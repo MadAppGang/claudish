@@ -1,0 +1,42 @@
+#!/bin/sh
+# The claudish proof, then compaction's own record: the launch log (key
+# checks and bundle digest), the paths of the debug log and the session
+# folders, and counts from the debug log. Prints no text from tool output.
+here=$(cd "$(dirname "$0")" && pwd)
+sh "$here/../claudish/evidence.sh"
+echo "variant=claudish-compaction"
+
+launch=$(cat "$HOME/.bench-compaction/launch-dir" 2>/dev/null)
+echo "launch_dir=${launch:-absent}"
+if [ -n "$launch" ] && [ -f "$launch/launch.log" ]; then
+  cat "$launch/launch.log"
+fi
+
+logs=$(ls "$launch"/debug/claudish_*.log 2>/dev/null)
+echo "debug_logs=${logs:-absent}"
+store=$(readlink "$HOME/.claudish/compaction" 2>/dev/null || echo "$HOME/.claudish/compaction")
+echo "compaction_store=$store"
+ls -1 "$store" 2>/dev/null | sed 's/^/session_folder=/'
+
+if [ -n "$logs" ]; then
+  c() { cat $logs | grep -c -- "$1"; }
+  echo "calls=$(c '\[compaction\] Calling API')"
+  echo "calls_x_api_key=$(cat $logs | grep '\[compaction\] Calling API' | grep -c 'auth: x-api-key')"
+  echo "calls_by_purpose_model:"
+  cat $logs | grep -o '\[compaction\] Calling API: [^ ]* (purpose: [^,]*, model: [^,]*' | sed 's/.*(purpose: /  /' | sort | uniq -c
+  echo "answers_by_status:"
+  cat $logs | grep -o '\[compaction\] [a-z-]*: HTTP [0-9]*' | sed 's/.*: HTTP /  HTTP /' | sort | uniq -c
+  tokens=$(cat $logs | grep -o 'HTTP [0-9]*, [0-9]* in / [0-9]* out tokens' | awk '{i+=$3; o+=$6; n++} END {printf "%d answers, %d in / %d out", n, i, o}')
+  echo "haiku_tokens=$tokens"
+  echo "sent_by_form:"
+  cat $logs | grep -o 'sent=[a-z-]*' | sort | uniq -c
+  echo "child_auth:"
+  cat $logs | grep -o '\[claude-runner\] child auth: .*' | sort | uniq -c
+  echo "compaction_warnings:"
+  cat $logs | grep '\[compaction\]' | grep -E 'off for|is ignored|could not|refused|warn' | cut -c1-240 | sort | uniq -c
+  echo "compaction_on:"
+  cat $logs | grep -o '\[compaction\] on: .*' | sort | uniq -c
+fi
+
+bun "$here/transcripts.ts"
+exit 0

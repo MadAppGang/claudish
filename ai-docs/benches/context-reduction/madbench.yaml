@@ -24,6 +24,16 @@ params:
   # The Context Gateway executable the gateway variants run, copied into the
   # run as ~/.bench-gateway/context-gateway. Default: the installed release.
   gateway_bin: ~/.local/bin/context-gateway
+  # A claudish build, copied into the run as ~/.bench-compaction/build: a
+  # compiled claudish executable, or a folder with index.js. Only
+  # claudish-compaction runs it. The default refuses to start.
+  claudish_build: ./config/no-claudish-build
+  # The claudish config of claudish-compaction, copied into the run as
+  # ~/.bench-compaction/config.json; its start.sh moves it to
+  # ~/.claudish/config.json. It holds the Anthropic API key compaction signs
+  # with: pass --param claudish_config=/absolute/path/to/a/0600/file. The
+  # default holds no key.
+  claudish_config: ./config/no-claudish-config.json
 
 harness:
   type: claude-code
@@ -64,6 +74,10 @@ defaults:
         - { from: "{{gateway_env}}", to: ~/.config/context-gateway/.env, access: copy }
         # The gateway executable, see the gateway_bin param.
         - { from: "{{gateway_bin}}", to: ~/.bench-gateway/context-gateway, access: copy }
+        # The claudish build and config, see the claudish_build and
+        # claudish_config params.
+        - { from: "{{claudish_build}}", to: ~/.bench-compaction/build, access: copy }
+        - { from: "{{claudish_config}}", to: ~/.bench-compaction/config.json, access: copy }
     provision:
       timeout: 5m
       steps:

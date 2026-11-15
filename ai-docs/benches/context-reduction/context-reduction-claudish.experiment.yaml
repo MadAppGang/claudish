@@ -19,6 +19,17 @@ guard_changes:
     # The gateway executable (the gateway_bin share), which only the streamfix
     # variant changes.
     - sandbox/share/paths/6/from
+    - sandbox/share/paths/6/identity
+    # The claudish build and config (claudish_build, claudish_config), which
+    # only claudish-compaction changes.
+    - sandbox/share/paths/7/from
+    - sandbox/share/paths/7/identity
+    - sandbox/share/paths/8/from
+    - sandbox/share/paths/8/identity
+    # The launcher: claudish-compaction starts its build through
+    # ./bin/claudish-compaction, every other variant through
+    # ./bin/claudish-unattended.
+    - harness/binary
 
 variants:
   # claudish with no context tool.
@@ -54,3 +65,15 @@ variants:
       binary: ./bin/claudish-unattended
       tool: claudish-context-gateway-local
       gateway_bin: ./config/no-gateway-bin
+  # claudish's own compaction on claude-haiku-5-5: a large tool output is
+  # compressed once and the stored text sent again, and a history summary is
+  # prepared ahead. A local build, started by ./bin/claudish-compaction with
+  # --compaction --debug-claudish. Pass --param claudish_build=/absolute/path/to/a
+  # compiled claudish (bun run build:binary, signed again with codesign)
+  # and --param claudish_config=/absolute/path/to/a/0600/config with the
+  # compaction block and the Anthropic API key; without them the run errors
+  # before the agent starts.
+  - name: claudish-compaction
+    params:
+      binary: ./bin/claudish-compaction
+      tool: claudish-compaction
