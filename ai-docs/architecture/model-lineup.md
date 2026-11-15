@@ -156,7 +156,8 @@ the restore needs one write, and that write is made conditional.
   back or removed, so "only `model` changed" holds for the parsed value, not for the bytes: string
   escapes are rewritten (`"é"` becomes `"é"`), numbers lose their spelling (`1.0` becomes
   `1`), and mixed indentation becomes the first line's. Every other key keeps its value and its
-  place, except that `JSON.parse` moves integer-like keys first.
+  place, except that `JSON.parse` moves integer-like keys first. A file whose `model` already
+  equals the recorded original (the user's own default is a listed spec) is left, not rewritten.
 - **A newer default can be overwritten.** `original` is recorded once, when the first session for
   the settings file registers. In this sequence the user's newer default is lost with no message:
   while a lineup session runs, the user sets a new default in another `claude` (the file now holds

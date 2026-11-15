@@ -205,6 +205,8 @@ export function restoreDecision(
   entry: { original: OriginalModel; listed: string[] }
 ): { action: "leave" } | { action: "set"; value: unknown } | { action: "delete" } {
   if (typeof current !== "string" || !entry.listed.includes(current)) return { action: "leave" };
+  // The original value is itself a listed spec and still in place: nothing to put back.
+  if (entry.original.present && entry.original.value === current) return { action: "leave" };
   return entry.original.present
     ? { action: "set", value: entry.original.value }
     : { action: "delete" };
