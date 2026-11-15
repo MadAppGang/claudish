@@ -29,6 +29,8 @@ type Check = {
 };
 type Result = {
   run_name: string;
+  // Set when the trial errored before it could be graded.
+  error?: string;
   scenario_id: string;
   status: string;
   duration: number;
@@ -159,6 +161,9 @@ if (files.length === 0) {
 }
 
 const rows: Row[] = [];
+// A trial that errored has no graded Session: it would add zeros to every
+// mean. It is listed on its own and counted nowhere else.
+const errored: { file: string; variant: string; error: string }[] = [];
 for (const file of files) {
   // One trial: `results` at the top. Several trials: one `results` per trial.
   const report = JSON.parse(await Bun.file(file).text()) as {
@@ -166,7 +171,24 @@ for (const file of files) {
     trials?: { results?: Result[] }[];
   };
   const results = report.results ?? report.trials?.flatMap((t) => t.results ?? []) ?? [];
-  for (const r of results) rows.push(trialRow(file, r));
+  for (const r of results) {
+    if (r.status === "error") {
+      errored.push({ file, variant: r.run_name, error: String(r.error ?? "").split("\n")[0] });
+    } else {
+      rows.push(trialRow(file, r));
+    }
+  }
+}
+
+if (errored.length > 0) {
+  console.log("## Errored trials: not counted in any table below\n");
+  console.log(
+    table(
+      ["variant", "report", "error"],
+      errored.map((e) => [e.variant, e.file.split("/").pop() ?? e.file, e.error])
+    )
+  );
+  console.log("");
 }
 
 const variants = [...new Set(rows.map((r) => r.variant))];
