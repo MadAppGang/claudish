@@ -93,6 +93,14 @@ errors at provision, before any spend. `madbench check` therefore reports
 that variant as not graded unless it gets a key file too; a fake one is
 enough, because the mock harness makes no call.
 
+`--param gateway_bin=<path>` picks the Context Gateway executable (default
+`~/.local/bin/context-gateway`). The gateway start script prints its
+SHA-256, so the evidence names the build that served each trial.
+`claudish-context-gateway-local-streamfix` is `claudish-context-gateway-local`
+with a locally patched build; its own `gateway_bin` is
+`config/no-gateway-bin`, which refuses to start, so the variant errors at
+provision unless the command line names the build.
+
 ## The grade
 
 `checks/grade-check.ts` copies the seven files under `hidden-tests/` into the

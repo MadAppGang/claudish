@@ -21,6 +21,9 @@ params:
   # ANTHROPIC_API_KEY=.... The default holds no key, and the provision step
   # deletes the file in every run before the agent starts.
   gateway_env: ./config/no-gateway-key.env
+  # The Context Gateway executable the gateway variants run, copied into the
+  # run as ~/.bench-gateway/context-gateway. Default: the installed release.
+  gateway_bin: ~/.local/bin/context-gateway
 
 harness:
   type: claude-code
@@ -59,6 +62,8 @@ defaults:
         - { from: ./out, to: ~/.bench-out, access: rw }
         # The gateway's key file, see the gateway_env param.
         - { from: "{{gateway_env}}", to: ~/.config/context-gateway/.env, access: copy }
+        # The gateway executable, see the gateway_bin param.
+        - { from: "{{gateway_bin}}", to: ~/.bench-gateway/context-gateway, access: copy }
     provision:
       timeout: 5m
       steps:

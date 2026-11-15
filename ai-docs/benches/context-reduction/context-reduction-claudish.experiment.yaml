@@ -16,6 +16,9 @@ guard_changes:
     - harness/config/files/**
     - harness/config/plugins/**
     - sandbox/provision/steps/1
+    # The gateway executable (the gateway_bin share), which only the streamfix
+    # variant changes.
+    - sandbox/share/paths/6/from
 
 variants:
   # claudish with no context tool.
@@ -42,3 +45,12 @@ variants:
     params:
       binary: ./bin/claudish-unattended
       tool: claudish-context-gateway-local
+  # The same as claudish-context-gateway-local with a locally patched gateway
+  # build whose stream buffer keeps an event cut across two reads whole. Pass
+  # --param gateway_bin=/absolute/path/to/that/build; without it the provision
+  # step errors.
+  - name: claudish-context-gateway-local-streamfix
+    params:
+      binary: ./bin/claudish-unattended
+      tool: claudish-context-gateway-local
+      gateway_bin: ./config/no-gateway-bin

@@ -13,8 +13,11 @@ set -eu
 
 config=${1:?usage: start.sh <config.yaml>}
 port=18431
-gw=${CONTEXT_GATEWAY_BIN:-$HOME/.local/bin/context-gateway}
+gw=${CONTEXT_GATEWAY_BIN:-$HOME/.bench-gateway/context-gateway}
+if [ -f "$gw" ]; then chmod +x "$gw"; else gw="$HOME/.local/bin/context-gateway"; fi
 run="$HOME/.context-gateway-bench"
+# The digest names the build that served this run in the evidence.
+echo "start: gateway binary $gw sha256 $(shasum -a 256 "$gw" | cut -d' ' -f1)"
 
 stale=$(lsof -ti "tcp:$port" -sTCP:LISTEN 2>/dev/null || true)
 if [ -n "$stale" ]; then
