@@ -249,6 +249,7 @@ export const CompactionConfigSchema = z
         minTokens: z.number().int().positive().optional(),
         timeoutMs: z.number().int().positive().optional(),
         maxRatio: z.number().gt(0).lte(1).optional(),
+        skipTools: z.array(z.string().min(1)).optional(),
       })
       .optional(),
     history: z

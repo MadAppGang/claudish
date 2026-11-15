@@ -48,7 +48,8 @@ defaults:
     "enabled": true,
     "minTokens": 4000,      // smaller outputs are never touched (estimated as characters / 4)
     "timeoutMs": 20000,     // the longest a request waits for its compressions
-    "maxRatio": 0.6         // a result longer than 60% of the original is discarded
+    "maxRatio": 0.6,        // a result longer than 60% of the original is discarded
+    "skipTools": ["Read"]   // outputs of these tools are never compressed; [] skips none
   },
   "history": {
     "enabled": true,
@@ -98,8 +99,9 @@ claudish keychain set ANTHROPIC_API_KEY
 
 ## Tool outputs
 
-A tool output is a candidate when it is text only, not an error, at least `minTokens` long, and
-not the advisor's. It is decided **once**, the first time it appears, before the model sees it:
+A tool output is a candidate when it is text only, not an error, at least `minTokens` long, not
+the advisor's, not from a tool listed in `skipTools`, and not a read of the session's own recovery
+files. It is decided **once**, the first time it appears, before the model sees it:
 
 - **Compressed:** the compression keeps every error line, file path, line number, identifier,
   command and number, and drops repeats, boilerplate and progress lines. The result ends with:
@@ -115,6 +117,17 @@ not the advisor's. It is decided **once**, the first time it appears, before the
 Every later request sends exactly the same text. That keeps Anthropic's prompt cache valid and the
 model's earlier reasoning blocks accepted. An output the model has already seen in full is never
 compressed afterwards.
+
+### Tools that are never compressed
+
+`skipTools` lists tool names, exactly as Claude Code calls them, whose outputs are always sent as
+they are. The default is `["Read"]`: the model edits files with `Edit`, which needs the file's exact
+text, and a compressed `Read` drops the lines it would have to match. Set `"skipTools": []` to let
+`Read` outputs be compressed too, or add a tool, such as `"Grep"`, to keep its outputs whole.
+
+A read of the session's recovery files (any tool call whose `file_path` lies inside
+`~/.claudish/compaction/<session_id>/`) is never compressed either, whatever `skipTools` says, so
+the model always gets the full original it asked for.
 
 ### The wait
 

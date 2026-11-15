@@ -5,7 +5,8 @@
  * "compaction": {
  *   "enabled": false,      // opt-in: it costs money and sends tool output to Anthropic
  *   "model": "haiku",      // a tier alias or an exact claude-* id
- *   "toolOutputs": { "enabled": true, "minTokens": 4000, "timeoutMs": 20000, "maxRatio": 0.6 },
+ *   "toolOutputs": { "enabled": true, "minTokens": 4000, "timeoutMs": 20000, "maxRatio": 0.6,
+ *                    "skipTools": ["Read"] },
  *   "history": { "enabled": true, "precomputeAt": 0.6, "applyAt": 0.8 }
  * }
  * ```
@@ -34,6 +35,11 @@ export interface ToolOutputSettings {
   timeoutMs: number;
   /** A result longer than this fraction of the original is discarded. */
   maxRatio: number;
+  /**
+   * Tool names whose results are never compressed nor recorded. Empty skips
+   * nothing. The default skips `Read`: an Edit needs the file's exact text.
+   */
+  skipTools: string[];
 }
 
 export interface HistorySettings {
@@ -63,6 +69,7 @@ export const DEFAULT_COMPACTION_SETTINGS: Readonly<CompactionSettings> = Object.
     minTokens: 4000,
     timeoutMs: 20000,
     maxRatio: 0.6,
+    skipTools: Object.freeze(["Read"]) as unknown as string[],
   }),
   history: Object.freeze({
     enabled: true,
@@ -149,7 +156,10 @@ function cloneDefaults(): CompactionSettings {
   return {
     enabled: DEFAULT_COMPACTION_SETTINGS.enabled,
     model: DEFAULT_COMPACTION_SETTINGS.model,
-    toolOutputs: { ...DEFAULT_COMPACTION_SETTINGS.toolOutputs },
+    toolOutputs: {
+      ...DEFAULT_COMPACTION_SETTINGS.toolOutputs,
+      skipTools: [...DEFAULT_COMPACTION_SETTINGS.toolOutputs.skipTools],
+    },
     history: { ...DEFAULT_COMPACTION_SETTINGS.history },
   };
 }

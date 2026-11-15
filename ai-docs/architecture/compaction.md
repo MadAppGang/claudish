@@ -90,6 +90,13 @@ A `tool_result` is a candidate only when its content is a string or text blocks 
 one of them is never compressed and never recorded, so it is sent as it is on every request:
 
 - **The advisor's results**, by the tool name `ADVISOR_TOOL_NAME`.
+- **A tool named in `toolOutputs.skipTools`**, by the tool_use's name; default `["Read"]`, and an
+  empty list skips nothing. `Read` is skipped because the model edits with `Edit`, which needs the
+  file's exact text: a compressed Read drops the lines an edit has to match, so the model reads the
+  file again. A record made before a tool was listed is still replayed (`replay` reads records,
+  not the list): dropping a compressed form the model has seen would change its history. The
+  recovery-read rule below is checked first, so its log line is written also when `Read` is
+  listed.
 - **A read of this session's recovery files.** The tool_use's input `file_path`, after
   `path.resolve`, lies inside `store.sessionDir(sessionId)` or inside that folder's real path (the
   store root may sit behind a symlink). It is checked by the input path, not by the tool name.

@@ -19,7 +19,8 @@
  *
  * Candidates are tool_result blocks of the last message whose content is a
  * string or text blocks only, with no `is_error`, at least `minTokens`
- * (characters / 4), not a result of the advisor tool, and not a read of this
+ * (characters / 4), not a result of the advisor tool or of a tool named in
+ * `skipTools` (default `Read`: an Edit needs the file's exact text), and not a read of this
  * session's own recovery files (a tool_use input `file_path` inside the
  * session's folder): compressing that read again would hand the model one more
  * footer and never the full original.
@@ -30,7 +31,7 @@ import { realpathSync } from "node:fs";
 import { basename, isAbsolute, relative, resolve, sep } from "node:path";
 import { ADVISOR_TOOL_NAME } from "../handlers/advisor-decorator.js";
 import { log } from "../logger.js";
-import type { ToolOutputSettings } from "./config.js";
+import { DEFAULT_COMPACTION_SETTINGS, type ToolOutputSettings } from "./config.js";
 import type { CompactionCallResult, CompactionClient } from "./haiku-client.js";
 import { type CompactionStore, type ToolOutputRecord, toolOutputKey } from "./store.js";
 
@@ -115,7 +116,8 @@ interface Located {
 export interface ToolOutputCompactorDeps {
   store: CompactionStore;
   client: CompactionClient;
-  settings: ToolOutputSettings;
+  /** An absent `skipTools` takes the default list. */
+  settings: Omit<ToolOutputSettings, "skipTools"> & Partial<Pick<ToolOutputSettings, "skipTools">>;
 }
 
 export class ToolOutputCompactor {
@@ -137,11 +139,15 @@ export class ToolOutputCompactor {
     const tools = toolUsesOf(messages);
     const lastIndex = messages.length - 1;
     const folders = this.sessionFolders(sessionId);
+    const skipTools = new Set(
+      this.deps.settings.skipTools ?? DEFAULT_COMPACTION_SETTINGS.toolOutputs.skipTools
+    );
 
     const fresh: Array<Promise<ToolOutputRecord>> = [];
     const freshKeys = new Set<string>();
     for (const [index, message] of messages.entries()) {
-      const scan = { sessionId, tools, minTokens, folders, isLast: index === lastIndex };
+      const isLast = index === lastIndex;
+      const scan = { sessionId, tools, minTokens, folders, skipTools, isLast };
       for (const located of this.eligibleBlocks(message, scan)) {
         if (this.deps.store.get(sessionId, located.key)) continue;
         if (index === lastIndex && message.role === "user") {
@@ -374,6 +380,8 @@ interface BlockScan {
   minTokens: number;
   /** `sessionFolders` of the session. */
   folders: string[];
+  /** Tool names whose results are never compressed (`toolOutputs.skipTools`). */
+  skipTools: ReadonlySet<string>;
   /** Whether the message is the request's last one. */
   isLast: boolean;
 }
@@ -397,7 +405,9 @@ function recoveryFileRead(tool: ToolUse | undefined, folders: string[]): string 
 /** Whether the tool_use's result is never compressed, whatever its size. */
 function isExcludedTool(tool: ToolUse | undefined, scan: BlockScan): boolean {
   if (tool?.name === ADVISOR_TOOL_NAME) return true;
-  return isRecoveryRead(tool, scan);
+  // Before the name list, so a recovery read is logged also when its tool is listed.
+  if (isRecoveryRead(tool, scan)) return true;
+  return tool !== undefined && scan.skipTools.has(tool.name);
 }
 
 /**

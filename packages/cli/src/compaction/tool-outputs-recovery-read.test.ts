@@ -27,7 +27,7 @@ afterEach(() => {
   rmSync(join(root, ".."), { recursive: true, force: true });
 });
 
-function rig() {
+function rig(skipTools: string[] = []) {
   let calls = 0;
   const fetchImpl = (async () => {
     calls += 1;
@@ -47,7 +47,8 @@ function rig() {
     record() {},
   });
   const store = new CompactionStore(root);
-  const settings = { enabled: true, minTokens: 4000, timeoutMs: 1000, maxRatio: 0.6 };
+  // Read is skipped by default; the recovery-read rule must hold without that.
+  const settings = { enabled: true, minTokens: 4000, timeoutMs: 1000, maxRatio: 0.6, skipTools };
   const compactor = new ToolOutputCompactor({ store, client, settings });
   return { store, compactor, calls: () => calls };
 }
@@ -127,4 +128,16 @@ test("a Read of a sibling session's recovery file is still compressed", async ()
   );
   const lines = (await capturedLines()).filter((l) => l.includes("recovery read"));
   expect(lines).toHaveLength(0);
+});
+
+test("a recovery read is logged also when Read is in skipTools", async () => {
+  const r = rig(["Read"]);
+  const path = r.store.writeRecovery(session, storedKey, original);
+
+  await r.compactor.compact(readPayload(path), session);
+
+  expect(r.calls()).toBe(0);
+  const lines = (await capturedLines()).filter((l) => l.includes("recovery read"));
+  expect(lines).toHaveLength(1);
+  expect(lines[0]).toEndWith(recoveryLine(storedKey));
 });
