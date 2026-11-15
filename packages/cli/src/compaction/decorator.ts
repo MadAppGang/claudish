@@ -34,24 +34,27 @@ declare module "hono" {
  */
 export function withCompaction(
   inner: ModelHandler,
-  runtime: CompactionRuntime | undefined
+  runtime: CompactionRuntime | undefined,
+  routedModel?: string
 ): ModelHandler {
   if (!runtime) return inner;
   if (inner instanceof CompactionHandler) return inner;
-  return new CompactionHandler(inner, runtime);
+  return new CompactionHandler(inner, runtime, routedModel);
 }
 
 /** The wrapper `withCompaction` returns. Exported for `instanceof` checks. */
 export class CompactionHandler implements ModelHandler {
   constructor(
     readonly inner: ModelHandler,
-    private readonly runtime: CompactionRuntime
+    private readonly runtime: CompactionRuntime,
+    /** The model spec the proxy routes this request to; see `compactRequest`. */
+    private readonly routedModel?: string
   ) {}
 
   async handle(c: Context, payload: unknown): Promise<Response> {
     if (c.get("compactionHandled") === true) return this.inner.handle(c, payload);
     c.set("compactionHandled", true);
-    await compactRequest(this.runtime, payload);
+    await compactRequest(this.runtime, payload, this.routedModel);
     return this.inner.handle(c, payload);
   }
 
@@ -71,8 +74,16 @@ export function compactionSessionOf(payload: unknown): string | undefined {
  * the history pass, which hashes the messages as the first pass left them.
  * Never rejects: a fault leaves the body as the decisions recorded so far
  * made it. The history pass never waits for a summary.
+ *
+ * `routedModel` is the model spec the proxy routes the request to (a role
+ * mapping or `--model` can send a `claude-*` request to another model); the
+ * history limit is its context window. Absent, the body's own `model` is used.
  */
-export async function compactRequest(runtime: CompactionRuntime, payload: unknown): Promise<void> {
+export async function compactRequest(
+  runtime: CompactionRuntime,
+  payload: unknown,
+  routedModel?: string
+): Promise<void> {
   const sessionId = compactionSessionOf(payload);
   if (!sessionId) return;
   if (runtime.settings.toolOutputs.enabled) {
@@ -89,7 +100,7 @@ export async function compactRequest(runtime: CompactionRuntime, payload: unknow
   }
   if (runtime.settings.history.enabled) {
     try {
-      const pass = runtime.history.compact(payload, sessionId);
+      const pass = runtime.history.compact(payload, sessionId, routedModel);
       if (pass.applied !== "none" || pass.precomputeStarted) {
         log(
           `[compaction] session ${sessionId}: history ${pass.applied}${pass.boundary !== undefined ? ` at ${pass.boundary}` : ""}, ~${pass.estimate ?? "?"} of ${pass.limit ?? "?"} tokens${pass.precomputeStarted ? ", summary started" : ""}`

@@ -316,6 +316,12 @@ interface RequestResolution {
   nativeModel?: string;
   /** The request's own signing when it differs from the launch's (`login-only`). */
   signing?: NativeSigning;
+  /**
+   * The model spec this request is routed to after the slot map, role
+   * mapping and `--model` (wire markers removed); the requested model itself
+   * when none applied.
+   */
+  target?: string;
 }
 
 export async function createProxyServer(
@@ -593,11 +599,12 @@ export async function createProxyServer(
   const getHandlerForRequest = async (
     requestedModel: string,
     probeHopOrigin?: "routed",
-    resolved?: { nativeModel?: string; signing?: NativeSigning }
+    resolved?: { nativeModel?: string; signing?: NativeSigning; target?: string }
   ): Promise<ModelHandler> => {
     const out: RequestResolution = {};
     const handler = await resolveHandlerForRequest(requestedModel, out, probeHopOrigin);
     if (out.refusal) return new RefusingHandler(out.refusal);
+    if (resolved && out.target) resolved.target = out.target;
     if (resolved && out.nativeModel) resolved.nativeModel = out.nativeModel;
     if (resolved && out.signing) resolved.signing = out.signing;
     return out.markers && (out.markers.mode || out.markers.speed)
@@ -615,7 +622,10 @@ export async function createProxyServer(
     probeHopOrigin?: "routed"
   ): Promise<ModelHandler> => {
     // 1. Monitor Mode Override
-    if (monitorMode) return nativeHandler;
+    if (monitorMode) {
+      out.target = requestedModel;
+      return nativeHandler;
+    }
 
     // 2. Resolve target model based on mappings or defaults
     // Priority: exact slot map > role mappings > default model (--model) > requested model (native)
@@ -704,6 +714,7 @@ export async function createProxyServer(
         out.markers = markers;
         target = markers.spec;
       }
+      out.target = target;
     } catch (err) {
       if (err instanceof WireMarkerError) {
         out.refusal = err.message;
@@ -1407,7 +1418,7 @@ export async function createProxyServer(
       // The advisor wrapper goes on the RESOLVED handler (FallbackHandler
       // included), once per request, around the hooks. See `withAdvisor` and
       // `withRequestHooks` above.
-      const resolved: { nativeModel?: string; signing?: NativeSigning } = {};
+      const resolved: { nativeModel?: string; signing?: NativeSigning; target?: string } = {};
       const resolvedHandler = await getHandlerForRequest(
         body.model,
         requestProbeHopOrigin(c),
@@ -1416,9 +1427,14 @@ export async function createProxyServer(
       const signing = resolved.signing ?? defaultRequestSigning(body.model);
       setNativeSigning(c, signing);
       // Compaction sits between the two: after the advisor's rewrite of its own
-      // tool_results, before the hooks, which see the compacted body.
+      // tool_results, before the hooks, which see the compacted body. Its
+      // history limit is the window of the model this request is routed to.
       const handler = withAdvisor(
-        withCompaction(withRequestHooks(resolvedHandler), options.compaction),
+        withCompaction(
+          withRequestHooks(resolvedHandler),
+          options.compaction,
+          resolved.nativeModel ?? resolved.target
+        ),
         signing,
         advisorPresence
       );

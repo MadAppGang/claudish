@@ -35,6 +35,7 @@ import { lookupModel, lookupModelForProvider } from "../adapters/model-catalog.j
 import { withoutCacheMarkers } from "../code-mode/hashes.js";
 import { claudeApiContextWindow } from "../handlers/claude-api-meter.js";
 import { log } from "../logger.js";
+import { ONE_MILLION_CONTEXT_SUFFIX } from "../providers/claude-code-aliases.js";
 import { parseModelSpec } from "../providers/model-parser.js";
 import { localTokenEstimate } from "../token-estimate.js";
 import type { HistorySettings } from "./config.js";
@@ -126,8 +127,13 @@ export function getLaunchAutoCompactWindow(): number | undefined {
  * a `provider@model` spec, on the Claude API for a `claude-*` name, else the
  * model's own. Undefined when the catalog knows none.
  */
-export function catalogContextWindow(model: unknown): number | undefined {
-  if (typeof model !== "string" || model.length === 0) return undefined;
+export function catalogContextWindow(name: unknown): number | undefined {
+  if (typeof name !== "string" || name.length === 0) return undefined;
+  // Claude Code's `[1m]` selector is not part of any catalog id.
+  const model = name.toLowerCase().endsWith(ONE_MILLION_CONTEXT_SUFFIX)
+    ? name.slice(0, -ONE_MILLION_CONTEXT_SUFFIX.length)
+    : name;
+  if (model.length === 0) return undefined;
   const positive = (n: number | undefined): number | undefined =>
     typeof n === "number" && n > 0 ? n : undefined;
   try {
@@ -441,8 +447,11 @@ export class HistoryCompactor {
    * Replay a recorded swap, record a new one when the request qualifies, and
    * start a background summary when it reaches `precomputeAt`. Mutates
    * `payload.messages`. Synchronous: it never waits for a summary.
+   *
+   * `routedModel` is the model the request is routed to; its context window
+   * is the limit. Absent, the body's own `model` is used.
    */
-  compact(payload: unknown, sessionId: string): HistoryPassSummary {
+  compact(payload: unknown, sessionId: string, routedModel?: string): HistoryPassSummary {
     const result: HistoryPassSummary = { applied: "none", precomputeStarted: false };
     const original = messagesOf(payload);
     if (!original) return result;
@@ -458,7 +467,7 @@ export class HistoryCompactor {
     }
 
     const limit = effectiveHistoryLimit(
-      (this.deps.contextWindowOf ?? catalogContextWindow)(body.model),
+      (this.deps.contextWindowOf ?? catalogContextWindow)(routedModel ?? body.model),
       (this.deps.autoCompactWindow ?? getLaunchAutoCompactWindow)()
     );
     if (limit === undefined) return result;

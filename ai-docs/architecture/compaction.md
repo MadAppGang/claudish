@@ -86,9 +86,12 @@ Each rule has a test.
 - **Limit** = min(the request model's catalog context window, the `CLAUDE_CODE_AUTO_COMPACT_WINDOW`
   this launch gave Claude Code). The runner records the child env's value
   (`setLaunchAutoCompactWindow`, clamped to Claude Code's 100K floor and 1M ceiling) just before
-  the spawn. No catalog window ⇒ history off for that request. The catalog window comes from the
-  named provider for `provider@model`, the Claude API connection for `claude-*`, else the model's
-  own.
+  the spawn. No catalog window ⇒ history off for that request. The model is the one the proxy
+  routes the request to (`resolveHandlerForRequest`'s target after the slot map, role mapping and
+  `--model`; the bare id for `claude@<id>`), never the raw `body.model`: a role mapping can send
+  `claude-sonnet-*` to a model with a smaller window, or none. A `[1m]` suffix is removed for the
+  lookup. The catalog window comes from the named provider for `provider@model`, the Claude API
+  connection for `claude-*`, else the model's own.
 - **Measure** with `localTokenEstimate` (`token-estimate.ts`, JSON length / 4), the same number
   `count_tokens` answers with locally.
 - **Prepare** at `precomputeAt`, in the background, never awaited. Boundary `b` = the start of the
