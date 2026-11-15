@@ -100,6 +100,7 @@ import { closeAllEpisodes } from "./recovery/coordinator.js";
 import { redactExactValues, redactForClient } from "./redact.js";
 import { warmPricingCache } from "./services/pricing-cache.js";
 import { resolveUpstreamUrl } from "./test-upstream.js";
+import { localTokenEstimate } from "./token-estimate.js";
 import type { ProxyServer } from "./types.js";
 
 /**
@@ -1318,7 +1319,7 @@ export async function createProxyServer(
         // the session usable where a propagated 401 would not.
         if (res.status === 401 || res.status === 403) {
           log(`[CountTokens] upstream ${res.status} — falling back to the local estimate`);
-          return c.json({ input_tokens: Math.ceil(JSON.stringify(body).length / 4) });
+          return c.json({ input_tokens: localTokenEstimate(body) });
         }
 
         // Every other status is the UPSTREAM's, carried through. Discarding it
@@ -1341,8 +1342,7 @@ export async function createProxyServer(
         return c.json(payload, res.status as any);
       }
       // OpenRouter handler logic (estimation)
-      const txt = JSON.stringify(body);
-      return c.json({ input_tokens: Math.ceil(txt.length / 4) });
+      return c.json({ input_tokens: localTokenEstimate(body) });
     } catch (e) {
       if (isTerminalRoutingFailure(e)) {
         return c.json(

@@ -23,6 +23,12 @@ lives in `ROADMAP.md`.
   harness-conformance supervisor with its plan-mode measurement. Read before editing `hooks/`, a stream
   parser's raw tap, or the settle path. User guide: `docs/advanced/hooks.md`
 - `advisor.md` — `--advisor` for any main model: independent of `--monitor`, decorator on the routed handler, ids by tool name, retained session state, stub paths S1-S10 and the record fields, Claude Code's gates; panel routing through `planAdvisorModel` + `buildAdvisorChains` before the port (no lazy path), the advisor handler set, the never-served panel gateway, stickiness, and the Claude rule (login only where `childAuthControl` says claudish controls the child's auth, S0 request shape, the 429 "Error" shape refusal, the key arm that follows the native signing: none on the Claude subscription, the launch key on the Claude API launch); read before editing advisor, decorator, panel gateway, `planAdvisorModel`/`buildAdvisorChains`, monitor-launch or native-auth code
+- `compaction.md` — `--compaction` (`compaction/`): a request decorator on every route (monitor
+  launches load no hooks), tool outputs compressed once on first sighting and replayed byte for
+  byte, the six cache-stability rules, the history swap at a human-turn boundary (prefix and tail
+  hashes, thinking stripped, background summary never awaited), the Anthropic key held in memory on
+  a signing lease, the store and its 7-day retention. Read before editing `compaction/`, the
+  `/v1/messages` decorator chain or the `count_tokens` route
 - `settings-env.md` — a settings `env` block overwrites the environment claudish gives Claude Code; why a proxy-auth launch is marked host-managed and withholds first-party trust, and why a launch that keeps the user's login is not; the two Claude launches (the Claude API child holds only claudish's placeholder token under the host marker alone, measured on Claude Code 2.1.323; the Claude subscription launch is refused when a settings layer would hand it an API key); read before changing the child's environment or `launcher/claude-launch.ts`
 - `providers/devin.md`, `providers/grok-subscription.md`, `providers/antigravity.md`, `providers/qwen-alibaba.md` — one per reverse-engineered provider
 - `providers/meta-muse-code.md`: `muse@` on a Muse Code subscription and its metered sibling `meta@`: the mint

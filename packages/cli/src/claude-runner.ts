@@ -32,6 +32,7 @@ import {
 } from "./auth/claudish-placeholder.js";
 import type { ChildAuthControl, ChildAuthSource } from "./child-auth-types.js";
 import { classifierPassthroughEnabled } from "./classifier-passthrough.js";
+import { setLaunchAutoCompactWindow } from "./compaction/history.js";
 import { prepareCompactionLaunch } from "./compaction/launch.js";
 import { compactionRoot } from "./compaction/store.js";
 import { ENV } from "./config.js";
@@ -3015,6 +3016,12 @@ export async function runClaudeWithProxy(
       turnDir,
       sessionId: minted ?? compactionMintedId ?? sessionFlags.sessionId,
     };
+  }
+
+  if (config.compaction === true) {
+    // History compaction measures each request against the lower of the
+    // model's catalog window and the auto-compact window Claude Code was given.
+    setLaunchAutoCompactWindow(env[ENV.CLAUDE_CODE_AUTO_COMPACT_WINDOW]);
   }
 
   const wrap =

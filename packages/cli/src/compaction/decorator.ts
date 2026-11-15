@@ -67,38 +67,64 @@ export function compactionSessionOf(payload: unknown): string | undefined {
 }
 
 /**
- * Compact one `/v1/messages` body in place. Never rejects: a fault leaves the
- * body as the decisions recorded so far made it.
+ * Compact one `/v1/messages` body in place: the tool-output pass first, then
+ * the history pass, which hashes the messages as the first pass left them.
+ * Never rejects: a fault leaves the body as the decisions recorded so far
+ * made it. The history pass never waits for a summary.
  */
 export async function compactRequest(runtime: CompactionRuntime, payload: unknown): Promise<void> {
   const sessionId = compactionSessionOf(payload);
   if (!sessionId) return;
-  if (!runtime.settings.toolOutputs.enabled) return;
-  try {
-    const summary = await runtime.toolOutputs.compact(payload, sessionId);
-    if (summary.compressed > 0 || summary.keptOriginal > 0 || summary.replaced > 0) {
-      log(
-        `[compaction] session ${sessionId}: replaced=${summary.replaced} compressed=${summary.compressed} kept-original=${summary.keptOriginal}`
-      );
+  if (runtime.settings.toolOutputs.enabled) {
+    try {
+      const summary = await runtime.toolOutputs.compact(payload, sessionId);
+      if (summary.compressed > 0 || summary.keptOriginal > 0 || summary.replaced > 0) {
+        log(
+          `[compaction] session ${sessionId}: replaced=${summary.replaced} compressed=${summary.compressed} kept-original=${summary.keptOriginal}`
+        );
+      }
+    } catch (err) {
+      log(`[compaction] tool outputs skipped: ${err instanceof Error ? err.message : String(err)}`);
     }
-  } catch (err) {
-    log(`[compaction] tool outputs skipped: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (runtime.settings.history.enabled) {
+    try {
+      const pass = runtime.history.compact(payload, sessionId);
+      if (pass.applied !== "none" || pass.precomputeStarted) {
+        log(
+          `[compaction] session ${sessionId}: history ${pass.applied}${pass.boundary !== undefined ? ` at ${pass.boundary}` : ""}, ~${pass.estimate ?? "?"} of ${pass.limit ?? "?"} tokens${pass.precomputeStarted ? ", summary started" : ""}`
+        );
+      }
+    } catch (err) {
+      log(`[compaction] history skipped: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 }
 
 /**
  * Apply the recorded forms to a `count_tokens` body in place, with no model
- * call, so Claude Code's count matches what `/v1/messages` sends. Never throws.
+ * call: the tool-output forms, then a recorded history swap. So Claude Code's
+ * count matches what `/v1/messages` sends. Never throws.
  */
 export function applyStoredForms(runtime: CompactionRuntime, payload: unknown): void {
   const sessionId = compactionSessionOf(payload);
   if (!sessionId) return;
-  if (!runtime.settings.toolOutputs.enabled) return;
-  try {
-    runtime.toolOutputs.replay(payload, sessionId);
-  } catch (err) {
-    log(
-      `[compaction] count_tokens replay skipped: ${err instanceof Error ? err.message : String(err)}`
-    );
+  if (runtime.settings.toolOutputs.enabled) {
+    try {
+      runtime.toolOutputs.replay(payload, sessionId);
+    } catch (err) {
+      log(
+        `[compaction] count_tokens replay skipped: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+  if (runtime.settings.history.enabled) {
+    try {
+      runtime.history.replay(payload, sessionId);
+    } catch (err) {
+      log(
+        `[compaction] count_tokens history replay skipped: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
   }
 }

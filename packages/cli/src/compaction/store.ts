@@ -8,6 +8,11 @@
  * ~/.claudish/compaction/<session_id>/<key>.txt    (0600) the original output, for Read
  * ```
  *
+ * History compaction keeps its records in the same folder and the same
+ * `<key>.json` shape: a summary prepared for one boundary
+ * (`historyRecordKey("history-summary", ...)`) and a swap applied at one
+ * boundary (`historyRecordKey("history-swap", ...)`).
+ *
  * A form is decided once and replayed on every later request. The cache and
  * the thinking signatures both match the history the model already saw, so a
  * record is never rewritten: `put` refuses to replace an existing key. The
@@ -85,8 +90,76 @@ export type ToolOutputRecord =
       decidedAt: string;
     };
 
+/**
+ * The record key of one history record: sha256 over the record kind, the
+ * session id and the prefix hash, NUL-separated, as lowercase hex. A summary
+ * and a swap of the same boundary therefore never share a key.
+ */
+export function historyRecordKey(
+  kind: "history-summary" | "history-swap",
+  sessionId: string,
+  prefixHash: string
+): string {
+  return createHash("sha256")
+    .update(kind)
+    .update("\0")
+    .update(sessionId)
+    .update("\0")
+    .update(prefixHash)
+    .digest("hex");
+}
+
+/**
+ * A summary of messages `[0, boundary)` of one conversation thread, decided
+ * once. A `failed` record is final for its boundary: it is never retried.
+ */
+export type HistorySummaryRecord =
+  | {
+      kind: "history-summary";
+      form: "ready";
+      /** The thread: sha256 of the conversation's first message. */
+      thread: string;
+      /** sha256 of messages `[0, boundary)` (`messagesHash`). */
+      prefixHash: string;
+      boundary: number;
+      /** The summary text, sent after the summary marker line. */
+      summary: string;
+      /** The prefix hash of the summary this one rolled forward from, if any. */
+      basedOn?: string;
+      decidedAt: string;
+    }
+  | {
+      kind: "history-summary";
+      form: "failed";
+      thread: string;
+      prefixHash: string;
+      boundary: number;
+      reason: string;
+      decidedAt: string;
+    };
+
+/**
+ * A history swap: messages `[0, boundary)` replaced by one summary message,
+ * and thinking blocks removed from messages `[boundary, end)`. Replayed on
+ * every later request whose `[0, boundary)` and `[boundary, end)` hash the same.
+ */
+export interface HistorySwapRecord {
+  kind: "history-swap";
+  thread: string;
+  /** sha256 of messages `[0, boundary)`. */
+  prefixHash: string;
+  /** sha256 of messages `[boundary, end)`. */
+  tailHash: string;
+  boundary: number;
+  /** One past the last message the swap saw (the message count at swap time). */
+  end: number;
+  /** The summary text the swap sends. */
+  summary: string;
+  decidedAt: string;
+}
+
 /** Every record kind the store holds. */
-export type CompactionRecord = ToolOutputRecord;
+export type CompactionRecord = ToolOutputRecord | HistorySummaryRecord | HistorySwapRecord;
 
 const KEY_PATTERN = /^[0-9a-f]{64}$/;
 
@@ -150,6 +223,11 @@ export class CompactionStore {
     return record;
   }
 
+  /** Every record of a session, loading it from disk on its first use. */
+  list(sessionId: string): Array<[string, CompactionRecord]> {
+    return [...this.session(sessionId).entries()];
+  }
+
   /** Write the original output for Read. Returns its absolute path. */
   writeRecovery(sessionId: string, key: string, original: string): string {
     if (!KEY_PATTERN.test(key)) throw new Error("Refusing a recovery file with a malformed key");
@@ -185,9 +263,27 @@ export function ensureSessionFolder(root: string, sessionId: string): string {
 function isRecord(value: unknown): value is CompactionRecord {
   if (!value || typeof value !== "object") return false;
   const r = value as Record<string, unknown>;
-  if (r.kind !== "tool-output") return false;
-  if (r.form === "compressed") return typeof r.text === "string";
-  return r.form === "original";
+  if (r.kind === "tool-output") {
+    if (r.form === "compressed") return typeof r.text === "string";
+    return r.form === "original";
+  }
+  if (r.kind === "history-summary") {
+    if (typeof r.prefixHash !== "string" || typeof r.thread !== "string") return false;
+    if (!Number.isInteger(r.boundary)) return false;
+    if (r.form === "ready") return typeof r.summary === "string";
+    return r.form === "failed";
+  }
+  if (r.kind === "history-swap") {
+    return (
+      typeof r.prefixHash === "string" &&
+      typeof r.tailHash === "string" &&
+      typeof r.thread === "string" &&
+      typeof r.summary === "string" &&
+      Number.isInteger(r.boundary) &&
+      Number.isInteger(r.end)
+    );
+  }
+  return false;
 }
 
 /** Every readable record in a session folder. An unreadable file is skipped. */

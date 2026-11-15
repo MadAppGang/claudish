@@ -20,6 +20,7 @@ import { acquireSigningLease } from "../redact.js";
 import type { StatsEvent } from "../stats-otlp.js";
 import { type CompactionSettings, resolveCompactionModel } from "./config.js";
 import { CompactionClient } from "./haiku-client.js";
+import { HistoryCompactor } from "./history.js";
 import { CompactionStore, compactionRoot, purgeExpiredSessions } from "./store.js";
 import { ToolOutputCompactor } from "./tool-outputs.js";
 
@@ -34,6 +35,7 @@ export interface CompactionRuntime {
   client: CompactionClient;
   store: CompactionStore;
   toolOutputs: ToolOutputCompactor;
+  history: HistoryCompactor;
 }
 
 /** The slice of the credential authority startup uses. */
@@ -131,5 +133,6 @@ export async function prepareCompaction(
     client,
     store,
     toolOutputs: new ToolOutputCompactor({ store, client, settings: settings.toolOutputs }),
+    history: new HistoryCompactor({ store, client, settings: settings.history }),
   };
 }

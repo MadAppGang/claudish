@@ -180,7 +180,7 @@ export class ToolOutputCompactor {
           sessionId,
           toolOutputKey(sessionId, block.tool_use_id, text)
         );
-        if (record?.form !== "compressed") continue;
+        if (record?.kind !== "tool-output" || record.form !== "compressed") continue;
         replaceContent(block, record.text);
         replaced += 1;
       }
