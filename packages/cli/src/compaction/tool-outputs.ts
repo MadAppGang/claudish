@@ -19,10 +19,15 @@
  *
  * Candidates are tool_result blocks of the last message whose content is a
  * string or text blocks only, with no `is_error`, at least `minTokens`
- * (characters / 4), and not a result of the advisor tool.
+ * (characters / 4), not a result of the advisor tool, and not a read of this
+ * session's own recovery files (a tool_use input `file_path` inside the
+ * session's folder): compressing that read again would hand the model one more
+ * footer and never the full original.
  */
 
 import { createHash } from "node:crypto";
+import { realpathSync } from "node:fs";
+import { basename, isAbsolute, relative, resolve, sep } from "node:path";
 import { ADVISOR_TOOL_NAME } from "../handlers/advisor-decorator.js";
 import { log } from "../logger.js";
 import type { ToolOutputSettings } from "./config.js";
@@ -131,11 +136,13 @@ export class ToolOutputCompactor {
     const { minTokens } = this.deps.settings;
     const tools = toolUsesOf(messages);
     const lastIndex = messages.length - 1;
+    const folders = this.sessionFolders(sessionId);
 
     const fresh: Array<Promise<ToolOutputRecord>> = [];
     const freshKeys = new Set<string>();
     for (const [index, message] of messages.entries()) {
-      for (const located of this.eligibleBlocks(message, sessionId, tools, minTokens)) {
+      const scan = { sessionId, tools, minTokens, folders, isLast: index === lastIndex };
+      for (const located of this.eligibleBlocks(message, scan)) {
         if (this.deps.store.get(sessionId, located.key)) continue;
         if (index === lastIndex && message.role === "user") {
           if (freshKeys.has(located.key)) continue;
@@ -192,13 +199,31 @@ export class ToolOutputCompactor {
     return replaced;
   }
 
+  /**
+   * The session's folder as built, plus its real path when it exists and
+   * differs (the store root may sit behind a symlink). Empty for an id the
+   * store refuses.
+   */
+  private sessionFolders(sessionId: string): string[] {
+    let dir: string;
+    try {
+      dir = resolve(this.deps.store.sessionDir(sessionId));
+    } catch {
+      return [];
+    }
+    const folders = [dir];
+    try {
+      const real = realpathSync(dir);
+      if (real !== dir) folders.push(real);
+    } catch {
+      // Not created yet: no recovery file can be read from it.
+    }
+    return folders;
+  }
+
   /** Tool_result blocks of one message that meet every candidate condition. */
-  private *eligibleBlocks(
-    message: Block,
-    sessionId: string,
-    tools: Map<string, ToolUse>,
-    minTokens: number
-  ): Generator<Located> {
+  private *eligibleBlocks(message: Block, scan: BlockScan): Generator<Located> {
+    const { sessionId, tools, minTokens } = scan;
     if (!Array.isArray(message.content)) return;
     for (const raw of message.content) {
       const block = raw as Block;
@@ -206,7 +231,7 @@ export class ToolOutputCompactor {
       const toolUseId = block.tool_use_id;
       if (typeof toolUseId !== "string" || toolUseId.length === 0) continue;
       if (block.is_error === true) continue;
-      if (tools.get(toolUseId)?.name === ADVISOR_TOOL_NAME) continue;
+      if (isExcludedTool(tools.get(toolUseId), scan)) continue;
       const text = toolResultText(block.content);
       if (text === undefined || estimateTokens(text) < minTokens) continue;
       yield { block, toolUseId, text, key: toolOutputKey(sessionId, toolUseId, text) };
@@ -341,6 +366,58 @@ export function compressionRequestText(tool: ToolUse | undefined, output: string
 interface ToolUse {
   name: string;
   input: unknown;
+}
+
+interface BlockScan {
+  sessionId: string;
+  tools: Map<string, ToolUse>;
+  minTokens: number;
+  /** `sessionFolders` of the session. */
+  folders: string[];
+  /** Whether the message is the request's last one. */
+  isLast: boolean;
+}
+
+/**
+ * The resolved path when the tool_use's input `file_path` lies inside one of
+ * `folders`, else undefined. Decided by the input path, whatever the tool.
+ */
+function recoveryFileRead(tool: ToolUse | undefined, folders: string[]): string | undefined {
+  const filePath = (tool?.input as { file_path?: unknown } | null | undefined)?.file_path;
+  if (typeof filePath !== "string" || filePath.length === 0) return undefined;
+  const target = resolve(filePath);
+  for (const folder of folders) {
+    const rel = relative(folder, target);
+    const outside = rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel);
+    if (rel.length > 0 && !outside) return target;
+  }
+  return undefined;
+}
+
+/** Whether the tool_use's result is never compressed, whatever its size. */
+function isExcludedTool(tool: ToolUse | undefined, scan: BlockScan): boolean {
+  if (tool?.name === ADVISOR_TOOL_NAME) return true;
+  return isRecoveryRead(tool, scan);
+}
+
+/**
+ * Whether the tool_use reads one of the session's recovery files. A fresh
+ * sighting (the block is in the last message) is logged.
+ */
+function isRecoveryRead(tool: ToolUse | undefined, scan: BlockScan): boolean {
+  const recoveryFile = recoveryFileRead(tool, scan.folders);
+  if (recoveryFile === undefined) return false;
+  if (scan.isLast) {
+    log(`[compaction] session ${scan.sessionId}: recovery read ${recoveryKeyOf(recoveryFile)}`);
+  }
+  return true;
+}
+
+/** A recovery file's record key (its name without `.txt`), else its basename. */
+function recoveryKeyOf(path: string): string {
+  const name = basename(path);
+  const match = /^([0-9a-f]{64})\.txt$/.exec(name);
+  return match ? match[1]! : name;
 }
 
 function messagesOf(payload: unknown): Block[] | undefined {

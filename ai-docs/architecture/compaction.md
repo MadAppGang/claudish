@@ -83,6 +83,22 @@ Each rule has a test.
    next swap, every later request sends the same summary bytes and the same stripped turns. Each
    swap costs one cache write.
 
+## What is never compressed
+
+A `tool_result` is a candidate only when its content is a string or text blocks only, it has no
+`is_error`, it reaches `minTokens` (characters / 4), and none of these holds. A block that matches
+one of them is never compressed and never recorded, so it is sent as it is on every request:
+
+- **The advisor's results**, by the tool name `ADVISOR_TOOL_NAME`.
+- **A read of this session's recovery files.** The tool_use's input `file_path`, after
+  `path.resolve`, lies inside `store.sessionDir(sessionId)` or inside that folder's real path (the
+  store root may sit behind a symlink). It is checked by the input path, not by the tool name.
+  Compressed again, the read would get one more Haiku call and a footer pointing to ANOTHER `.txt`,
+  and the model would never see the full original. When such a block is in the request's last
+  message, the debug log gets one line, `[compaction] session <sessionId>: recovery read <key>`
+  (the file's basename without `.txt` when it is a record key, else the basename); a later request
+  that carries it earlier in the history logs nothing. A sibling session's folder is not exempt.
+
 ## History swap shape (`compaction/history.ts`)
 
 - **Limit** = min(the request model's catalog context window, the `CLAUDE_CODE_AUTO_COMPACT_WINDOW`
