@@ -244,6 +244,30 @@ function sameStat(a: FileStat, b: FileStat): boolean {
   );
 }
 
+type WriteSyncFn = (fd: number, buffer: Buffer, offset: number, length: number) => number;
+
+/**
+ * Writes every byte of `data` to `fd`. One `write` may write fewer bytes than
+ * asked; a temp file holding only part of the settings must never be renamed
+ * over the user's file, so a write that makes no progress throws and the
+ * caller's failure path removes the temp file.
+ */
+export function writeWholeSync(
+  fd: number,
+  data: string,
+  write: WriteSyncFn = (f, b, o, l) => writeSync(f, b, o, l)
+): void {
+  const bytes = Buffer.from(data, "utf8");
+  let offset = 0;
+  while (offset < bytes.length) {
+    const n = write(fd, bytes, offset, bytes.length - offset);
+    if (!(n > 0)) {
+      throw new Error(`short write: ${offset} of ${bytes.length} bytes, then no progress`);
+    }
+    offset += n;
+  }
+}
+
 export const realRestoreFs: RestoreFsDeps = {
   realpath: (path) => realpathSync.native(path),
   readFile: (path) => readFileSync(path),
@@ -253,7 +277,7 @@ export const realRestoreFs: RestoreFsDeps = {
     try {
       // `open`'s mode is masked by the umask; the file keeps the original's mode.
       fchmodSync(fd, mode);
-      writeSync(fd, data);
+      writeWholeSync(fd, data);
       fsyncSync(fd);
     } finally {
       closeSync(fd);

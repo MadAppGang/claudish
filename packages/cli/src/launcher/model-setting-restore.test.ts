@@ -8,6 +8,7 @@ import {
   canonicalSettingsPath,
   realRestoreFs,
   sweepModelSettingLedger,
+  writeWholeSync,
 } from "./model-setting-restore.js";
 
 let home: string;
@@ -192,5 +193,22 @@ describe("begin on a settings file a restore already failed on", () => {
     expect(entry?.original).toEqual({ present: true, value: "opus" });
     expect(entry?.listed).toEqual(["or@a", "or@b"]);
     expect(entry?.sessions as unknown[]).toHaveLength(1);
+  });
+});
+
+describe("the restored settings file's write", () => {
+  test("keeps writing after a short write until every byte is down", () => {
+    const written: Buffer[] = [];
+    const shortWrite = (_fd: number, buffer: Buffer, offset: number, length: number) => {
+      const n = Math.min(3, length);
+      written.push(Buffer.from(buffer.subarray(offset, offset + n)));
+      return n;
+    };
+    writeWholeSync(7, '{"model": "opus"}\n', shortWrite);
+    expect(Buffer.concat(written).toString("utf8")).toBe('{"model": "opus"}\n');
+  });
+
+  test("throws when a write makes no progress", () => {
+    expect(() => writeWholeSync(7, '{"model": "opus"}\n', () => 0)).toThrow();
   });
 });
