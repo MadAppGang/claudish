@@ -311,9 +311,11 @@ function loadSession(dir: string): Map<string, CompactionRecord> {
 }
 
 /**
- * Delete every session folder under `root` whose newest file is older than
- * `maxAgeMs` (an empty folder counts by its own mtime). Ids in `keep` are
- * never deleted. Returns the ids deleted. Never throws.
+ * Delete every session folder under `root` whose newest mtime, of the folder
+ * itself or of any file in it, is older than `maxAgeMs`. The folder's own
+ * mtime counts so that a folder the launcher just created, still empty, is
+ * never taken for an old one. Ids in `keep` are never deleted. Returns the ids
+ * deleted. Never throws.
  */
 export function purgeExpiredSessions(
   root: string = compactionRoot(),
