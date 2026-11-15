@@ -180,6 +180,7 @@ import {
   scrubHarnessIdentity,
 } from "./shared/format/identity-filter.js";
 import { inlineSystemAsUserText } from "./shared/format/inline-system.js";
+import { removeProviderRefusedText } from "./shared/format/provider-refused-text.js";
 import { aliasToolsForProvider } from "./shared/format/tool-name-alias.js";
 import { hasActionableLink, hasModelUnsupportedWording } from "./shared/model-unsupported.js";
 import { hasPlanLimitWording, isQuotaExhaustionError } from "./shared/quota-exhaustion.js";
@@ -1595,6 +1596,11 @@ export class ComposedHandler implements ModelHandler {
     if (!keepIdentity) {
       claudeRequest = scrubHarnessIdentity(claudeRequest, identityHeadFor(this.provider.name));
     }
+
+    // 2a'. Remove the system-prompt paragraphs this provider's server refuses
+    // (antigravity only). Outside the `keepIdentity` test on purpose: the
+    // server's filter is in front of every model it serves, Claude included.
+    claudeRequest = removeProviderRefusedText(claudeRequest, this.provider.name);
 
     // 2b. Rename tools to the provider's own names (antigravity only): in the
     // definitions, in `tool_choice` and in assistant-history tool_use blocks.

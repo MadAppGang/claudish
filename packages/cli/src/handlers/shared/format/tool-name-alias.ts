@@ -18,17 +18,24 @@
  * Claude Code receives a `tool_use` for a tool it never declared and the turn
  * fails. The round trip is covered in `tool-name-alias.test.ts`.
  *
- * The native names come from the `agy` binary's own prompt (few-shot tool
- * calls); see `ai-docs/architecture/providers/antigravity.md`. `Read` is left
- * unaliased on purpose: the binary carries both `read_file` and `view_file` and
- * does not settle which is current, and a wrong name is worse than none.
+ * The native names are the `functionDeclarations` the `agy` CLI 1.5.9 puts on
+ * the wire (recorded 2026-11-15; see
+ * `ai-docs/architecture/providers/antigravity.md`). The last three are not in
+ * that tool set: they are the names of the binary's other tool set, kept for a
+ * Claude Code that still declares `Grep`, `Glob` or `LS`.
  */
 
 /** Claude Code built-in → the agy-native name. A fixed, hand-verified set. */
 const AGY_TOOL_ALIAS: ReadonlyArray<readonly [string, string]> = [
   ["Bash", "run_command"],
-  ["Write", "write_to_file"],
+  ["Read", "read_file"],
+  ["Write", "write_file"],
   ["Edit", "edit_file"],
+  ["Agent", "invoke_subagent"],
+  ["AskUserQuestion", "ask_question"],
+  ["WebSearch", "search_web"],
+  ["SendMessage", "send_message"],
+  ["Workflow", "run_workflow"],
   ["Grep", "grep_search"],
   ["Glob", "find_by_name"],
   ["LS", "list_dir"],
