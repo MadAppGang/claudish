@@ -48,6 +48,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { atomicWriteFileSync } from "../auth/accounts/atomic-write.js";
 import {
   FileLockUnavailableError,
+  type LockHandle,
   acquireFileLockSync,
   withFileLock,
 } from "../auth/accounts/file-lock.js";
@@ -114,7 +115,16 @@ export type RestoreOutcome =
   | "changed-under-us"
   | "unparsable"
   | "absent"
-  | "not-writable";
+  | "not-writable"
+  /** The ledger lock was taken from this holder before the rename; nothing was written. */
+  | "fenced";
+
+/**
+ * Answers whether this process still holds the ledger lock. Asked immediately
+ * before every durable write: a holder suspended past the stale TTL may have
+ * been stolen from, and its stale copy must not overwrite the new holder's.
+ */
+export type LockFence = () => boolean;
 
 /** The file operations the compare-and-set uses; real ones by default. */
 export interface RestoreFsDeps {
@@ -163,6 +173,8 @@ export interface ModelSettingWatch {
 
 /** Async lock wait (begin, end, sweep). */
 const LOCK_TIMEOUT_MS = 2_000;
+/** How often an async holder refreshes its lock, well inside {@link LOCK_STALE_MS}. */
+const LOCK_HEARTBEAT_MS = 2_000;
 /** Sync lock wait: the event loop is blocked for the whole of it. */
 const SYNC_LOCK_WAIT_MS = 250;
 /** A holder this old is dead debris; every holder here finishes in milliseconds. */
@@ -272,7 +284,8 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 export function restoreSettingsFile(
   settingsKey: string,
   entry: Pick<LedgerEntry, "original" | "listed">,
-  deps: RestoreFsDeps = realRestoreFs
+  deps: RestoreFsDeps = realRestoreFs,
+  fence: LockFence = () => true
 ): RestoreOutcome {
   let target: string;
   try {
@@ -281,7 +294,7 @@ export function restoreSettingsFile(
     return errnoOf(err) === "ENOENT" ? "absent" : "not-writable";
   }
   for (let round = 0; round < RESTORE_ROUNDS; round++) {
-    const outcome = restoreRound(settingsKey, target, entry, deps);
+    const outcome = restoreRound(settingsKey, target, entry, deps, fence);
     if (outcome !== "retry") return outcome;
   }
   return "changed-under-us";
@@ -320,7 +333,8 @@ function restoreRound(
   settingsKey: string,
   target: string,
   entry: Pick<LedgerEntry, "original" | "listed">,
-  deps: RestoreFsDeps
+  deps: RestoreFsDeps,
+  fence: LockFence
 ): RestoreOutcome | "retry" {
   let bytesA: Buffer;
   let statA: FileStat;
@@ -355,6 +369,10 @@ function restoreRound(
   if (!unchanged) {
     unlinkQuietly(deps, temp);
     return "retry";
+  }
+  if (!fence()) {
+    unlinkQuietly(deps, temp);
+    return "fenced";
   }
   try {
     deps.rename(temp, target);
@@ -418,16 +436,29 @@ function reportUnreadableLedger(ctx: Context, reason: LedgerUnreadable): void {
   );
 }
 
-/** Writes the ledger, or deletes it when its last entry is gone. */
-function writeLedger(path: string, ledger: Ledger): void {
+/**
+ * Writes the ledger, or deletes it when its last entry is gone. Writes nothing
+ * and answers false when `fence` says the lock is no longer this process's.
+ */
+function writeLedger(path: string, ledger: Ledger, fence: LockFence): boolean {
+  if (!fence()) {
+    log(`[model-restore] ledger lock taken by another claudish; ${path} not written`);
+    return false;
+  }
   if (Object.keys(ledger.entries).length === 0) {
     rmSync(path, { force: true });
-    return;
+    return true;
   }
   atomicWriteFileSync(path, `${JSON.stringify(ledger, null, 2)}\n`, {
     mode: 0o600,
     dirMode: 0o700,
   });
+  return true;
+}
+
+/** The fence of a held lock; a missing handle holds nothing. */
+function fenceOf(handle: LockHandle | null): LockFence {
+  return () => handle?.holdsLock() ?? false;
 }
 
 function lockPathOf(ledgerPath: string): string {
@@ -513,12 +544,21 @@ function statOrNull(ctx: Context, key: string): FileStat | null {
  * to the ledger: deleted when settled, kept for a later sweep otherwise.
  * `silent` is the sweep's retry of a recorded failure: nothing is printed again.
  */
-function settleEntry(ctx: Context, ledger: Ledger, key: string, silent: boolean): void {
+function settleEntry(
+  ctx: Context,
+  ledger: Ledger,
+  key: string,
+  silent: boolean,
+  fence: LockFence
+): void {
   const entry = ledger.entries[key];
   if (!entry) return;
-  const outcome = restoreSettingsFile(key, entry, ctx.fs);
+  const outcome = restoreSettingsFile(key, entry, ctx.fs, fence);
   log(`[model-restore] ${key}: ${outcome}`);
   switch (outcome) {
+    case "fenced":
+      // The ledger is another holder's now; this copy is written nowhere.
+      return;
     case "restored":
       ctx.report(`Put back your Claude Code default model in ${key}`);
       delete ledger.entries[key];
@@ -589,7 +629,7 @@ function removeOrphanTemps(ctx: Context, key: string, table: ProcessTable): void
 
 /* ─────────────────────────── the sweep ─────────────────────────── */
 
-function sweepLedger(ctx: Context, ledger: Ledger): void {
+function sweepLedger(ctx: Context, ledger: Ledger, fence: LockFence): void {
   const table = ctx.processTable();
   const now = ctx.now();
   for (const key of Object.keys(ledger.entries)) {
@@ -626,10 +666,10 @@ function sweepLedger(ctx: Context, ledger: Ledger): void {
       const unchanged =
         stat !== null && entry.failure.stat !== null && sameStat(stat, entry.failure.stat);
       if (unchanged) continue;
-      settleEntry(ctx, ledger, key, true);
+      settleEntry(ctx, ledger, key, true, fence);
       continue;
     }
-    settleEntry(ctx, ledger, key, false);
+    settleEntry(ctx, ledger, key, false, fence);
   }
 }
 
@@ -643,15 +683,21 @@ export async function sweepModelSettingLedger(deps: RestoreDeps = {}): Promise<v
   try {
     await withFileLock(
       lockPathOf(ctx.ledgerPath),
-      { timeoutMs: LOCK_TIMEOUT_MS, staleMs: LOCK_STALE_MS, onUnavailable: "fail" },
-      async () => {
+      {
+        timeoutMs: LOCK_TIMEOUT_MS,
+        staleMs: LOCK_STALE_MS,
+        heartbeatMs: LOCK_HEARTBEAT_MS,
+        onUnavailable: "fail",
+      },
+      async (handle) => {
         const read = readLedger(ctx.ledgerPath);
         if (!read.ok) {
           reportUnreadableLedger(ctx, read.reason);
           return;
         }
-        sweepLedger(ctx, read.ledger);
-        writeLedger(ctx.ledgerPath, read.ledger);
+        const fence = fenceOf(handle);
+        sweepLedger(ctx, read.ledger, fence);
+        writeLedger(ctx.ledgerPath, read.ledger, fence);
       }
     );
   } catch (err) {
@@ -717,6 +763,7 @@ export async function beginModelSettingWatch(
   const lockOpts = {
     timeoutMs: LOCK_TIMEOUT_MS,
     staleMs: LOCK_STALE_MS,
+    heartbeatMs: LOCK_HEARTBEAT_MS,
     onUnavailable: "fail" as const,
   };
   const sessionId = randomUUID();
@@ -726,7 +773,7 @@ export async function beginModelSettingWatch(
     "so claudish will not put back your Claude Code default model after this session";
   let registered = false;
   try {
-    registered = await withFileLock(lockPath, lockOpts, async () => {
+    registered = await withFileLock(lockPath, lockOpts, async (handle) => {
       const read = readLedger(ctx.ledgerPath);
       if (!read.ok) {
         reportUnreadableLedger(ctx, read.reason);
@@ -751,7 +798,10 @@ export async function beginModelSettingWatch(
         settingsArg: null,
         startedAt: ctx.now(),
       });
-      writeLedger(ctx.ledgerPath, read.ledger);
+      if (!writeLedger(ctx.ledgerPath, read.ledger, fenceOf(handle))) {
+        ctx.report(`${lockPath} was taken by another claudish, ${noRestore}`);
+        return false;
+      }
       return true;
     });
   } catch (err) {
@@ -768,17 +818,17 @@ export async function beginModelSettingWatch(
   let ended = false;
 
   /** Updates this session's row; false when the ledger, entry or row is gone. */
-  const updateRow = (update: (session: LedgerSession) => void): void => {
+  const updateRow = (fence: LockFence, update: (session: LedgerSession) => void): void => {
     const read = readLedger(ctx.ledgerPath);
     if (!read.ok) return;
     const session = read.ledger.entries[key]?.sessions.find((s) => s.id === sessionId);
     if (!session) return;
     update(session);
-    writeLedger(ctx.ledgerPath, read.ledger);
+    writeLedger(ctx.ledgerPath, read.ledger, fence);
   };
 
   /** The exit transaction, run under the ledger lock. */
-  const exitTransaction = (): void => {
+  const exitTransaction = (fence: LockFence): void => {
     const read = readLedger(ctx.ledgerPath);
     if (!read.ok) return;
     const entry = read.ledger.entries[key];
@@ -793,17 +843,17 @@ export async function beginModelSettingWatch(
     const othersLive = entry.sessions.some((s) => sessionLiveness(s, table) !== "ended");
     if (!othersLive) {
       entry.sessions = [];
-      settleEntry(ctx, read.ledger, key, false);
+      settleEntry(ctx, read.ledger, key, false, fence);
     }
-    writeLedger(ctx.ledgerPath, read.ledger);
+    writeLedger(ctx.ledgerPath, read.ledger, fence);
   };
 
   return {
     registered: true,
     recordSettingsArg: async (settingsPath) => {
       try {
-        await withFileLock(lockPath, lockOpts, async () =>
-          updateRow((s) => {
+        await withFileLock(lockPath, lockOpts, async (handle) =>
+          updateRow(fenceOf(handle), (s) => {
             s.settingsArg = settingsPath;
           })
         );
@@ -814,8 +864,8 @@ export async function beginModelSettingWatch(
     recordChild: (pid) => {
       const mark: ProcessMark = { pid, startedEpochMs: Date.now() };
       childMark = mark;
-      const apply = () =>
-        updateRow((s) => {
+      const apply = (handle: LockHandle | null) =>
+        updateRow(fenceOf(handle), (s) => {
           s.child = mark;
         });
       try {
@@ -824,13 +874,14 @@ export async function beginModelSettingWatch(
           waitMs: SYNC_LOCK_WAIT_MS,
         });
         try {
-          apply();
+          apply(handle);
         } finally {
           handle.release();
         }
       } catch {
-        void withFileLock(lockPath, lockOpts, async () => apply()).catch((err: unknown) =>
-          log(`[model-restore] child not recorded: ${(err as Error)?.message ?? err}`)
+        void withFileLock(lockPath, lockOpts, async (handle) => apply(handle)).catch(
+          (err: unknown) =>
+            log(`[model-restore] child not recorded: ${(err as Error)?.message ?? err}`)
         );
       }
     },
@@ -838,7 +889,7 @@ export async function beginModelSettingWatch(
       if (ended) return;
       ended = true;
       try {
-        await withFileLock(lockPath, lockOpts, async () => exitTransaction());
+        await withFileLock(lockPath, lockOpts, async (handle) => exitTransaction(fenceOf(handle)));
       } catch (err) {
         log(`[model-restore] exit skipped: ${(err as Error)?.message ?? err}`);
       }
@@ -852,7 +903,7 @@ export async function beginModelSettingWatch(
           waitMs: SYNC_LOCK_WAIT_MS,
         });
         try {
-          exitTransaction();
+          exitTransaction(fenceOf(handle));
         } finally {
           handle.release();
         }
