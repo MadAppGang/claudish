@@ -22,6 +22,7 @@
  * (characters / 4), and not a result of the advisor tool.
  */
 
+import { createHash } from "node:crypto";
 import { ADVISOR_TOOL_NAME } from "../handlers/advisor-decorator.js";
 import { log } from "../logger.js";
 import type { ToolOutputSettings } from "./config.js";
@@ -176,11 +177,14 @@ export class ToolOutputCompactor {
         }
         const text = toolResultText(block.content);
         if (text === undefined) continue;
-        const record = this.deps.store.get(
-          sessionId,
-          toolOutputKey(sessionId, block.tool_use_id, text)
+        const key = toolOutputKey(sessionId, block.tool_use_id, text);
+        const record = this.deps.store.get(sessionId, key);
+        if (record?.kind !== "tool-output") continue;
+        const sent = record.form === "compressed" ? record.text : text;
+        log(
+          `[compaction] session ${sessionId}: tool_result ${block.tool_use_id} key=${key.slice(0, 12)} sent=${record.form} sha256=${createHash("sha256").update(sent).digest("hex").slice(0, 16)} chars=${sent.length}`
         );
-        if (record?.kind !== "tool-output" || record.form !== "compressed") continue;
+        if (record.form !== "compressed") continue;
         replaceContent(block, record.text);
         replaced += 1;
       }
