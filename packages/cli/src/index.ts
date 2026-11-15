@@ -836,6 +836,19 @@ async function runCli() {
       ensureEndpointsRegistered();
     });
 
+    // A launch with listing entries (`--model devin@`) resolves the providers it
+    // lists in /model now that custom endpoints are registered, and refuses the
+    // forms whose rows could never be routed, before the picker, key validation,
+    // the catalog warm or any fetch.
+    if (cliConfig._modelFlags?.hasLineup) {
+      const { decideModelListings } = await import("./launcher/claude-launch.js");
+      const decision = decideModelListings(cliConfig, cliConfig._modelFlags);
+      if (!decision.ok) {
+        console.error(`[claudish] Error: ${decision.message}`);
+        process.exit(1);
+      }
+    }
+
     // Team mode: run models in parallel (skip normal Claude Code path)
     if (cliConfig.team && cliConfig.team.length > 0) {
       // Resolve prompt: --file flag, or positional args from claudeArgs
@@ -1072,6 +1085,7 @@ async function runCli() {
       interactive: cliConfig.interactive,
       monitor: cliConfig.monitor,
       advisorNativeSession,
+      hasModelListings: (cliConfig.modelListings?.length ?? 0) > 0,
       model: cliConfig.model,
       hasProfileTiers,
     });

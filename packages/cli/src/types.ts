@@ -2,6 +2,7 @@
 
 import type { CodeModeSetting } from "./code-mode/policy.js";
 import type { AdvisorPanelGateway } from "./handlers/advisor-route-plan.js";
+import type { ParsedModelFlags } from "./providers/model-parser.js";
 
 // Model ID type - any valid OpenRouter model string
 export type OpenRouterModel = string;
@@ -50,6 +51,20 @@ export interface ClaudishConfig {
    * Absent for a single-spec `--model`, which is the overwhelming majority.
    */
   modelChain?: string[];
+  /**
+   * Every `--model` value of a launch with a listing entry (`--model devin@`,
+   * `--model 'or@*'`), split and classified by `parseArgs`. Absent on every
+   * other launch. Read once, by `decideModelListings`, which resolves the
+   * shortcuts after endpoint registration and sets `modelListings`.
+   */
+  _modelFlags?: ParsedModelFlags;
+  /**
+   * The claudish providers whose models this launch lists in Claude Code's
+   * `/model`, one entry per provider, set by `decideModelListings`. Present
+   * only on a launch with a listing entry; never a `ClaudishProfileConfig`
+   * field.
+   */
+  modelListings?: ProviderListing[];
   /**
    * `--model-pinned`: `--model` is a parent's pin (one spec or a chain), routed for
    * a bare name in the parent. Only the proxy reads it, to treat each element as a

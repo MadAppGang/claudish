@@ -76,7 +76,7 @@ export interface ParsedModel {
  * Provider shortcut mappings — derived from BUILTIN_PROVIDERS.
  * Re-exported for backward compatibility.
  */
-import { isClaudeCodeModelName } from "./claude-code-aliases.js";
+import { isClaudeCodeModelName, normalizeNativeModelSpec } from "./claude-code-aliases.js";
 import {
   getLegacyPrefixPatterns as _getLegacyPrefixPatterns,
   getNativeModelPatterns as _getNativeModelPatterns,
@@ -408,4 +408,134 @@ export function formatModelSpec(provider: string, model: string, concurrency?: n
     spec += `:${concurrency}`;
   }
   return spec;
+}
+
+/**
+ * A listing entry: a `--model` value that names a claudish provider and no
+ * model, so the launch lists that provider's models in Claude Code's `/model`.
+ * `devin@` lists every chat model a vendor's own provider or a subscription
+ * serves (a gateway: its recommended ones); `or@*` lists every chat model.
+ */
+export interface ListingEntry {
+  /** The provider shortcut as typed, lowercased; resolved after endpoint registration. */
+  shortcut: string;
+  scope: "recommended" | "all";
+}
+
+const LISTING_ENTRY = /^([^@\s/:+#]+)@(\*)?$/;
+
+/** `devin@` → {shortcut:"devin", scope:"recommended"}, `or@*` → scope "all"; anything else null. */
+export function parseListingEntry(value: string): ListingEntry | null {
+  const match = LISTING_ENTRY.exec(value.trim());
+  if (!match) return null;
+  return { shortcut: (match[1] as string).toLowerCase(), scope: match[2] ? "all" : "recommended" };
+}
+
+/** Every `--model` value of one argv, split and classified. */
+export interface ParsedModelFlags {
+  /** The LAST full spec, native selectors normalized. */
+  start?: string;
+  /** Only when the deciding value was a routing chain (no listing entry). */
+  chain?: string[];
+  /** Every earlier full spec on a lineup launch, argv order. */
+  pinned: string[];
+  /** Listing entries in flag order; one per shortcut, `*` winning. */
+  listings: ListingEntry[];
+  /** True when at least one listing entry was given. */
+  hasLineup: boolean;
+}
+
+export type ModelFlagsResult =
+  | { ok: true; value: ParsedModelFlags }
+  | { ok: false; message: string };
+
+/**
+ * Why a full spec cannot be a pinned row of a lineup launch, or null. Reads the
+ * parser only: a pinned row must name a claudish provider explicitly, and that
+ * provider must be one whose models can be listed.
+ */
+function pinnedSpecRefusal(spec: string): string | null {
+  const parsed = parseModelSpec(spec);
+  if (parsed.provider === "custom-url") {
+    return `--model ${spec}: a raw URL cannot be listed in /model. Declare the endpoint under customEndpoints and list it by name (--model <name>@).`;
+  }
+  if (parsed.provider === "native-anthropic") {
+    return `--model ${spec}: a Claude model cannot be listed beside the start model, because Claude Code lists Claude's own models in /model already. Drop it, or give it as the last --model to start on it.`;
+  }
+  if (!parsed.isExplicitProvider) {
+    if (parsed.provider === "unknown") {
+      return `--model ${spec}: "${spec}" names no claudish provider to list. Use <provider>@${spec}, for example openrouter@${spec}.`;
+    }
+    return `--model ${spec}: a bare model name names no provider to list. Use <provider>@${spec}, or give it as the last --model to start on it.`;
+  }
+  return null;
+}
+
+/**
+ * Split and classify every `--model` value of one argv. Pure: no provider
+ * registry is read, so it runs before endpoint registration.
+ *
+ * With no listing entry the answer is today's: the LAST value decides,
+ * `start` is its first element and `chain` its elements when it is a routing
+ * chain; earlier values are ignored. With a listing entry the launch has a
+ * lineup: the last full spec starts it, every earlier full spec is a pinned
+ * row, and a routing chain or a full spec that cannot be a row is refused.
+ */
+export function parseModelFlags(values: readonly string[]): ModelFlagsResult {
+  const listings: ListingEntry[] = [];
+  const fullSpecs: string[][] = [];
+  const raw: string[] = [];
+  for (const value of values) {
+    const entry = parseListingEntry(value);
+    if (entry) {
+      const earlier = listings.find((l) => l.shortcut === entry.shortcut);
+      if (earlier) {
+        if (entry.scope === "all") earlier.scope = "all";
+      } else {
+        listings.push(entry);
+      }
+      continue;
+    }
+    fullSpecs.push(parseModelChain(value).map(normalizeNativeModelSpec));
+    raw.push(value);
+  }
+
+  if (listings.length === 0) {
+    const last = fullSpecs[fullSpecs.length - 1];
+    if (!last) return { ok: true, value: { pinned: [], listings: [], hasLineup: false } };
+    return {
+      ok: true,
+      value: {
+        start: last[0],
+        ...(last.length > 1 ? { chain: last } : {}),
+        pinned: [],
+        listings: [],
+        hasLineup: false,
+      },
+    };
+  }
+
+  for (let i = 0; i < fullSpecs.length; i++) {
+    if ((fullSpecs[i] as string[]).length > 1) {
+      return {
+        ok: false,
+        message: `--model ${raw[i]}: a + routing chain cannot be combined with a listing entry. Give one model per --model.`,
+      };
+    }
+  }
+  const specs = fullSpecs.map((chain) => chain[0] as string);
+  const pinned = specs.slice(0, -1);
+  for (const spec of pinned) {
+    const refusal = pinnedSpecRefusal(spec);
+    if (refusal) return { ok: false, message: refusal };
+  }
+  return {
+    ok: true,
+    value: {
+      ...(specs.length > 0 ? { start: specs[specs.length - 1] } : {}),
+      pinned,
+      listings,
+      hasLineup: true,
+    },
+  };
 }

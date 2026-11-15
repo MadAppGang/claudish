@@ -40,8 +40,8 @@
  *
  * `hasProfileTiers` is an input rather than four fields so the predicate's domain
  * stays small enough to enumerate: five booleans, which is the 32-cell grid its
- * test walks, plus `advisorNativeSession`, which the test pins as behaving exactly
- * like `monitor` rather than doubling the grid to 64 rows.
+ * test walks, plus `advisorNativeSession` and `hasModelListings`, each of which
+ * behaves exactly like `monitor` rather than doubling the grid.
  */
 export interface ModelPickerGate {
   /**
@@ -58,6 +58,14 @@ export interface ModelPickerGate {
    * gate rather than a condition beside it — see `noModelConfigured`.
    */
   advisorNativeSession?: boolean;
+  /**
+   * The launch lists claudish providers in Claude Code's `/model` (`--model
+   * devin@`): the user chose what to list, and a launch with no full spec
+   * starts on Claude's default model, so there is nothing to select and
+   * nothing to demand. A term of the gate beside `advisorNativeSession`, for
+   * the same reason.
+   */
+  hasModelListings?: boolean;
   /** `--model` / `CLAUDISH_MODEL` / a profile's single spec — already chosen. */
   model?: string;
   /**
@@ -83,7 +91,13 @@ export interface ModelPickerGate {
  * silently and still be told to name a model, or the reverse.
  */
 function noModelConfigured(gate: ModelPickerGate): boolean {
-  return !gate.monitor && !gate.advisorNativeSession && !gate.model && !gate.hasProfileTiers;
+  return (
+    !gate.monitor &&
+    !gate.advisorNativeSession &&
+    !gate.hasModelListings &&
+    !gate.model &&
+    !gate.hasProfileTiers
+  );
 }
 
 /**

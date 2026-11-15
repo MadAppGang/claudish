@@ -29,6 +29,11 @@
  * verdict and key validation, which must already see `monitor`;
  * `prepareClaudeLaunch` runs after the catalog warm and before the advisor
  * check and the proxy.
+ *
+ * A launch with listing entries (`--model devin@`) is decided one step
+ * earlier, right after endpoint registration: `decideModelListings` resolves
+ * the providers it lists in Claude Code's `/model` and refuses the forms whose
+ * rows could never be routed.
  */
 
 import {
@@ -55,7 +60,11 @@ import {
 import { isPaneChild } from "../pane/child-env.js";
 import { resolveModelNameSync } from "../providers/catalog-client.js";
 import { normalizeNativeModelSpec } from "../providers/claude-code-aliases.js";
-import { MODEL_CHAIN_SEPARATOR, parseModelSpec } from "../providers/model-parser.js";
+import {
+  MODEL_CHAIN_SEPARATOR,
+  type ParsedModelFlags,
+  parseModelSpec,
+} from "../providers/model-parser.js";
 import {
   CLAUDE_SUBSCRIPTION_LABEL,
   claudeLaunchMarkersRefusal,
@@ -64,8 +73,13 @@ import {
   nativeRouteFor,
 } from "../providers/native-route.js";
 import { shadowedEndpointRefusal } from "../providers/shadowed-endpoint.js";
+import {
+  describeUnknownShortcut,
+  isKnownProviderName,
+  typedShortcutOf,
+} from "../providers/unknown-shortcut.js";
 import { acquireSigningLease, redactSecrets } from "../redact.js";
-import type { ClaudishConfig, ModelTier } from "../types.js";
+import type { ClaudishConfig, ModelTier, ProviderListing } from "../types.js";
 
 export interface LaunchSigningDeps {
   /** Default `wantsAnthropicApiBilling` (flag, env, config). */
@@ -414,6 +428,123 @@ export function decideClaudeLaunch(
   if (tierRefusal) return { ok: false, message: tierRefusal };
   config.monitor = true;
   config.claudeLaunch = "subscription";
+  return { ok: true };
+}
+
+/** Why a listing entry names no provider whose models can be listed, or null. */
+function listingProviderRefusal(typed: string, provider: string): string | null {
+  if (provider === "native-anthropic") {
+    return `--model ${typed}: Claude Code lists the Claude subscription's models in /model already, so claude@ cannot be a listing entry.`;
+  }
+  if (provider === "custom-url") {
+    return `--model ${typed}: a raw URL has no model list. Declare the endpoint under customEndpoints and list it by name (--model <name>@).`;
+  }
+  return null;
+}
+
+/** The refusal for a shortcut claudish does not know, worded as everywhere else. */
+function unknownShortcutRefusal(shortcut: string, typed: string): string {
+  const { reason, hint } = describeUnknownShortcut(shortcut, "", undefined, typed);
+  return `${reason} ${hint}`;
+}
+
+export interface DecideModelListingsDeps {
+  /** Default `isKnownProviderName`. */
+  isKnownProvider?: (name: string) => boolean;
+}
+
+/**
+ * The lineup of a launch with listing entries, decided after endpoint
+ * registration and before the picker, key validation, catalog warm and any
+ * fetch. Resolves every shortcut to its claudish provider and builds
+ * `config.modelListings`: one entry per provider, the start model's provider
+ * first when it can be listed (its models are listed too), then the listing
+ * entries in flag order, then the providers of pinned specs. `x@*` wins over
+ * `x@` for one provider. Refused, each naming the value and the form to use:
+ *
+ * - a listing entry or pinned spec whose shortcut claudish does not know;
+ * - `claude@` (Claude Code lists those models itself) and `custom-url@` as a
+ *   listing entry;
+ * - `--monitor`, and an `anthropic@<id>` start: either forwards every request
+ *   to Anthropic, so no listed model could be routed.
+ *
+ * A launch with no listing entry is left as it is.
+ */
+export function decideModelListings(
+  config: ClaudishConfig,
+  parsed: ParsedModelFlags | undefined,
+  deps: DecideModelListingsDeps = {}
+): ClaudeLaunchDecision {
+  if (!parsed?.hasLineup) return { ok: true };
+  const isKnown = deps.isKnownProvider ?? isKnownProviderName;
+
+  if (config.monitor) {
+    return {
+      ok: false,
+      message:
+        "--monitor cannot be combined with a listing entry (--model <provider>@): a monitor session sends every request to Anthropic, so no listed model could be routed.",
+    };
+  }
+  const start = parsed.start;
+  if (start && isClaudeApiSpec(start)) {
+    return {
+      ok: false,
+      message: `--model ${start} starts a Claude API session that forwards every request to Anthropic, so no listed model could be routed. Start on another model, or drop the listing entries.`,
+    };
+  }
+
+  const byProvider = new Map<string, ProviderListing>();
+  const add = (provider: string, typed: string, scope: ProviderListing["scope"]) => {
+    const existing = byProvider.get(provider);
+    if (existing) {
+      if (scope === "all") existing.scope = "all";
+      return existing;
+    }
+    const listing: ProviderListing = { provider, typed, scope, pinnedSpecs: [] };
+    byProvider.set(provider, listing);
+    return listing;
+  };
+
+  if (start) {
+    const parsedStart = parseModelSpec(start);
+    if (
+      parsedStart.isExplicitProvider &&
+      listingProviderRefusal(start, parsedStart.provider) === null &&
+      isKnown(typedShortcutOf(start))
+    ) {
+      // The start spec is its provider's first row, so a later pick can go back to it.
+      add(parsedStart.provider, start, "recommended").pinnedSpecs.push(start);
+    }
+  }
+
+  for (const entry of parsed.listings) {
+    const typed = `${entry.shortcut}@${entry.scope === "all" ? "*" : ""}`;
+    if (!isKnown(entry.shortcut)) {
+      return { ok: false, message: unknownShortcutRefusal(entry.shortcut, typed) };
+    }
+    const provider = parseModelSpec(`${entry.shortcut}@x`).provider;
+    const refusal = listingProviderRefusal(typed, provider);
+    if (refusal) return { ok: false, message: refusal };
+    const listing = add(provider, typed, entry.scope);
+    // The start model's provider was added first with the spec as `typed`; a
+    // listing entry for the same provider is how the user wrote the listing.
+    if (listing.typed === start) listing.typed = typed;
+  }
+
+  for (const spec of parsed.pinned) {
+    const shortcut = typedShortcutOf(spec);
+    if (!isKnown(shortcut)) {
+      const parsedPin = parseModelSpec(spec);
+      const { reason, hint } = describeUnknownShortcut(shortcut, parsedPin.model, undefined, spec);
+      return { ok: false, message: `${reason} ${hint}` };
+    }
+    const provider = parseModelSpec(spec).provider;
+    const refusal = listingProviderRefusal(spec, provider);
+    if (refusal) return { ok: false, message: refusal };
+    add(provider, spec, "recommended").pinnedSpecs.push(spec);
+  }
+
+  config.modelListings = [...byProvider.values()];
   return { ok: true };
 }
 
