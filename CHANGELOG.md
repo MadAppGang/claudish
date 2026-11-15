@@ -2,6 +2,39 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.25.0] - 2026-11-15
+
+### Bug Fixes
+
+- send no Gemini thinkingConfig chosen by model name *(adapters)* ([`1b39aaa`](https://github.com/MadAppGang/claudish/commit/1b39aaaec25aa1dbb598a953e2ba8c9414818005))
+- order Gemini function responses by their function calls *(adapters)* ([`463c439`](https://github.com/MadAppGang/claudish/commit/463c439eee8871b0782814a67ec640c2ce8fde38))
+- send one Gemini tool round's function responses together *(adapters)* ([`a6bb21a`](https://github.com/MadAppGang/claudish/commit/a6bb21adbcb07ef79845c664fb48ae9c09ee5cf4))
+- keep run_prompt's Claude print child off harnessGateway *(mcp)* ([`39487ba`](https://github.com/MadAppGang/claudish/commit/39487ba14995b45bf57e1ff9819f8206b4463898))
+- print the harnessGateway notice with the launch banners *(hooks)* ([`3aa0e7a`](https://github.com/MadAppGang/claudish/commit/3aa0e7adced58daf5ca0da2410ff85a5571a0848))
+- remove an inherited X-Target-URL when harnessGateway is off *(hooks)* ([`3dffa8a`](https://github.com/MadAppGang/claudish/commit/3dffa8a057f663e4113ff1d662c51e1b34825150))
+- pass harnessGateway.url to Claude Code in canonical form *(hooks)* ([`1d7ea34`](https://github.com/MadAppGang/claudish/commit/1d7ea34f0c00960f2c9ae77ca6e5699365e45721))
+- show only the origin of harnessGateway.url in the notice *(hooks)* ([`e4c2d93`](https://github.com/MadAppGang/claudish/commit/e4c2d932ff6c7ae1869cdb243b05a92df0cbd9b4))
+
+### Documentation
+
+- record the Gemini response order and the pinned limits *(adapters)* ([`6e64978`](https://github.com/MadAppGang/claudish/commit/6e64978147112bf691f522d3a8d52232d7f892c9))
+- describe the wire-fidelity test and the Gemini round merge *(adapters)* ([`7f8ffe7`](https://github.com/MadAppGang/claudish/commit/7f8ffe7faabe19fd4984bdeba663cf383cf9c083))
+- correct when an invalid harnessGateway.url refuses a launch *(hooks)* ([`6c534a6`](https://github.com/MadAppGang/claudish/commit/6c534a68500b66df7aa626896e3151460b52e7cb))
+- correct three statements in the context tools guide *(hooks)* ([`62564eb`](https://github.com/MadAppGang/claudish/commit/62564eb61b41d5454a5ad6cbef0276aef65db102))
+- pass the command to rtk rewrite after -- *(hooks)* ([`aaeca99`](https://github.com/MadAppGang/claudish/commit/aaeca995439f60ffa0027f24e093e9919127a4dd))
+- throw on an unexpected rtk exit code in the rtk example *(hooks)* ([`ad8d188`](https://github.com/MadAppGang/claudish/commit/ad8d18805e8770d6df2fb32c98f03cd9476c3a09))
+- require GATEWAY_ALLOWED_HOSTS for Context-Gateway *(hooks)* ([`2c43090`](https://github.com/MadAppGang/claudish/commit/2c43090306ac4e447fa92c96d592f895f6ddbdf2))
+- add rtk, context-mode and Context-Gateway setup examples *(hooks)* ([`39f6104`](https://github.com/MadAppGang/claudish/commit/39f6104835f738dd50a3c91f1e1ed4ca7dfcfbee))
+- update CHANGELOG.md for v14.24.0([`fc840be`](https://github.com/MadAppGang/claudish/commit/fc840beea184bf9c4154b3e1057a4f0e775f3713))
+
+### New Features
+
+- add harnessGateway.url to route Claude Code via a gateway *(hooks)* ([`df2e39e`](https://github.com/MadAppGang/claudish/commit/df2e39ec6ea3903e8dcdf9b100469d71c43572c4))
+
+### Refactoring
+
+- check harnessGateway.url characters without a regex *(hooks)* ([`c4939d5`](https://github.com/MadAppGang/claudish/commit/c4939d55fae3ea21271541d17d28a7e91aa581de))
+
 ## [14.24.0] - 2026-11-14
 
 ### Bug Fixes
