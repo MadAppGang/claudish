@@ -20,8 +20,13 @@ between trials.
   the main thread: main-thread prompt tokens fell 15.8%, subagent prompt
   tokens rose 48.7%, and the total was 1.0% lower. Main-thread cost was 7.2%
   higher, and output tokens 25.0% higher.
+- **Context Gateway with Haiku on an API key** (compression and history
+  summary by `claude-haiku-5-5`): 2 of 3 trials errored with the same
+  malformed stream. The one graded trial passed all 114 tests and used 45.6%
+  more prompt tokens and 35.1% more main-thread cost than the baseline mean,
+  plus 53 Haiku calls on the key.
 
-Every variant that completed built the feature: 21 of 24 graded trials passed
+Every variant that completed built the feature: 22 of 25 graded trials passed
 all 114 hidden tests, and the other three missed one test each.
 
 No Session reached compaction. The largest single request was 122,396 tokens.
@@ -67,7 +72,7 @@ checkout gives `82 pass`, `19 fail`; the real feature gives `114 pass`, `0 fail`
 | `context-mode` | the context-mode plugin, tag `v2.1.10` (Elastic License 2.0, fetched at staging time, not committed) |
 | `context-gateway-local` | Context Gateway v0.5.3 as a local proxy (`ANTHROPIC_BASE_URL`); tool output shortened by its built-in `trimming` strategy; no summarizer, no provider, no model call of its own |
 | `haiku-subagent` | a Claude Code subagent, `output-digest` (`model: claude-haiku-5-5`, tools Bash, Read, Grep, Glob, read-only), and a `CLAUDE.md` that tells the main agent to hand large output to it |
-| `context-gateway-haiku-key` | Context Gateway with tool output compression and history summarization on `claude-haiku-5-5`, signed with an Anthropic API key. Not run yet: see its section |
+| `context-gateway-haiku-key` | Context Gateway with tool output compression and history summarization on `claude-haiku-5-5`, signed with an Anthropic API key; Claude Code's own requests stay on the subscription |
 | `claudish-*` | the same as the native variant of the same name, with claudish between Claude Code and the API; see "Through claudish" |
 
 ## How the numbers were taken
@@ -93,6 +98,11 @@ creation and cache read together. "Main-thread cost" is madbench's
 | `context-mode` | 2/3 | 3,121,309 (+11.3%) | 1,196,851 (+43.3%) | 4,318,160 (+18.6%) | 56,659 (+16.2%) | $1.73 (+14.4%) | 39/37 | 31.7 min |
 | `context-gateway-local` | 2/3 | 3,521,747 (+25.6%) | 1,331,556 (+59.4%) | 4,853,302 (+33.3%) | 56,407 (+15.7%) | $1.99 (+32.1%) | 48/42 | 28.1 min |
 | `haiku-subagent` | 3/3 | 2,362,193 (-15.8%) | 1,241,932 (+48.7%) | 3,604,125 (-1.0%) | 60,963 (+25.0%) | $1.62 (+7.2%) | 31/41 | 22.4 min |
+| `context-gateway-haiku-key`, 1 graded trial of 3 | 1/1 | 3,684,453 (+31.4%) | 1,614,286 (+93.3%) | 5,298,739 (+45.6%) | 53,934 (+10.6%) | $2.04 (+35.1%) | 56/49 | 29.9 min |
+
+The `context-gateway-haiku-key` row is one trial, not a mean: the other two
+errored. Its tokens and cost leave out the gateway's own Haiku calls; see
+that variant's section.
 
 Ranges over the 3 trials (least to most):
 
@@ -200,10 +210,54 @@ behaviour: `output-digest`, given a task that called for a subagent, replied
 "I don't have the Agent tool here" and ran the commands itself. A subagent
 reads the same `CLAUDE.md` and cannot start a subagent of its own.
 
-## context-gateway-haiku-key: not run yet
+## context-gateway-haiku-key
 
-The variant is built and its control holds; its trials wait for the key file.
-What is in place, so the measurement can start without new work:
+Context Gateway v0.5.3 (the installed release, as in the native gateway
+variant), run 2026-11-15, 3 trials, one at a time.
+
+| Trial | Outcome | Duration | Haiku calls | Haiku input tokens | Haiku output tokens |
+|---|---|---|---|---|---|
+| 1 | errored: `API Error: The response stream was malformed. The response above may be incomplete.` | about 1.5 min | 14 | 47,893 | 13,388 |
+| 2 | 114 pass, all Checks passed | 29.9 min | 53 | 149,847 | 39,123 |
+| 3 | errored, same message | about 2.5 min | 20 | 57,245 | 14,802 |
+| all | | | 87 | 254,985 | 67,313 |
+
+The Haiku figures come from the usage recorder's log of each trial
+(`out/context-gateway-haiku-key-live-20261115T214500`, `…T214634`,
+`…T221639`). Every one of the 87 calls answered 200 from `claude-haiku-5-5`,
+signed with `x-api-key`; no cache read or cache creation. madbench prices
+none of them, and this report does not convert them to dollars: the price
+in the cloud models catalog carries no unit this report could verify. The
+durations of the errored trials are the gap between their log folders'
+start times.
+
+The graded trial's `VariantCheck` output:
+
+```
+main requests: total=112 subscription=112 fallback=0
+gateway auth_fallback lines: 0
+haiku calls: total=53 status200=53 bearer=0
+answered by model:
+  53 "model":"claude-haiku-5-5"
+tool outputs compressed: 47
+```
+
+The gateway's own counts for that trial (`session_stats`): 1,275 tool
+outputs, 47 compressed, 1,069 cache hits, 1,674,423 tokens before
+compression and 576,118 after; `expand_context` was called 21 times;
+preemptive summarization triggered 0 times.
+
+The two errored trials end with the message the claudish gateway trials
+ended with, so the stream defect in "Through claudish" can end a native
+trial too. That cause is likely, not captured: an errored trial gets no
+Check, and these runs did not record the stream. An errored trial left its
+gateway and recorder running; they were stopped by hand after the run.
+
+Against the baseline mean, the graded trial used 45.6% more prompt tokens and
+35.1% more main-thread cost. One trial is no basis for a comparison of
+means.
+
+How the variant keeps the key away from Claude Code:
 
 - **The key reaches the gateway only.** The Bench copies the file named by
   `--param gateway_env` to `~/.config/context-gateway/.env`, which the gateway
@@ -237,8 +291,6 @@ output tokens. The `env -u ANTHROPIC_API_KEY` in `start.sh` closes this; the
 re-run got `401 "invalid x-api-key"` from the fake key. The leak into
 provision steps is filed as MadAppGang/madbench#216.
 
-Risk for its trials: the same `expand_context` defect as below can end a
-trial; an errored trial will be reported as errored.
 
 ## Through claudish
 
