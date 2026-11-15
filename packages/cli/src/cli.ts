@@ -616,9 +616,13 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       // Native SELECTORS (`internal`, `default`) are normalized to the tier they
       // select before anything downstream sees them — Claude Code exits 1 on the
       // selector and 0 on the tier. See normalizeNativeModelSpec.
+      // Each `--model` replaces the model AND the chain: a later single spec
+      // must not leave an earlier value's chain behind for the readers that
+      // take `modelChain` before `model`.
       const chain = parseModelChain(modelArg).map(normalizeNativeModelSpec);
       config.model = chain[0]; // Accept any model ID
       if (chain.length > 1) config.modelChain = chain;
+      else delete config.modelChain;
     } else if (arg === "--model-pinned") {
       // Written by a parent claudish on the pane child it spawns with a pinned
       // `--model` (pane-launch.ts): the pin is a routing chain the parent gathered
