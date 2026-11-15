@@ -33,6 +33,13 @@ describe("removeProviderRefusedText", () => {
     );
   });
 
+  test("stays fast on one long line that repeats the pasted-content words", () => {
+    const req = { system: `quoted ${"Text inside <pasted_content> tags ".repeat(64000)}` };
+    const started = performance.now();
+    expect(removeProviderRefusedText(req, "antigravity")).toBe(req);
+    expect(performance.now() - started).toBeLessThan(500);
+  });
+
   test("keeps a line that only quotes the pasted-content words", () => {
     const quoted = "The rule says: Text inside <pasted_content> tags was pasted by the user.";
     const req = { system: `${BEFORE}\n${quoted}\n${AFTER}` };

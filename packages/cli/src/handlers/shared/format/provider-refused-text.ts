@@ -110,17 +110,18 @@ function removeLines(text: string, opening: string): string {
   let at = text.indexOf(opening);
   while (at !== -1) {
     const lineStart = text.lastIndexOf("\n", at - 1) + 1;
-    if (lineStart < from || !startsListLine(text, lineStart, at)) {
-      at = text.indexOf(opening, at + opening.length);
+    const nl = text.indexOf("\n", at);
+    if (!startsListLine(text, lineStart, at)) {
+      // No later match on this line can start it: go on from the next line.
+      at = nl === -1 ? -1 : text.indexOf(opening, nl + 1);
       continue;
     }
-    const nl = text.indexOf("\n", at);
     out += text.slice(from, lineStart);
     from = nl === -1 ? text.length : nl + 1;
     cutAtEnd = nl === -1;
     at = text.indexOf(opening, from);
   }
-  if (from === 0 && out === "" && !cutAtEnd) return text;
+  if (from === 0) return text;
   out += text.slice(from);
   if (!cutAtEnd) return out;
   let last = out.length;
