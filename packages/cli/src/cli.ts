@@ -34,6 +34,7 @@ import {
 } from "./model-loader.js";
 import { parseModelParams } from "./model-params.js";
 import { compareByReleaseDateDesc, isPickableProvider } from "./model-selector.js";
+import { isModelVarSetByClaudish } from "./model-vars-env.js";
 import {
   type CredentialLookup,
   type ProbeChainLink,
@@ -513,8 +514,11 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
 
   if (claudishModel) {
     config.model = claudishModel; // Claudish-specific takes priority
-  } else if (anthropicModel) {
-    config.model = anthropicModel; // Fall back to Claude Code standard
+  } else if (anthropicModel && !isModelVarSetByClaudish(process.env, "ANTHROPIC_MODEL")) {
+    // Fall back to Claude Code standard. A value a parent claudish set for its
+    // own child (and recorded) is not the user's choice: a nested launch with
+    // no --model does not start on the parent's model.
+    config.model = anthropicModel;
   }
 
   // Parse model mappings from env vars

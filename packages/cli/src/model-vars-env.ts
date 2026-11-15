@@ -11,8 +11,11 @@
  * keeps the user's Claude login a claudish provider spec there is a model Claude
  * Code cannot serve.
  *
- * `CLAUDISH_SET_MODEL_VARS` records what claudish set, as JSON (name → value). A
- * variable is removed when its value still equals the recorded one. On a launch
+ * `CLAUDISH_SET_MODEL_VARS` records what claudish set, as JSON (name → value).
+ * A nested launch reads that record twice: `parseArgs` does not take an
+ * `ANTHROPIC_MODEL` that still equals the recorded value as its launch model
+ * (`isModelVarSetByClaudish`), and the child's environment drops a variable
+ * whose value still equals the recorded one (`scrubInheritedModelVars`). On a launch
  * whose child keeps the user's login, a value that is an explicit claudish
  * provider spec is removed too, record or not: a claudish older than the record
  * set it, and Claude Code on a login cannot serve it. On a proxy-auth launch the
@@ -68,6 +71,19 @@ function readRecord(
   } catch {
     return {};
   }
+}
+
+/**
+ * True when `env[name]` still holds the value a parent claudish recorded for it
+ * in `CLAUDISH_SET_MODEL_VARS`: the variable was set by claudish, not by the
+ * user. `parseArgs` skips such an `ANTHROPIC_MODEL` as the launch model.
+ */
+export function isModelVarSetByClaudish(
+  env: Record<string, string | undefined>,
+  name: ModelVarName
+): boolean {
+  const value = env[name];
+  return typeof value === "string" && value.length > 0 && readRecord(env)[name] === value;
 }
 
 /** An explicit claudish provider spec (`devin@swe-1.7`), not the Claude subscription. */
