@@ -34,6 +34,7 @@ import {
   readdirSync,
   rmSync,
   statSync,
+  utimesSync,
 } from "node:fs";
 import { join } from "node:path";
 import { atomicWriteFileSync } from "../auth/accounts/atomic-write.js";
@@ -240,7 +241,10 @@ export class CompactionStore {
   private session(sessionId: string): Map<string, CompactionRecord> {
     let records = this.sessions.get(sessionId);
     if (!records) {
-      records = loadSession(this.sessionDir(sessionId));
+      const dir = this.sessionDir(sessionId);
+      records = loadSession(dir);
+      // A session in use keeps its folder, also when it only replays records.
+      touchSessionFolder(dir);
       this.sessions.set(sessionId, records);
     }
     return records;
@@ -257,7 +261,25 @@ export function ensureSessionFolder(root: string, sessionId: string): string {
   const dir = join(root, sessionId);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   chmodSync(dir, 0o700);
+  // mkdir on an existing folder leaves its mtime alone: a resumed session's
+  // folder would otherwise still count from its last write.
+  touchSessionFolder(dir);
   return dir;
+}
+
+/**
+ * Set a session folder's mtime to now, so the 7-day retention counts from its
+ * latest use. Best effort: a folder that does not exist or cannot be touched
+ * is left as it is.
+ */
+export function touchSessionFolder(dir: string): void {
+  try {
+    if (!existsSync(dir)) return;
+    const now = new Date();
+    utimesSync(dir, now, now);
+  } catch {
+    // retention only; never a reason to fail a request
+  }
 }
 
 function isRecord(value: unknown): value is CompactionRecord {

@@ -155,7 +155,10 @@ id literal is in code. A name that does not resolve to a `claude-*` id turns com
 
 A record is never rewritten (`put`: first decision wins, disk first, then memory). A session folder
 is deleted 7 days after its newest mtime (the folder's own or any file's), checked at startup; a
-session being resumed is kept. The folder's own mtime counts because the launcher creates the
+session the arguments name (`--resume <id>`, `-r <id>`, `--resume=<id>`, `--session-id <id>`, read
+by `compactionSessionPlan`) or the resume picker chose is kept. Opening a session's records and the
+launcher's folder setup set the folder's mtime to now (`touchSessionFolder`), so a resumed session
+that only replays records does not expire. The folder's own mtime counts because the launcher creates the
 folder before Claude Code starts, and it stays empty until the first large output: a rule on
 files alone would let a second claudish starting at that moment delete a live session's folder. `--add-dir` names the session's own folder only, so no session can Read another's
 outputs. The session id is known before Claude Code starts (`--session-id`, `--resume <uuid>`, or

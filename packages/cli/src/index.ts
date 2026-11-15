@@ -1455,19 +1455,25 @@ async function runCli() {
     // `--add-dir` for it.
     let compactionRuntime: import("./compaction/runtime.js").CompactionRuntime | null = null;
     if (cliConfig.compaction) {
-      const [{ prepareCompaction }, { resolveCompactionSettings }, { loadConfig }, { logStderr }] =
-        await Promise.all([
-          import("./compaction/runtime.js"),
-          import("./compaction/config.js"),
-          import("./profile-config.js"),
-          import("./logger.js"),
-        ]);
+      const [
+        { prepareCompaction },
+        { resolveCompactionSettings },
+        { compactionKeepSessionIds },
+        { loadConfig },
+        { logStderr },
+      ] = await Promise.all([
+        import("./compaction/runtime.js"),
+        import("./compaction/config.js"),
+        import("./compaction/launch.js"),
+        import("./profile-config.js"),
+        import("./logger.js"),
+      ]);
       const { settings, warning } = resolveCompactionSettings(loadConfig(), true);
       if (warning) logStderr(`[compaction] ${warning}`);
       compactionRuntime = await prepareCompaction({
         settings,
         allowOpPrompt: cliConfig.interactive,
-        ...(resumedSessionId ? { keepSessionIds: [resumedSessionId] } : {}),
+        keepSessionIds: compactionKeepSessionIds(cliConfig.claudeArgs, resumedSessionId),
       });
       if (!compactionRuntime) cliConfig.compaction = false;
     }

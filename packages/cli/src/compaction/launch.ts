@@ -78,6 +78,23 @@ export function compactionSessionPlan(args: ReadonlyArray<string>): CompactionSe
   return { kind: "mint" };
 }
 
+/**
+ * The session folders the startup purge must keep: the session the user's
+ * arguments name in any of the forms `compactionSessionPlan` reads
+ * (`--resume <id>`, `-r <id>`, `--resume=<id>`, `--session-id <id>`, ...),
+ * and the one the resume picker chose.
+ */
+export function compactionKeepSessionIds(
+  args: ReadonlyArray<string>,
+  pickedSessionId: string | null
+): string[] {
+  const plan = compactionSessionPlan(args);
+  const ids = new Set<string>();
+  if (plan.kind === "known") ids.add(plan.sessionId);
+  if (pickedSessionId) ids.add(pickedSessionId);
+  return [...ids];
+}
+
 /** What the launcher puts in front of Claude Code's argv for compaction. */
 export interface CompactionLaunch {
   /** Arguments for the FRONT of argv: `[--session-id <minted>] --add-dir <folder>`, or none. */
