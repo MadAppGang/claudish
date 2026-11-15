@@ -331,6 +331,13 @@ interface RequestResolution {
   signing?: NativeSigning;
 }
 
+/**
+ * The `created` field (Unix seconds) of every `GET /v1/models` entry. A fixed
+ * value: the field is required by the list's shape, no model here has a real
+ * creation time, and the `serve` slot list must stay byte-identical.
+ */
+const MODEL_LIST_CREATED = 1716000000;
+
 export async function createProxyServer(
   port: number,
   // Legacy: the OpenRouter key is now resolved through the credential authority
@@ -1223,7 +1230,7 @@ export async function createProxyServer(
       type: "model",
       object: "model",
       display_name: redactForClient(row.label),
-      created: 1716000000,
+      created: MODEL_LIST_CREATED,
       owned_by: "claudish",
     }));
 
@@ -1242,7 +1249,7 @@ export async function createProxyServer(
         id,
         object: "model",
         type: "model",
-        created: 1716000000,
+        created: MODEL_LIST_CREATED,
         owned_by: "claudish",
       })),
     });
