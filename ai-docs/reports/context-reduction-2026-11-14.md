@@ -679,6 +679,46 @@ history reached the model. This run shows that summaries are prepared and
 swaps are applied; it does not show that a swapped history is sent, or what
 it saves. The check runs again on the fixed build.
 
+### History replay re-check on build a6952916: PASS 8/8
+
+Result: **history replay re-check: PASS 8/8, verified by the compaction
+branch's request-by-request mapping.** The 8/8 is that branch's mapping of
+each request after a swap to the prefix it sent; this bench did not repeat
+the mapping.
+
+The same Bench, prompts and config as above, on build source a6952916,
+sha256 `37ee19cf445407b97658276f995bfcec289217a2841eca21dcc583be721c6447`.
+The debug log now has the replay lines that build 6f869a1d did not write:
+
+```
+[compaction] session cc520abf-…: history swapped at 9, ~20802 of 1000000 tokens
+[compaction] session cc520abf-…: history replayed at 9, tail changed: recorded [f04601308c4e] current [29e0d74bdb9c]
+[compaction] session cc520abf-…: history replayed at 9, ~20955 of 1000000 tokens
+[compaction] session cc520abf-…: history replayed at 9, tail changed: recorded [f04601308c4e] current [29e0d74bdb9c]
+[compaction] session cc520abf-…: history replayed at 9, ~21463 of 1000000 tokens, summary started
+[compaction] session cc520abf-…: history replayed at 9, tail changed: recorded [f04601308c4e] current [29e0d74bdb9c]
+[compaction] session cc520abf-…: history swapped at 13, ~20908 of 1000000 tokens
+[compaction] session cc520abf-…: history replayed at 13, tail changed: recorded [cbeb3558a8fb] current [9e38646d45fc]
+[compaction] session cc520abf-…: history replayed at 13, ~21354 of 1000000 tokens, summary started
+```
+
+madbench's Events: of 7 requests, number 5 read 27,762 tokens from the cache,
+number 6 read 28,425 (27,762 plus 663 new tokens, so the swapped prefix was
+sent again), and number 7 read 27,762. On 6f869a1d, number 6 read the old
+34,387-token prefix.
+
+3 summaries, 2 swaps; 3 Haiku calls, all `claude-haiku-5-5` with
+`x-api-key`, HTTP 200, 9,392 in / 2,084 out tokens. The key checks passed.
+The fourth answer:
+
+> Your first question asked me to read `package.json` and report the package
+> name and scripts. The package is named `tally-sheet` (version 0.3.1), and
+> its scripts are `start` (`bun src/index.ts`), `test` (`bun test`), `lint`
+> (`biome check src`) and `build` (`bun build src/index.ts --outdir dist`).
+
+By the compaction branch's mapping, the request that answered it sent the
+swapped history, so on this build the answer came from the summary.
+
 ## Explanations (inference, not verified)
 
 - **Why the gateway costs more.** Shortened tool output leaves the agent
