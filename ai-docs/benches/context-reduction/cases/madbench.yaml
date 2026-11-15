@@ -81,7 +81,51 @@ metrics:
   - { name: duration, source: scenario.duration, aggregate: mean, better: lower }
 
 scenarios:
-  # Case e: research with many parallel subagents, read only.
+  # Case c: a mechanical refactor across the largest files. Run with
+  # --param case_prep=install.
+  - name: refactor
+    description: "rename nativeRouteFor to claudeSubscriptionRoute and move it to its own module, in 17 files"
+    repo:
+      url: ../../../..
+      ref: 533e4233b9d0c6b49bfc2420fcc76d9626169677
+    timeout: 60m
+    prompt: |
+      Refactor claudish in `packages/cli/src`. Keep the behaviour exactly as it is.
+
+      1. Rename the exported function `nativeRouteFor` (now in `packages/cli/src/providers/native-route.ts`) to `claudeSubscriptionRoute`.
+      2. Move it to a new module, `packages/cli/src/providers/claude-subscription-route.ts`, which exports it. `native-route.ts` must not define it or re-export it any more.
+      3. Update every caller and every test, and every comment that names the old function. When you are done, the name `nativeRouteFor` must not appear anywhere under `packages/cli/src`.
+      4. Run `bun run typecheck` from `packages/cli`, and `bun test` for the test files you changed, and fix what fails.
+
+      Do not change `bun.lock` or any `package.json`. Do not stop to ask me anything: I am away until you finish. End with the typecheck and test results and the list of files you changed.
+    checks:
+      - type: custom:exec
+        metric: Graded
+        command: ["bun", "./checks/refactor-check.ts"]
+        timeout: "600s"
+      - type: file-changes
+        metric: StayedInBounds
+        must:
+          create: packages/cli/src/providers/claude-subscription-route.ts
+          update: packages/cli/src/providers/native-route.ts
+        must-not:
+          touch: [bun.lock, package.json, packages/cli/package.json]
+        ignore: [logs]
+      - type: exec
+        metric: VariantCheck
+        readout: true
+        in_sandbox: true
+        cmd: sh "$HOME/.bench-tools/{{tool}}/variant-check.sh"
+        timeout: "60s"
+      - type: exec
+        metric: ToolEvidence
+        readout: true
+        in_sandbox: true
+        cmd: sh "$HOME/.bench-tools/{{tool}}/evidence.sh"; ls "$HOME"/.claude/projects/*/*.jsonl >/dev/null 2>&1
+        timeout: "60s"
+
+  # Case e: research with many parallel subagents, read only. Run with
+  # --param case_prep=research.
   - name: research
     description: "answer 12 questions about claudish from its source, with at least 6 parallel Explore subagents"
     repo:
