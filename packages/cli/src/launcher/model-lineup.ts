@@ -630,7 +630,9 @@ export async function buildModelLineup(
 
       if (declared && declared.length > 0) {
         source = "declared";
-      } else if (deps.hasDiscovery(provider)) {
+      } else if (deps.hasDiscovery(provider) && (declared === null || listing.scope === "all")) {
+        // A custom endpoint that declares no models lists nothing on `<name>@`
+        // (only `<name>@*` lists what it discovers), so it is never asked.
         const asked = await discoverFor(provider, deps, remaining());
         discovered = asked.discovered;
         source = asked.source;
