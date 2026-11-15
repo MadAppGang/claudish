@@ -779,16 +779,24 @@ export async function beginModelSettingWatch(
         reportUnreadableLedger(ctx, read.reason);
         return false;
       }
+      const unreadableAtLaunch = (): false => {
+        log(`[model-restore] ${key} unreadable at launch; no restore for this session`);
+        ctx.report(`${key} cannot be read or is not a JSON object, ${noRestore}`);
+        return false;
+      };
       let entry = read.ledger.entries[key];
       if (!entry) {
         const original = readOriginal(ctx, key);
-        if (original === null) {
-          log(`[model-restore] ${key} unreadable at launch; no restore for this session`);
-          ctx.report(`${key} cannot be read or is not a JSON object, ${noRestore}`);
-          return false;
-        }
+        if (original === null) return unreadableAtLaunch();
         entry = { original, listed: [], sessions: [] };
         read.ledger.entries[key] = entry;
+      } else if (entry.failure) {
+        // A restore already failed on this file, and its exit stays silent about
+        // that failure: register only once the file can be read again. The
+        // entry keeps its `original`, the user's value from before the first
+        // listed pick; a still-failing file leaves the entry for a later sweep.
+        if (readOriginal(ctx, key) === null) return unreadableAtLaunch();
+        delete entry.failure;
       }
       for (const spec of listedSpecs) if (!entry.listed.includes(spec)) entry.listed.push(spec);
       entry.sessions.push({

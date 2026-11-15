@@ -152,3 +152,45 @@ describe("a ledger lock stolen between read and write", () => {
     expect(readJson(ledgerPath)).toEqual(newerLedger(key));
   });
 });
+
+describe("begin on a settings file a restore already failed on", () => {
+  function failedEntry() {
+    return {
+      original: { present: true, value: "opus" },
+      listed: ["or@a"],
+      sessions: [],
+      failure: { outcome: "unparsable", firstAt: 1, stat: null, reported: true },
+    };
+  }
+
+  test("a file that still fails to parse gets no restore promise and no session", async () => {
+    mkdirSync(dirname(settingsFile), { recursive: true });
+    writeFileSync(settingsFile, "{not json");
+    const key = canonicalSettingsPath(settingsFile);
+    put(ledgerPath, { version: 1, entries: { [key]: failedEntry() } });
+
+    const watch = await beginModelSettingWatch(["or@b"], deps());
+
+    expect(watch.registered).toBe(false);
+    expect(lines).toEqual([
+      `${key} cannot be read or is not a JSON object, so claudish will not put back your Claude Code default model after this session`,
+    ]);
+    expect(readJson(ledgerPath)).toEqual({ version: 1, entries: { [key]: failedEntry() } });
+  });
+
+  test("a file that parses again clears the failure and keeps the recorded original", async () => {
+    put(settingsFile, { model: "sonnet" });
+    const key = canonicalSettingsPath(settingsFile);
+    put(ledgerPath, { version: 1, entries: { [key]: failedEntry() } });
+
+    const watch = await beginModelSettingWatch(["or@b"], deps());
+
+    expect(watch.registered).toBe(true);
+    const entry = (readJson(ledgerPath) as { entries: Record<string, Record<string, unknown>> })
+      .entries[key];
+    expect(entry?.failure).toBeUndefined();
+    expect(entry?.original).toEqual({ present: true, value: "opus" });
+    expect(entry?.listed).toEqual(["or@a", "or@b"]);
+    expect(entry?.sessions as unknown[]).toHaveLength(1);
+  });
+});
