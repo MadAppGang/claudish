@@ -26,11 +26,13 @@
  * - **Failures** are final for their boundary and never block a request.
  *
  * Every hash is taken over the messages as they stand after the tool-output
- * pass, which replays recorded forms deterministically.
+ * pass, which replays recorded forms deterministically, with Claude Code's
+ * moving `cache_control` markers removed.
  */
 
 import { createHash } from "node:crypto";
 import { lookupModel, lookupModelForProvider } from "../adapters/model-catalog.js";
+import { withoutCacheMarkers } from "../code-mode/hashes.js";
 import { claudeApiContextWindow } from "../handlers/claude-api-meter.js";
 import { log } from "../logger.js";
 import { parseModelSpec } from "../providers/model-parser.js";
@@ -174,13 +176,18 @@ export function canonicalJson(value: unknown): string {
   return `{${entries.join(",")}}`;
 }
 
-/** sha256 hex of messages `[start, end)`, over their canonical JSON. */
+/**
+ * sha256 hex of messages `[start, end)`, over their canonical JSON without
+ * `cache_control` markers. Claude Code moves those prompt-cache breakpoints to
+ * newer blocks on every request, so a hash that included them would stop
+ * matching the same conversation one or two requests later.
+ */
 export function messagesHash(messages: readonly unknown[], start: number, end: number): string {
   const hash = createHash("sha256");
   hash.update("[");
   for (let i = start; i < end; i++) {
     if (i > start) hash.update(",");
-    hash.update(canonicalJson(messages[i]));
+    hash.update(canonicalJson(withoutCacheMarkers(messages[i])));
   }
   hash.update("]");
   return hash.digest("hex");
