@@ -1207,10 +1207,30 @@ export async function createProxyServer(
     return [...seen];
   })();
 
+  /**
+   * A launch with listing entries advertises exactly its /model lineup, each row
+   * with the label it has in /model. Claude Code's own `/model` does not read
+   * this route (it reads `modelPicker`); other clients of the proxy do. A label
+   * is upstream text, so it reaches the body only through `redactForClient`,
+   * applied per request so a signing value leased since startup is covered.
+   */
+  const lineupModels = () =>
+    (options.modelLineup ?? []).map((row) => ({
+      id: row.model,
+      type: "model",
+      object: "model",
+      display_name: redactForClient(row.label),
+      created: 1716000000,
+      owned_by: "claudish",
+    }));
+
   app.get("/v1/models", (c) => {
     // Slot mode wins whenever `serve` supplied ids: Claude Desktop only
     // recognizes the slot ids, and this branch must stay byte-identical to what
     // it has always returned.
+    if (servedSlotIds.length === 0 && options.modelLineup !== undefined) {
+      return c.json({ object: "list", has_more: false, data: lineupModels() });
+    }
     const ids = servedSlotIds.length > 0 ? servedSlotIds : discoverableModelIds;
     return c.json({
       object: "list",
