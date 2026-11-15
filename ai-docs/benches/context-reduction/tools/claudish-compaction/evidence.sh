@@ -22,10 +22,12 @@ if [ -n "$logs" ]; then
   c() { cat $logs | grep -c -- "$1"; }
   echo "calls=$(c '\[compaction\] Calling API')"
   echo "calls_x_api_key=$(cat $logs | grep '\[compaction\] Calling API' | grep -c 'auth: x-api-key')"
-  echo "calls_by_purpose_model:"
-  cat $logs | grep -o '\[compaction\] Calling API: [^ ]* (purpose: [^,]*, model: [^,]*' | sed 's/.*(purpose: /  /' | sort | uniq -c
+  echo "calls_by_purpose:"
+  cat $logs | grep '\[compaction\] Calling API' | grep -o '(purpose: [a-z]* [a-z]*' | sed 's/(purpose: /  /' | sort | uniq -c
+  echo "calls_by_model_auth:"
+  cat $logs | grep '\[compaction\] Calling API' | grep -o 'model: [^,]*, auth: [a-z-]*' | sed 's/^/  /' | sort | uniq -c
   echo "answers_by_status:"
-  cat $logs | grep -o '\[compaction\] [a-z-]*: HTTP [0-9]*' | sed 's/.*: HTTP /  HTTP /' | sort | uniq -c
+  cat $logs | grep '\[compaction\]' | grep -o ': HTTP [0-9]*' | sed 's/^: /  /' | sort | uniq -c
   tokens=$(cat $logs | grep -o 'HTTP [0-9]*, [0-9]* in / [0-9]* out tokens' | awk '{i+=$3; o+=$6; n++} END {printf "%d answers, %d in / %d out", n, i, o}')
   echo "haiku_tokens=$tokens"
   echo "sent_by_form:"
@@ -36,6 +38,11 @@ if [ -n "$logs" ]; then
   cat $logs | grep '\[compaction\]' | grep -E 'off for|is ignored|could not|refused|warn' | cut -c1-240 | sort | uniq -c
   echo "compaction_on:"
   cat $logs | grep -o '\[compaction\] on: .*' | sort | uniq -c
+  echo "history_started=$(c '\[compaction\] history summary started')"
+  echo "history_ready=$(c '\[compaction\] history summary ready')"
+  echo "history_failed=$(c '\[compaction\] history summary failed')"
+  echo "history_swaps=$(c '\[compaction\] history swap in session')"
+  echo "history_skipped=$(c '\[compaction\] history skipped')"
 fi
 
 bun "$here/transcripts.ts"

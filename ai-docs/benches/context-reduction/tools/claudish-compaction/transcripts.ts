@@ -47,6 +47,8 @@ let results = 0;
 let large = 0;
 let largest = 0;
 let configReads = 0;
+const toolNames = new Map<string, string>();
+const largeIds: string[] = [];
 for (const f of files(root)) {
   transcripts++;
   for (const line of readFileSync(f, "utf8").split("\n")) {
@@ -59,18 +61,43 @@ for (const f of files(root)) {
     }
     const content = e.message?.content;
     if (!Array.isArray(content)) continue;
-    for (const b of content as Array<{ type?: string; content?: unknown; input?: unknown }>) {
+    for (const b of content as Array<{
+      type?: string;
+      id?: string;
+      name?: string;
+      tool_use_id?: string;
+      content?: unknown;
+      input?: unknown;
+    }>) {
       if (b?.type === "tool_result") {
         results++;
         const len = textLength(b.content);
         if (len > largest) largest = len;
-        if (len >= LARGE) large++;
+        if (len >= LARGE) {
+          large++;
+          largeIds.push(b.tool_use_id ?? "");
+        }
       } else if (b?.type === "tool_use") {
+        if (b.id && b.name) toolNames.set(b.id, b.name);
         if (configPattern.test(JSON.stringify(b.input ?? ""))) configReads++;
       }
     }
   }
 }
+// A subagent's tool_result can appear in two transcripts (its own and a
+// sidechain copy), so the large outputs are also counted by distinct id.
+const byTool: Record<string, number> = {};
+for (const id of new Set(largeIds)) {
+  const name = toolNames.get(id) ?? "unknown";
+  byTool[name] = (byTool[name] ?? 0) + 1;
+}
 console.log(`transcripts=${transcripts}`);
 console.log(`tool_results=${results} large_tool_outputs=${large} largest_chars=${largest}`);
+console.log(
+  `large_distinct=${new Set(largeIds).size} large_by_tool=${
+    Object.entries(byTool)
+      .map(([k, v]) => `${k}:${v}`)
+      .join(",") || "none"
+  }`
+);
 console.log(`config_reads=${configReads}`);

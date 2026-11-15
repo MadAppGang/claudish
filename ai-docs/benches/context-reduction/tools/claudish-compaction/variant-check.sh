@@ -44,7 +44,7 @@ on=$(cat $logs | grep -c '\[compaction\] on: model claude-haiku-5-5')
 calls=$(cat $logs | grep -c '\[compaction\] Calling API')
 signed=$(cat $logs | grep '\[compaction\] Calling API' | grep 'model: claude-haiku-5-5,' | grep -c 'auth: x-api-key')
 off=$(cat $logs | grep '\[compaction\]' | grep -c 'off for')
-echo "compaction on lines: $on; calls: $calls; on claude-haiku-5-5 with x-api-key: $signed; switched-off lines: $off"
+echo "compaction on lines: $on; calls: $calls; signed with an API key on claude-haiku-5-5: $signed; switched-off lines: $off"
 [ "$on" -gt 0 ] && [ "$signed" -eq "$calls" ] && [ "$off" -eq 0 ] || fail=1
 
 exit "$fail"
