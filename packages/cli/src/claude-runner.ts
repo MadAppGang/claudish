@@ -639,6 +639,29 @@ function settingsArgOccurrences(args: readonly string[]): SettingsArgOccurrence[
   return out;
 }
 
+/**
+ * Which passthrough `--settings` values a settings discovery reads.
+ * `"first"`: the value after the first `--settings` token, the launch with no
+ * listing entry. `"every"`: every occurrence in both spellings, argv order, the
+ * ones {@link mergeEverySettingsArg} merges on a launch with a /model lineup.
+ */
+export type SettingsArgScope = "first" | "every";
+
+/** The scope that matches what `mergeUserSettingsIfPresent` will merge for this launch. */
+export function settingsArgScopeOf(config: Pick<ClaudishConfig, "modelLineup">): SettingsArgScope {
+  return config.modelLineup?.picker ? "every" : "first";
+}
+
+/** The `--settings` values a discovery reads, lowest precedence first. */
+function settingsArgValues(claudeArgs: readonly string[], scope: SettingsArgScope): string[] {
+  if (scope === "every") {
+    return settingsArgOccurrences(claudeArgs).flatMap((o) => (o.value ? [o.value] : []));
+  }
+  const idx = claudeArgs.indexOf("--settings");
+  const value = idx === -1 ? undefined : claudeArgs[idx + 1];
+  return value ? [value] : [];
+}
+
 /** The auth header names (lowercase) an ANTHROPIC_CUSTOM_HEADERS value (one `Name: value` per line) sets. */
 function customHeaderAuthNames(value: unknown): Set<"authorization" | "x-api-key"> {
   const names = new Set<"authorization" | "x-api-key">();
@@ -1471,13 +1494,11 @@ function userSettingsFileCandidates(cwd: string): string[] {
  */
 export function discoverUserStatusLineCommand(
   claudeArgs: string[] = [],
-  cwd: string = process.cwd()
+  cwd: string = process.cwd(),
+  scope: SettingsArgScope = "first"
 ): string | null {
   const sources = userSettingsFileCandidates(cwd).filter((file) => existsSync(file));
-
-  const idx = claudeArgs.indexOf("--settings");
-  const settingsArg = idx === -1 ? undefined : claudeArgs[idx + 1];
-  if (settingsArg) sources.push(settingsArg);
+  sources.push(...settingsArgValues(claudeArgs, scope));
 
   let effective: unknown;
   for (const source of sources) {
@@ -2410,15 +2431,14 @@ export interface AdvisorModelArg {
  */
 export function discoverUserAdvisorModel(
   claudeArgs: string[] = [],
-  cwd: string = process.cwd()
+  cwd: string = process.cwd(),
+  scope: SettingsArgScope = "first"
 ): string | undefined {
   const sources = userSettingsFileCandidates(cwd).filter((file) => existsSync(file));
 
   // An explicit --settings value outranks the files but not the managed tier. It is
   // pushed unfiltered because it may be inline JSON rather than a path.
-  const idx = claudeArgs.indexOf("--settings");
-  const settingsArg = idx === -1 ? undefined : claudeArgs[idx + 1];
-  if (settingsArg) sources.push(settingsArg);
+  sources.push(...settingsArgValues(claudeArgs, scope));
 
   const managed = managedSettingsPath();
   if (existsSync(managed)) sources.push(managed);
@@ -2454,7 +2474,7 @@ export function resolveAdvisorModelArg(
 ): AdvisorModelArg {
   if (!config.advisor) return { args: [], source: "off" };
 
-  const userChoice = discoverUserAdvisorModel(config.claudeArgs, cwd);
+  const userChoice = discoverUserAdvisorModel(config.claudeArgs, cwd, settingsArgScopeOf(config));
   if (userChoice) return { args: [], model: userChoice, source: "inherited" };
 
   return {
@@ -2707,7 +2727,11 @@ export async function runClaudeWithProxy(
   // Chain, don't clobber: find the status line the user would otherwise have
   // seen so claudish's segment can be appended to it. Must run BEFORE
   // mergeUserSettingsIfPresent, which splices --settings out of claudeArgs.
-  const userStatusLineCommand = discoverUserStatusLineCommand(config.claudeArgs);
+  const userStatusLineCommand = discoverUserStatusLineCommand(
+    config.claudeArgs,
+    process.cwd(),
+    settingsArgScopeOf(config)
+  );
 
   // Same timing constraint as the status line: this reads the user's --settings
   // value, which mergeUserSettingsIfPresent splices out of claudeArgs below.
