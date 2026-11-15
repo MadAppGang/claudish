@@ -64,6 +64,10 @@ ignored with one warning; it never turns compaction on.
 
 From an MCP session, pass the flag through: `create_session` with `claude_flags: "--compaction"`.
 
+`claudish serve` does not support compaction. It has no `--compaction` flag, and its requests are
+sent as they arrive. When `CLAUDISH_COMPACTION` or `compaction.enabled` turns compaction on, `serve`
+prints one warning saying so.
+
 ## The model
 
 `model` takes a tier alias (`haiku`, `sonnet`, `opus`) or an exact `claude-*` id. The default is
@@ -135,8 +139,7 @@ reads a recovery file:
 
 - `--continue` (`-c`);
 - `--resume` with no id, or with a search term instead of an id;
-- `--fork-session` with no `--session-id`;
-- `claudish serve`.
+- `--fork-session` with no `--session-id`.
 
 ### Retention
 

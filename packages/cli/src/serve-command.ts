@@ -30,10 +30,12 @@
 import { existsSync, readFileSync } from "node:fs";
 import { setCredentialPromptRole } from "./auth/credentials/prompt-role.js";
 import { wantsAnthropicApiBilling } from "./claude-runner.js";
+import { COMPACTION_ENV_VAR, resolveCompactionEnabled } from "./compaction/config.js";
 import { realValueFor } from "./env-placeholder.js";
 import { LOGIN_ONLY_SIGNING } from "./handlers/shared/anthropic-forward.js";
 import { ensureEndpointsRegistered } from "./providers/endpoint-registration.js";
 import { parseModelSpec } from "./providers/model-parser.js";
+import { loadConfig } from "./profile-config.js";
 import { nativeRouteFor } from "./providers/native-route.js";
 import { type ProxyServerOptions, type SlotRoute, createProxyServer } from "./proxy-server.js";
 
@@ -178,6 +180,19 @@ export function serveProxyOptions(
   };
 }
 
+/**
+ * The one warning `serve` prints when `CLAUDISH_COMPACTION` or the global
+ * config's `compaction.enabled` turns compaction on: `serve` does not run it.
+ * Undefined when compaction is not enabled.
+ */
+export function serveCompactionWarning(
+  env: string | undefined,
+  block: unknown
+): string | undefined {
+  if (!resolveCompactionEnabled({ env, block })) return undefined;
+  return `compaction is enabled (${COMPACTION_ENV_VAR} or compaction.enabled), but serve does not run compaction; requests are sent as they arrive`;
+}
+
 export async function serveCommand(args: string[]): Promise<void> {
   // A gateway for Claude Desktop answers requests nobody at a terminal made:
   // it never opens a credential dialog (`auth/credentials/prompt-role.ts`).
@@ -198,6 +213,12 @@ export async function serveCommand(args: string[]): Promise<void> {
     console.error("[claudish serve] --models <path> is required");
     process.exit(1);
   }
+
+  const compactionWarning = serveCompactionWarning(
+    process.env[COMPACTION_ENV_VAR],
+    loadConfig().compaction
+  );
+  if (compactionWarning) console.error(`[claudish serve] ${compactionWarning}`);
 
   // Before the slot map is read, so a slot naming a bundled endpoint resolves
   // against a provider list that already contains it. `createProxyServer` registers

@@ -167,7 +167,7 @@ that only replays records does not expire. The folder's own mtime counts because
 folder before Claude Code starts, and it stays empty until the first large output: a rule on
 files alone would let a second claudish starting at that moment delete a live session's folder. `--add-dir` names the session's own folder only, so no session can Read another's
 outputs. The session id is known before Claude Code starts (`--session-id`, `--resume <uuid>`, or
-one claudish mints); with `--continue`, a bare `--resume`, `--fork-session` alone, or `serve`, no
+one claudish mints); with `--continue`, a bare `--resume` or `--fork-session` alone, no
 folder is added and Read asks for permission.
 
 ## Out of scope, and why
@@ -178,4 +178,8 @@ folder is added and Read asks for permission.
   request shape.
 - **An injected "expand" tool.** `Read` on a recovery file works on every route without the proxy
   answering tool calls.
-- Images, `is_error` results, the advisor's results; `--add-dir` for `serve`; per-project config.
+- Images, `is_error` results, the advisor's results; per-project config.
+- **`claudish serve`.** `serve` builds no compaction runtime and passes none to its proxy, so its
+  requests are never compacted, and it has no `--compaction` flag. When `CLAUDISH_COMPACTION` or
+  `compaction.enabled` turns compaction on, `serve` prints one stderr warning saying so
+  (`serveCompactionWarning`).
