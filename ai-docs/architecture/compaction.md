@@ -67,8 +67,8 @@ Each rule has a test.
 2. **Never compress what the model saw.** An eligible `tool_result` first seen anywhere else
    (compaction switched on mid-session, a store lost) is recorded `original` and never compressed.
 3. **Replay, never regenerate.** Every later request sends the recorded form. The store is on disk
-   (dir `0700`, files `0600`, `atomicWriteFileSync`), so a proxy restart or `claude --resume`
-   replays the same text.
+   (dir `0700`, files `0600`, published by a no-replace hard link), so a proxy restart or
+   `claude --resume` replays the same text.
 4. **A failure is final.** A timeout, a 429 "Error" shape refusal, any 4xx or 5xx, an incomplete
    answer, or a result above `maxRatio` records `original`. It is never retried: a retry on a
    later turn is a cache break.
@@ -153,7 +153,9 @@ id literal is in code. A name that does not resolve to a `claude-*` id turns com
   <key>.txt   0600   the original tool output, for Read
 ```
 
-A record is never rewritten (`put`: first decision wins, disk first, then memory). A session folder
+A record is never rewritten (`put`: first decision wins, disk first, then memory; a complete temp
+file is hard-linked to its name, so of two proxies on one session the first on disk wins and the
+other reads it back). A session folder
 is deleted 7 days after its newest mtime (the folder's own or any file's), checked at startup; a
 session the arguments name (`--resume <id>`, `-r <id>`, `--resume=<id>`, `--session-id <id>`, read
 by `compactionSessionPlan`) or the resume picker chose is kept. Opening a session's records and the

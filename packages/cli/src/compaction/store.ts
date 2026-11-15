@@ -15,26 +15,34 @@
  *
  * A form is decided once and replayed on every later request. The cache and
  * the thinking signatures both match the history the model already saw, so a
- * record is never rewritten: `put` refuses to replace an existing key. The
- * records are written atomically (`atomicWriteFileSync`) and loaded from disk
- * on the first use of a session in this process, so a proxy restart or
- * `claude --resume` replays the same bytes.
+ * record is never rewritten: `put` refuses to replace an existing key, in this
+ * process and on disk. A record is published with a no-replace link of a
+ * complete temporary file (`publishRecord`), so of two processes deciding the
+ * same key the first on disk wins and the other reads it back. Records are
+ * loaded from disk on the first use of a session in this process, so a proxy
+ * restart or `claude --resume` replays the same bytes.
  *
  * The session id comes from the request's `metadata.user_id`; only ids that
  * are safe as one path segment are accepted (`isSafeSessionId`), so no
  * request can name a folder outside the store.
  */
 
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   chmodSync,
+  closeSync,
   existsSync,
+  fsyncSync,
+  linkSync,
   mkdirSync,
+  openSync,
   readFileSync,
   readdirSync,
   rmSync,
   statSync,
+  unlinkSync,
   utimesSync,
+  writeSync,
 } from "node:fs";
 import { join } from "node:path";
 import { atomicWriteFileSync } from "../auth/accounts/atomic-write.js";
@@ -195,10 +203,12 @@ export class CompactionStore {
   /**
    * Store a decision, on disk first and then in memory. The first decision for
    * a key wins: a second `put` of the same key returns the record already held
-   * and writes nothing. When the disk write fails the error is rethrown and
-   * nothing is held, so a caller can fall back to `remember` an `original`
-   * form, which a later process reaches by itself (rule: a block with no record
-   * outside the last message stays original).
+   * and writes nothing, and so does a `put` whose key another store instance
+   * or process already published on disk (the record on disk is returned).
+   * When the disk write fails the error is rethrown and nothing is held, so a
+   * caller can fall back to `remember` an `original` form, which a later
+   * process reaches by itself (rule: a block with no record outside the last
+   * message stays original).
    */
   put(sessionId: string, key: string, record: CompactionRecord): CompactionRecord {
     if (!KEY_PATTERN.test(key))
@@ -207,12 +217,9 @@ export class CompactionStore {
     const existing = records.get(key);
     if (existing) return existing;
     this.ensureSessionDir(sessionId);
-    atomicWriteFileSync(join(this.sessionDir(sessionId), `${key}.json`), JSON.stringify(record), {
-      mode: 0o600,
-      dirMode: 0o700,
-    });
-    records.set(key, record);
-    return record;
+    const winner = publishRecord(join(this.sessionDir(sessionId), `${key}.json`), record);
+    records.set(key, winner);
+    return winner;
   }
 
   /** Hold a decision in memory only. The first decision for a key wins. */
@@ -280,6 +287,46 @@ export function touchSessionFolder(dir: string): void {
   } catch {
     // retention only; never a reason to fail a request
   }
+}
+
+/**
+ * Write `record` to `path` unless a record is already there, and return the
+ * record that holds `path` afterwards. The bytes go to a temporary file in the
+ * same folder (0600, fsynced), which is then hard-linked to `path`: a link
+ * never replaces an existing name, so the first writer wins and a losing
+ * writer reads the winner back. The temporary file is always removed. Throws
+ * when the record cannot be written, or when the record found on disk cannot
+ * be read.
+ */
+function publishRecord(path: string, record: CompactionRecord): CompactionRecord {
+  const tmp = `${path}.tmp-${process.pid}-${randomBytes(6).toString("hex")}`;
+  try {
+    const fd = openSync(tmp, "wx", 0o600);
+    try {
+      writeSync(fd, Buffer.from(JSON.stringify(record), "utf8"));
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    chmodSync(tmp, 0o600);
+    try {
+      linkSync(tmp, path);
+      return record;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+    }
+  } finally {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      // already gone, or never created
+    }
+  }
+  const onDisk: unknown = JSON.parse(readFileSync(path, "utf-8"));
+  if (!isRecord(onDisk)) {
+    throw new Error("A compaction record already on disk for this key could not be read");
+  }
+  return onDisk;
 }
 
 function isRecord(value: unknown): value is CompactionRecord {
