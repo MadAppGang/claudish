@@ -183,8 +183,10 @@ to `api.github.com`. That call carries no workspace data.
 
 The gateway's `expand_context` append breaks Claude Code's stream when it
 cuts an event across its 4096-byte reads (`internal/pipes/tool_output/stream_buffer.go`).
-Through claudish it ended every trial; natively it ends some. The report
-has the details.
+Through claudish it ended every trial; natively it ends some. It is filed as
+Compresr-ai/Context-Gateway#48. With v0.5.3 locally patched for #48,
+`claudish-context-gateway-local-streamfix` completed 3 of 3 trials. The
+report has the details.
 
 ## The gateway key variant
 

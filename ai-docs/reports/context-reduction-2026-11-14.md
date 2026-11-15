@@ -14,8 +14,11 @@ between trials.
 - **context-mode** used more: 18.6% more prompt tokens and 14.4% more
   main-thread cost natively, 16.2% and 13.7% more through claudish.
 - **Context Gateway in local mode** used more natively: 33.3% more prompt
-  tokens and 32.1% more main-thread cost. Through claudish it could not
-  complete: 4 of 4 trials errored at the gateway's `expand_context` append.
+  tokens and 32.1% more main-thread cost. Through claudish v0.5.3 could not
+  complete: 4 of 4 trials errored at the gateway's `expand_context` append
+  (Compresr-ai/Context-Gateway#48). With v0.5.3 locally patched for #48, all
+  3 claudish trials passed all 114 tests, with 34.1% more prompt tokens and
+  26.8% more main-thread cost than `claudish-baseline`.
 - **A Haiku subagent** (`output-digest` on `claude-haiku-5-5`) moved work off
   the main thread: main-thread prompt tokens fell 15.8%, subagent prompt
   tokens rose 48.7%, and the total was 1.0% lower. Main-thread cost was 7.2%
@@ -26,7 +29,7 @@ between trials.
   more prompt tokens and 35.1% more main-thread cost than the baseline mean,
   plus 53 Haiku calls on the key.
 
-Every variant that completed built the feature: 22 of 25 graded trials passed
+Every variant that completed built the feature: 25 of 28 graded trials passed
 all 114 hidden tests, and the other three missed one test each.
 
 No Session reached compaction. The largest single request was 122,396 tokens.
@@ -328,12 +331,15 @@ Mean over 3 trials, change against `claudish-baseline`:
 | `claudish-baseline` | 2/3 | 2,793,813 | 1,026,200 | 3,820,013 | 51,006 | $1.54 | 36/29 | 29.1 min |
 | `claudish-rtk` | 3/3 | 3,070,693 (+9.9%) | 693,721 (-32.4%) | 3,764,414 (-1.5%) | 49,559 (-2.8%) | $1.51 (-2.0%) | 38/23 | 27.0 min |
 | `claudish-context-mode` | 3/3 | 2,938,283 (+5.2%) | 1,501,717 (+46.3%) | 4,440,000 (+16.2%) | 58,570 (+14.8%) | $1.76 (+13.7%) | 36/44 | 32.3 min |
-| `claudish-context-gateway-local` | could not complete: 4/4 trials errored at the gateway's `expand_context` append | | | | | | | |
+| `claudish-context-gateway-local`, Context-Gateway v0.5.3 | could not complete: 4/4 trials errored at the gateway's `expand_context` append | | | | | | | |
+| `claudish-context-gateway-local-streamfix`, Context-Gateway v0.5.3, locally patched for Compresr-ai/Context-Gateway#48 | 3/3 | 3,584,736 (+28.3%) | 1,536,626 (+49.7%) | 5,121,362 (+34.1%) | 55,533 (+8.9%) | $1.96 (+26.8%) | 50/43 | 33.3 min |
 
 Ranges (least to most): `claudish-baseline` 3,286,752 to 4,577,894 prompt
 tokens, $1.38 to $1.80, 16.1 to 42.7 min; `claudish-rtk` 3,357,195 to
 4,218,521, $1.48 to $1.58, 9.1 to 44.1 min; `claudish-context-mode` 3,766,588
-to 5,322,884, $1.62 to $1.94, 27.0 to 42.0 min.
+to 5,322,884, $1.62 to $1.94, 27.0 to 42.0 min;
+`claudish-context-gateway-local-streamfix` 4,535,753 to 6,274,336, $1.62 to
+$2.31, 26.6 to 44.1 min.
 
 The failed test: `claudish-baseline`, trial 1, 113 pass, 1 fail.
 
@@ -380,6 +386,53 @@ Natively, the gateway trials made 2 to 5 expansions each and completed; one
 native dry run of the Haiku key variant failed the same way after an
 expansion.
 
+The defect is filed upstream as Compresr-ai/Context-Gateway#48.
+
+### claudish-context-gateway-local-streamfix: the patched gateway
+
+The same variant, on Context-Gateway v0.5.3 locally patched for
+Compresr-ai/Context-Gateway#48. The patch is
+`/private/tmp/claude-501/-Users-jack-mag-claudish/909617a1-1a03-4869-b84e-16c834d287fc/scratchpad/gw-fix/streamfix.diff`,
+outside this repository. It makes two changes:
+
+- the read loop carries an unfinished SSE event over to the next 4096-byte
+  read;
+- `ProcessChunk` no longer adds a `\n` that the input did not have.
+
+A new Go test in the gateway fails on v0.5.3 and passes with the patch.
+
+The variant's own `gateway_bin` is `config/no-gateway-bin`, which refuses to
+start. The run named the build with `--param gateway_bin=<path>`. Each
+trial's start log shows the build that served it:
+
+```
+start: gateway binary …/madbench-927608326/home/.bench-gateway/context-gateway sha256 84c97c450bf0d7a9707351542a1379235c40b35ccb105fe1a1ce7406c0a312a9
+start: gateway binary …/madbench-1930447487/home/.bench-gateway/context-gateway sha256 84c97c450bf0d7a9707351542a1379235c40b35ccb105fe1a1ce7406c0a312a9
+start: gateway binary …/madbench-2157266720/home/.bench-gateway/context-gateway sha256 84c97c450bf0d7a9707351542a1379235c40b35ccb105fe1a1ce7406c0a312a9
+```
+
+The installed v0.5.3 is `98045fd35ec76afec55500f32b7c2b16dd7fb6af838e32d9f231f237c633ca80`.
+The evidence line `tool=context-gateway v0.5.3` names the installed release
+in every trial and does not tell the two builds apart.
+
+All 3 trials passed all 114 hidden tests and all Checks. The path that broke
+v0.5.3 ran in each trial, and no stream error occurred. This supports the
+cause given above, because the patch changes only the two lines of code that
+cause names. The failing bytes are still not captured. From the gateway's
+`session_stats.json`:
+
+| Trial | Tool outputs | Compressed | Cache hits | Tokens before / after compression | `expand_context` calls |
+|---|---|---|---|---|---|
+| 1 | 787 | 56 | 731 | 1,026,649 / 571,914 | 9 |
+| 2 | 769 | 40 | 729 | 866,321 / 496,769 | 7 |
+| 3 | 1,079 | 51 | 1,028 | 1,295,378 / 740,614 | 8 |
+
+The gateway removed 369,552 to 554,764 tokens of tool output per trial, and
+the trials still sent 34.1% more prompt tokens than `claudish-baseline`.
+Uncached input rose from a mean of 130 tokens per trial to 28,261, and cache
+creation rose 21.9%. This matches the native gateway result (see "Why the
+gateway costs more").
+
 ## Explanations (inference, not verified)
 
 - **Why the gateway costs more.** Shortened tool output leaves the agent
@@ -405,8 +458,11 @@ expansion.
   largest request was 122,396 tokens. Context Gateway's history summarizer
   triggers at 85% and did not run in any trial.
 - **Background subagents.** Every variant ran them in the foreground.
-- **`context-gateway-haiku-key`.** Not run yet; see its section.
-- **`claudish-context-gateway-local`.** Could not complete; see its section.
+- **`context-gateway-haiku-key` beyond one trial.** 2 of 3 trials errored, so
+  its row is one graded trial. Its Haiku calls are given in tokens, with no
+  dollar figure.
+- **`claudish-context-gateway-local` on the released gateway.** v0.5.3 could
+  not complete; only the locally patched build was measured through claudish.
 - **Variance.** 3 trials per variant give a range, not a confidence
   interval. Durations vary up to 4.8 times within one variant, mostly from
   how often the agent ran the full test collection.
