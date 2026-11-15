@@ -16,10 +16,39 @@ const REFUSED_PARAGRAPH_OPENINGS: Record<string, string[]> = {
   antigravity: ["IMPORTANT: Assist with authorized security testing"],
 };
 
+const isLineEnd = (ch: string | undefined) => ch === "\n" || ch === "\r";
+const isBlank = (ch: string | undefined) => ch === " " || ch === "\t" || ch === "\r";
+
+/** Index just after the blank lines that start at line start `from`. */
+function skipBlankLines(text: string, from: number): number {
+  let lineStart = from;
+  for (;;) {
+    let i = lineStart;
+    while (isBlank(text[i])) i++;
+    if (text[i] !== "\n") return lineStart;
+    lineStart = i + 1;
+  }
+}
+
+/**
+ * Start of the first line after the blank lines that end the paragraph at
+ * `from`, or -1 when no blank line follows. A blank line may hold spaces and
+ * tabs.
+ */
+function afterParagraph(text: string, from: number): number {
+  let nl = text.indexOf("\n", from);
+  while (nl !== -1) {
+    const next = skipBlankLines(text, nl + 1);
+    if (next > nl + 1) return next;
+    nl = text.indexOf("\n", nl + 1);
+  }
+  return -1;
+}
+
 /**
  * `text` without each paragraph that starts, at the start of a line, with
- * `opening`. A paragraph ends at the next blank line. Plain `indexOf` scans:
- * linear on any input.
+ * `opening`. A paragraph ends at the next blank line, with LF or CRLF line
+ * ends. Linear on any input.
  */
 function removeParagraphs(text: string, opening: string): string {
   let out = "";
@@ -31,13 +60,9 @@ function removeParagraphs(text: string, opening: string): string {
       at = text.indexOf(opening, at + opening.length);
       continue;
     }
-    let end = text.indexOf("\n\n", at);
-    if (end === -1) {
-      end = text.length;
-      cutAtEnd = true;
-    } else {
-      while (text[end] === "\n") end++;
-    }
+    const next = afterParagraph(text, at);
+    const end = next === -1 ? text.length : next;
+    if (next === -1) cutAtEnd = true;
     out += text.slice(from, at);
     from = end;
     at = text.indexOf(opening, end);
@@ -46,7 +71,7 @@ function removeParagraphs(text: string, opening: string): string {
   out += text.slice(from);
   if (!cutAtEnd) return out;
   let last = out.length;
-  while (last > 0 && out[last - 1] === "\n") last--;
+  while (last > 0 && isLineEnd(out[last - 1])) last--;
   return out.slice(0, last);
 }
 

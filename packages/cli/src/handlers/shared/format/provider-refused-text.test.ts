@@ -24,6 +24,21 @@ describe("removeProviderRefusedText", () => {
     expect(removeProviderRefusedText(req, "antigravity").system).toBe(AFTER);
   });
 
+  test("keeps the paragraphs after it when the lines end in CRLF", () => {
+    const req = { system: `${BEFORE}\r\n\r\n${SECURITY}\r\n\r\n${AFTER}` };
+    expect(removeProviderRefusedText(req, "antigravity").system).toBe(`${BEFORE}\r\n\r\n${AFTER}`);
+  });
+
+  test("removes it as the last paragraph of a CRLF prompt", () => {
+    const req = { system: `${BEFORE}\r\n\r\n${SECURITY}\r\n` };
+    expect(removeProviderRefusedText(req, "antigravity").system).toBe(BEFORE);
+  });
+
+  test("ends the paragraph at a blank line that holds only spaces and tabs", () => {
+    const req = { system: `${BEFORE}\n\n${SECURITY}\n \t\n${AFTER}` };
+    expect(removeProviderRefusedText(req, "antigravity").system).toBe(`${BEFORE}\n\n${AFTER}`);
+  });
+
   test("removes a paragraph that keeps the opening words but has other wording after", () => {
     const reworded = "IMPORTANT: Assist with authorized security testing only. Other words here.";
     const req = { system: `${BEFORE}\n\n${reworded}\n\n${AFTER}` };
