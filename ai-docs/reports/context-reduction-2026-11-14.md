@@ -265,6 +265,10 @@ How the variant keeps the key away from Claude Code:
   removed from its environment and deletes the file before the agent starts.
   Claude Code never receives the key: in a dry run with a fake key, the
   agent's own Bash printed `AGENT_ENV_KEY_UNSET`.
+- **The source key file outlives the run.** The provision step deletes only
+  the sandbox's copy. The file named by `--param gateway_env` stays where it
+  is until someone removes it. For these trials it was removed by hand on
+  2026-11-15, after the run.
 - **The main thread stays on the subscription.** `config.yaml` names
   `auth: "api_key"`. Without that line, a provider that has a key gets the
   mode "both" (`internal/auth/setup.go`, `parseAuthFromConfig`; the comment in

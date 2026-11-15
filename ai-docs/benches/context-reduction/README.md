@@ -195,7 +195,9 @@ recorder and `variant-check.sh`.
   `--param gateway_env` (one line `ANTHROPIC_API_KEY=sk-ant-…`, mode 0600) to
   `~/.config/context-gateway/.env`, which the gateway loads at startup. The
   generic provision step deletes that file in every run after `start.sh`, so
-  the agent never finds it. The default param value holds no key.
+  the agent never finds it. The default param value holds no key. The file
+  you pass stays on disk after the run: remove it yourself when the variant
+  is done.
 - `start.sh` starts the gateway with `ANTHROPIC_API_KEY` removed from its
   environment. A provision step inherits madbench's environment, which holds
   madbench's own keychain key, and the gateway's `.env` loader never
