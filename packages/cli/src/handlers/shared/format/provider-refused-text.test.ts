@@ -33,6 +33,13 @@ describe("removeProviderRefusedText", () => {
     );
   });
 
+  test("removes only its own line end when the pasted-content line is last", () => {
+    const lf = { system: `${HARNESS_BEFORE}\n\n${PASTED}` };
+    expect(removeProviderRefusedText(lf, "antigravity").system).toBe(`${HARNESS_BEFORE}\n`);
+    const crlf = { system: `${HARNESS_BEFORE}\r\n\r\n${PASTED}` };
+    expect(removeProviderRefusedText(crlf, "antigravity").system).toBe(`${HARNESS_BEFORE}\r\n`);
+  });
+
   test("stays fast on one long line that repeats the pasted-content words", () => {
     const req = { system: `quoted ${"Text inside <pasted_content> tags ".repeat(64000)}` };
     const started = performance.now();

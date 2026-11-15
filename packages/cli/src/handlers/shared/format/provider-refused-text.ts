@@ -125,7 +125,8 @@ function removeLines(text: string, opening: string): string {
   out += text.slice(from);
   if (!cutAtEnd) return out;
   let last = out.length;
-  while (last > 0 && isLineEnd(out[last - 1])) last--;
+  if (out[last - 1] === "\n") last--;
+  if (out[last - 1] === "\r") last--;
   return out.slice(0, last);
 }
 
