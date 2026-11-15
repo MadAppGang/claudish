@@ -183,6 +183,13 @@ the restore needs one write, and that write is made conditional.
   its lines reach the user and the new Claude Code reads the restored value. An unparsable or
   unwritable file is reported once with the manual remedy, retried only after its stat changes,
   and dropped after 14 days.
+- **Inert watch.** The watch registers nothing when the lock is not free within 2 s, the settings
+  file cannot be read or is not a JSON object, or the ledger cannot be read, is not JSON, or has a
+  version or shape this claudish does not read (a newer claudish wrote it). The restore promise
+  line (`MODEL_RESTORE_PROMISE`) is printed only after the watch registered; an inert watch prints
+  one stderr line naming the cause and the file instead. A ledger claudish cannot read is never
+  rewritten, so nothing else clears it: the sweep and the watch both name its path and tell the
+  user to delete it, once per process.
 
 ## Known limits
 

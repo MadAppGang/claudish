@@ -1642,6 +1642,12 @@ async function runCli() {
           modelSettingWatch = await restore.beginModelSettingWatch(
             cliConfig.modelLineup.rows.map((row) => row.model)
           );
+          // The promise only for a registered watch; an inert one reported its cause.
+          if (modelSettingWatch.registered && cliConfig.modelLineup.rows.length > 0) {
+            const { MODEL_RESTORE_PROMISE } = await import("./launcher/model-lineup.js");
+            const { logStderr } = await import("./logger.js");
+            logStderr(MODEL_RESTORE_PROMISE);
+          }
         }
       }
     }

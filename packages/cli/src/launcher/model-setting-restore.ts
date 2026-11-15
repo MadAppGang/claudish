@@ -46,7 +46,11 @@ import {
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { atomicWriteFileSync } from "../auth/accounts/atomic-write.js";
-import { acquireFileLockSync, withFileLock } from "../auth/accounts/file-lock.js";
+import {
+  FileLockUnavailableError,
+  acquireFileLockSync,
+  withFileLock,
+} from "../auth/accounts/file-lock.js";
 import { userSettingsFile } from "../claude-runner.js";
 import { log, logStderr } from "../logger.js";
 import {
@@ -142,6 +146,11 @@ export interface RestoreDeps {
 }
 
 export interface ModelSettingWatch {
+  /**
+   * True when this session holds a row in the ledger, so its exit can put the
+   * setting back. False for an inert watch, whose cause was already reported.
+   */
+  readonly registered: boolean;
   /** Records the temp settings path in this session's row before spawn. Never rejects. */
   recordSettingsArg(settingsPath: string): Promise<void>;
   /** Records the Claude Code child's pid and start time, synchronously when the lock is free. */
@@ -356,7 +365,9 @@ function restoreRound(
 
 /* ─────────────────────────── the ledger ─────────────────────────── */
 
-type LedgerRead = { ok: true; ledger: Ledger } | { ok: false };
+type LedgerUnreadable = "unreadable" | "unparsable" | "unknown-shape";
+
+type LedgerRead = { ok: true; ledger: Ledger } | { ok: false; reason: LedgerUnreadable };
 
 function readLedger(path: string): LedgerRead {
   let text: string;
@@ -365,17 +376,44 @@ function readLedger(path: string): LedgerRead {
   } catch (err) {
     if (errnoOf(err) === "ENOENT") return { ok: true, ledger: { version: 1, entries: {} } };
     log(`[model-restore] ledger unreadable (${path}): ${errnoOf(err) ?? String(err)}`);
-    return { ok: false };
+    return { ok: false, reason: "unreadable" };
   }
+  // Never rewritten when it cannot be read: an entry this process cannot read
+  // may still be pending.
+  let parsed: Ledger;
   try {
-    const parsed = JSON.parse(text) as Ledger;
-    if (parsed?.version !== 1 || !isPlainObject(parsed.entries)) throw new Error("unknown shape");
-    return { ok: true, ledger: parsed };
+    parsed = JSON.parse(text) as Ledger;
   } catch (err) {
-    // Never rewritten: an entry this process cannot read may still be pending.
     log(`[model-restore] ledger unparsable (${path}): ${(err as Error).message}`);
-    return { ok: false };
+    return { ok: false, reason: "unparsable" };
   }
+  if (parsed?.version !== 1 || !isPlainObject(parsed.entries)) {
+    log(`[model-restore] ledger of unknown shape (${path})`);
+    return { ok: false, reason: "unknown-shape" };
+  }
+  return { ok: true, ledger: parsed };
+}
+
+/** Ledger paths whose unreadable state this process already reported. */
+const reportedUnreadableLedgers = new Set<string>();
+
+/**
+ * Tells the user, once per process, that a ledger claudish cannot read stops
+ * every restore until it is deleted: it is never rewritten, so nothing else
+ * clears it.
+ */
+function reportUnreadableLedger(ctx: Context, reason: LedgerUnreadable): void {
+  if (reportedUnreadableLedgers.has(ctx.ledgerPath)) return;
+  reportedUnreadableLedgers.add(ctx.ledgerPath);
+  const why =
+    reason === "unreadable"
+      ? "cannot be read"
+      : reason === "unparsable"
+        ? "is not valid JSON"
+        : "has a version or shape this claudish does not read";
+  ctx.report(
+    `${ctx.ledgerPath} ${why}, so claudish cannot put back your Claude Code default model; delete that file`
+  );
 }
 
 /** Writes the ledger, or deletes it when its last entry is gone. */
@@ -606,7 +644,10 @@ export async function sweepModelSettingLedger(deps: RestoreDeps = {}): Promise<v
       { timeoutMs: LOCK_TIMEOUT_MS, staleMs: LOCK_STALE_MS, onUnavailable: "fail" },
       async () => {
         const read = readLedger(ctx.ledgerPath);
-        if (!read.ok) return;
+        if (!read.ok) {
+          reportUnreadableLedger(ctx, read.reason);
+          return;
+        }
         sweepLedger(ctx, read.ledger);
         writeLedger(ctx.ledgerPath, read.ledger);
       }
@@ -619,6 +660,7 @@ export async function sweepModelSettingLedger(deps: RestoreDeps = {}): Promise<v
 /* ─────────────────────────── the watch ─────────────────────────── */
 
 const INERT_WATCH: ModelSettingWatch = {
+  registered: false,
   recordSettingsArg: async () => {},
   recordChild: () => {},
   end: async () => {},
@@ -651,8 +693,9 @@ function selfStartEpochMs(): number {
  * Begins this launch's watch on the user settings file: records the original
  * value (or reuses the entry another live session recorded), the listed specs
  * and this session's row. Never rejects; when the ledger or the settings file
- * cannot be read, or the lock is unavailable, the watch is inert and nothing
- * will be written for this session.
+ * cannot be read, or the lock is unavailable, the watch is inert, nothing will
+ * be written for this session, and one line naming the cause and the file is
+ * reported.
  */
 export async function beginModelSettingWatch(
   listedSpecs: readonly string[],
@@ -677,16 +720,22 @@ export async function beginModelSettingWatch(
   const sessionId = randomUUID();
   const launcherPid = deps.pid ?? process.pid;
 
+  const noRestore =
+    "so claudish will not put back your Claude Code default model after this session";
   let registered = false;
   try {
     registered = await withFileLock(lockPath, lockOpts, async () => {
       const read = readLedger(ctx.ledgerPath);
-      if (!read.ok) return false;
+      if (!read.ok) {
+        reportUnreadableLedger(ctx, read.reason);
+        return false;
+      }
       let entry = read.ledger.entries[key];
       if (!entry) {
         const original = readOriginal(ctx, key);
         if (original === null) {
           log(`[model-restore] ${key} unreadable at launch; no restore for this session`);
+          ctx.report(`${key} cannot be read or is not a JSON object, ${noRestore}`);
           return false;
         }
         entry = { original, listed: [], sessions: [] };
@@ -705,6 +754,11 @@ export async function beginModelSettingWatch(
     });
   } catch (err) {
     log(`[model-restore] watch not begun: ${err instanceof Error ? err.message : String(err)}`);
+    ctx.report(
+      err instanceof FileLockUnavailableError && err.reason !== "unwritable"
+        ? `${lockPath} is held by another claudish, ${noRestore}`
+        : `${ctx.ledgerPath} cannot be written, ${noRestore}`
+    );
   }
   if (!registered) return INERT_WATCH;
 
@@ -743,6 +797,7 @@ export async function beginModelSettingWatch(
   };
 
   return {
+    registered: true,
     recordSettingsArg: async (settingsPath) => {
       try {
         await withFileLock(lockPath, lockOpts, async () =>

@@ -793,6 +793,13 @@ export type LineupPosture = "claude-start" | "claude-model-start" | "foreign-sta
 const PREFIX = "[claudish] ";
 
 /**
+ * The restore promise, printed by the launch only once the restore watch has
+ * registered this session (`ModelSettingWatch.registered`); an inert watch
+ * reports its own cause instead.
+ */
+export const MODEL_RESTORE_PROMISE = `/model: Enter saves a pick as Claude Code's default; claudish puts your setting back at exit ("s" picks for this session only)`;
+
+/**
  * The launch's stderr lines for the lineup. Pure. Printed before Claude Code
  * takes the screen, in quiet mode too: a provider whose rows are missing must
  * say why.
@@ -825,11 +832,6 @@ export function lineupReport(
   const windowLine = smallerWindowLine(lineup.rows, ctx.sizedFor);
   if (windowLine) lines.push(windowLine);
   for (const notice of ctx.settingsNotices) lines.push(`${PREFIX}/model: ${redactSecrets(notice)}`);
-  if (lineup.rows.length > 0) {
-    lines.push(
-      `${PREFIX}/model: Enter saves a pick as Claude Code's default; claudish puts your setting back at exit ("s" picks for this session only)`
-    );
-  }
   if (ctx.posture === "foreign-start") {
     lines.push(
       `${PREFIX}/model: this session starts on a foreign model, so a Claude row runs that start model`

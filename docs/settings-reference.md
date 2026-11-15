@@ -819,6 +819,8 @@ Other lines, each printed only when it applies:
 | `starts on <model> from ANTHROPIC_MODEL in your environment` | your own `ANTHROPIC_MODEL` still picks the start model |
 | `<NAME>=<value> from your environment still applies` | your own `ANTHROPIC_SMALL_FAST_MODEL` or `ANTHROPIC_DEFAULT_HAIKU_MODEL` still applies |
 | `/model: removed <NAME>, set by a parent claudish session, from this session` | a variable a claudish outside this one set is not passed on |
+| `<file> … so claudish will not put back your Claude Code default model after this session` | printed instead of the "puts your setting back" line: the settings file or claudish's restore record could not be read or locked |
+| `<ledger> … so claudish cannot put back your Claude Code default model; delete that file` | claudish's restore record is unreadable or from another claudish version; delete the named file |
 
 **The 6 s limit.** Every listed provider and the recommended list are fetched in parallel, for at
 most 6 s in total, beside the rest of startup. A provider still waiting at 6 s is reported as
