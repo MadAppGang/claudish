@@ -30,6 +30,19 @@ const listedModels = [
   },
 ];
 
+const contributorModel = {
+  name: "publishers/google/models/gemini-3.8-flash-contributor",
+  launchStage: "GA",
+  publisherModelTemplate:
+    "projects/{project}/locations/{location}/publishers/google/models/gemini-3.8-flash-contributor",
+};
+const contributorFreeModel = {
+  name: "publishers/google/models/gemini-3.8-flash-contributor-free",
+  launchStage: "GA",
+  publisherModelTemplate:
+    "projects/{project}/locations/{location}/publishers/google/models/gemini-3.8-flash-contributor-free",
+};
+
 /**
  * The catalog rows discovery reads: chat capability (from the output modality) and the release
  * date that ranks 3.8 above 2.5. Seeded here, because without them discovery reads the real
@@ -38,6 +51,20 @@ const listedModels = [
 const catalogEntries = [
   {
     modelId: "gemini-3.8-flash",
+    aliases: [],
+    inputModalities: ["text"],
+    outputModalities: ["text"],
+    releaseDate: "2026-08-01",
+  },
+  {
+    modelId: "gemini-3.8-flash-contributor",
+    aliases: [],
+    inputModalities: ["text"],
+    outputModalities: ["text"],
+    releaseDate: "2026-08-01",
+  },
+  {
+    modelId: "gemini-3.8-flash-contributor-free",
     aliases: [],
     inputModalities: ["text"],
     outputModalities: ["text"],
@@ -66,7 +93,10 @@ writeAllModelsCache(
 );
 afterAll(() => rmSync(catalogDir, { recursive: true, force: true }));
 
-function installHttpFixture(statuses: Record<string, number>): string[] {
+function installHttpFixture(
+  statuses: Record<string, number>,
+  models: typeof listedModels = listedModels
+): string[] {
   const requests: string[] = [];
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
@@ -75,7 +105,7 @@ function installHttpFixture(statuses: Record<string, number>): string[] {
     if (url.endsWith("/v1beta1/publishers/google/models")) {
       expect(init?.method).toBe("GET");
       expect(new Headers(init?.headers).get("x-goog-user-project")).toBe("vertex-test-project");
-      return Response.json({ publisherModels: listedModels });
+      return Response.json({ publisherModels: models });
     }
 
     const match = url.match(/\/models\/([^/:]+):countTokens$/);
@@ -143,5 +173,17 @@ describe.serial("Vertex discovery confirmation", () => {
     expect(
       requests.filter((url) => url.endsWith("/v1beta1/publishers/google/models"))
     ).toHaveLength(1);
+  });
+
+  test("a higher-ranked content-use opt-in id is never the probe pick", async () => {
+    installHttpFixture({}, [contributorModel, listedModels[1]]);
+
+    expect(await discoverVertexProbeModel()).toEqual({ model: "gemini-2.5-flash" });
+  });
+
+  test("a listing with only content-use opt-in chat ids has no probe pick", async () => {
+    installHttpFixture({}, [contributorModel, contributorFreeModel]);
+
+    expect((await discoverVertexProbeModel()).model).toBeNull();
   });
 });
