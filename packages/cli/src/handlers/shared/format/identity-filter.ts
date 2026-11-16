@@ -35,7 +35,7 @@ export const NEUTRAL_IDENTITY_HEAD =
  * The identity block Google's own Antigravity client opens its system prompt
  * with (the default, non-autonomous variant of its `antigravity_identity`
  * template). The template's third line, which says user requests arrive inside
- * `<USER_REQUEST>` tags, is left out: claudish does not wrap user turns in them.
+ * `<USER_REQUEST>` tags, is left out.
  */
 export const ANTIGRAVITY_IDENTITY_HEAD = [
   "You are Antigravity, a powerful agentic AI coding assistant designed by the Google Deepmind team working on Advanced Agentic Coding.",

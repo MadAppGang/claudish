@@ -255,13 +255,15 @@ narrower. `ComposedHandler` step 2b, right after the identity scrub.
   and `read_file` as strings; the CLI sends `write_file` and `read_file`. Until 14.25.1 the table
   had `write_to_file` and left `Read` alone, both read from the binary.
 
-**The honest limit — names only, not shapes.** The argument SCHEMAS stay Claude Code's. agy's
-`edit_file` takes an `Instruction` plus a `CodeEdit` with `{{...}}` elision that a separate
-apply-model reconciles; Claude Code's `Edit` takes exact `old_string`/`new_string`. So a renamed
-tool carries Claude Code's arguments under agy's name. This matches the backend's tool VOCABULARY,
-not its request SHAPE, and an `edit_file` bearing `old_string`/`new_string` may read as MORE
-anomalous, not less. Whether the rename helps is unproven; it is cheap and reversible, which is the
-only reason it is defensible. Tests: `tool-name-alias.test.ts` (round trip, `tool_choice`, a
+**Argument names, on four tools.** `run_command`, `read_file`, `write_file` and `edit_file` also
+carry the argument names `agy` 1.5.9 declares (recorded 2026-11-17: `CommandLine`, `toolSummary`,
+`IsDaemon`, `Path`, `Content`, `Target`, `Replacement`, and a read's range as `StartLine` and
+`EndLine` in place of `offset` and `limit`), in the schema and in the history's `tool_use`
+inputs. `restoreArguments` undoes it on a returned call, through the Gemini parser's
+`mapToolArguments`; a call that reached Claude Code with `CommandLine` would fail `Bash`'s schema.
+An argument with no equivalent keeps Claude Code's name (`timeout`, `replace_all`, `pages`), and
+every other tool keeps its whole schema. Descriptions stay Claude Code's, so a description can
+name an argument by its old name. Tests: `tool-name-alias.test.ts` (round trip, `tool_choice`, a
 request that already declares a native name, the call and result names through the Gemini
 adapter, stage B through `forward`), `gemini-sse-tool-alias.test.ts` (inbound restore and the
 wire name in the history store), `composed-handler-tool-alias.test.ts` (outbound end to end,
