@@ -336,9 +336,11 @@ export class CredentialAuthority {
 
   /**
    * Invalidate, as {@link invalidate} does for one name, every provider that
-   * reads its key from one of `names`, and no other. A write that changed only
-   * those variables leaves every other provider's memo and replacement key in
-   * place.
+   * reads its key from one of `names`, and every provider that reports no key
+   * variables. A provider is skipped only when it reports key variables and
+   * none of them is in `names`, so its memo and replacement key stay in place.
+   * A provider without `keyEnvVars` reads its own variables, which a write may
+   * have changed; it holds no replacement key, so invalidating it drops none.
    */
   invalidateKeyVars(names: readonly string[]): void {
     const wanted = new Set(names);
@@ -346,7 +348,9 @@ export class CredentialAuthority {
     for (const p of this.registry.values()) {
       if (seen.has(p)) continue;
       seen.add(p);
-      if (p.keyEnvVars?.().some((v) => wanted.has(v))) this.invalidate(p.catalogName);
+      const vars = p.keyEnvVars?.();
+      if (vars && !vars.some((v) => wanted.has(v))) continue;
+      this.invalidate(p.catalogName);
     }
   }
 

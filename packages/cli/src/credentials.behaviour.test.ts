@@ -31,7 +31,8 @@ await isolatedFile(import.meta, async () => {
     },
   };
   mock.module("./auth/credentials/op-source.js", () => opStandIn);
-  const { credentials } = await import("./auth/credentials/authority.js");
+  const authorityModule = await import("./auth/credentials/authority.js");
+  const { credentials } = authorityModule;
   const { keySourcesSearched } = await import("./auth/credentials/key-sources.js");
   const { ApiKeyCredentialProvider } = await import("./auth/credentials/api-key-credential.js");
   const { recordKeychainHydratedVar } = await import("./auth/credentials/keychain-source.js");
@@ -242,6 +243,23 @@ await isolatedFile(import.meta, async () => {
         credentials.invalidate("anthropic");
       }
     });
+  });
+
+  // REGRESSION: a provider that reads its own variable kept a stale memo after a Keychain copy
+  test("invalidating by key variable also invalidates a provider that reports no key variables", () => {
+    const { CredentialAuthority } = authorityModule;
+    const authority = new CredentialAuthority();
+    let invalidations = 0;
+    authority.register({
+      catalogName: "reads-its-own-variable",
+      isAvailable: async () => false,
+      getRequestAuth: async () => ({ headers: {} }),
+      invalidate: () => {
+        invalidations += 1;
+      },
+    });
+    authority.invalidateKeyVars(["SOME_KEY"]);
+    expect(invalidations).toBe(1);
   });
 
   // REGRESSION: the TUI's Keychain copy step called the global invalidate and lost the replacement key
