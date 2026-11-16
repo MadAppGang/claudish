@@ -55,7 +55,8 @@ else
   build="$dir/build/index.js"
   set -- bun "$build" --quiet -y --compaction --debug-claudish "$@"
 fi
-note "launch: build $build sha256 $(shasum -a 256 "$build" | cut -d' ' -f1)"
+sha=$(shasum -a 256 "$build" | cut -d' ' -f1)
+note "launch: build $build sha256 $sha"
 note "launch: cwd $(pwd)"
 note "launch: claude version $(claude --version 2>&1 | head -1)"
 if [ ! -e logs ]; then
@@ -83,7 +84,14 @@ placeholder="sk-ant-api03-placeholder-not-used-proxy-handles-auth-with-openroute
 # run's out folder), never for the workspace or the home folder. This is a
 # bench workaround: a real --compaction user on Claude Code 2.1.326 meets the
 # same dialog, which is claudish's to fix.
-store=$(cd "$HOME/.claudish/compaction" 2>/dev/null && pwd -P)
+#
+# Only the build that passes --add-dir gets this record: 0aed68ec (case b).
+# A later build replaces --add-dir with an --allowedTools Read rule, and an
+# eval on it must show that it starts with no record from here.
+store=""
+if [ "$sha" = "dd5a05abc3734bbf8e287c08cce364f83d464b6d313c36051b4fad01b9676aee" ]; then
+  store=$(cd "$HOME/.claudish/compaction" 2>/dev/null && pwd -P)
+fi
 bun -e '
 const path = process.argv[1], tail = process.argv[2].slice(-20), store = process.argv[3];
 let c = {};
@@ -97,6 +105,6 @@ if (store) {
 }
 await Bun.write(path, JSON.stringify(c, null, 2));
 ' "$HOME/.claude.json" "$placeholder" "$store" && note "launch: placeholder key approved in ~/.claude.json" &&
-  note "launch: compaction store trusted in ~/.claude.json: ${store:-none (no ~/.claudish/compaction)}"
+  note "launch: compaction store trusted in ~/.claude.json: ${store:-none (not the 0aed68ec build, or no ~/.claudish/compaction)}"
 
 exec "$@"
