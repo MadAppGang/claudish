@@ -1353,11 +1353,12 @@ function parseSettingsArgSafe(value: string): Record<string, unknown> | null {
 /**
  * The settings files Claude Code merges below the CLI-args tier, LOWEST
  * precedence first. Anything a later file defines replaces the earlier value —
- * `statusLine` is a whole-object key, not a deep merge.
+ * `statusLine` is a whole-object key, not a deep merge. The user file is the one
+ * Claude Code loads for `env`'s `CLAUDE_CONFIG_DIR` ({@link userSettingsFile}).
  */
-function userSettingsFileCandidates(cwd: string): string[] {
+function userSettingsFileCandidates(cwd: string, env: NodeJS.ProcessEnv): string[] {
   return [
-    join(homedir(), ".claude", "settings.json"),
+    userSettingsFile(env.CLAUDE_CONFIG_DIR, homedir(), cwd),
     join(cwd, ".claude", "settings.json"),
     join(cwd, ".claude", "settings.local.json"),
   ];
@@ -1377,9 +1378,10 @@ function userSettingsFileCandidates(cwd: string): string[] {
  */
 export function discoverUserStatusLineCommand(
   claudeArgs: string[] = [],
-  cwd: string = process.cwd()
+  cwd: string = process.cwd(),
+  env: NodeJS.ProcessEnv = process.env
 ): string | null {
-  const sources = userSettingsFileCandidates(cwd).filter((file) => existsSync(file));
+  const sources = userSettingsFileCandidates(cwd, env).filter((file) => existsSync(file));
 
   const idx = claudeArgs.indexOf("--settings");
   const settingsArg = idx === -1 ? undefined : claudeArgs[idx + 1];
@@ -2209,9 +2211,10 @@ export interface AdvisorModelArg {
  */
 export function discoverUserAdvisorModel(
   claudeArgs: string[] = [],
-  cwd: string = process.cwd()
+  cwd: string = process.cwd(),
+  env: NodeJS.ProcessEnv = process.env
 ): string | undefined {
-  const sources = userSettingsFileCandidates(cwd).filter((file) => existsSync(file));
+  const sources = userSettingsFileCandidates(cwd, env).filter((file) => existsSync(file));
 
   // An explicit --settings value outranks the files but not the managed tier. It is
   // pushed unfiltered because it may be inline JSON rather than a path.

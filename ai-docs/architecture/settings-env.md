@@ -75,7 +75,10 @@ computes `(CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude")).normalize("NFC")`, t
 composed path). So
 `CLAUDE_CONFIG_DIR=""` loads `<cwd>/settings.json` and never `~/.claude/settings.json`, and
 `CLAUDE_CONFIG_DIR="<cfg> "` loads `<cfg> /settings.json`. Claudish reads that path
-(`userSettingsFile`), never `claudeCodeConfigDir`, which trims and treats empty as unset.
+(`userSettingsFile`), built on `claudeCodeConfigDir` (`auth/claude-code-facts.ts`), the one
+implementation of this rule, which the login file and Keychain service checks use too. The
+status-line and advisor-model readers (`discoverUserStatusLineCommand`,
+`discoverUserAdvisorModel`) read the same user file.
 Project-local means two files:
 `.claude/settings.local.json` at the repository's main checkout (for a linked worktree, the
 checkout owning the common Git directory, never the worktree's own file) and the legacy one in
@@ -112,7 +115,8 @@ user's own shell `ANTHROPIC_AUTH_TOKEN` for the child, so a real one that is not
 token (`sk-ant-oat<n>-`) is refused the same way, named as "your shell environment". Both
 `login-only` branches then ask `claudeCodeStartupCredential` (`auth/claude-code-login.ts`), by
 presence only, which credential Claude Code would start with. A stored Console key
-(`primaryApiKey` in `<CLAUDE_CONFIG_DIR or HOME>/.claude.json`, or the Keychain item `Claude
+(`primaryApiKey` in `<CLAUDE_CONFIG_DIR or HOME>/.claude.json`, where an empty
+`CLAUDE_CONFIG_DIR` is assumed, not measured, to mean `HOME`; or the Keychain item `Claude
 Code[-<hash>]`) with no claude.ai login refuses the launch: Claude Code 2.1.325 sends that key as
 `x-api-key` with no `authorization` and shows no login screen, so every request would get the
 401. No login of any kind refuses it with the `/login` text. A store that did not answer
