@@ -215,6 +215,15 @@ describe("a tool result", () => {
   test("any other tool is not covered", () => {
     expect(agyToolResult("Skill", "done", {}, T)).toBeNull();
   });
+
+  test("a tool named like an Object method is not covered", () => {
+    expect(agyToolResult("hasOwnProperty", "done", {}, T)).toBeNull();
+    expect(agyToolResult("toString", "done", {}, T)).toBeNull();
+  });
+
+  test("a read whose call is not in the history does not name the file's length", () => {
+    expect(agyToolResult("read_file", "1\ta\n2\tb", null, T)).toBe(`${header}1: a\n2: b`);
+  });
 });
 
 describe("the history's tool results", () => {
@@ -295,5 +304,27 @@ describe("the tools whose results are worded", () => {
 
   test("no tools, no worded results", () => {
     expect(agyWordedTools(undefined).size).toBe(0);
+  });
+});
+
+describe("the first message's model name", () => {
+  test("a retry on another effort variant repeats the name first sent", () => {
+    const conversations = new AntigravityConversations(4, () => "id", "session");
+    const inner = { contents: [{ role: "user", parts: [{ text: "hello" }] }] };
+    const send = (displayName: string) =>
+      (
+        buildAntigravityEnvelope({
+          inner,
+          model: "gemini-4-argon-medium",
+          meta: { displayName },
+          projectId: "p",
+          conversation: conversations.of(inner),
+          sessionId: "s",
+          now: 1794739596000,
+        }) as { request: { contents: Array<{ parts: Array<{ text: string }> }> } }
+      ).request.contents[0].parts[0].text;
+    const first = send("Gemini 4 Argon (Medium)");
+    expect(first).toContain("from None to Gemini 4 Argon (Medium).");
+    expect(send("Gemini 4 Argon (Low)")).toBe(first);
   });
 });

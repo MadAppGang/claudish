@@ -46,6 +46,11 @@ export interface AntigravityConversation {
    * must carry the time it carried the first time.
    */
   times?: Map<string, string>;
+  /**
+   * The model name the first message was first sent with. A retry on another
+   * effort variant repeats that message and must not rename the model in it.
+   */
+  firstModelDisplayName?: string;
 }
 
 /**
@@ -259,7 +264,7 @@ export function buildAntigravityEnvelope(input: AntigravityEnvelopeInput): Recor
       times.set(key, now);
       return now;
     },
-    modelDisplayName: meta?.displayName,
+    modelDisplayName: (conversation.firstModelDisplayName ??= meta?.displayName),
     wordedTools: agyWordedTools(tools),
   });
   const request: Record<string, unknown> = { contents: toolResultsAsModelEntries(worded) };

@@ -53,9 +53,9 @@ const NUMBERED_LINE = /^\s*(\d+)\t(.*)$/;
 /** The whole-file read limit of Claude Code's `Read`; a longer answer may be cut. */
 const READ_DEFAULT_LINES = 2000;
 
-function readFileBody(text: string, args: Record<string, unknown>): string {
+function readFileBody(text: string, args: Record<string, unknown> | null): string {
   const lines = text.split("\n");
-  const whole = args.StartLine === undefined && args.EndLine === undefined;
+  const whole = args !== null && args.StartLine === undefined && args.EndLine === undefined;
   // A whole file ending in a newline is shown with one more, empty, numbered
   // line. In a read of a range the last empty line can be a line of the file.
   if (whole && lines.length > 1 && /^\s*\d+\t$/.test(lines[lines.length - 1])) lines.pop();
@@ -74,23 +74,26 @@ function readFileBody(text: string, args: Record<string, unknown>): string {
   return `Showing lines 1-${last} of ${last}\n${body}`;
 }
 
-const RESULT_BODY: Record<string, (text: string, args: Record<string, unknown>) => string> = {
-  // The exit code is not known here: a first line `Exit code 7` can be the command's own output.
-  run_command: (text) => text,
-  read_file: readFileBody,
-  write_file: (text) => (text.startsWith("File created successfully at:") ? "Created file." : text),
-  edit_file: (text) => text,
-};
+/** `args` is null when the call behind the result is not in the history. */
+const RESULT_BODY: Record<string, (text: string, args: Record<string, unknown> | null) => string> =
+  {
+    // The exit code is not known here: a first line `Exit code 7` can be the command's own output.
+    run_command: (text) => text,
+    read_file: readFileBody,
+    write_file: (text) =>
+      text.startsWith("File created successfully at:") ? "Created file." : text,
+    edit_file: (text) => text,
+  };
 
 /** A tool result's text as `agy` words it, or null for a tool it does not cover. */
 export function agyToolResult(
   tool: string,
   text: string,
-  args: Record<string, unknown>,
+  args: Record<string, unknown> | null,
   time: string
 ): string | null {
+  if (!Object.hasOwn(RESULT_BODY, tool)) return null;
   const body = RESULT_BODY[tool];
-  if (!body) return null;
   return `Created At: ${time}\nCompleted At: ${time}\n${body(text, args)}`;
 }
 
@@ -204,7 +207,7 @@ export function agyContents(contents: unknown, options: AgyContentOptions): unkn
       const text = agyToolResult(
         result.name,
         output,
-        callArgs.get(id) ?? {},
+        callArgs.get(id) ?? null,
         options.timeOf(`result:${id}`)
       );
       if (text === null) return part;
