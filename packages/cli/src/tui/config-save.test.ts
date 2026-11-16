@@ -1,5 +1,36 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { setConfigFileOverride } from "../config-override.js";
 import { configKeySavedStatus, outrankedKeyNote } from "./config-save.js";
+
+describe("outrankedKeyNote", () => {
+  afterEach(() => {
+    setConfigFileOverride(null);
+  });
+
+  // REGRESSION: the note named ~/.claudish/config.json while --config pointed at another file
+  test("names the --config file, not ~/.claudish/config.json", () => {
+    const dir = mkdtempSync(join(tmpdir(), "claudish-config-save-"));
+    const file = join(dir, "c.json");
+    try {
+      setConfigFileOverride(file);
+      const note = outrankedKeyNote("TEST_API_KEY", ["config"]);
+      expect(note).toContain(file);
+      expect(note).not.toContain("~/.claudish/config.json");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // REGRESSION: the note used a singular verb for two outranking sources
+  test("agrees in number with two outranking sources", () => {
+    const note = outrankedKeyNote("TEST_API_KEY", ["environment", "config"]);
+    expect(note).toContain("which outrank it");
+    expect(note).not.toContain("which outranks it");
+  });
+});
 
 describe("configKeySavedStatus", () => {
   const note = outrankedKeyNote("TEST_API_KEY", ["environment"]);

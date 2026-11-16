@@ -198,6 +198,14 @@ export interface KeyOrigin {
   source: KeySource;
   /** `maskCredential` of the key: its first and last four characters. */
   masked: string;
+  /** Set while the key is a replacement the user just saved (`replaceKey`). */
+  replaced?: true;
+}
+
+/** A store that still outranks a saved key in a new process, and the variable it holds it under. */
+export interface OutrankingSource {
+  source: KeySource;
+  envVar: string;
 }
 
 /** The answer to "resolve the key now, for a use that signs with it". */
@@ -255,6 +263,8 @@ export interface CredentialProvider {
   accountIdentity?(opts?: { allowOpPrompt?: boolean }): Promise<string | undefined>;
   /** Drop any memoized resolution so the next read re-resolves (TUI hydrate-on-add). */
   invalidate?(): void;
+  /** OPTIONAL: the environment variables this provider reads its key from. */
+  keyEnvVars?(): string[];
   /**
    * Sign with a key the user just saved to `source`, until the next
    * `invalidate()`. Held in memory only, never written into `process.env`.
@@ -264,7 +274,7 @@ export interface CredentialProvider {
    * The local stores that still outrank a key saved to `savedTo` in a new
    * process (see `ApiKeyCredentialProvider.sourcesOutranking`).
    */
-  sourcesOutranking?(key: string, savedTo: KeySource): KeySource[];
+  sourcesOutranking?(key: string, savedTo: KeySource): OutrankingSource[];
   login?(): Promise<void>;
   logout?(): Promise<void>;
 }

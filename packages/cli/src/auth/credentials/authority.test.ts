@@ -455,6 +455,46 @@ describe("CredentialAuthority", () => {
     expect(() => authority.invalidate("minimal")).not.toThrow();
     expect(() => authority.invalidate()).not.toThrow();
   });
+
+  /** An authority with one key-reading provider registered under a second name. */
+  function aliasedAuthority(): {
+    authority: CredentialAuthority;
+    notified: Array<string | undefined>;
+  } {
+    const authority = new CredentialAuthority();
+    authority.register(
+      {
+        catalogName: "primary",
+        isAvailable: async () => false,
+        getRequestAuth: async () => ({ headers: {} }),
+        keyEnvVars: () => ["CLAUDISH_TEST_SHARED_KEY"],
+      },
+      ["primary", "alias"]
+    );
+    const notified: Array<string | undefined> = [];
+    authority.onInvalidate((name) => notified.push(name));
+    return { authority, notified };
+  }
+
+  // REGRESSION: invalidating a shared credential notified only its catalogName, leaving the alias's cached state
+  test("invalidate(name) notifies every name sharing the provider instance", () => {
+    const { authority, notified } = aliasedAuthority();
+    authority.invalidate("primary");
+    expect([...notified].sort()).toEqual(["alias", "primary"]);
+  });
+
+  test("invalidate(alias) notifies the catalogName too", () => {
+    const { authority, notified } = aliasedAuthority();
+    authority.invalidate("alias");
+    expect([...notified].sort()).toEqual(["alias", "primary"]);
+  });
+
+  // REGRESSION: invalidateKeyVars notified only the catalogName of a provider registered under an alias
+  test("invalidateKeyVars notifies every name sharing the provider instance", () => {
+    const { authority, notified } = aliasedAuthority();
+    authority.invalidateKeyVars(["CLAUDISH_TEST_SHARED_KEY"]);
+    expect([...notified].sort()).toEqual(["alias", "primary"]);
+  });
 });
 
 // ── buildDefault() wiring ───────────────────────────────────────────────────

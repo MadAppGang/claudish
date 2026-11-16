@@ -12,8 +12,8 @@
  */
 
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { claudeCodeConfigDir } from "../auth/claude-code-facts.js";
 import { log } from "../logger.js";
 import { projectDirNameFor } from "../mcp-session/home-dir.js";
 import { translateLine } from "./event-translator.js";
@@ -24,8 +24,12 @@ import type { HarnessEvent, SessionEventState } from "./types.js";
 export type SessionEventSubscriber = (sessionId: string, event: HarnessEvent) => void;
 
 export interface SessionEventRegistryOptions {
-  /** Claude Code home dir (default ~/.claude). Test seam — homedir() can't be re-pointed in Bun. */
+  /** Claude Code's config dir, taken as given. Default: `claudeCodeConfigDir(env, cwd)`. */
   claudeHome?: string;
+  /** The environment Claude Code runs under (default `process.env`). */
+  env?: Record<string, string | undefined>;
+  /** Claude Code's working directory (default `process.cwd()`). */
+  cwd?: string;
   /** Tailer poll interval in ms (default 250). Test seam. */
   pollIntervalMs?: number;
 }
@@ -79,12 +83,29 @@ export class SessionEventRegistry {
   private sessions = new Map<string, SessionEntry>();
   private misses = new Map<string, { lastTry: number; count: number }>();
   private subscribers: SessionEventSubscriber[] = [];
-  private claudeHome: string;
+  private resolvedHome: string | undefined;
+  private readonly opts: SessionEventRegistryOptions;
   private pollIntervalMs?: number;
 
   constructor(opts: SessionEventRegistryOptions = {}) {
-    this.claudeHome = opts.claudeHome ?? join(homedir(), ".claude");
+    this.opts = opts;
+    this.resolvedHome = opts.claudeHome;
     this.pollIntervalMs = opts.pollIntervalMs;
+  }
+
+  /** Claude Code's working directory: where its transcripts' project dir is named from. */
+  private get cwd(): string {
+    return this.opts.cwd ?? process.cwd();
+  }
+
+  /**
+   * Claude Code's config directory, resolved on first use and then kept. Not in the
+   * constructor: the process-wide instance is built at import, before the launcher has
+   * finished preparing the environment.
+   */
+  private get claudeHome(): string {
+    this.resolvedHome ??= claudeCodeConfigDir(this.opts.env ?? process.env, this.cwd);
+    return this.resolvedHome;
   }
 
   /** Locate the session transcript and start tailing it. Safe to call per request. */
@@ -195,7 +216,7 @@ export class SessionEventRegistry {
    */
   private locateTranscript(sessionId: string): string | undefined {
     const projectsDir = join(this.claudeHome, "projects");
-    const primary = join(projectsDir, slugFromCwd(process.cwd()), `${sessionId}.jsonl`);
+    const primary = join(projectsDir, slugFromCwd(this.cwd), `${sessionId}.jsonl`);
     if (existsSync(primary)) return primary;
     try {
       for (const dir of readdirSync(projectsDir)) {

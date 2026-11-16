@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   credentialNoteLines,
   resolveProviderDetailKeyDisplay,
+  resolveProviderDetailSources,
   validTestNote,
 } from "./ProviderDetail.js";
 
@@ -32,6 +33,86 @@ describe("resolveProviderDetailKeyDisplay", () => {
         cfgKeyMask: "cfg-mask",
       })
     ).toBe("env-mask");
+  });
+
+  // REGRESSION: the Key row showed the old shell key's mask after a replacement key was saved
+  test("shows the replacement key's mask ahead of the environment key", () => {
+    expect(
+      resolveProviderDetailKeyDisplay({
+        isLocal: false,
+        isReady: true,
+        authSource: "env",
+        hasEnvKey: true,
+        hasCfgKey: false,
+        envKeyMask: "old",
+        cfgKeyMask: "",
+        replacementKeyMask: "new",
+      })
+    ).toBe("new");
+  });
+});
+
+describe("resolveProviderDetailSources", () => {
+  const base = {
+    hasEnvKey: false,
+    hasCfgKey: false,
+    isKcKey: false,
+    isOpKey: false,
+    hasKcKey: false,
+  };
+  const render = (segments: { label: string; used: boolean }[]) =>
+    segments.map((s) => `${s.label} (${s.used ? "used" : "shadowed"})`).join(" + ");
+
+  test("names the environment key as used ahead of a config key", () => {
+    expect(
+      render(resolveProviderDetailSources({ ...base, hasEnvKey: true, hasCfgKey: true }))
+    ).toBe("env (used) + config (shadowed)");
+  });
+
+  test("names a keychain item that is not the runtime value as shadowed", () => {
+    expect(render(resolveProviderDetailSources({ ...base, hasCfgKey: true, hasKcKey: true }))).toBe(
+      "config (used) + keychain (shadowed)"
+    );
+  });
+
+  // REGRESSION: the From row named the shell key as used after a replacement key was saved to the Keychain
+  test("names the replacement's Keychain source as used and the shell key as outranked", () => {
+    expect(
+      render(
+        resolveProviderDetailSources({
+          ...base,
+          hasEnvKey: true,
+          hasKcKey: true,
+          replacementSource: "macOS Keychain",
+        })
+      )
+    ).toBe("keychain (used) + env (shadowed)");
+  });
+
+  test("names the replacement's Keychain source as used and a config key as outranked", () => {
+    expect(
+      render(
+        resolveProviderDetailSources({
+          ...base,
+          hasCfgKey: true,
+          hasKcKey: true,
+          replacementSource: "macOS Keychain",
+        })
+      )
+    ).toBe("keychain (used) + config (shadowed)");
+  });
+
+  test("names a replacement saved to config as used ahead of the shell key", () => {
+    expect(
+      render(
+        resolveProviderDetailSources({
+          ...base,
+          hasEnvKey: true,
+          hasCfgKey: true,
+          replacementSource: "config",
+        })
+      )
+    ).toBe("config (used) + env (shadowed)");
   });
 });
 

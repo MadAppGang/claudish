@@ -21,9 +21,10 @@ import {
 
 /**
  * Existence-only probe for an OS-credential-store Anthropic OAuth item. `env`
- * decides the config directory, and so the item's service name.
+ * decides the config directory, and so the item's service name; `cwd` is the
+ * working directory a relative `CLAUDE_CONFIG_DIR` resolves against.
  */
-export type KeychainCredentialProbe = (env?: NodeJS.ProcessEnv) => boolean;
+export type KeychainCredentialProbe = (env?: NodeJS.ProcessEnv, cwd?: string) => boolean;
 
 // Startup-only memo (at most a couple of evaluations per launch), keyed by the
 // SERVICE NAMES probed so a changed CLAUDE_CONFIG_DIR is not answered from the
@@ -53,7 +54,10 @@ const macosKeychainAnthropicMemo = new Map<string, boolean>();
  * `security` at all — see `keychain.md` on why a flag the production code
  * honours is the only stub that cannot leak.
  */
-export const defaultKeychainAnthropicProbe: KeychainCredentialProbe = (env = process.env) => {
+export const defaultKeychainAnthropicProbe: KeychainCredentialProbe = (
+  env = process.env,
+  cwd = process.cwd()
+) => {
   if (process.platform !== "darwin") return false;
   // The test guard is honoured from either environment: a caller's own env
   // must never be the reason a test run spawns `security`.
@@ -61,30 +65,36 @@ export const defaultKeychainAnthropicProbe: KeychainCredentialProbe = (env = pro
     return false;
   }
 
-  const memoKey = claudeCodeSecureStorageServices("-credentials", env).join("|");
+  const memoKey = claudeCodeSecureStorageServices("-credentials", env, cwd).join("|");
   const memoized = macosKeychainAnthropicMemo.get(memoKey);
   if (memoized !== undefined) return memoized;
   // Existence only: `defaultKeychainPresence` runs `find-generic-password`
   // WITHOUT `-w` and honours `CLAUDISH_KEYCHAIN_FILE`.
-  const found = keychainLoginPresent(env, defaultKeychainPresence);
+  const found = keychainLoginPresent(env, defaultKeychainPresence, cwd);
   macosKeychainAnthropicMemo.set(memoKey, found);
   return found;
 };
 
 /**
  * Whether a Claude Code OAuth Keychain item is present, asking `presence` about
- * each service. Presence only.
+ * each service, named for the config directory `env` resolves to from `cwd`.
+ * Presence only.
  */
 export function keychainLoginPresent(
   env: NodeJS.ProcessEnv,
-  presence: (service: string) => KeychainPresence
+  presence: (service: string) => KeychainPresence,
+  cwd: string = process.cwd()
 ): boolean {
-  return anyPresent(claudeCodeSecureStorageServices("-credentials", env), presence) === "found";
+  return (
+    anyPresent(claudeCodeSecureStorageServices("-credentials", env, cwd), presence) === "found"
+  );
 }
 
 /** Injectable reads for {@link hasClaudeCodeLogin}; each defaults to the real one. */
 export interface ClaudeCodeLoginDeps {
   env?: NodeJS.ProcessEnv;
+  /** The working directory a relative `CLAUDE_CONFIG_DIR` resolves against. */
+  cwd?: string;
   fileExists?: (path: string) => boolean;
   keychainProbe?: KeychainCredentialProbe;
 }
@@ -103,11 +113,12 @@ export interface ClaudeCodeLoginDeps {
  */
 export function hasClaudeCodeLogin(deps: ClaudeCodeLoginDeps = {}): boolean {
   const env = deps.env ?? process.env;
+  const cwd = deps.cwd ?? process.cwd();
   const token = env.CLAUDE_CODE_OAUTH_TOKEN;
   if (typeof token === "string" && token.trim().length > 0) return true;
   const fileExists = deps.fileExists ?? existsSync;
-  if (fileExists(join(claudeCodeConfigDir(env), ".credentials.json"))) return true;
-  return (deps.keychainProbe ?? defaultKeychainAnthropicProbe)(env);
+  if (fileExists(join(claudeCodeConfigDir(env, cwd), ".credentials.json"))) return true;
+  return (deps.keychainProbe ?? defaultKeychainAnthropicProbe)(env, cwd);
 }
 
 /** What one presence probe of a Keychain service answered; `failed` is never `absent`. */
@@ -161,6 +172,8 @@ export type ClaudeCodeStartupCredential =
 /** Injectable reads for {@link claudeCodeStartupCredential}; each defaults to the real one. */
 export interface ClaudeCodeStartupCredentialDeps {
   env?: NodeJS.ProcessEnv;
+  /** The working directory a relative `CLAUDE_CONFIG_DIR` resolves against. */
+  cwd?: string;
   fileExists?: (path: string) => boolean;
   readFile?: (path: string) => string;
   keychainPresence?: (service: string) => KeychainPresence;
@@ -176,27 +189,30 @@ export function claudeCodeStartupCredential(
   deps: ClaudeCodeStartupCredentialDeps = {}
 ): ClaudeCodeStartupCredential {
   const env = deps.env ?? process.env;
+  const cwd = deps.cwd ?? process.cwd();
   const fileExists = deps.fileExists ?? existsSync;
   const readFile = deps.readFile ?? ((path: string) => readFileSync(path, "utf-8"));
   const presence = deps.keychainPresence ?? defaultKeychainPresence;
 
   const token = env.CLAUDE_CODE_OAUTH_TOKEN;
   if (typeof token === "string" && token.trim().length > 0) return { kind: "login" };
-  if (fileExists(join(claudeCodeConfigDir(env), ".credentials.json"))) return { kind: "login" };
+  if (fileExists(join(claudeCodeConfigDir(env, cwd), ".credentials.json"))) {
+    return { kind: "login" };
+  }
 
   // Only the names Claude Code itself uses: `CLAUDE_SECURESTORAGE_CONFIG_DIR`
   // decides alone when set. A login under any other name is not the one it
   // would start with.
-  const oauth = anyPresent(claudeCodeSecureStorageServices("-credentials", env), presence);
+  const oauth = anyPresent(claudeCodeSecureStorageServices("-credentials", env, cwd), presence);
   if (oauth === "found") return { kind: "login" };
   // A login store that did not answer may hold the login: a Console key found
   // elsewhere proves a key exists, not that no login does.
   if (oauth === "failed") return { kind: "unknown" };
 
-  const configPath = claudeCodeGlobalConfigPath(env);
+  const configPath = claudeCodeGlobalConfigPath(env, cwd);
   const stored = fileExists(configPath) ? configSetsConsoleKey(configPath, readFile) : "absent";
   if (stored === "found") return { kind: "api-key", where: configPath };
-  const keychainKey = anyPresent(claudeCodeSecureStorageServices("", env), presence);
+  const keychainKey = anyPresent(claudeCodeSecureStorageServices("", env, cwd), presence);
   if (keychainKey === "found") return { kind: "api-key", where: "the macOS Keychain" };
   const unanswered = stored === "failed" || keychainKey === "failed";
   return unanswered ? { kind: "unknown" } : { kind: "none" };

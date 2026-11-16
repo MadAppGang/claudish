@@ -29,6 +29,7 @@
 import type { ChildProcess } from "node:child_process";
 import { readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { claudeCodeConfigDir } from "../auth/claude-code-facts.js";
 import { getConfigFileOverride } from "../config-override.js";
 import {
   type HookQueueItem,
@@ -47,7 +48,6 @@ import type {
   SessionHookBinding,
 } from "../hooks/session/binding.js";
 import { log } from "../logger.js";
-import { claudeConfigDir } from "../mcp-session/parent-session.js";
 import { redactSecrets } from "../redact.js";
 import { locateBox, locatedBoxText } from "./box-locate.js";
 import {
@@ -302,7 +302,7 @@ export interface PaneSessionOptions {
   spawnPinned?: boolean;
   cwd: string;
   sessionUuid: string;
-  /** transcriptPathFor(realpath cwd, sessionUuid, projectsDir(parentEnv)) — the caller derives it */
+  /** transcriptPathFor(realpath cwd, sessionUuid, projectsDir(parentEnv, cwd)) — the caller derives it */
   transcriptPath: string;
   slotEnv: Record<string, string>;
   shape: "one-shot" | "interactive";
@@ -764,7 +764,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     );
     // the same environment the transcript path is derived from
     this.registry = new SessionRegistry({
-      configDir: claudeConfigDir(o.parentEnv ?? process.env),
+      configDir: claudeCodeConfigDir(o.parentEnv ?? process.env, o.cwd),
       sessionUuid: o.sessionUuid,
     });
     this.ready = new Promise((r) => {

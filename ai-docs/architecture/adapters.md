@@ -1304,9 +1304,15 @@ applied in `buildForwardRequest`:
 
 | Kind | Used for | What is sent |
 |---|---|---|
-| `inbound` | every launch that is not a Claude launch and maps no Claude model: plain `--monitor`, `--anthropic-api-billing` (unpinned), a foreign main model with no Claude tier, `serve` under the API-billing opt-in, the probe proxy | the credential pair as it arrived; a Claude login bearer drops an `x-api-key` beside it; a request with neither header gets the fallback key (this process's key, else `ANTHROPIC_API_KEY` through the credential authority's `native-anthropic`) |
+| `inbound` | every launch that is not a Claude launch and maps no Claude model: plain `--monitor`, `--anthropic-api-billing` (unpinned), a foreign main model with no Claude tier, `serve` under the API-billing opt-in, the probe proxy | the credential pair as it arrived; a Claude login bearer drops an `x-api-key` beside it; a request with neither header gets the fallback key (this process's key, else `ANTHROPIC_API_KEY` through the credential authority's `native-anthropic`, which is the read-at-use `anthropic` provider under a second name: env, config, Keychain, 1Password, never written into `process.env`; `ANTHROPIC_AUTH_TOKEN` is never sent as `x-api-key`) |
 | `login-only` | the Claude subscription: a top-level `claude@` launch; a launch whose main model or any tier is a bare Claude name, without `--anthropic-api-billing`, a foreign main model included; a launch pinned by `claudeSubscriptionPin` whatever the opt-in says (a `claude@` tier, a pane child given `claude@`, `run_prompt`'s print child for `claude@`, which gets `--claude-subscription-pin`); `serve` without the API-billing opt-in (`serveProxyOptions`), so a request naming a bare Claude model no slot maps is never signed with the key; and any request whose decision is `claude@<id>` | `authorization` only when it matches `CLAUDE_LOGIN_BEARER` (`sk-ant-oat<n>-`); an inbound `x-api-key` and any other bearer are dropped; no fallback is ever called |
 | `launch-key` | the Claude API launch (`anthropic@<id>` at top level) | every inbound credential dropped; `x-api-key` set to the key the launch resolved |
+
+On an `inbound` launch with classifier passthrough and a foreign main model, what arrives depends on
+what the child holds: a shell `ANTHROPIC_API_KEY` is hidden from Claude Code when it holds a login
+(`shouldHideIncidentalAnthropicKey`, see `settings-env.md`), so the classifier and pass-through
+Claude names carry the login bearer, and the vision proxy, which reads only `x-api-key`, has no key;
+with no login the key stays and all three carry it.
 
 **The 401.** A `login-only` request with no Claude login gets claudish's own answer, HTTP 401
 `authentication_error`, through `redactForClient`, and no upstream call: "Claude subscription

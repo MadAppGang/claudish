@@ -70,13 +70,14 @@ import type {
   CredentialProvider,
   KeyOrigin,
   KeySource,
+  OutrankingSource,
   ReadinessResult,
   RequestAuth,
   RequestAuthContext,
   UseResolution,
 } from "./types.js";
 
-export type { KeyOrigin, KeySource, UseResolution } from "./types.js";
+export type { KeyOrigin, KeySource, OutrankingSource, UseResolution } from "./types.js";
 
 /**
  * The outcome of one async key resolution: the key (possibly ""), plus WHY it
@@ -226,8 +227,14 @@ export class ApiKeyCredentialProvider implements CredentialProvider {
   /** Remember where a resolved key came from, masked. Returns the resolution. */
   private settle(key: string, source: KeySource): KeyResolution {
     this.cachedKey = key;
-    this.lastOrigin = { source, masked: maskCredential(key) };
+    this.lastOrigin = this.originOf(key, source);
     return { key, source };
+  }
+
+  /** The origin of `key` from `source`, marked `replaced` when it is the held replacement. */
+  private originOf(key: string, source: KeySource): KeyOrigin {
+    const masked = maskCredential(key);
+    return this.replacement?.key === key ? { source, masked, replaced: true } : { source, masked };
   }
 
   /**
@@ -434,6 +441,11 @@ export class ApiKeyCredentialProvider implements CredentialProvider {
     this.replacement = undefined;
   }
 
+  /** The primary variable and its aliases. */
+  keyEnvVars(): string[] {
+    return [this.envVar, ...this.aliases];
+  }
+
   /**
    * Sign with `key`, just saved to `source`, from now until the next
    * `invalidate()`. Held here only: nothing is written into `process.env`.
@@ -441,28 +453,24 @@ export class ApiKeyCredentialProvider implements CredentialProvider {
   replaceKey(key: string, source: KeySource): void {
     this.invalidate();
     this.replacement = { key, source };
+    this.lastOrigin = this.originOf(key, source);
   }
 
   /**
    * The stores that will still outrank a key saved to `savedTo` when a NEW
-   * process resolves this provider: a real value other than `key` in the
-   * environment (a shell export, not a value this process hydrated from a
-   * vault), and, for a vault save, one in `config.json`'s `apiKeys`. Reads
-   * names and local values only; no vault is asked.
+   * process resolves this provider, each with the variable that holds the
+   * outranking value: a real value other than `key` in the environment under
+   * the primary variable or an alias (a shell export, not a value this process
+   * hydrated from a vault), and, for a vault save, one in `config.json`'s
+   * `apiKeys`. Reads names and local values only; no vault is asked.
    */
-  sourcesOutranking(key: string, savedTo: KeySource): KeySource[] {
-    const outranking: KeySource[] = [];
-    const primary = realValueFor(this.envVar, process.env[this.envVar]);
-    const primaryExported =
-      !!primary &&
-      primary !== key &&
-      !isKeychainHydratedVar(this.envVar) &&
-      !isOpHydratedVar(this.envVar);
-    const aliasExported = this.aliases.some((a) => {
-      const v = realValueFor(a, process.env[a]);
-      return !!v && v !== key;
+  sourcesOutranking(key: string, savedTo: KeySource): OutrankingSource[] {
+    const outranking: OutrankingSource[] = [];
+    const exported = [this.envVar, ...this.aliases].find((name) => {
+      const v = realValueFor(name, process.env[name]);
+      return !!v && v !== key && !isKeychainHydratedVar(name) && !isOpHydratedVar(name);
     });
-    if (primaryExported || aliasExported) outranking.push("environment");
+    if (exported) outranking.push({ source: "environment", envVar: exported });
     if (savedTo !== "environment" && savedTo !== "config") {
       let configured: string | undefined;
       try {
@@ -470,7 +478,9 @@ export class ApiKeyCredentialProvider implements CredentialProvider {
       } catch {
         configured = undefined;
       }
-      if (configured && configured !== key) outranking.push("config");
+      if (configured && configured !== key) {
+        outranking.push({ source: "config", envVar: this.envVar });
+      }
     }
     return outranking;
   }

@@ -57,6 +57,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
+import { claudeCodeConfigDir } from "../../auth/claude-code-facts.js";
 import { projectDirNameFor } from "../../mcp-session/home-dir.js";
 import { wrapPrompt } from "./repl-wrap.js";
 
@@ -277,7 +278,9 @@ const BG_BASH_REWAKE = {
 
 /* ───────────────────────────── transcript writer ───────────────────────────── */
 
-const configDir = env.CLAUDE_CONFIG_DIR || join(env.HOME ?? "/tmp", ".claude");
+// Claude Code's own rule: any CLAUDE_CONFIG_DIR value, empty included, resolved
+// against the working directory; else `.claude` under HOME.
+const configDir = claudeCodeConfigDir(env, cwd);
 const transcript = join(configDir, "projects", projectDirNameFor(cwd), `${sessionId}.jsonl`);
 let parent: string | null = null;
 let msgCounter = 0;

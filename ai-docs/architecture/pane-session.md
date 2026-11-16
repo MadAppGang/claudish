@@ -81,7 +81,11 @@ longer than 200 characters is cut to 200 and suffixed `-<base36 |hash(realpath)|
 `(h << 5) - h + charCode` hash over the whole path (Claude Code 2.1.291's `eI`/`Le`). Measured: a
 259-character cwd got `<200 slug chars>-g32rlu`, which `projectDirNameFor` reproduces; without it a
 deep worktree path names a transcript that is never written and every turn silently degrades to
-the screen.
+the screen. The config directory is `claudeCodeConfigDir(env, cwd)` (`auth/claude-code-facts.ts`,
+the one implementation of Claude Code's rule; `settings-env.md`) with the CHILD's working
+directory: Claude Code resolves an empty or relative `CLAUDE_CONFIG_DIR` against its own cwd, so
+`CLAUDE_CONFIG_DIR=""` puts transcripts under `<session cwd>/projects`, not under the MCP server's
+cwd. `projectsDir(env, cwd)` and the session registry's directory both take the session's cwd.
 
 **Turns are segmented by claudish's own deliveries, never by user records.** Before delivering a
 prompt the follower polls and records the transcript size; turn N owns every record past that
@@ -946,7 +950,11 @@ every other pane, and copies small parts of capture, resize, scroll and reconnec
 `CLAUDISH_PANE_CHILD=1`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`,
 `CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL=1`, `CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING=1`,
 `COLUMNS` and `LINES`. It does not start from `buildPaneEnv`, because that one removes names from the
-parent's environment and a credential under a name nobody listed would pass through.
+parent's environment and a credential under a name nobody listed would pass through. An empty value
+is dropped, so an inherited `CLAUDE_CONFIG_DIR=""` reaches the child as unset. `CLAUDE_CONFIG_DIR`
+is replaced by the session's absolute config directory only when the value the child is actually
+handed, resolved against the replay's cwd by `claudeCodeConfigDir`, names another directory
+(`replayConfigDirOverride`); otherwise the raw value passes unchanged.
 
 **Two switches keep plugin state out of the user's config.** `--bare` stops neither of these,
 although its help says it does. On a config with no official marketplace, a replay's first start

@@ -15,36 +15,80 @@
  * its own connection and hands the reply's `result` here.
  */
 
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-
-const execFileAsync = promisify(execFile);
+import { type ChildProcess, spawn } from "node:child_process";
 
 /** How many parents the ancestry walk visits above this process. */
 export const ANCESTRY_DEPTH = 6;
+
+/** How long one `ps` run may take before it is killed and counted as no answer. */
+const PS_TIMEOUT_MS = 1_000;
+/** After `ps` exits, how long its last output may take to arrive. */
+const PS_EXIT_DRAIN_MS = 100;
 
 /**
  * This process and its ancestors, up to `maxDepth` parents. The pane process is a
  * login shell or the claudish launcher, and this process runs somewhere beneath it.
  * Asynchronous on purpose: callers run inside the proxy while requests are served.
+ * `ps` names the binary to run (a test seam).
  */
-export async function ancestorPids(maxDepth = ANCESTRY_DEPTH): Promise<Set<number>> {
+export async function ancestorPids(maxDepth = ANCESTRY_DEPTH, ps = "ps"): Promise<Set<number>> {
   const out = new Set<number>([process.pid]);
   let pid = process.ppid;
   for (let i = 0; i < maxDepth && pid > 1; i++) {
     out.add(pid);
-    try {
-      const { stdout } = await execFileAsync("ps", ["-o", "ppid=", "-p", String(pid)], {
-        timeout: 1_000,
-      });
-      const next = Number(stdout.trim());
-      if (!Number.isFinite(next) || next <= 1) break;
-      pid = next;
-    } catch {
-      break;
-    }
+    const stdout = await readParentPid(ps, pid);
+    if (stdout === null) break;
+    const next = Number(stdout.trim());
+    if (!Number.isFinite(next) || next <= 1) break;
+    pid = next;
   }
   return out;
+}
+
+/**
+ * The stdout of one `ps -o ppid= -p <pid>` run, or null when it failed or gave no
+ * answer in time. It answers shortly after `ps` exits and never waits for the pipe to
+ * close: a process spawned at the same moment can inherit the pipe's write end (macOS
+ * has no pipe2(O_CLOEXEC)) and hold it open long after `ps` is gone. A deadline that
+ * depends on neither the exit nor the pipe bounds the run; on expiry `ps` is SIGKILLed
+ * and its pipe released.
+ */
+function readParentPid(ps: string, pid: number): Promise<string | null> {
+  return new Promise((resolve) => {
+    let settled = false;
+    let child: ChildProcess | undefined;
+    let out = "";
+    const timer = setTimeout(() => {
+      try {
+        child?.kill("SIGKILL");
+      } catch {
+        // already gone
+      }
+      finish(null);
+    }, PS_TIMEOUT_MS);
+    const finish = (answer: string | null): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child?.stdout?.destroy();
+      resolve(answer);
+    };
+    try {
+      child = spawn(ps, ["-o", "ppid=", "-p", String(pid)], {
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+      child.stdout?.setEncoding("utf8").on("data", (chunk: string) => {
+        out += chunk;
+      });
+      child.on("error", () => finish(null));
+      child.on("exit", (code) => {
+        // output written just before the exit can still be in flight
+        setTimeout(() => finish(code === 0 ? out : null), PS_EXIT_DRAIN_MS);
+      });
+    } catch {
+      finish(null);
+    }
+  });
 }
 
 /** The panes of a `list` reply's `result`: `{panes: [...]}` or a bare array. */

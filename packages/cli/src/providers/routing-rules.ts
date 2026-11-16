@@ -593,8 +593,9 @@ export type RoutePlan =
  *
  * Delegates to the credential authority's sync readiness oracle. The authority's
  * per-provider impls replicate every special case this function used to inline:
- *   - `native-anthropic` requires an explicit ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN
- *     (NativeAnthropicCredentialProvider).
+ *   - `native-anthropic` is the `anthropic` provider under a second name: it
+ *     requires an ANTHROPIC_API_KEY (env, config, Keychain or 1Password, read
+ *     at use). ANTHROPIC_AUTH_TOKEN does not count: it is never an API key.
  *   - `openai-codex` requires its codex-specific key or OAuth — the OPENAI_API_KEY
  *     alias is excluded (the Codex composite's API-key half has no aliases).
  *   - Local transports (ollama, lmstudio, vllm, mlx) require explicit enablement

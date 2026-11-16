@@ -86,11 +86,26 @@ describe("session discovery pure helpers", () => {
     );
   });
 
-  test("projectsDir falls back to $HOME/.claude when CLAUDE_CONFIG_DIR is unset or empty", () => {
+  test("projectsDir falls back to $HOME/.claude when CLAUDE_CONFIG_DIR is unset", () => {
     expect(projectsDir({ HOME: "/home/u" })).toBe("/home/u/.claude/projects");
-    expect(projectsDir({ HOME: "/home/u", CLAUDE_CONFIG_DIR: "" })).toBe(
-      "/home/u/.claude/projects"
+  });
+
+  // REGRESSION: an empty CLAUDE_CONFIG_DIR was read as unset, while Claude Code resolves it to its cwd
+  test("projectsDir resolves an empty CLAUDE_CONFIG_DIR against the child's cwd", () => {
+    expect(projectsDir({ HOME: "/home/u", CLAUDE_CONFIG_DIR: "" }, "/w")).toBe("/w/projects");
+  });
+
+  // REGRESSION: a relative CLAUDE_CONFIG_DIR was returned unresolved instead of against the child's cwd
+  test("projectsDir resolves a relative CLAUDE_CONFIG_DIR against the child's cwd", () => {
+    expect(projectsDir({ HOME: "/home/u", CLAUDE_CONFIG_DIR: "rel" }, "/w")).toBe(
+      "/w/rel/projects"
     );
+  });
+
+  // REGRESSION: a decomposed-Unicode CLAUDE_CONFIG_DIR was not NFC-normalised as Claude Code does
+  test("projectsDir NFC-normalises CLAUDE_CONFIG_DIR", () => {
+    const decomposed = "/x/cafe\u0301";
+    expect(projectsDir({ CLAUDE_CONFIG_DIR: decomposed }, "/w")).toBe("/x/caf\u00e9/projects");
   });
 
   test("transcriptPathFor joins under the projects directory it is handed", () => {

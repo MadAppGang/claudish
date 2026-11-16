@@ -47,6 +47,20 @@ no-model advisor) is therefore not marked, and a base URL in the user's settings
 to it. For a `--monitor` session that costs nothing when the settings gateway forwards to
 Anthropic unchanged.
 
+A real shell `ANTHROPIC_API_KEY` is hidden from such a child unless API billing is opted in
+(`shouldHideIncidentalAnthropicKey`, `claude-runner.ts`), and the startup notice says so. On a
+launch with a native Claude role mapping it is always hidden. On a classifier-only passthrough
+launch (a foreign main model, no Claude role) it is hidden only when Claude Code holds a login
+(`hasClaudeCodeLogin`, presence only). Left in the child, the key signs more than the classifier
+call: the vision proxy forwards the inbound `x-api-key` for image descriptions, and on a launch
+with role mappings and no default model an unmapped Claude name passes through on the inbound
+credential. With the key hidden, the classifier and a passed-through Claude name bill the login.
+The vision proxy does not: it reads only `x-api-key` (`extractAuthHeaders` in
+`handlers/composed-handler.ts`, `services/vision-proxy.ts`), never the login bearer, so on that
+launch it has no key and the images sent to a non-vision main model are stripped. The startup
+notice says image descriptions for a non-vision main model are off. With no login the key stays,
+because it may be the user's only Anthropic credential.
+
 Pinning such a session through claudish's `--settings` file would hold for the session itself,
 but Claude Code carries `--settings` into a session sent to the background, which would then
 point at a proxy that stops when claudish's child exits.
@@ -86,7 +100,29 @@ computes `(CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude")).normalize("NFC")`, t
 composed path). So
 `CLAUDE_CONFIG_DIR=""` loads `<cwd>/settings.json` and never `~/.claude/settings.json`, and
 `CLAUDE_CONFIG_DIR="<cfg> "` loads `<cfg> /settings.json`. Claudish reads that path
-(`userSettingsFile`), never `claudeCodeConfigDir`, which trims and treats empty as unset.
+(`userSettingsFile`), built on `claudeCodeConfigDir` (`auth/claude-code-facts.ts`), the one
+implementation of this rule, which the login file and Keychain service checks use too. The
+status-line and advisor-model readers (`discoverUserStatusLineCommand`,
+`discoverUserAdvisorModel`) read the same layers through the same collector
+(`claudeSettingsLayers`), so they follow `--setting-sources` and the main checkout's local file
+below like every other reader, and take the highest tier that names the key (`highestTierValues`).
+The status-line reader skips managed settings and reads only the `--settings` value claudish
+merges (a later one is forwarded and replaces the chained line in the child anyway); two
+disagreeing layers of one tier give no chained command. The advisor-model reader reads every
+tier, managed first; a disagreement inside one tier returns a value, so claudish adds no
+`--advisor` flag and the child decides.
+Inside the command-line tier both readers take the LATER `--settings` value, because that is
+the one Claude Code applies. Measured on Claude Code 2.1.325, 2026-11-16: two settings files,
+A (`{"env":{"PROBE":"A"}}` plus a SessionStart hook `echo "$PROBE" >> out.txt`) and B (the
+same with `B`), run as `claude -p hi --settings a.json --settings=b.json` and then
+`claude -p hi --settings b.json --settings=a.json`, under `env -i` with an empty temporary
+`HOME` and `CLAUDE_CONFIG_DIR` (no login, so each run stopped at "Not logged in · Please run
+/login" after SessionStart, with no model call). `out.txt` read `B`, then `A`: the later
+value's key wins, in both spellings, and the hook ran once per launch. Only an `env` key was
+measured; that other top-level keys (`advisorModel`, `statusLine`, `modelPicker`) follow the
+same order is inferred, not measured. On a launch with a /model lineup claudish still merges
+every `--settings` occurrence into its one file in that same order and sets `modelPicker`
+last (`mergeEverySettingsArg`), so no forwarded value can replace the lineup's.
 Project-local means two files:
 `.claude/settings.local.json` at the repository's main checkout (for a linked worktree, the
 checkout owning the common Git directory, never the worktree's own file) and the legacy one in
@@ -123,7 +159,9 @@ user's own shell `ANTHROPIC_AUTH_TOKEN` for the child, so a real one that is not
 token (`sk-ant-oat<n>-`) is refused the same way, named as "your shell environment". Both
 `login-only` branches then ask `claudeCodeStartupCredential` (`auth/claude-code-login.ts`), by
 presence only, which credential Claude Code would start with. A stored Console key
-(`primaryApiKey` in `<CLAUDE_CONFIG_DIR or HOME>/.claude.json`, or the Keychain item `Claude
+(`primaryApiKey` in `<CLAUDE_CONFIG_DIR or HOME>/.claude.json`, where an empty
+`CLAUDE_CONFIG_DIR` means `HOME`: Claude Code 2.1.325 then puts its config dir at the working
+directory but keeps `.claude.json` at `$HOME/.claude.json`, measured; or the Keychain item `Claude
 Code[-<hash>]`) with no claude.ai login refuses the launch: Claude Code 2.1.325 sends that key as
 `x-api-key` with no `authorization` and shows no login screen, so every request would get the
 401. No login of any kind refuses it with the `/login` text. A store that did not answer

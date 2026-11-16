@@ -15,7 +15,7 @@ import { hasKeychainSource } from "./keychain-source.js";
 import { hasOpSources } from "./op-source.js";
 
 /** The config file as a message names it: the override path, else the tilde form. */
-function configLabel(): string {
+export function configLabel(): string {
   return getConfigFileOverride()
     ? activeGlobalConfigFile(join(homedir(), ".claudish", "config.json"))
     : "~/.claudish/config.json";

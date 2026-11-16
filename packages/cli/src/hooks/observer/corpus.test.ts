@@ -138,4 +138,23 @@ describe("buildCorpus", () => {
       expect(corpus.records[0].model).toBe("test-model");
     });
   });
+
+  // REGRESSION: the default projects root was <homedir>/.claude/projects, ignoring CLAUDE_CONFIG_DIR
+  it("scans the projects directory under CLAUDE_CONFIG_DIR by default", () => {
+    inTempDir((dir) => {
+      const projectDir = join(dir, "projects", "p");
+      const assignedPath = "/tmp/custom-plans/assigned.md";
+      mkdirSync(projectDir, { recursive: true });
+      writeTranscript(join(projectDir, "a.jsonl"), [
+        assistantToolRow("test-model", [assignedPath]),
+        exitResultRow(assignedPath, "# Plan"),
+      ]);
+
+      const options = { env: { CLAUDE_CONFIG_DIR: dir } };
+      const corpus = buildCorpus(options);
+
+      expect(corpus.scanned).toBe(1);
+      expect(corpus.records.length).toBeGreaterThanOrEqual(1);
+    });
+  });
 });

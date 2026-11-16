@@ -524,8 +524,8 @@ nothing for `"off"`, the request's `x-api-key` and never `ANTHROPIC_API_KEY` for
 
 Startup reads the LAUNCH's signing (`evaluateAdvisorStartup(…, {launchSigning})`, from
 `prepareClaudeLaunch`, which `index.ts` runs before the advisor check). Without it a Claude API
-launch whose key is only in the Keychain would plan through `native-anthropic`'s lookup, which has
-no Keychain step, and refuse a member the runtime could serve. The proxy reads each REQUEST's
+launch would plan through `native-anthropic`'s lookup instead of the key the launch resolved, and
+could refuse a member the runtime could serve. The proxy reads each REQUEST's
 signing, so a `claude@<id>` request is `"off"` on any launch. A member whose own spec is
 `claude@…` is `"off"` too, at planning and at runtime, whatever the launch signs with: an explicit
 subscription spec is never consent to its metered sibling, so with no login it is refused at

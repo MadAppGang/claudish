@@ -1,3 +1,4 @@
+import type { KeySource } from "../../auth/credentials/types.js";
 import { DETAIL_H } from "../constants.js";
 import { type AuthSource, type ProviderDef, providerSetLabel } from "../providers.js";
 /** @jsxImportSource @opentui/react */
@@ -78,6 +79,13 @@ interface ProviderDetailProps {
   /** The masked value of that key, once the authority has resolved it. Never the key. */
   vaultKeyMask?: string;
   /**
+   * The masked value of a key the user saved in this tab, which the provider
+   * signs with ahead of every other store (`credentials.replaceKey`). Never the key.
+   */
+  replacementKeyMask?: string;
+  /** The store that replacement key was saved to; named as the source in use. */
+  replacementKeySource?: KeySource;
+  /**
    * Where a key typed here will be written. Named in the input box title so the
    * store is never a surprise — this used to be plaintext config.json
    * unconditionally, and a silent change of destination for secrets is exactly
@@ -108,9 +116,12 @@ export function resolveProviderDetailKeyDisplay(input: {
   cfgKeyMask: string;
   vaultKeySource?: "macOS Keychain" | "1Password";
   vaultKeyMask?: string;
+  replacementKeyMask?: string;
 }): string {
   if (input.isLocal) return input.isReady ? "enabled" : "disabled";
   if (input.authSource === "oauth") return "oauth";
+  // A saved replacement signs ahead of the environment, so it is the key in use.
+  if (input.replacementKeyMask) return input.replacementKeyMask;
   if (input.hasEnvKey) return input.envKeyMask;
   if (input.hasCfgKey) return input.cfgKeyMask;
   if (input.vaultKeySource) return input.vaultKeyMask ?? vaultLabel(input.vaultKeySource);
@@ -120,6 +131,61 @@ export function resolveProviderDetailKeyDisplay(input: {
 /** The `From:` word for a vault. */
 function vaultLabel(source: "macOS Keychain" | "1Password"): string {
   return source === "macOS Keychain" ? "keychain" : "1Password";
+}
+
+/** One store named on the `From:` row, and whether its key is the one that signs. */
+export interface ProviderDetailSource {
+  label: string;
+  used: boolean;
+}
+
+/** The `From:` word for the store a replacement key was saved to. */
+function keySourceLabel(source: KeySource): string {
+  if (source === "environment") return "env";
+  if (source === "config") return "config";
+  return vaultLabel(source);
+}
+
+/**
+ * The stores the `From:` row names, the one that signs first.
+ *
+ * A key saved in this tab (`replacementSource`, the store it was saved to)
+ * signs ahead of every other store, so its store is the one `used` and an
+ * environment, config or vault key it outranks is named `shadowed`. A store
+ * that holds the replacement itself is named once.
+ */
+export function resolveProviderDetailSources(input: {
+  hasEnvKey: boolean;
+  hasCfgKey: boolean;
+  isKcKey: boolean;
+  isOpKey: boolean;
+  hasKcKey: boolean;
+  vaultKeySource?: "macOS Keychain" | "1Password";
+  replacementSource?: KeySource;
+}): ProviderDetailSource[] {
+  if (input.replacementSource) {
+    const used = keySourceLabel(input.replacementSource);
+    const outranked = resolveProviderDetailSources({ ...input, replacementSource: undefined })
+      .map((segment) => segment.label)
+      .filter((label) => label !== used);
+    return [
+      { label: used, used: true },
+      ...[...new Set(outranked)].map((label) => ({ label, used: false })),
+    ];
+  }
+  const segments: ProviderDetailSource[] = [];
+  if (input.hasEnvKey) {
+    segments.push({
+      label: input.isKcKey ? "keychain" : input.isOpKey ? "1Password" : "env",
+      used: true,
+    });
+  }
+  if (input.hasCfgKey) segments.push({ label: "config", used: !input.hasEnvKey });
+  if (input.vaultKeySource) segments.push({ label: vaultLabel(input.vaultKeySource), used: true });
+  if (input.hasKcKey && !input.isKcKey && input.vaultKeySource !== "macOS Keychain") {
+    segments.push({ label: "keychain", used: false });
+  }
+  return segments;
 }
 
 export function validTestNote(input: { isLocal: boolean; credential: "key" | "login" }): string {
@@ -144,6 +210,8 @@ export function ProviderDetail({
   hasKcKey,
   vaultKeySource,
   vaultKeyMask,
+  replacementKeyMask,
+  replacementKeySource,
   keySaveTarget,
   credentialNote,
   cfgKeyMask,
@@ -165,6 +233,19 @@ export function ProviderDetail({
     cfgKeyMask,
     ...(vaultKeySource ? { vaultKeySource } : {}),
     ...(vaultKeyMask ? { vaultKeyMask } : {}),
+    ...(replacementKeyMask ? { replacementKeyMask } : {}),
+  });
+  // `isKcKey` is tested BEFORE `isOpKey` (inside) because the keychain is
+  // resolved first, so when both vaults could supply this variable the keychain
+  // is the one that did.
+  const fromSources = resolveProviderDetailSources({
+    hasEnvKey,
+    hasCfgKey,
+    isKcKey,
+    isOpKey,
+    hasKcKey,
+    ...(vaultKeySource ? { vaultKeySource } : {}),
+    ...(replacementKeySource ? { replacementSource: replacementKeySource } : {}),
   });
 
   if (isInputMode) {
@@ -342,43 +423,29 @@ export function ProviderDetail({
             <span fg={C.blue} attributes={A.bold}>
               {"From: "}
             </span>
-            {/* Origin of the runtime value. `isKcKey` is tested BEFORE `isOpKey`
-                because the keychain is resolved first, so when both vaults could
-                supply this variable the keychain is the one that did. */}
-            {hasEnvKey && (
-              <span fg={C.green} attributes={A.bold}>
-                {isKcKey ? "keychain" : isOpKey ? "1Password" : "env"}
-              </span>
-            )}
-            {hasEnvKey && hasCfgKey && <span fg={C.fgMuted}>{" (used) + "}</span>}
-            {hasEnvKey && !hasCfgKey && <span fg={C.fgMuted}>{" (used)"}</span>}
-            {hasCfgKey && (
-              <span fg={hasEnvKey ? C.fgMuted : C.green} attributes={A.boldIf(!hasEnvKey)}>
-                {"config"}
-              </span>
-            )}
-            {hasCfgKey && <span fg={C.fgMuted}>{hasEnvKey ? " (shadowed)" : " (used)"}</span>}
-            {/* A read-at-use key stays in its vault and is read when a request
-                signs, so no environment or config value names it. */}
-            {vaultKeySource && (
-              <>
-                <span fg={C.green} attributes={A.bold}>
-                  {vaultLabel(vaultKeySource)}
-                </span>
-                <span fg={C.fgMuted}>{" (used)"}</span>
-              </>
-            )}
-            {/* A keychain item that exists but is NOT the runtime value — the
-                backend is off, or a higher-priority source shadows it. Worth
-                naming explicitly: otherwise `x` reporting "removed from macOS
-                Keychain" would come as a surprise on a row that never mentioned
-                one. */}
-            {hasKcKey && !isKcKey && vaultKeySource !== "macOS Keychain" && (
-              <>
-                <span fg={C.fgMuted}>{" + "}</span>
-                <span fg={C.fgMuted}>{"keychain (shadowed)"}</span>
-              </>
-            )}
+            {/* Every store holding a key, the signing one first. A keychain
+                item that is not the runtime value is named too: otherwise `x`
+                reporting "removed from macOS Keychain" would come as a surprise
+                on a row that never mentioned one. */}
+            {fromSources.flatMap((source, i) => [
+              ...(i > 0
+                ? [
+                    <span key={`${source.label}-sep`} fg={C.fgMuted}>
+                      {" + "}
+                    </span>,
+                  ]
+                : []),
+              <span
+                key={source.label}
+                fg={source.used ? C.green : C.fgMuted}
+                attributes={A.boldIf(source.used)}
+              >
+                {source.label}
+              </span>,
+              <span key={`${source.label}-state`} fg={C.fgMuted}>
+                {source.used ? " (used)" : " (shadowed)"}
+              </span>,
+            ])}
           </>
         )}
       </text>

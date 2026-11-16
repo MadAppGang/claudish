@@ -191,7 +191,8 @@ afterEach(() => {
   globalThis.fetch = originalFetch;
   if (originalFetcher) discovery.registerModelDiscoveryFetcher("muse-code-models", originalFetcher);
   discovery.invalidateModelDiscovery();
-  for (const previous of previousCredentials.values()) credentials.register(previous);
+  for (const [name, previous] of previousCredentials) credentials.register(previous, [name]);
+  for (const [name, previous] of previousCredentials) expect(credentials.get(name)).toBe(previous);
   previousCredentials.clear();
   _resetCatalogClient();
   _clearAllModelsCacheMemo();

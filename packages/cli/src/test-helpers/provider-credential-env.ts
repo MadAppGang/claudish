@@ -29,7 +29,7 @@ type Env = Record<string, string | undefined>;
 
 /** Credential variables that no provider definition declares (see the module comment). */
 const UNDECLARED_CREDENTIAL_VARS = [
-  // native-anthropic declares no apiKeyEnvVar (native-anthropic-credential.ts)
+  // native-anthropic declares no apiKeyEnvVar (it signs with the anthropic provider's key)
   "ANTHROPIC_API_KEY",
   "ANTHROPIC_AUTH_TOKEN",
   // devin's apiKeyEnvVar MUST stay "" (CLAUDE.md); its source reads this name directly

@@ -120,7 +120,13 @@ import { ProvidersContent } from "./components/ProvidersContent.js";
 import { RoutingContent } from "./components/RoutingContent.js";
 import { RoutingDetail } from "./components/RoutingDetail.js";
 import { TabBar } from "./components/TabBar.js";
-import { configKeySavedStatus, configSaveFailure, outrankedKeyNote } from "./config-save.js";
+import {
+  type KeychainCopyOutcome,
+  configKeySavedStatus,
+  configSaveFailure,
+  invalidateAfterKeychainCopy,
+  outrankedKeyNote,
+} from "./config-save.js";
 import { DETAIL_H, FOOTER_H, HEADER_H, TABS_H, getChainProviders } from "./constants.js";
 import { useProfileWizard } from "./hooks/useProfileWizard.js";
 import { useRouteProbe } from "./hooks/useRouteProbe.js";
@@ -219,14 +225,6 @@ async function resolveOpEntrySecrets(
   return secrets;
 }
 
-/** What a keychain copy actually did. Counts and NAMES only — never a value. */
-interface KeychainCopyOutcome {
-  created: number;
-  replaced: number;
-  /** Variables that could not be stored, by name. */
-  skipped: string[];
-}
-
 /**
  * Write a resolved secret map into the keychain.
  *
@@ -240,11 +238,12 @@ function writeSecretsToKeychain(
   secrets: Record<string, string>,
   alreadyStored: ReadonlySet<string>
 ): KeychainCopyOutcome {
-  const outcome: KeychainCopyOutcome = { created: 0, replaced: 0, skipped: [] };
+  const outcome: KeychainCopyOutcome = { created: 0, replaced: 0, skipped: [], written: [] };
   for (const [name, value] of Object.entries(secrets)) {
     if (!value) continue;
     try {
       writeKeychainSecret(name, value);
+      outcome.written.push(name);
       if (alreadyStored.has(name)) outcome.replaced++;
       else outcome.created++;
     } catch {
@@ -652,6 +651,12 @@ export function App({ requestLogin }: AppProps = {}) {
   const vaultKeyMask = vaultKeySource
     ? credentials.describeOrigin(selectedProvider.catalogName)?.masked
     : undefined;
+  // A key saved in this tab signs ahead of every other store until the next
+  // invalidation, so the Key row shows its mask rather than the shell's key and
+  // the From row names the store it was saved to as the one in use.
+  const selectedOrigin = credentials.describeOrigin(selectedProvider.catalogName);
+  const replacementKeyMask = selectedOrigin?.replaced ? selectedOrigin.masked : undefined;
+  const replacementKeySource = selectedOrigin?.replaced ? selectedOrigin.source : undefined;
   const cfgKeyMask = maskKey(config.apiKeys?.[selectedProvider.apiKeyEnvVar]);
   const envKeyMask = maskKey(process.env[selectedProvider.apiKeyEnvVar]);
   const activeEndpointEnvVar = selectedProvider.endpointEnvVar;
@@ -1006,7 +1011,7 @@ export function App({ requestLogin }: AppProps = {}) {
           // Every provider whose key just changed has a stale authority memo,
           // and the endpoint list may now include vendors that were gated out
           // for lack of a local credential.
-          credentials.invalidate();
+          invalidateAfterKeychainCopy(outcome);
           invalidateProbeProxyHandlers();
           refreshConfig();
         }
@@ -2893,6 +2898,8 @@ export function App({ requestLogin }: AppProps = {}) {
             hasKcKey={hasKcKey}
             {...(vaultKeySource ? { vaultKeySource } : {})}
             {...(vaultKeyMask ? { vaultKeyMask } : {})}
+            {...(replacementKeyMask ? { replacementKeyMask } : {})}
+            {...(replacementKeySource ? { replacementKeySource } : {})}
             keySaveTarget={keychainSupported ? "macOS Keychain" : "config.json"}
             credentialNote={providerCredentialNote(selectedProvider)}
             cfgKeyMask={cfgKeyMask}

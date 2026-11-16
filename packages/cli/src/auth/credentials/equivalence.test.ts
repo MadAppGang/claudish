@@ -369,9 +369,10 @@ describe("credential equivalence: native-anthropic (dual-env)", async () => {
     process.env.ANTHROPIC_API_KEY = "sk-ant-123";
     await assertEquivalent("native-anthropic", true);
   });
-  test("ANTHROPIC_AUTH_TOKEN → true", async () => {
+  // REGRESSION: an ANTHROPIC_AUTH_TOKEN alone made native-anthropic ready, though it can never sign as x-api-key
+  test("ANTHROPIC_AUTH_TOKEN alone → false", async () => {
     process.env.ANTHROPIC_AUTH_TOKEN = "tok-ant-456";
-    await assertEquivalent("native-anthropic", true);
+    await assertEquivalent("native-anthropic", false);
   });
 });
 

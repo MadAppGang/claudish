@@ -24,11 +24,11 @@ import { keySourcesSearched } from "./key-sources.js";
 import { makeKimiCodingCredential, makeKimiCredential } from "./kimi-credential.js";
 import { LocalCredentialProvider } from "./local-credential.js";
 import { MuseCodeCredentialProvider } from "./muse-code-credential.js";
-import { NativeAnthropicCredentialProvider } from "./native-anthropic-credential.js";
 import type {
   CredentialProvider,
   KeyOrigin,
   KeySource,
+  OutrankingSource,
   ReadinessResult,
   RequestAuth,
   RequestAuthContext,
@@ -47,6 +47,7 @@ export type {
   CredentialReadiness,
   KeyOrigin,
   KeySource,
+  OutrankingSource,
   ReadinessResult,
   UseResolution,
 } from "./types.js";
@@ -316,20 +317,48 @@ export class CredentialAuthority {
    * credential was replaced or removed, until the next request rewrote it.
    * Clearing returns the answer to "which credential WOULD sign", which is the
    * honest answer when nothing has been signed since.
+   *
+   * A named invalidation covers every name the provider instance is registered
+   * under: each one's signed arm is cleared and each one is notified, so a
+   * listener that keyed its state by an alias drops it too.
    */
   invalidate(name?: string): void {
-    clearSignedArm(name);
-    this.notifyInvalidated(name);
     if (name) {
+      for (const registered of this.namesSharing(name)) {
+        clearSignedArm(registered);
+        this.notifyInvalidated(registered);
+      }
       this.registry.get(name)?.invalidate?.();
       return;
     }
+    clearSignedArm();
+    this.notifyInvalidated();
     // Dedup: providers registered under aliases share one instance.
     const seen = new Set<CredentialProvider>();
     for (const p of this.registry.values()) {
       if (seen.has(p)) continue;
       seen.add(p);
       p.invalidate?.();
+    }
+  }
+
+  /**
+   * Invalidate, as {@link invalidate} does for one name, every provider that
+   * reads its key from one of `names`, and every provider that reports no key
+   * variables. A provider is skipped only when it reports key variables and
+   * none of them is in `names`, so its memo and replacement key stay in place.
+   * A provider without `keyEnvVars` reads its own variables, which a write may
+   * have changed; it holds no replacement key, so invalidating it drops none.
+   */
+  invalidateKeyVars(names: readonly string[]): void {
+    const wanted = new Set(names);
+    const seen = new Set<CredentialProvider>();
+    for (const p of this.registry.values()) {
+      if (seen.has(p)) continue;
+      seen.add(p);
+      const vars = p.keyEnvVars?.();
+      if (vars && !vars.some((v) => wanted.has(v))) continue;
+      this.invalidate(p.catalogName);
     }
   }
 
@@ -351,7 +380,7 @@ export class CredentialAuthority {
    * presenting the saved key as the one every launch uses. Call it BEFORE the
    * save touches `process.env` or `config.json`. Never throws.
    */
-  sourcesOutranking(name: string, key: string, savedTo: KeySource): KeySource[] {
+  sourcesOutranking(name: string, key: string, savedTo: KeySource): OutrankingSource[] {
     try {
       return this.registry.get(name)?.sourcesOutranking?.(key, savedTo) ?? [];
     } catch {
@@ -417,7 +446,6 @@ export class CredentialAuthority {
     for (const name of LOCAL_PROVIDER_NAMES) {
       authority.register(new LocalCredentialProvider(name), [name]);
     }
-    authority.register(new NativeAnthropicCredentialProvider(), ["native-anthropic"]);
 
     // Names already owned by the explicit registrations above — never override
     // them with a generic API-key provider.
@@ -432,7 +460,6 @@ export class CredentialAuthority {
       "kimi",
       "kimi-coding",
       "vertex",
-      "native-anthropic",
       ...LOCAL_PROVIDER_NAMES,
     ]);
 
@@ -460,6 +487,14 @@ export class CredentialAuthority {
         [def.name, ...(RUNTIME_NAME_ALIASES[def.name] ?? [])]
       );
     }
+
+    // The native pass-through's fallback credential, used when a request
+    // carries no credential of its own, is the Claude API's key: the SAME
+    // read-at-use `anthropic` provider (ANTHROPIC_API_KEY, x-api-key), so a
+    // vault key never enters `process.env`, and ANTHROPIC_AUTH_TOKEN, Claude
+    // Code's login bearer, is never sent as an API key.
+    const anthropic = authority.get("anthropic");
+    if (anthropic) authority.register(anthropic, ["native-anthropic"]);
 
     return authority;
   }

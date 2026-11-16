@@ -6,12 +6,18 @@
  * here does not error — it silently looks in the wrong place and reports "no
  * login", which is the failure mode this file exists to make visible.
  *
- * Measured against **Claude Code 2.1.268**.
+ * Measured against **Claude Code 2.1.268**, except the `CLAUDE_CONFIG_DIR`
+ * rule ({@link claudeCodeConfigDir}), measured on **Claude Code 2.1.325**.
+ *
+ * `.claude.json` with `CLAUDE_CONFIG_DIR` set to the empty string, measured on
+ * Claude Code 2.1.325: the config dir is the working directory (backups land in
+ * `<cwd>/backups/`), but `.claude.json` stays at `~/.claude.json` under `HOME`,
+ * as when the variable is unset.
  */
 
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
-import { isAbsolute, resolve } from "node:path";
+import { join, resolve } from "node:path";
 
 /** The Claude Code version these facts were measured against. */
 export const CLAUDE_CODE_FACTS_VERSION = "2.1.268";
@@ -19,20 +25,19 @@ export const CLAUDE_CODE_FACTS_VERSION = "2.1.268";
 /** Service name with no config-dir suffix — the default-config-dir case. */
 const BASE_KEYCHAIN_SERVICE = "Claude Code";
 
-/** Claude Code's default config directory. */
-function defaultConfigDir(env: NodeJS.ProcessEnv): string {
-  return resolve(env.HOME || homedir(), ".claude");
-}
-
 /**
- * The directory Claude Code keeps its config and file-backed login in:
- * `CLAUDE_CONFIG_DIR` (resolved against the working directory) when set, else
- * `~/.claude` under `HOME`.
+ * The directory Claude Code keeps its config and file-backed login in, measured
+ * on Claude Code 2.1.325: `CLAUDE_CONFIG_DIR` when it is set to any string,
+ * empty and whitespace-only included, taken exactly as given; else `.claude`
+ * under `HOME`. The directory is NFC-normalized and then resolved against `cwd`,
+ * as the binary does, so `""` names `cwd` itself and `" /x "` keeps its spaces.
  */
-export function claudeCodeConfigDir(env: NodeJS.ProcessEnv = process.env): string {
-  const raw = env.CLAUDE_CONFIG_DIR?.trim();
-  if (!raw) return defaultConfigDir(env);
-  return isAbsolute(raw) ? resolve(raw) : resolve(process.cwd(), raw);
+export function claudeCodeConfigDir(
+  env: NodeJS.ProcessEnv = process.env,
+  cwd: string = process.cwd()
+): string {
+  const dir = env.CLAUDE_CONFIG_DIR ?? join(env.HOME ? env.HOME : homedir(), ".claude");
+  return resolve(cwd, dir.normalize("NFC"));
 }
 
 /** `sha256(configDir)` truncated to 8 hex characters, as the binary does. */
@@ -59,7 +64,8 @@ export const CLAUDE_CODE_OAUTH_ITEM_KEY = "claudeAiOauth";
  */
 export function claudeCodeSecureStorageServices(
   kind: "-credentials" | "",
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
+  cwd: string = process.cwd()
 ): string[] {
   const base = `${BASE_KEYCHAIN_SERVICE}${kind}`;
   const secure = env.CLAUDE_SECURESTORAGE_CONFIG_DIR;
@@ -71,7 +77,7 @@ export function claudeCodeSecureStorageServices(
       : env.CLAUDE_CONFIG_DIR
         ? [
             env.CLAUDE_CONFIG_DIR,
-            claudeCodeConfigDir(env),
+            claudeCodeConfigDir(env, cwd),
             env.CLAUDE_CONFIG_DIR.replace(/\/+$/, ""),
           ]
         : [];
@@ -81,12 +87,16 @@ export function claudeCodeSecureStorageServices(
 
 /**
  * Claude Code's global config file, where a Console login keeps its key
- * (`primaryApiKey`): `<CLAUDE_CONFIG_DIR>/.claude.json` when that is set
- * (measured on Claude Code 2.1.325), else `~/.claude.json` under `HOME`.
+ * (`primaryApiKey`): `<CLAUDE_CONFIG_DIR>/.claude.json` when that is set to a
+ * non-empty value, else `~/.claude.json` under `HOME`. Both measured on Claude
+ * Code 2.1.325, the empty value included: it moves the config dir to the working
+ * directory but leaves `.claude.json` under `HOME`.
  */
-export function claudeCodeGlobalConfigPath(env: NodeJS.ProcessEnv = process.env): string {
-  const raw = env.CLAUDE_CONFIG_DIR?.trim();
-  return raw
-    ? resolve(claudeCodeConfigDir(env), ".claude.json")
+export function claudeCodeGlobalConfigPath(
+  env: NodeJS.ProcessEnv = process.env,
+  cwd: string = process.cwd()
+): string {
+  return env.CLAUDE_CONFIG_DIR
+    ? resolve(claudeCodeConfigDir(env, cwd), ".claude.json")
     : resolve(env.HOME || homedir(), ".claude.json");
 }

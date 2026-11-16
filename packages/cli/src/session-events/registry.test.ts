@@ -38,6 +38,49 @@ describe("SessionEventRegistry", () => {
     expect(state?.seededFrom).toBe("settings");
   });
 
+  // REGRESSION: the registry read <homedir>/.claude and ignored a CLAUDE_CONFIG_DIR Claude Code writes under
+  test("reads the transcript and settings.json effortLevel from CLAUDE_CONFIG_DIR", () => {
+    home = mkdtempSync(join(tmpdir(), "claudish-sev-"));
+    const projectDir = join(home, "projects", "-x");
+    mkdirSync(projectDir, { recursive: true });
+    writeFileSync(
+      join(projectDir, `${FIXTURE_SESSION_ID}.jsonl`),
+      `${FIXTURE_ULTRA_EFFORT_ENTER}\n`
+    );
+    writeFileSync(join(home, "settings.json"), JSON.stringify({ effortLevel: "high" }));
+
+    const opts = { env: { CLAUDE_CONFIG_DIR: home }, pollIntervalMs: 60_000 };
+    registry = new SessionEventRegistry(opts);
+    registry.ensureSession(FIXTURE_SESSION_ID);
+    registry.sync(FIXTURE_SESSION_ID);
+
+    const state = registry.getState(FIXTURE_SESSION_ID);
+    expect(state?.defaultEffort).toBe("high");
+    expect(state?.ultracodeActive).toBe(true);
+  });
+
+  // REGRESSION: the registry used homedir(), which ignores the HOME Claude Code was started with
+  test("reads $HOME/.claude from the HOME it is given", () => {
+    home = mkdtempSync(join(tmpdir(), "claudish-sev-"));
+    const configDir = join(home, ".claude");
+    const projectDir = join(configDir, "projects", "-x");
+    mkdirSync(projectDir, { recursive: true });
+    writeFileSync(
+      join(projectDir, `${FIXTURE_SESSION_ID}.jsonl`),
+      `${FIXTURE_ULTRA_EFFORT_ENTER}\n`
+    );
+    writeFileSync(join(configDir, "settings.json"), JSON.stringify({ effortLevel: "high" }));
+
+    const opts = { env: { HOME: home }, pollIntervalMs: 60_000 };
+    registry = new SessionEventRegistry(opts);
+    registry.ensureSession(FIXTURE_SESSION_ID);
+    registry.sync(FIXTURE_SESSION_ID);
+
+    const state = registry.getState(FIXTURE_SESSION_ID);
+    expect(state).toBeDefined();
+    expect(state?.defaultEffort).toBe("high");
+  });
+
   test("unknown session → getState undefined (no injection), ensureSession never throws", () => {
     home = mkdtempSync(join(tmpdir(), "claudish-sev-"));
     registry = new SessionEventRegistry({ claudeHome: home });

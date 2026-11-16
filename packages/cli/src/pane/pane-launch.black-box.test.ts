@@ -7,6 +7,7 @@ import {
   isUsableMagmuxVersion,
   replayLauncherScript,
 } from "./pane-launch.js";
+import * as paneLaunch from "./pane-launch.js";
 import { type PaneTestEnv, makePaneTestEnv } from "./test-helpers/hermetic-env.js";
 
 let layout: PaneTestEnv | undefined;
@@ -113,5 +114,29 @@ describe("child isolation and additive contract", () => {
     ["3.4.2", false],
   ] as const)("TEST-41 REQ-40 version %s usability is %s", (version, expected) => {
     expect(isUsableMagmuxVersion(version)).toBe(expected);
+  });
+});
+
+type ReplayConfigDirOverride = (
+  parentEnv: Record<string, string | undefined>,
+  cwd: string,
+  configDir: string
+) => string | undefined;
+const replayConfigDirOverride = (...args: Parameters<ReplayConfigDirOverride>) =>
+  (
+    paneLaunch as unknown as { replayConfigDirOverride: ReplayConfigDirOverride }
+  ).replayConfigDirOverride(...args);
+
+describe("replay CLAUDE_CONFIG_DIR override", () => {
+  // REGRESSION: a relative inherited CLAUDE_CONFIG_DIR that already names the config dir drew an override
+  test("no override when the inherited relative value resolves to the config dir in the replay cwd", () => {
+    expect(
+      replayConfigDirOverride({ HOME: "/h", CLAUDE_CONFIG_DIR: "cfg" }, "/w", "/w/cfg")
+    ).toBeUndefined();
+  });
+
+  // REGRESSION: an empty CLAUDE_CONFIG_DIR is dropped from a replay's env, so the child would read $HOME/.claude
+  test("override when the inherited value is empty and the config dir is the cwd", () => {
+    expect(replayConfigDirOverride({ HOME: "/h", CLAUDE_CONFIG_DIR: "" }, "/w", "/w")).toBe("/w");
   });
 });
