@@ -4,6 +4,10 @@ import { join, relative, resolve } from "node:path";
 
 const repositoryRoot = resolve(import.meta.dir, "..");
 const thisFile = resolve(import.meta.path);
+// Another vendor's text, kept exactly as recorded: the words in it are not claudish's.
+const recordedVerbatim = new Set([
+  resolve(repositoryRoot, "packages/cli/src/providers/antigravity-agy-request.json"),
+]);
 
 function filesUnder(dir: string): string[] {
   const files: string[] = [];
@@ -11,7 +15,8 @@ function filesUnder(dir: string): string[] {
     if (entry.name === "node_modules" || entry.name === "dist") continue;
     const path = join(dir, entry.name);
     if (entry.isDirectory()) files.push(...filesUnder(path));
-    else if (entry.isFile() && resolve(path) !== thisFile) files.push(path);
+    else if (entry.isFile() && resolve(path) !== thisFile && !recordedVerbatim.has(resolve(path)))
+      files.push(path);
   }
   return files;
 }
