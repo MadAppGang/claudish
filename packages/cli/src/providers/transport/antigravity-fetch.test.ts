@@ -5,7 +5,11 @@ import {
   ANTIGRAVITY_PLAIN_FETCH_ENV,
   antigravityFetch,
   antigravityHeaderLines,
+  nodeHttpWritesOwnHead,
 } from "./antigravity-fetch.js";
+
+/** The suites that read what `node:http` wrote run only where it writes its own head. */
+const ownClient = describe.skipIf(!nodeHttpWritesOwnHead(process.versions.bun));
 
 type Mode = "plain" | "gzip" | "hang" | "sse" | "redirect";
 
@@ -103,7 +107,18 @@ const HEADERS = {
   "Content-Type": "application/json",
 };
 
-describe("the request head is the Antigravity CLI's", () => {
+test("the node:http client is used on Node and on Bun 1.4.0 and later", () => {
+  expect(nodeHttpWritesOwnHead(undefined)).toBe(true);
+  expect(nodeHttpWritesOwnHead("1.4.0")).toBe(true);
+  expect(nodeHttpWritesOwnHead("1.4.1-canary.3")).toBe(true);
+  expect(nodeHttpWritesOwnHead("2.0.0")).toBe(true);
+  expect(nodeHttpWritesOwnHead("1.3.10")).toBe(false);
+  expect(nodeHttpWritesOwnHead("1.10.0")).toBe(true);
+  expect(nodeHttpWritesOwnHead("0.9.0")).toBe(false);
+  expect(nodeHttpWritesOwnHead("garbage")).toBe(false);
+});
+
+ownClient("the request head is the Antigravity CLI's", () => {
   test("a streamGenerateContent call: chunked body, the recorded header order, nothing more", async () => {
     mode = "sse";
     const res = await antigravityFetch(`${base}/v1internal:streamGenerateContent?alt=sse`, {
@@ -175,7 +190,7 @@ describe("the request head is the Antigravity CLI's", () => {
   });
 });
 
-describe("the response reads as a fetch response", () => {
+ownClient("the response reads as a fetch response", () => {
   test("status, headers and body of a refusal are passed on", async () => {
     const res = await antigravityFetch(`${base}/x`, {
       method: "POST",
@@ -201,7 +216,7 @@ describe("the response reads as a fetch response", () => {
   });
 });
 
-describe("failures keep the vocabulary the callers classify", () => {
+ownClient("failures keep the vocabulary the callers classify", () => {
   test("an abort before the response rejects with the signal's reason", async () => {
     mode = "hang";
     const controller = new AbortController();
@@ -247,7 +262,7 @@ describe("failures keep the vocabulary the callers classify", () => {
   });
 });
 
-describe("what fetch did for its callers and node:http does not", () => {
+ownClient("what fetch did for its callers and node:http does not", () => {
   test("a connection that stays silent fails as a timed-out connection", async () => {
     mode = "hang";
     const failure = await antigravityFetch(
@@ -320,38 +335,41 @@ test("behind a proxy the runtime's fetch sends the request", async () => {
   }
 });
 
-test("NO_PROXY with the target's port sends the request itself; another port does not", async () => {
-  process.env.HTTP_PROXY = "http://127.0.0.1:9";
-  const port = new URL(base).port;
-  const calls: string[] = [];
-  const original = globalThis.fetch;
-  globalThis.fetch = (async (input: RequestInfo | URL) => {
-    calls.push(String(input));
-    return new Response("via fetch");
-  }) as typeof fetch;
-  try {
-    process.env.NO_PROXY = `127.0.0.1:${port}`;
-    const direct = await antigravityFetch(`${base}/x`, {
-      method: "POST",
-      headers: HEADERS,
-      body: "{}",
-    });
-    await direct.text();
-    expect(calls).toEqual([]);
-    expect(received).toContain("POST /x HTTP/1.1");
+test.skipIf(!nodeHttpWritesOwnHead(process.versions.bun))(
+  "NO_PROXY with the target's port sends the request itself; another port does not",
+  async () => {
+    process.env.HTTP_PROXY = "http://127.0.0.1:9";
+    const port = new URL(base).port;
+    const calls: string[] = [];
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      calls.push(String(input));
+      return new Response("via fetch");
+    }) as typeof fetch;
+    try {
+      process.env.NO_PROXY = `127.0.0.1:${port}`;
+      const direct = await antigravityFetch(`${base}/x`, {
+        method: "POST",
+        headers: HEADERS,
+        body: "{}",
+      });
+      await direct.text();
+      expect(calls).toEqual([]);
+      expect(received).toContain("POST /x HTTP/1.1");
 
-    process.env.NO_PROXY = "127.0.0.1:1";
-    const proxied = await antigravityFetch(`${base}/y`, {
-      method: "POST",
-      headers: HEADERS,
-      body: "{}",
-    });
-    expect(await proxied.text()).toBe("via fetch");
-    expect(calls).toEqual([`${base}/y`]);
-  } finally {
-    globalThis.fetch = original;
+      process.env.NO_PROXY = "127.0.0.1:1";
+      const proxied = await antigravityFetch(`${base}/y`, {
+        method: "POST",
+        headers: HEADERS,
+        body: "{}",
+      });
+      expect(await proxied.text()).toBe("via fetch");
+      expect(calls).toEqual([`${base}/y`]);
+    } finally {
+      globalThis.fetch = original;
+    }
   }
-});
+);
 
 test("the plain-fetch switch hands the request to the runtime's fetch", async () => {
   process.env[ANTIGRAVITY_PLAIN_FETCH_ENV] = "1";

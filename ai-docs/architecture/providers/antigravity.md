@@ -725,6 +725,14 @@ through the transport's optional `fetch` member.
   `createConnection` returning a `tls.connect({socket})` wrapper wrote the request to the raw
   socket under the wrapper on Bun 1.4.0: the request, bearer included, left unencrypted and Google
   answered 403 "SSL is required to perform this operation."
+- The client is used only where `node:http` writes the head it is given: Node, and Bun 1.4.0 and
+  later (`nodeHttpWritesOwnHead`). Measured on Bun 1.3.10, the version CI pins: `node:http` sends
+  the request through the runtime's `fetch`, so the head is `fetch`'s (`Accept`, its own order), an
+  abort before the response never rejects, a socket timeout never fires, and the chunked call did
+  not complete against a raw socket. There the request goes to `fetch` and the head is the
+  runtime's, as it was before this client. 1.4.0 is the oldest Bun measured to work, not a known
+  boundary; versions between were not measured. The hermetic jobs skip the client's tests on
+  1.3.10 and the Bun 1.4.0 job in `test.yml` runs them.
 - What `fetch` did for its callers and `node:http` does not, the client does itself. A connection
   silent for `ANTIGRAVITY_IDLE_TIMEOUT_MS` (five minutes, the runtime's own idle limit) fails with
   `ETIMEDOUT`: `loadCodeAssist`, model discovery and `retrieveUserQuota` pass no signal, and without

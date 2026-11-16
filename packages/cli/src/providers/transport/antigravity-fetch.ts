@@ -23,6 +23,29 @@ import { createGunzip } from "node:zlib";
 /** Set to `1` to send Antigravity requests with the runtime's `fetch` instead. */
 export const ANTIGRAVITY_PLAIN_FETCH_ENV = "CLAUDISH_ANTIGRAVITY_PLAIN_FETCH";
 
+/** The first Bun whose `node:http` was measured to write the head it is given. */
+const FIRST_BUN_WITH_OWN_HTTP_HEAD = "1.4.0";
+
+/**
+ * Whether this runtime's `node:http` writes the request head it is given.
+ * Bun 1.3.10 sends a `node:http` request through its `fetch`: the head is the
+ * runtime's, an abort before the response never rejects and a socket timeout
+ * never fires. On such a runtime the request goes to `fetch`. `bunVersion` is
+ * `process.versions.bun`, absent on Node.
+ */
+export function nodeHttpWritesOwnHead(bunVersion: string | undefined): boolean {
+  if (!bunVersion) return true;
+  const part = (version: string) => version.split("-")[0].split(".").map(Number);
+  const have = part(bunVersion);
+  const need = part(FIRST_BUN_WITH_OWN_HTTP_HEAD);
+  for (let i = 0; i < need.length; i++) {
+    const n = have[i];
+    if (!Number.isFinite(n)) return false;
+    if (n !== need[i]) return n > need[i];
+  }
+  return true;
+}
+
 /** Headers this client writes itself; a caller's value for one of them is not sent. */
 const OWN_HEADERS = new Set([
   "host",
@@ -159,8 +182,9 @@ export async function antigravityFetch(
   init: RequestInit = {},
   idleTimeoutMs: number = ANTIGRAVITY_IDLE_TIMEOUT_MS
 ): Promise<Response> {
-  // These three hand the whole request to the runtime's `fetch`, redirects included.
+  // These four hand the whole request to the runtime's `fetch`, redirects included.
   if (process.env[ANTIGRAVITY_PLAIN_FETCH_ENV] === "1") return fetch(url, init);
+  if (!nodeHttpWritesOwnHead(process.versions.bun)) return fetch(url, init);
   if (init.body != null && typeof init.body !== "string") return fetch(url, init);
   let target = new URL(url);
   // Behind a proxy the runtime's `fetch` sends the request: it owns the tunnel
