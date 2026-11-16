@@ -408,7 +408,8 @@ scenarios:
   # refactor, and by checks/regression-check.ts. A asks for no test, so D's
   # test is new work that only the session's memory of A can direct. B forbids
   # subagents, so the reading lands in the main context. Run with
-  # --param case_prep=long-session (a 200K auto-compact window).
+  # --param case_prep=topic-change (a 200K auto-compact window, and the
+  # Ollama address the embed decider reads).
   - name: topic-change
     description: "five tasks in one session, two true topic changes and two returns, in a 200K window"
     repo:
