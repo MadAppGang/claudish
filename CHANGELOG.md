@@ -2,6 +2,64 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.27.3] - 2026-11-16
+
+### Bug Fixes
+
+- keep the model name of an ag@ first message on a retry *(antigravity)* ([`32a60e2`](https://github.com/MadAppGang/claudish/commit/32a60e2dada0dd8abfe2f6d3b02b560f2006449d))
+- report ag@ quota for a model id without an effort suffix *(quota)* ([`1308ef0`](https://github.com/MadAppGang/claudish/commit/1308ef0ba98292e9a2552231a9b3799a511ee50d))
+- redact the access token an ag@ account call signs with *(antigravity)* ([`c2bf1ed`](https://github.com/MadAppGang/claudish/commit/c2bf1ed74a315b484d28be319c87c79031e619ed))
+- keep ag@ history parts in place under the agy wording *(antigravity)* ([`8917fe5`](https://github.com/MadAppGang/claudish/commit/8917fe5c8aabe8e6da17015e5b2cab21fc6b6a86))
+- write only the outgoing request's trajectory access record *(antigravity)* ([`889bfe9`](https://github.com/MadAppGang/claudish/commit/889bfe963512a5621ba6ab214002f26b1372f315))
+- settle readProcessTableAsync on ps exit, not pipe close *(pane)* ([`1226893`](https://github.com/MadAppGang/claudish/commit/122689388d1ca8d68a75a2e957992d9b8a9a113e))
+- bound each ps call in ancestorPids by exit, not pipe close *(pane)* ([`550c698`](https://github.com/MadAppGang/claudish/commit/550c698a9cb0a72f8f30f655c20734002f0bee0c))
+- take the last-applied advisorModel in one settings tier *(advisor)* ([`6c2b0fd`](https://github.com/MadAppGang/claudish/commit/6c2b0fd4c73e588b46253d37cbc360fd1593e08e))
+- notify every alias when a shared credential is invalidated *(auth)* ([`0a624fb`](https://github.com/MadAppGang/claudish/commit/0a624fbbb26b4b2455d6b28636c8d042759728a1))
+- hash the Keychain service name against the injected cwd *(auth)* ([`8d4973b`](https://github.com/MadAppGang/claudish/commit/8d4973ba2e8cd99d62d1d1dba3c11822b277fc77))
+- forward login probes through childAuthControl *(launch)* ([`a44f6dc`](https://github.com/MadAppGang/claudish/commit/a44f6dca5667a061d7c490110bf226e381befc38))
+- say image descriptions are off when the key is hidden *(launch)* ([`bf38e0d`](https://github.com/MadAppGang/claudish/commit/bf38e0d5f72ea9044853d0842f682b0c5346299a))
+- read settings under env.HOME when no home is injected *(status-line)* ([`17f5f77`](https://github.com/MadAppGang/claudish/commit/17f5f77f9d671df370a378528b171aef1e60e5cf))
+- name the replacement key's source as used in the From row *(tui)* ([`7e60b60`](https://github.com/MadAppGang/claudish/commit/7e60b60e14cf06c3f38d2f1e6b999b60eb337048))
+- honour --setting-sources when chaining the status line *(status-line)* ([`655436d`](https://github.com/MadAppGang/claudish/commit/655436d0aa082c48ab2f76b5cb989bf5d6ca6be3))
+- scan transcripts under CLAUDE_CONFIG_DIR in the observer *(hooks)* ([`f1e9948`](https://github.com/MadAppGang/claudish/commit/f1e9948581e8f021c64db22b625412c9f82af472))
+- read settings and transcript from CLAUDE_CONFIG_DIR *(session-events)* ([`ebbb6b4`](https://github.com/MadAppGang/claudish/commit/ebbb6b4a0fd1d62e1c26f48264cf22919e940a01))
+- resolve CLAUDE_CONFIG_DIR against the child's cwd *(session)* ([`021e927`](https://github.com/MadAppGang/claudish/commit/021e927ce3c05625eecc396fd87001572e6a41e6))
+- invalidate providers without key variables after a copy *(auth)* ([`90a0ff0`](https://github.com/MadAppGang/claudish/commit/90a0ff01e58e0e3cc2a29b66b18e4ee9c086aedd))
+- take the whole copy outcome in invalidateAfterKeychainCopy *(tui)* ([`5e8a912`](https://github.com/MadAppGang/claudish/commit/5e8a912dfb708260c1149872b57fcab3fd524bb0))
+- name the active config file in the outranked-key note *(tui)* ([`a434122`](https://github.com/MadAppGang/claudish/commit/a43412294cb1db5a11cf08a793bacb3bac681964))
+- invalidate only the copied providers after a 1Password copy *(tui)* ([`9a06430`](https://github.com/MadAppGang/claudish/commit/9a06430bd6905ad115b1891cb7d074014487c463))
+- show the replacement key's mask in the provider detail pane *(tui)* ([`5d6f47a`](https://github.com/MadAppGang/claudish/commit/5d6f47a1a2babe9e8da236b1bdc46d29c36236d0))
+- skip vault-hydrated aliases in sourcesOutranking *(auth)* ([`e452acf`](https://github.com/MadAppGang/claudish/commit/e452acffb66869d889a73f142a0c9796e37e6340))
+- record the replacement key's origin in replaceKey *(auth)* ([`9dc3ebb`](https://github.com/MadAppGang/claudish/commit/9dc3ebb37a2d7a7ccc5feb4003a75f05389ee737))
+- hide shell ANTHROPIC_API_KEY on logged-in classifier launch *(launch)* ([`842fcdf`](https://github.com/MadAppGang/claudish/commit/842fcdfd3f8b016749c4ea056d8150afc1640a20))
+- sign native-anthropic with the read-at-use anthropic key *(auth)* ([`aab0112`](https://github.com/MadAppGang/claudish/commit/aab01127e41974c41739bdcdbd89d22bb3aa78ec))
+- read settings.json from CLAUDE_CONFIG_DIR to chain *(status-line)* ([`11c36c4`](https://github.com/MadAppGang/claudish/commit/11c36c4963de1cebace39521dd8191bcec540a67))
+- read CLAUDE_CONFIG_DIR untrimmed and resolve it against cwd *(auth)* ([`8aa892a`](https://github.com/MadAppGang/claudish/commit/8aa892a0c5bf3b034ffb71d4287524d7cdb5e6be))
+
+### Documentation
+
+- record the endpoints and content ag@ now copies from agy *(antigravity)* ([`4538cb9`](https://github.com/MadAppGang/claudish/commit/4538cb91321e809887cf184f501fe9a546671e4c))
+- update CHANGELOG.md for v14.27.2([`369029c`](https://github.com/MadAppGang/claudish/commit/369029cfa88fe6e860f5a93d4b405858d21709e4))
+- record that Claude Code applies the later --settings value *(launch)* ([`8f0e63b`](https://github.com/MadAppGang/claudish/commit/8f0e63bebed51ecbdd5c4e2efa4c1ed5cb470e52))
+- record where .claude.json lives with an empty config dir *(auth)* ([`e7d990a`](https://github.com/MadAppGang/claudish/commit/e7d990a4d39f5feb533e13cc0ac4f1fe71fb1dac))
+
+### New Features
+
+- word ag@ history text as the agy CLI words it *(antigravity)* ([`2bc550a`](https://github.com/MadAppGang/claudish/commit/2bc550a1e0fd94a15e6daf686feba32b37b06772))
+- send ag@ file and shell tool arguments under agy names *(antigravity)* ([`c93fe0e`](https://github.com/MadAppGang/claudish/commit/c93fe0e6a3dbafb57f1acafae762b8c0f9d5c67c))
+- read ag@ quota from retrieveUserQuotaSummary *(antigravity)* ([`7721819`](https://github.com/MadAppGang/claudish/commit/772181924b7d13fb3a96fd236b3632725a0cc42d))
+- write the trajectory's access record before ag@ generates *(antigravity)* ([`8e178a0`](https://github.com/MadAppGang/claudish/commit/8e178a09e6dbf6f995b2bf5e34b54f89ed15fdd9))
+- send the agy CLI's account lookups when ag@ sets up *(antigravity)* ([`58c6c99`](https://github.com/MadAppGang/claudish/commit/58c6c999c9a7204463651721c2bddef1bb68a777))
+
+### Other Changes
+
+- merge main into the config-dir branch([`cee72fc`](https://github.com/MadAppGang/claudish/commit/cee72fc65900187044d777af69fcd28d093f2c4c))
+- merge main into the config-dir branch([`106f3e1`](https://github.com/MadAppGang/claudish/commit/106f3e10eca39b63e5a78cfb060b8bb40f2a9eba))
+
+### Refactoring
+
+- assign the first message's model name in a statement *(antigravity)* ([`e0c0a48`](https://github.com/MadAppGang/claudish/commit/e0c0a4825ad555b89392043c3b22d3aef934023e))
+
 ## [14.27.2] - 2026-11-16
 
 ### Bug Fixes
