@@ -22,6 +22,7 @@
 import { appendFileSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { projectsDir } from "../../session/session-discovery.js";
 
 export interface Divergence {
   transcript: string;
@@ -162,12 +163,16 @@ export interface CorpusResult {
  */
 export function buildCorpus(
   options: {
+    /** default: Claude Code's projects directory, `projectsDir(env, cwd)` */
     projectsRoot?: string;
+    env?: Record<string, string | undefined>;
+    cwd?: string;
     outputPath?: string;
     write?: boolean;
   } = {}
 ): CorpusResult {
-  const root = options.projectsRoot ?? join(homedir(), ".claude", "projects");
+  const root =
+    options.projectsRoot ?? projectsDir(options.env ?? process.env, options.cwd ?? process.cwd());
   const files = listTranscripts(root);
 
   const records: Divergence[] = [];
