@@ -1,15 +1,16 @@
 // REGRESSION: an image-only message on a non-vision model was sent with empty content, so the upstream answered 400
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { deflateSync } from "node:zlib";
 import { Hono } from "hono";
 import { AnthropicAPIFormat } from "../adapters/anthropic-api-format.js";
 import { CodexAPIFormat } from "../adapters/codex-api-format.js";
 import { lookupModelAcceptsImages } from "../adapters/model-catalog.js";
 import { OpenAIAPIFormat } from "../adapters/openai-api-format.js";
-import type { DiskCacheV3 } from "../providers/all-models-cache.js";
+import type { DiskCacheV3, SlimModelEntry } from "../providers/all-models-cache.js";
 import type { ResolvedConnection } from "../providers/connection-resolver.js";
 import type { ProviderTransport } from "../providers/transport/types.js";
 import { ComposedHandler } from "./composed-handler.js";
@@ -268,6 +269,89 @@ function partsOfType(value: unknown, type: string): CapturedPart[] {
   const matches = "type" in value && value.type === type ? [value as CapturedPart] : [];
   return [...matches, ...Object.values(value).flatMap((child) => partsOfType(child, type))];
 }
+
+async function captureVisionModel(entries: SlimModelEntry[]): Promise<string> {
+  const home = mkdtempSync(join(tmpdir(), "claudish-vision-opt-in-"));
+  const cachePath = join(home, ".claudish", "cloud-models-catalog-v3.json");
+  mkdirSync(join(home, ".claudish"), { recursive: true });
+  const allModelsCacheUrl = pathToFileURL(
+    join(import.meta.dir, "../providers/all-models-cache.ts")
+  ).href;
+  const visionProxyUrl = pathToFileURL(join(import.meta.dir, "../services/vision-proxy.ts")).href;
+  const script = `
+    const { writeAllModelsCache } = await import(${JSON.stringify(allModelsCacheUrl)});
+    const { describeImages } = await import(${JSON.stringify(visionProxyUrl)});
+    writeAllModelsCache({
+      version: 3,
+      catalogGenerationId: "test-generation",
+      lastUpdated: "2026-11-16T00:00:00.000Z",
+      entries: JSON.parse(process.env.CATALOG_ENTRIES),
+      models: [],
+      plans: []
+    }, process.env.CATALOG_CACHE_PATH);
+    let model;
+    globalThis.fetch = async (_input, init) => {
+      model = JSON.parse(String(init?.body)).model;
+      return new Response(JSON.stringify({ content: [{ type: "text", text: "description" }] }), {
+        headers: { "content-type": "application/json" }
+      });
+    };
+    const descriptions = await describeImages([{
+      type: "image_url",
+      image_url: { url: "data:image/png;base64," + process.env.PNG }
+    }], {});
+    console.log(JSON.stringify({ model, descriptions }));
+  `;
+  try {
+    const child = Bun.spawn([process.execPath, "--eval", script], {
+      env: {
+        ...process.env,
+        HOME: home,
+        PNG: png,
+        CATALOG_CACHE_PATH: cachePath,
+        CATALOG_ENTRIES: JSON.stringify(entries),
+        CLAUDISH_CONFIG: join(home, "config.json"),
+        CLAUDISH_DISABLE_CATALOG_WARM: "1",
+        CLAUDISH_DISABLE_BUNDLED_LIST: "1",
+        CLAUDISH_DISABLE_KEYCHAIN: "1",
+        CLAUDISH_DISABLE_OP: "1",
+      },
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [stdout, stderr, code] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+    const result = JSON.parse(stdout) as { model: string; descriptions: string[] };
+    expect(result.descriptions).toEqual(["description"]);
+    return result.model;
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+}
+
+describe("vision proxy opt-in model selection", () => {
+  test("skips an opt-in canonical model id in vision alias order", async () => {
+    const model = await captureVisionModel([
+      { modelId: "claude-sonnet-contributor", aliases: ["sonnet"], supportsVision: true },
+      { modelId: "claude-sonnet-9", aliases: ["sonnet"], supportsVision: true },
+    ]);
+
+    expect(model).toBe("claude-sonnet-9");
+  });
+
+  test("uses the fixed fallback when every vision alias match is opt-in", async () => {
+    const model = await captureVisionModel([
+      { modelId: "claude-sonnet-contributor", aliases: ["sonnet"], supportsVision: true },
+    ]);
+
+    expect(model).toBe("claude-sonnet-4-6");
+  });
+});
 
 describe("ComposedHandler non-vision image omission", () => {
   test("(a) chat-completions: image-only tool_result retains an omission placeholder", async () => {
