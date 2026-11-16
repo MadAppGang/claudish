@@ -825,7 +825,8 @@ async function readMagmuxVersion(found: string): Promise<string> {
 export function runMagmuxVersion(
   found: string,
   timeoutMs: number,
-  drainMs: number = EXIT_DRAIN_MS
+  drainMs: number = EXIT_DRAIN_MS,
+  spawnChild: typeof spawn = spawn
 ): Promise<string> {
   return new Promise((resolveRun, rejectRun) => {
     let settled = false;
@@ -839,10 +840,13 @@ export function runMagmuxVersion(
       // an exited child is not hung: its exit handler's drain settles the run within `drainMs`,
       // and an empty answer there gets the retry in `versionOf` that a refusal here would skip
       if (code !== null) {
-        setTimeout(
-          () => fail(`exited (${code}) but no exit event within ${drainMs + EXIT_DRAIN_MS} ms`),
-          drainMs + EXIT_DRAIN_MS
-        );
+        // with no exit event, an exit 0 answers with what arrived (usually nothing), so the
+        // empty answer reaches the retry in `versionOf`; a refusal would skip it. Seen on a
+        // loaded macOS runner: exited (0), no output and no exit event 5.2 s after the spawn
+        setTimeout(() => {
+          if (code === 0) return done();
+          fail(`exited (${code}) but no exit event within ${drainMs + EXIT_DRAIN_MS} ms`);
+        }, drainMs + EXIT_DRAIN_MS);
         return;
       }
       fail(`no answer in ${timeoutMs} ms (timer ran at ${ranAt} ms; child still running)`);
@@ -882,7 +886,7 @@ export function runMagmuxVersion(
     try {
       // async: the first create_session or team run must not stall the MCP server's event
       // loop for up to 5 s (every other session's frames and socket share it)
-      child = spawn(found, ["--version"], { stdio: ["ignore", "pipe", "pipe"] });
+      child = spawnChild(found, ["--version"], { stdio: ["ignore", "pipe", "pipe"] });
       child.stdout?.setEncoding("utf8").on("data", read);
       child.stderr?.setEncoding("utf8").on("data", read);
       child.on("error", (e) => fail(e.message));
