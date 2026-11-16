@@ -8,7 +8,7 @@ import { randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sessionItem } from "../herdr/test-helpers/placer-harness.js";
+import { sessionItem } from "../herdr/test-helpers/view-items.js";
 import { ContractErrorException } from "../pane/contract.js";
 import { makeViewRoot } from "./test-helpers/fake-view-endpoint.js";
 import { ViewClaims } from "./view-claims.js";

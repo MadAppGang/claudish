@@ -41,9 +41,11 @@ import { getCatalogSnapshot } from "./catalog-client.js";
 
 /**
  * One connection a recommendation may be sent on: its route binding, wire id,
- * and how the effort is encoded there. Only `request_parameter` is sendable;
- * `model_id_switch` is reserved by the backend for a later phase, and a missing
- * or other value means "not sendable on this connection".
+ * and how the effort is encoded there. `request_parameter` is sent as the
+ * request's effort; `model_id_switch` chooses the model id on a connection with
+ * an effort map, and claudish reads it only for the `default` task type (the
+ * level a request with no effort is sent at, `model-id-effort-choice.ts`). A
+ * missing or other value means "not sendable on this connection".
  */
 export interface EffortSendableOn {
   routeId: string;
@@ -52,8 +54,14 @@ export interface EffortSendableOn {
   encoding?: string;
 }
 
-/** The one `encoding` claudish sends: the effort is a request parameter. */
+/** The `encoding` of an effort sent as a request parameter. */
 export const SENDABLE_ENCODING = "request_parameter";
+
+/** The `encoding` of an effort carried in the model id (a connection's `modelIdEffort`). */
+export const MODEL_ID_ENCODING = "model_id_switch";
+
+/** The task type that names the level a request with no effort is sent at. */
+export const DEFAULT_TASK_TYPE = "default";
 
 /**
  * One recommendation: the catalog effort name, why (logged only), and the

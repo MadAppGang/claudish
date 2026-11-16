@@ -3,8 +3,8 @@
  * (`claudish.view.v1`, JSON Lines) and a pane's read-only magmux view socket (NDJSON). Both record
  * every line they receive, so a test can prove what a viewer sent and what it never sent.
  *
- * The endpoint answers like `ViewServer` does where the viewer can tell: a claim publishes the new
- * holder as an `item.upsert` before its reply, as `ViewClaims` notifies inside the resize.
+ * The endpoint answers like `ViewServer` does where the viewer can tell: an op a viewer has no
+ * use for answers `unknown_op`.
  *
  * Run as a script (`bun fake-view-endpoint.ts <root> <item json>`), it binds an endpoint named for
  * its own process and prints `ready` once listening, so a test can SIGKILL a real owner.
@@ -52,8 +52,6 @@ function listen(server: Server, path: string): Promise<void> {
 export interface FakeEndpointOptions {
   root: string;
   item: ViewItem;
-  /** the label the server would derive from the viewer's term_program */
-  label?: string;
   /** endpoint file name; default this process's own, so two fakes in one root need one each */
   name?: string;
   /** what `hello` answers as the server's version */
@@ -64,11 +62,8 @@ export class FakeViewEndpoint {
   readonly received: Json[] = [];
   readonly path: string;
   item: ViewItem;
-  /** renew answers `view_not_held` while true */
-  refuseRenew = false;
   private readonly server: Server;
   private readonly conns = new Set<Socket>();
-  private grants = 0;
   private seq = 0;
 
   private constructor(private readonly o: FakeEndpointOptions) {
@@ -103,7 +98,7 @@ export class FakeViewEndpoint {
     for (const c of this.conns) this.event(c, { event: "server.closing" }, 0);
   }
 
-  /** Another holder takes the view. */
+  /** Claude Code takes the view: the row names the new holder. */
   steal(view: ViewHolder): void {
     this.upsert({ ...this.item, view } as ViewItem);
   }
@@ -133,7 +128,6 @@ export class FakeViewEndpoint {
     const m = JSON.parse(line) as Json;
     this.received.push(m);
     const id = m.id;
-    const args = (m.args ?? {}) as Json;
     const ok = (result: unknown): void => this.send(sock, { id, ok: true, result });
     const fail = (code: string): void =>
       this.send(sock, { id, ok: false, error: { code, message: code } });
@@ -158,28 +152,6 @@ export class FakeViewEndpoint {
       case "subscribe":
         ok({ sub: 1 });
         this.event(sock, { event: "snapshot", items: [this.item] });
-        return;
-      case "claim": {
-        this.grants += 1;
-        const view: ViewHolder = {
-          holder: "terminal",
-          label: this.o.label ?? "a terminal",
-          since: new Date().toISOString(),
-          claim_id: `grant-${this.grants}`,
-        };
-        this.upsert({ ...this.item, view } as ViewItem);
-        ok({ granted: true, view, resize: { cols: args.cols, rows: args.rows, changed: true } });
-        return;
-      }
-      case "renew":
-        if (this.refuseRenew) fail("view_not_held");
-        else ok({ view: this.item.view ?? null });
-        return;
-      case "release":
-        ok({ view: null });
-        return;
-      case "resize":
-        ok({ cols: args.cols, rows: args.rows, changed: true });
         return;
       default:
         fail("unknown_op");

@@ -51,9 +51,16 @@ import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import * as nodeOs from "node:os";
 import { join, sep } from "node:path";
+import { HOME_BYPASS_OVERRIDES } from "./home-bypass-overrides.ts";
 import { SESSION_ENV_VARS } from "./session-env-vars.ts";
 
 for (const name of SESSION_ENV_VARS) {
+  delete process.env[name];
+}
+
+// A path override outranks HOME, so moving HOME below does not isolate a run that
+// inherits one. `--config` exports CLAUDISH_CONFIG to everything a session starts.
+for (const name of HOME_BYPASS_OVERRIDES) {
   delete process.env[name];
 }
 
@@ -62,6 +69,8 @@ for (const flag of [
   "CLAUDISH_DISABLE_OP",
   "CLAUDISH_DISABLE_CATALOG_WARM",
   "CLAUDISH_DISABLE_BUNDLED_LIST",
+  // Antigravity requests go through the runtime's `fetch`, which the tests replace.
+  "CLAUDISH_ANTIGRAVITY_PLAIN_FETCH",
 ]) {
   if (process.env[flag] === undefined) process.env[flag] = "1";
 }
@@ -115,13 +124,13 @@ if (!inherited || !isTemporaryHome(inherited) || isGuardRunHome(inherited)) {
 const fallbackHome = process.env.HOME as string;
 
 // The stored dynamic models catalogs and their HMAC secret, pinned under the
-// temporary home for the whole run, unless the environment already names them.
-// Both are read at call time, so this holds for every test file.
+// temporary home for the whole run. An inherited value was deleted above with the
+// other path overrides. Both are read at call time, so this holds for every test file.
 for (const [name, leaf] of [
   ["CLAUDISH_DYNAMIC_CATALOG_DIR", "dynamic-models-catalog"],
   ["CLAUDISH_DYNAMIC_CATALOG_KEY", "dynamic-models-catalog.key"],
 ] as const) {
-  if (process.env[name] === undefined) process.env[name] = join(fallbackHome, ".claudish", leaf);
+  process.env[name] = join(fallbackHome, ".claudish", leaf);
 }
 
 // Capture the originals before any replacement: `nodeOs` is a live namespace.

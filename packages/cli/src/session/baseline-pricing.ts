@@ -53,9 +53,8 @@ const BASELINE_ALIASES: ReadonlyArray<{ alias: string; label: string }> = [
 
 /**
  * The name bound to Anthropic's native API route (`anthropic/direct-api`), whose
- * price counts as the reference. See file header. It is a lookup-only binding
- * (`LOOKUP_ONLY_ROUTE_BINDINGS`), kept for reads like this one: no claudish
- * provider calls that route.
+ * price counts as the reference. See file header. It is also the claudish
+ * provider of that route (the Claude API); this read only takes its price.
  */
 const FIRST_PARTY = "anthropic";
 

@@ -48,7 +48,20 @@
  */
 
 import { EFFORT_LEVELS, type EffortLevel, isEffortLevel } from "../../adapters/base-api-format.js";
+import {
+  type ModelIdEffortConnection,
+  findModelIdEffortConnection,
+  listModelIdEffortConnections,
+} from "../../adapters/model-catalog.js";
 import type { DevinModelConfig } from "../devin/devin-models.js";
+import {
+  type ConnectionMapDecision,
+  type ModelIdChoice,
+  chooseConnectionModelId,
+  existingResolutionChoice,
+  logModelIdChoice,
+} from "../model-id-effort-choice.js";
+import { SPEED_PREMIUM_SUFFIXES } from "../model-id-effort.js";
 import type {
   ExpandContext,
   ModelChoice,
@@ -68,7 +81,7 @@ const SPEED_AXIS_KEY = "fast mode";
  * Uid suffixes that denote a speed premium, for the entries Devin declares no
  * axes for. Kept as a fallback only — the declared flag is the authority.
  */
-const SPEED_SUFFIXES = ["fast", "priority"];
+const SPEED_SUFFIXES = SPEED_PREMIUM_SUFFIXES;
 
 /**
  * Devin's effort vocabulary -> claudish's {@link EffortLevel}.
@@ -186,12 +199,16 @@ function byCost(a: ModelsCatalogEntry, b: ModelsCatalogEntry): number {
 }
 
 /**
- * The entry a group resolves to when no effort is requested — also the id the
- * picker shows for that row.
+ * The entry a group resolves to when no effort is requested and the catalog
+ * publishes no effort map for it, and the group's representative in the picker:
+ * its label, window and cost always, and its id when no Devin connection's
+ * effort map lists a member of the group (a mapped group shows its connection's
+ * base instead, see `collapse`).
  *
- * Order: the vendor's own default (the cheapest, when a pool spanning several
- * groups carries more than one) -> cheapest **tier-less** non-premium ->
- * cheapest non-premium -> cheapest anything.
+ * Order: Devin's declared family default (`is_default_model_in_family`; the
+ * cheapest, when a pool spanning several groups carries more than one) ->
+ * cheapest **tier-less** non-premium -> cheapest non-premium -> cheapest
+ * anything.
  *
  * The tier-less preference is load-bearing, not cosmetic. A representative that
  * names a tier gets honoured verbatim by `expand` (that is the whole point of
@@ -249,9 +266,20 @@ export class DevinModelResolver implements ProviderModelResolver {
       windowsPerLabel.set(label, seen);
     }
 
+    // A group with a catalog effort map shows and launches its connection's
+    // base, so the request's effort (or, with none, the no-effort rule) chooses
+    // the level; a suffixed representative would fix it. The base is launched
+    // exactly as a picked row is, so a group takes it only when it lands there.
+    const bases = soleConnectionBases(
+      [...groups.values()],
+      listModelIdEffortConnections("devin"),
+      (base) => this.expand(base, modelsCatalog, { quiet: true })
+    );
     const choices: ModelChoice[] = [];
+    const emitted = new Set<string>();
     for (const group of groups.values()) {
       const chosen = defaultOf(group);
+      const id = uniqueRowId(bases.get(group), chosen.wireId, emitted);
       const label = groupKeyOf(chosen);
       const ambiguous = (windowsPerLabel.get(label)?.size ?? 1) > 1;
       const window = chosen.contextWindow ?? 0;
@@ -267,7 +295,7 @@ export class DevinModelResolver implements ProviderModelResolver {
       });
 
       choices.push({
-        id: chosen.wireId,
+        id,
         displayName: ambiguous && window > 0 ? `${label} (${formatWindow(window)})` : label,
         contextWindow: chosen.contextWindow,
         variants,
@@ -282,9 +310,20 @@ export class DevinModelResolver implements ProviderModelResolver {
   /**
    * A selection + this turn's effort -> the uid to send.
    *
+   * 0. **The connection's effort map** (`modelIdEffort`), read from the cloud
+   *    models catalog for the connection whose `externalModelId` is exactly the
+   *    selection: `values[effort]`, else the next higher listed level, else the
+   *    highest; `off` for `none`; with no effort, the recommended-effort
+   *    table's `default` level for this connection, else `medium`, then as an
+   *    effort level (`chooseConnectionModelId`). Devin's declared family
+   *    default does not decide for a mapped base. Only an id the dynamic
+   *    models catalog lists and that carries no speed premium is sent;
+   *    otherwise the rules below decide. A listed base with no effort is sent as itself.
    * 1. **An exact uid** is honoured verbatim when the turn carries no effort, or
    *    when the uid NAMES a tier — `dv@claude-opus-5-xhigh` stays xhigh even at
-   *    effort `low`. Otherwise it identifies a group and re-resolves within it,
+   *    effort `low`, and so does a row's representative that names a tier
+   *    (`claude-opus-5-5-medium` is always medium). Otherwise it identifies a
+   *    group and re-resolves within it,
    *    which is what makes `dv@glm-5-2-1m` at effort `max` reach
    *    `glm-5-2-max-1m`; before this it was reachable by no request at all.
    * 2. **An exact vendor label or family id** resolves within the group it
@@ -298,8 +337,33 @@ export class DevinModelResolver implements ProviderModelResolver {
    *    message naming what IS served; guessing here would hide it.
    */
   expand(selection: string, modelsCatalog: ModelsCatalogEntry[], ctx: ExpandContext): string {
+    const choice = this.choose(selection, modelsCatalog, ctx.effort);
+    if (!ctx.quiet) logModelIdChoice("Devin", selection.trim() || selection, choice);
+    return choice.id;
+  }
+
+  /** The rules of {@link expand}, with what decided the uid. */
+  private choose(
+    selection: string,
+    modelsCatalog: ModelsCatalogEntry[],
+    effort: EffortLevel | undefined
+  ): ModelIdChoice {
     const requested = selection.trim();
-    if (!requested || modelsCatalog.length === 0) return requested || selection;
+    const lower = requested.toLowerCase();
+    const exact = modelsCatalog.find((entry) => entry.wireId.toLowerCase() === lower);
+
+    // 0. The connection's effort map, when the catalog publishes one for this
+    //    exact base on Devin's route. A listed base with no effort is sent as
+    //    itself; the provider then serves it at its own default.
+    const isMappedBase =
+      requested !== "" && findModelIdEffortConnection(requested, "devin") !== undefined;
+    if (exact && !effort && isMappedBase) {
+      return { id: exact.wireId, effort: undefined, source: "served base" };
+    }
+    const decision = isMappedBase ? mappedWireId(requested, modelsCatalog, effort) : undefined;
+    if (decision?.usable) return decision.choice;
+    const unmapped = (id: string): ModelIdChoice => existingResolutionChoice(id, effort, decision);
+    if (!requested || modelsCatalog.length === 0) return unmapped(requested || selection);
 
     const groups = new Map<string, ModelsCatalogEntry[]>();
     for (const entry of modelsCatalog) {
@@ -309,18 +373,15 @@ export class DevinModelResolver implements ProviderModelResolver {
       else groups.set(key, [entry]);
     }
 
-    const lower = requested.toLowerCase();
-    const exact = modelsCatalog.find((entry) => entry.wireId.toLowerCase() === lower);
     if (exact) {
-      if (!ctx.effort) return exact.wireId;
-      const group = groups.get(keyOf(exact))!;
-      // The group's own representative always re-resolves, even when it names a
-      // tier — it is the face of the row, not a tier the user asked for. This
-      // has to be checked BEFORE the explicit-tier rule or a row whose only
-      // possible representative carries a tier would be pinned to it.
-      if (exact.wireId === defaultOf(group).wireId) return pickForEffort(group, ctx.effort).wireId;
-      if (namesEffortTier(exact.wireId)) return exact.wireId;
-      return pickForEffort(group, ctx.effort).wireId;
+      // An id that names a tier is that tier, at any effort — the group's
+      // representative included.
+      if (!effort || namesEffortTier(exact.wireId)) {
+        return isMappedBase
+          ? unmapped(exact.wireId)
+          : { id: exact.wireId, effort, source: "exact id" };
+      }
+      return unmapped(pickForEffort(groups.get(keyOf(exact))!, effort).wireId);
     }
 
     // 2. An exact vendor label or family id. Unambiguous by construction — it
@@ -338,11 +399,11 @@ export class DevinModelResolver implements ProviderModelResolver {
     //    the backend's error, rewritten against the dynamic models catalog,
     //    names what is served.
     const pool = named.length > 0 ? named : effortSiblings(lower, modelsCatalog);
-    if (pool.length === 0) return requested;
+    if (pool.length === 0) return unmapped(requested);
     // Effort siblings pick among themselves, across whatever groups they sit in
     // and never among the other members of those groups: every sibling is the
     // requested base, so the answer is always `<base>-<effort>`.
-    if (named.length === 0) return pickForEffort(pool, ctx.effort).wireId;
+    if (named.length === 0) return unmapped(pickForEffort(pool, effort).wireId);
 
     // One label, possibly several context groups (GLM-5.2 is 200K and 1M): take
     // the group the vendor itself defaults to, else the cheapest. Sorted, not
@@ -350,8 +411,108 @@ export class DevinModelResolver implements ProviderModelResolver {
     // the order the dynamic models catalog happened to arrive in.
     const chosen =
       pool.filter((entry) => entry.isFamilyDefault).sort(byCost)[0] ?? pool.slice().sort(byCost)[0];
-    return pickForEffort(groups.get(keyOf(chosen!))!, ctx.effort).wireId;
+    return unmapped(pickForEffort(groups.get(keyOf(chosen!))!, effort).wireId);
   }
+}
+
+/**
+ * Rule 0 of `expand`: what the connection's effort map decides, the uid it
+ * chooses or the level it looked up when that uid cannot be sent, or undefined
+ * when the connection publishes no map. In both non-chosen cases the other
+ * rules decide. Only a uid the dynamic models catalog lists and that carries no
+ * speed premium is sendable.
+ */
+function mappedWireId(
+  requested: string,
+  modelsCatalog: ModelsCatalogEntry[],
+  effort: EffortLevel | undefined
+): ConnectionMapDecision | undefined {
+  const byId = new Map<string, ModelsCatalogEntry>();
+  for (const entry of modelsCatalog) {
+    const key = entry.wireId.toLowerCase();
+    if (!byId.has(key)) byId.set(key, entry);
+  }
+
+  return chooseConnectionModelId(requested, "devin", effort, {
+    sendable: (id) => {
+      const entry = byId.get(id.toLowerCase());
+      return entry && !devinHasSpeedPremium(asConfig(entry)) ? entry.wireId : undefined;
+    },
+  });
+}
+
+/**
+ * The Devin connection whose effort map lists one of the group's ids (a level or
+ * `off`): the connection whose base a picker row shows and launches, when it
+ * matches no other group (see `collapse`). Matching by listed id keeps a 1M
+ * group on its own connection's base, never the default-context sibling's.
+ * Undefined when no connection's map lists a member of the group.
+ */
+function mappedConnectionOf(
+  group: ModelsCatalogEntry[],
+  connections: readonly ModelIdEffortConnection[]
+): ModelIdEffortConnection | undefined {
+  const members = new Set(group.map((entry) => entry.wireId.toLowerCase()));
+  const lists = (id: string | undefined) => id !== undefined && members.has(id.toLowerCase());
+  return connections.find(
+    ({ map }) => lists(map.off) || Object.values(map.values).some((id) => lists(id))
+  );
+}
+
+/**
+ * The base each picker group shows and launches: the `externalModelId` of the
+ * connection {@link mappedConnectionOf} finds, only when
+ *  - that connection matches no other group: a map spanning a 200K and a 1M
+ *    group would give both rows one id;
+ *  - the base is no other group's uid: a served 1M base `glm-5-2` stays the 1M
+ *    row's own id, never also the id of the 200K group its map lists;
+ *  - `launch(base)`, the resolution a picked row goes through with no effort,
+ *    returns a uid of the group: a base whose map ids the account does not
+ *    serve may fall back to a sibling in another context group.
+ * Any other group gets no base and keeps its representative, so no two rows
+ * share an id whatever order discovery returned.
+ */
+function soleConnectionBases(
+  groups: readonly ModelsCatalogEntry[][],
+  connections: readonly ModelIdEffortConnection[],
+  launch: (base: string) => string
+): Map<ModelsCatalogEntry[], string> {
+  const groupOfUid = new Map<string, ModelsCatalogEntry[]>();
+  for (const group of groups) {
+    for (const entry of group) groupOfUid.set(entry.wireId.toLowerCase(), group);
+  }
+  const launchesInto = (base: string, group: ModelsCatalogEntry[]) => {
+    const owner = groupOfUid.get(base.toLowerCase());
+    if (owner && owner !== group) return false;
+    return groupOfUid.get(launch(base).toLowerCase()) === group;
+  };
+  const owners = new Map<ModelsCatalogEntry[], ModelIdEffortConnection>();
+  const groupsPerConnection = new Map<ModelIdEffortConnection, number>();
+  for (const group of groups) {
+    const owner = mappedConnectionOf(group, connections);
+    if (!owner) continue;
+    owners.set(group, owner);
+    groupsPerConnection.set(owner, (groupsPerConnection.get(owner) ?? 0) + 1);
+  }
+  const bases = new Map<ModelsCatalogEntry[], string>();
+  for (const [group, owner] of owners) {
+    const base = owner.connection.externalModelId;
+    if (base && groupsPerConnection.get(owner) === 1 && launchesInto(base, group)) {
+      bases.set(group, base);
+    }
+  }
+  return bases;
+}
+
+/**
+ * A picker row's id: the group's base when no earlier row took that id, else
+ * its representative's uid. Records the id in `emitted`, so no two rows share
+ * one.
+ */
+function uniqueRowId(base: string | undefined, representative: string, emitted: Set<string>) {
+  const id = base && !emitted.has(base.toLowerCase()) ? base : representative;
+  emitted.add(id.toLowerCase());
+  return id;
 }
 
 /**

@@ -35,6 +35,7 @@ import {
   isLocalProviderName,
   parseModelSpec,
 } from "./model-parser.js";
+import { nativeRouteFor } from "./native-route.js";
 import { renderOpFailureNotice } from "./onepassword.js";
 import { DROPPED_LABEL } from "./probe-runner.js";
 import {
@@ -299,7 +300,27 @@ export function resolveModelProvider(modelId: string | undefined): ProviderResol
     });
   }
 
-  // 3. Check for native Anthropic models
+  // 3. Check for native Anthropic models. `claude@<id>` is the Claude
+  // subscription only when `<id>` is a name Claude Code owns (the proxy's native
+  // decision); any other inner name is served by nothing, so it is reported as
+  // unavailable rather than as a native model Claude Code would accept.
+  if (
+    parsed.provider === "native-anthropic" &&
+    parsed.isExplicitProvider &&
+    nativeRouteFor(modelId) === null
+  ) {
+    return addCommonFields({
+      category: "native-anthropic",
+      catalogName: "native-anthropic",
+      providerName: "Anthropic (Native)",
+      modelName: parsed.model,
+      fullModelId: modelId,
+      requiredApiKeyEnvVar: null,
+      apiKeyAvailable: false,
+      apiKeyDescription: "claude@ serves only Claude Code's own Claude models",
+      apiKeyUrl: null,
+    });
+  }
   if (parsed.provider === "native-anthropic") {
     return addCommonFields({
       category: "native-anthropic",

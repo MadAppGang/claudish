@@ -83,6 +83,53 @@ zero rows — "this provider has no models", manufactured by the fix for it (com
 `CatalogClient.servedByVendor` answers from the local slim-catalog cache instead, using the
 same route-binding rule as `modelsByVendor`'s own served-by filter, so the two cannot disagree.
 
+## Claude has two rows: the Claude subscription and the Claude API
+
+The provider list starts with two Claude rows (`PICKER_ORDER`, `model-selector.ts`): **Claude
+subscription** (`native-anthropic`, Claude Code's own login) and **Claude API** (`anthropic`,
+metered on the user's Anthropic API key). Each is an ordinary provider row, so every model row
+carries its route in its spec, `claude@<wire id>` or `anthropic@<wire id>`
+(`buildExplicitModelSpec`), in the provider view and in the `all models` view alike. A caller that
+receives only the string keeps the choice: the launch, `claudish init`, `profile add` and
+`profile edit`. The two rows of one model have different specs, so they never share a React key.
+
+What picking a row starts is decided by the launch, not the picker (`launcher/claude-launch.ts`):
+`--model claude@<id>` is a monitor session on Claude Code's own login, and `--model
+anthropic@<id>` a monitor session that claudish's proxy signs with the key
+([settings-env.md](settings-env.md)). A profile tier is a role mapping, not a launch: `claude@<id>`
+in a tier is the native passthrough for that role, and `anthropic@<id>` a proxied hop claudish
+signs, metered.
+
+**One readiness rule for every picker.** `pickerProviderReady` (`providers/picker-readiness.ts`)
+answers for the OpenTUI picker's credential sweep (`PickerDataSource.probeCredentials`) and for
+`getProviderChoices`, which the classic picker (`CLAUDISH_PICKER=classic`) and the profile picker
+use. Nothing else enumerates provider readiness for a picker.
+
+- Claude subscription: `hasClaudeCodeLogin()` (`auth/claude-code-login.ts`): a real
+  `CLAUDE_CODE_OAUTH_TOKEN`, `~/.claude/.credentials.json`, or Claude Code's macOS Keychain item,
+  probed by attributes only, so no secret is read and no access dialog opens. An Anthropic API key
+  never makes this row ready, because the Claude subscription is never signed with one, and the
+  credential authority is not asked about `native-anthropic`.
+- Claude API and every other provider: the credential authority's `isAvailable`. For `anthropic`
+  that is a key present in the environment, the config, the Keychain (by enumeration, never read:
+  [keychain.md](keychain.md)) or 1Password. When the focused provider is missing and declares
+  `vaultKeyReadAtUse`, the hint row names where claudish looked, `looked in: env, config,
+  Keychain, 1Password` (`lookedInHint`, `picker/ModelPicker.tsx`, from `keySourcesSearched`). A
+  login-backed provider gets no such line: its missing state is not about those stores.
+
+**One billing label for every picker.** `displayBillingOf` (`model-selector.ts`) answers `sub` for
+a `SUBSCRIPTION_PROVIDERS` member and for `native-anthropic`. The OpenTUI row prints `SUB` from it
+(`billingModeOf`, `priceLabel` in `picker/rows.tsx`), and so does `resolveProviderDisplayPrice` for
+the classic and profile pickers. It is display only: `calculateCost` never asks it.
+`native-anthropic` stays out of `SUBSCRIPTION_PROVIDERS` because the advisor prices its Claude
+API-key arm through `calculateCost("native-anthropic", …)`, which must stay metered.
+
+**Each row lists its own connections.** The Claude subscription row lists the mapped catalog
+connections bound to `anthropic/claude-code-subscription`, the Claude API row those bound to
+`anthropic/direct-api`. `servedByVendor` and `filterToServedByProvider` (`providers/model-catalog.ts`)
+count only `routeStatus === "mapped"` entries, the thesaurus' definition of a connection; an
+unmapped `aggregators[]` entry is not one.
+
 ## Never open without a terminal
 
 `cli.ts` sets `interactive` whenever no prompt was given, which includes `claudish < /dev/null`,

@@ -10,6 +10,8 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { EFFORT_LEVELS, isEffortLevel } from "./adapters/base-api-format.js";
+import { isClaudishPlaceholderCredential } from "./auth/claudish-placeholder.js";
+import { keySourcesSearched } from "./auth/credentials/key-sources.js";
 import { setCredentialPromptRole } from "./auth/credentials/prompt-role.js";
 import {
   CODE_MODE_ENV_VAR,
@@ -18,6 +20,7 @@ import {
   parseCodeModeSetting,
 } from "./code-mode/policy.js";
 import { ENV } from "./config.js";
+import { realValueFor } from "./env-placeholder.js";
 import { setStderrQuiet } from "./logger.js";
 import {
   type ModelDoc,
@@ -31,11 +34,13 @@ import {
 } from "./model-loader.js";
 import { parseModelParams } from "./model-params.js";
 import { compareByReleaseDateDesc, isPickableProvider } from "./model-selector.js";
+import { isModelVarSetByClaudish } from "./model-vars-env.js";
 import {
   type CredentialLookup,
   type ProbeChainLink,
   type ProbeDroppedLink,
   probeChainFrom,
+  refusedLinkOf,
   resultLinksFrom,
   routingFieldsFrom,
 } from "./probe/probe-chain.js";
@@ -65,11 +70,22 @@ import { parseContextWindow } from "./providers/context-window-limit.js";
 import { ensureEndpointsRegistered } from "./providers/endpoint-registration.js";
 import { explainRouteSettled } from "./providers/explain-route-settled.js";
 import { describeMuseSigningSource } from "./providers/meta-muse/muse-credentials.js";
-import { parseModelChain, parseModelSpec } from "./providers/model-parser.js";
+import {
+  parseListingEntry,
+  parseModelChain,
+  parseModelFlags,
+  parseModelSpec,
+} from "./providers/model-parser.js";
 import { NATIVE_NOT_PROBED } from "./providers/native-route.js";
 import { fetchOllamaModels } from "./providers/ollama-discovery.js";
 import { type ProbeResult, describeProbeState, probeLink } from "./providers/probe-live.js";
-import { type ProbeTarget, describeDropped, probeTargets } from "./providers/probe-runner.js";
+import {
+  type ProbeSendRefusal,
+  type ProbeTarget,
+  describeDropped,
+  probeSendRefusal,
+  probeTargets,
+} from "./providers/probe-runner.js";
 import {
   BUILTIN_PROVIDERS,
   type ProviderDefinition,
@@ -84,8 +100,9 @@ import {
 } from "./providers/routing-rules.js";
 import { nativeShortcutForVendor, renderRecommendedText } from "./recommended-listing.js";
 import { setRecoveryFlagOverrides } from "./recovery/settings.js";
+import { redactSecrets } from "./redact.js";
 import { cliAnsi } from "./theme/ansi.js";
-import type { ClaudishConfig } from "./types.js";
+import type { ClaudishConfig, ModelTier } from "./types.js";
 import { VERSION } from "./version.js";
 // Re-export from centralized provider-resolver for backwards compatibility
 export {
@@ -240,6 +257,7 @@ export const CLAUDISH_FLAG_ARITY: Readonly<Record<string, ClaudishFlagArity>> = 
   "--model-haiku": "value",
   "--model-subagent": "value",
   "--model-pinned": "none",
+  "--claude-subscription-pin": "none",
   "--port": "value",
   "--auto-approve": "none",
   "-y": "none",
@@ -497,20 +515,44 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
 
   if (claudishModel) {
     config.model = claudishModel; // Claudish-specific takes priority
-  } else if (anthropicModel) {
-    config.model = anthropicModel; // Fall back to Claude Code standard
+  } else if (anthropicModel && !isModelVarSetByClaudish(process.env, "ANTHROPIC_MODEL")) {
+    // Fall back to Claude Code standard. A value a parent claudish set for its
+    // own child (and recorded) is not the user's choice: a nested launch with
+    // no --model does not start on the parent's model.
+    config.model = anthropicModel;
   }
 
   // Parse model mappings from env vars
   // Priority: CLAUDISH_MODEL_* (highest) > ANTHROPIC_DEFAULT_* / CLAUDE_CODE_SUBAGENT_MODEL (fallback)
-  config.modelOpus =
-    process.env[ENV.CLAUDISH_MODEL_OPUS] || process.env[ENV.ANTHROPIC_DEFAULT_OPUS_MODEL];
-  config.modelSonnet =
-    process.env[ENV.CLAUDISH_MODEL_SONNET] || process.env[ENV.ANTHROPIC_DEFAULT_SONNET_MODEL];
-  config.modelHaiku =
-    process.env[ENV.CLAUDISH_MODEL_HAIKU] || process.env[ENV.ANTHROPIC_DEFAULT_HAIKU_MODEL];
-  config.modelSubagent =
-    process.env[ENV.CLAUDISH_MODEL_SUBAGENT] || process.env[ENV.CLAUDE_CODE_SUBAGENT_MODEL];
+  // Each tier's source is kept beside it, for a launch that refuses the tier.
+  const tierSources: NonNullable<ClaudishConfig["modelTierSources"]> = {};
+  config.modelTierSources = tierSources;
+  const tierFromEnv = (tier: ModelTier, names: readonly string[]): string | undefined => {
+    for (const name of names) {
+      const value = process.env[name];
+      if (value) {
+        tierSources[tier] = name;
+        return value;
+      }
+    }
+    return undefined;
+  };
+  config.modelOpus = tierFromEnv("opus", [
+    ENV.CLAUDISH_MODEL_OPUS,
+    ENV.ANTHROPIC_DEFAULT_OPUS_MODEL,
+  ]);
+  config.modelSonnet = tierFromEnv("sonnet", [
+    ENV.CLAUDISH_MODEL_SONNET,
+    ENV.ANTHROPIC_DEFAULT_SONNET_MODEL,
+  ]);
+  config.modelHaiku = tierFromEnv("haiku", [
+    ENV.CLAUDISH_MODEL_HAIKU,
+    ENV.ANTHROPIC_DEFAULT_HAIKU_MODEL,
+  ]);
+  config.modelSubagent = tierFromEnv("subagent", [
+    ENV.CLAUDISH_MODEL_SUBAGENT,
+    ENV.CLAUDE_CODE_SUBAGENT_MODEL,
+  ]);
 
   const envPort = process.env[ENV.CLAUDISH_PORT];
   if (envPort) {
@@ -561,6 +603,9 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
     config.logLevel = "debug";
   }
 
+  // Every `--model` value, in argv order, for the listing-entry check after the loop.
+  const modelValues: string[] = [];
+
   // Parse command line arguments
   let i = 0;
   while (i < args.length) {
@@ -584,9 +629,14 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       // Native SELECTORS (`internal`, `default`) are normalized to the tier they
       // select before anything downstream sees them — Claude Code exits 1 on the
       // selector and 0 on the tier. See normalizeNativeModelSpec.
+      // Each `--model` replaces the model AND the chain: a later single spec
+      // must not leave an earlier value's chain behind for the readers that
+      // take `modelChain` before `model`.
       const chain = parseModelChain(modelArg).map(normalizeNativeModelSpec);
       config.model = chain[0]; // Accept any model ID
       if (chain.length > 1) config.modelChain = chain;
+      else delete config.modelChain;
+      modelValues.push(modelArg);
     } else if (arg === "--model-pinned") {
       // Written by a parent claudish on the pane child it spawns with a pinned
       // `--model` (pane-launch.ts): the pin is a routing chain the parent gathered
@@ -594,19 +644,39 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       // left out of `--help`; index.ts honours it only in a pane child
       // (`modelPinnedHonoured`) and drops it, with a debug line, anywhere else.
       config.modelPinned = true;
+    } else if (arg === "--claude-subscription-pin") {
+      // Written by the MCP server on run_prompt's print child for a `claude@`
+      // spec, whose model reaches the child as the bare name: it keeps the
+      // explicit choice of the Claude subscription across that boundary, so the
+      // child signs login-only whatever API-billing opt-in it inherits. It only
+      // ever narrows signing to the login, so it is honoured from any argv, and
+      // left out of `--help`.
+      config.claudeSubscriptionPin = true;
     } else if (arg === "--model-opus") {
       // Model mapping flags
       const val = args[++i];
-      if (val) config.modelOpus = val;
+      if (val) {
+        config.modelOpus = val;
+        tierSources.opus = "--model-opus";
+      }
     } else if (arg === "--model-sonnet") {
       const val = args[++i];
-      if (val) config.modelSonnet = val;
+      if (val) {
+        config.modelSonnet = val;
+        tierSources.sonnet = "--model-sonnet";
+      }
     } else if (arg === "--model-haiku") {
       const val = args[++i];
-      if (val) config.modelHaiku = val;
+      if (val) {
+        config.modelHaiku = val;
+        tierSources.haiku = "--model-haiku";
+      }
     } else if (arg === "--model-subagent") {
       const val = args[++i];
-      if (val) config.modelSubagent = val;
+      if (val) {
+        config.modelSubagent = val;
+        tierSources.subagent = "--model-subagent";
+      }
     } else if (arg === "--port") {
       const portArg = args[++i];
       if (!portArg) {
@@ -1080,6 +1150,22 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
     i++;
   }
 
+  // A listing entry (`--model devin@`, `--model 'or@*'`) makes this a lineup
+  // launch: the providers' models are listed in Claude Code's /model. The last
+  // full spec starts it (none: Claude's default model), every earlier one is a
+  // pinned row, and a chain cannot be combined with it. With no listing entry
+  // nothing changes: the loop above already gave today's last-wins answer.
+  if (modelValues.some((value) => parseListingEntry(value) !== null)) {
+    const flags = parseModelFlags(modelValues);
+    if (!flags.ok) {
+      console.error(`[claudish] Error: ${redactSecrets(flags.message)}`);
+      process.exit(1);
+    }
+    config.model = flags.value.start;
+    delete config.modelChain;
+    config._modelFlags = flags.value;
+  }
+
   // Determine if this will be interactive mode BEFORE API key check
   // If no prompt provided and not explicitly interactive, default to interactive mode
   // Exception: --stdin mode reads prompt from stdin, so don't default to interactive
@@ -1112,9 +1198,10 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
   // handed to NativeHandler, which sends it to api.anthropic.com and gets a 401.
   // --monitor has always scrubbed it; `--advisor` keeps doing so now that it no
   // longer implies monitor.
+  // Exact match only: a user's key that merely contains "placeholder" is theirs.
   if (
     (config.monitor || config.advisor) &&
-    process.env.ANTHROPIC_API_KEY?.includes("placeholder")
+    isClaudishPlaceholderCredential("ANTHROPIC_API_KEY", process.env.ANTHROPIC_API_KEY)
   ) {
     delete process.env.ANTHROPIC_API_KEY;
   }
@@ -1133,7 +1220,8 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
   // Collect available API keys (NO validation here - validation happens in index.ts AFTER model selection)
   // This ensures we know which model the user wants before checking if they have the right key
   config.openrouterApiKey = process.env[ENV.OPENROUTER_API_KEY];
-  config.anthropicApiKey = process.env.ANTHROPIC_API_KEY;
+  // claudish's own placeholder, inherited from a proxied parent, is not a key.
+  config.anthropicApiKey = realValueFor("ANTHROPIC_API_KEY", process.env.ANTHROPIC_API_KEY);
 
   // Set default for quiet mode if not explicitly set
   // Single-shot mode: quiet by default
@@ -1156,20 +1244,27 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
     !config.modelSubagent
   ) {
     // A project profile's raw-URL tiers are dropped here (project-models.ts).
-    const profileModels = usableProfileModels(getRunModelMapping(config.profile));
+    const runMapping = getRunModelMapping(config.profile);
+    const profileModels = usableProfileModels(runMapping);
+    const profileSource =
+      runMapping.profileName !== undefined ? `profile "${runMapping.profileName}"` : "a profile";
 
     // Apply profile models only if not set by CLI flags
     if (!config.modelOpus && profileModels.opus) {
       config.modelOpus = profileModels.opus;
+      tierSources.opus = profileSource;
     }
     if (!config.modelSonnet && profileModels.sonnet) {
       config.modelSonnet = profileModels.sonnet;
+      tierSources.sonnet = profileSource;
     }
     if (!config.modelHaiku && profileModels.haiku) {
       config.modelHaiku = profileModels.haiku;
+      tierSources.haiku = profileSource;
     }
     if (!config.modelSubagent && profileModels.subagent) {
       config.modelSubagent = profileModels.subagent;
+      tierSources.subagent = profileSource;
     }
   }
 
@@ -1580,8 +1675,11 @@ async function printVersion(): Promise<void> {
  * from, so `--probe` shows exactly the chain a request uses: the kept candidates
  * in order, then the candidates the credential, availability and membership
  * filters dropped, each with its outcome. Only kept candidates are probed
- * (`probeTargets`). A native link is never probed: it is served on Claude Code's
- * own auth, which this process cannot forward (`NATIVE_NOT_PROBED`).
+ * (`probeTargets`). A native link is never probed: it is the Claude subscription,
+ * served on Claude Code's own login, which this process cannot forward
+ * (`NATIVE_NOT_PROBED`). A bare Claude name also lists the model's other catalog
+ * routes (the Claude API, gateways, re-serving subscriptions) after it, each
+ * probed and marked `comparison`: a launch of the name never uses them.
  *
  * Two paths:
  * - JSON path (--json): prints the decisions as JSON to stdout
@@ -1623,9 +1721,14 @@ async function probeModelRouting(
     catalog?: RouteExplanation["catalog"];
     catalogSource?: RouteExplanation["catalogSource"];
     fallbackWithheld?: RouteExplanation["fallbackWithheld"];
+    /** A bare Claude name: whether the catalog could be read for its comparison routes. */
+    comparisonCatalog?: RouteExplanation["comparisonCatalog"];
     outcome: RouteExplanation["outcome"];
     warnings: RouteWarning[];
-    /** The kept hops in `route()`'s order; a native target's one not-probed link. `[]` = no route. */
+    /**
+     * The kept hops in `route()`'s order. A native target: the Claude subscription's
+     * not-probed link first, then its comparison links. `[]` = no route.
+     */
     chain: ProbeChainLink[];
     /** Every other candidate, in chain order, with its outcome. Never probed. */
     dropped: ProbeDroppedLink[];
@@ -1667,10 +1770,18 @@ async function probeModelRouting(
    * read again AFTER them, from that hop's own probe result, so its Key line
    * names the login that signed THAT request (or that it was rejected). Both
    * the `--json` and the TUI/printer paths call this once their probes settle.
+   *
+   * A read-at-use key (the Claude API's) is read only when its hop is sent, so
+   * before the send its provenance can say only "not read yet"; read again
+   * after, it names the source and masked value of the key that signed.
    */
   function refreshMuseProvenance(chain: ProbeChainLink[]): void {
     for (const link of chain) {
       if (link.provider === "meta-muse-code") link.provenance = museKeyProvenance(link.probe);
+      else if (link.probe && getProviderByName(link.provider)?.vaultKeyReadAtUse === true) {
+        const provenance = probeCredentials.provenanceFor(link.provider);
+        if (provenance) link.provenance = provenance;
+      }
     }
   }
 
@@ -1720,6 +1831,13 @@ async function probeModelRouting(
         ? resolveCredentialProvenance(provider, keyInfo.envVar, keyInfo.aliases)
         : undefined;
     },
+    searchedFor(provider) {
+      // A read-at-use key (the Claude API's) is found or not at send time, so its
+      // row says where claudish looked when none was there.
+      return getProviderByName(provider)?.vaultKeyReadAtUse === true
+        ? keySourcesSearched().join(", ")
+        : undefined;
+    },
   };
 
   /** One model's decision, its rows, and the hops a probe sends requests down. */
@@ -1734,12 +1852,42 @@ async function probeModelRouting(
 
   /** The routing decision for one model (shared by both paths). */
   async function explainForProbe(modelInput: string): Promise<ModelProbe> {
-    const explanation = await explainRouteSettled(modelInput);
+    const explanation = await explainRouteSettled(modelInput, { comparison: true });
     const { chain, dropped } = probeChainFrom(explanation, probeCredentials);
-    // Both are the kept candidates in chain order, so the i-th target is the
-    // i-th link. A native target has one link and no targets.
-    const targets = probeTargets(explanation).map((target, i) => ({ target, link: chain[i] }));
+    // Targets and probed links are both in chain order, so the i-th target is
+    // the i-th probed link. Paired by POSITION: two hops may share a provider and
+    // a wire id (`or@x#fast`, `or@x`). The Claude subscription's link is never
+    // probed, so it has no target.
+    const probed = chain.filter((link) => !link.notProbed);
+    const targets = probeTargets(explanation).map((target, i) => ({ target, link: probed[i] }));
     return { modelInput, explanation, chain, dropped, targets };
+  }
+
+  /**
+   * Whether a target may be sent: a read-at-use key is read now, and one that
+   * cannot be read (a reported failure or a thrown read), or is not there,
+   * refuses the send for that target only (`probeSendRefusal`).
+   */
+  async function sendRefusalFor(target: ProbeTarget): Promise<ProbeSendRefusal | null> {
+    const { credentials } = await import("./auth/credentials/authority.js");
+    return probeSendRefusal(target.provider, (name) => credentials.resolveForUse(name));
+  }
+
+  /** A link whose send was refused leaves the chain and joins the dropped rows. */
+  function dropRefusedLink(
+    probe: ModelProbe,
+    link: ProbeChainLink,
+    refusal: ProbeSendRefusal
+  ): ProbeDroppedLink {
+    const hint =
+      refusal.outcome === "no-credential" ? probeCredentials.hintFor(link.provider) : undefined;
+    const entry: ProbeDroppedLink = {
+      ...refusedLinkOf(link, refusal),
+      ...(hint ? { credentialHint: hint } : {}),
+    };
+    probe.chain = probe.chain.filter((l) => l !== link);
+    probe.dropped.push(entry);
+    return entry;
   }
 
   /** One live request down one kept hop. `probeSpec` is final, so no second pinning. */
@@ -1778,6 +1926,7 @@ async function probeModelRouting(
       ...(exp.catalog ? { catalog: exp.catalog } : {}),
       ...(exp.catalogSource ? { catalogSource: exp.catalogSource } : {}),
       ...(exp.fallbackWithheld ? { fallbackWithheld: exp.fallbackWithheld } : {}),
+      ...(exp.comparisonCatalog ? { comparisonCatalog: exp.comparisonCatalog } : {}),
       outcome: exp.outcome,
       warnings: exp.warnings,
       chain: probe.chain,
@@ -1789,13 +1938,14 @@ async function probeModelRouting(
 
   /**
    * Compute wiring for the first kept hop. A native link has none to report: the
-   * native passthrough forwards the request as is, through no adapter.
+   * native passthrough forwards the request as is, through no adapter. A
+   * comparison link is not a hop of the name's route, so it has none either.
    */
   async function computeWiring(
     chain: ProbeChainLink[],
     parsedModel: string
   ): Promise<Wiring | undefined> {
-    const firstReadyRoute = chain.find((c) => c.hasCredentials && !c.notProbed);
+    const firstReadyRoute = chain.find((c) => c.hasCredentials && !c.notProbed && !c.comparison);
     if (!firstReadyRoute) return undefined;
 
     const providerName = firstReadyRoute.provider;
@@ -1903,7 +2053,7 @@ async function probeModelRouting(
           process.env.OPENROUTER_API_KEY,
           undefined,
           false,
-          process.env.ANTHROPIC_API_KEY,
+          realValueFor("ANTHROPIC_API_KEY", process.env.ANTHROPIC_API_KEY),
           undefined,
           // Hooks never see --probe traffic. A probe proxy builds a hop marked
           // as routed the way real traffic builds a routing chain's hop.
@@ -1927,11 +2077,16 @@ async function probeModelRouting(
         // Kept hops only. Dropped candidates and a native link are never probed.
         if (liveProxy) {
           const url = liveProxy.url;
-          const probes = await Promise.all(
-            probe.targets.map(({ target }) => probeTarget(url, target))
+          const sent = await Promise.all(
+            probe.targets.map(async ({ target }) => {
+              const refusal = await sendRefusalFor(target);
+              return refusal ? { refusal } : { result: await probeTarget(url, target) };
+            })
           );
           probe.targets.forEach(({ link }, i) => {
-            link.probe = probes[i];
+            const outcome = sent[i];
+            if ("result" in outcome) link.probe = outcome.result;
+            else dropRefusedLink(probe, link, outcome.refusal);
           });
         }
         refreshMuseProvenance(probe.chain);
@@ -2016,7 +2171,7 @@ async function probeModelRouting(
           process.env.OPENROUTER_API_KEY,
           undefined,
           false,
-          process.env.ANTHROPIC_API_KEY,
+          realValueFor("ANTHROPIC_API_KEY", process.env.ANTHROPIC_API_KEY),
           undefined,
           // Hooks never see --probe traffic. A probe proxy builds a hop marked
           // as routed the way real traffic builds a routing chain's hop.
@@ -2038,17 +2193,38 @@ async function probeModelRouting(
     }
     updateStep("Resolving routing chains", "done");
 
-    // Step 3: One row per link, per model: the kept hops (probed when a live
-    // probe runs, otherwise not probed), the native link, then the dropped
-    // candidates. Only the kept hops are ever sent a request.
-    const liveRows: Array<{ id: string; target: ProbeTarget; link: ProbeChainLink }> = [];
+    // Step 3: One row per link, per model, in chain order (the Claude
+    // subscription's link first for a bare Claude name, then its comparison
+    // links), then the dropped candidates. Only the probed links are ever sent a
+    // request; the rest are not probed.
+    const liveRows: Array<{
+      id: string;
+      probe: ModelProbe;
+      target: ProbeTarget;
+      link: ProbeChainLink;
+    }> = [];
     const rows: ProbeLinkState[] = [];
     for (const probe of modelProbes) {
       const model = probe.modelInput;
-      probe.targets.forEach(({ target, link }, i) => {
+      const targetOf = new Map(probe.targets.map(({ target, link }) => [link, target]));
+      probe.chain.forEach((link, i) => {
+        if (link.notProbed) {
+          rows.push({
+            id: `${model}:native`,
+            model,
+            displayName: link.displayName,
+            modelSpec: link.modelSpec,
+            status: "not-probed",
+            tone: "native",
+            note: `◐ ${NATIVE_NOT_PROBED}`,
+          });
+          return;
+        }
+        const target = targetOf.get(link);
+        if (!target) return;
         const id = `${model}:${i}:${target.provider}`;
         if (liveProxy) {
-          liveRows.push({ id, target, link });
+          liveRows.push({ id, probe, target, link });
           rows.push({
             id,
             model,
@@ -2068,18 +2244,6 @@ async function probeModelRouting(
           });
         }
       });
-      for (const link of probe.chain) {
-        if (!link.notProbed) continue;
-        rows.push({
-          id: `${model}:native`,
-          model,
-          displayName: link.displayName,
-          modelSpec: link.modelSpec,
-          status: "not-probed",
-          tone: "native",
-          note: `◐ native — ${NATIVE_NOT_PROBED}`,
-        });
-      }
       probe.dropped.forEach((entry, i) => {
         rows.push({
           id: `${model}:dropped:${i}:${entry.provider}`,
@@ -2088,7 +2252,7 @@ async function probeModelRouting(
           modelSpec: entry.wireId,
           status: "not-probed",
           tone: "dropped",
-          note: `– ${describeDropped(entry.outcome, entry.credentialHint, entry.detail)}`,
+          note: `– ${describeDropped(entry.outcome, entry.credentialHint, entry.detail, entry.searched)}`,
         });
       });
     }
@@ -2099,7 +2263,17 @@ async function probeModelRouting(
     if (liveProxy) {
       const url = liveProxy.url;
       await Promise.all(
-        liveRows.map(async ({ id, target, link }) => {
+        liveRows.map(async ({ id, probe, target, link }) => {
+          const refusal = await sendRefusalFor(target);
+          if (refusal) {
+            const entry = dropRefusedLink(probe, link, refusal);
+            updateLink(id, {
+              status: "not-probed",
+              tone: "dropped",
+              note: `– ${describeDropped(entry.outcome, entry.credentialHint, entry.detail, entry.searched)}`,
+            });
+            return;
+          }
           updateLink(id, { status: "probing", startTime: Date.now() });
           const result = await probeTarget(url, target);
           if (result.state === "live") {
@@ -2296,6 +2470,9 @@ ${shortcutTable}
 ${h("OPTIONS")}
   ${green("-i, --interactive")}        Run in interactive mode (default when no prompt given)
   ${green("-m, --model")} ${yellow("<model>")}      Model to use (required for single-shot mode)
+                           ${dim("--model <provider>@ (no model) lists that provider's models in /model;")}
+                           ${dim("--model '<provider>@*' lists every model a gateway serves. Repeat --model")}
+                           ${dim("to list several; the last <provider>@<model> starts the session.")}
   ${green("--profile")} ${yellow("<name>")}         Use named profile for model mapping (default profile if omitted)
   ${green("--default-provider")} ${yellow("<name>")} Fallback provider for bare model names (claudish provider or customEndpoints key)
                            ${dim('"" disables it. Precedence: this flag > CLAUDISH_DEFAULT_PROVIDER env > config.json')}

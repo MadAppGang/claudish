@@ -484,14 +484,18 @@ describe("picker provider list", () => {
   });
 
   test("every builtin is pickable or an explicitly known unpickable shell", () => {
-    const knownUnpickableShells = ["qwen", "native-anthropic"];
+    const knownUnpickableShells = ["qwen"];
 
     for (const def of BUILTIN_PROVIDERS) {
       expect(isPickableProvider(def) || knownUnpickableShells.includes(def.name)).toBe(true);
     }
 
     // Changing this set is a product decision, not a provider rename.
-    expect(unpickableBuiltins.map((def) => def.name)).toEqual(["qwen", "native-anthropic"]);
+    expect(unpickableBuiltins.map((def) => def.name)).toEqual(["qwen"]);
+    // The Claude subscription is pickable through its `claude` shortcut.
+    const claudeSubscription = BUILTIN_PROVIDERS.find((def) => def.name === "native-anthropic")!;
+    expect(isPickableProvider(claudeSubscription)).toBe(true);
+    expect(claudeSubscription.shortcuts).toContain("claude");
   });
 
   test.each(unpickableBuiltins.map((def) => [def.name, def] as const))(

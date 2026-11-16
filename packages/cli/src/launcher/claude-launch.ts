@@ -1,0 +1,931 @@
+/**
+ * How a launch talks to Anthropic when its main model is a Claude model: who
+ * signs the native requests its proxy forwards, and whether the launch is a
+ * monitor session on Claude Code's own login.
+ *
+ * A launch whose main model or any tier is a bare Claude name is the Claude
+ * subscription, so its native requests are signed with Claude Code's login
+ * only, never with an Anthropic API key (`login-only`), unless the user opted
+ * into API billing (`--anthropic-api-billing`). A `claude@<id>` tier pins the
+ * launch to the subscription whatever the opt-in says. Every other launch keeps
+ * the proxy's `inbound` rule, which an absent signing selects.
+ *
+ * `claude@<id>` names the Claude subscription explicitly. At top level it is a
+ * monitor session: Claude Code talks to Anthropic on its own login and the
+ * proxy forwards every request unchanged, signed `login-only` whatever the
+ * API-billing opt-in says. In a pane child it is the bare `<id>`, the native
+ * passthrough a bare slot already takes, pinned to the subscription
+ * (`claudeSubscriptionPin`): `login-only` and the key hidden, whatever the
+ * opt-in says.
+ *
+ * `anthropic@<id>` (`a@`, `api@`) names the Claude API. At top level it is a
+ * monitor session too: Claude Code holds only claudish's placeholder token and
+ * the proxy signs every request with the user's key (`launch-key`), so the key
+ * never enters Claude Code's environment, its tool shells, MCP servers or a
+ * nested claudish. In a pane child, and inside a chain, it stays a proxied hop
+ * claudish signs itself.
+ *
+ * Decided in two steps. `decideClaudeLaunch` runs before the launch's catalog
+ * verdict and key validation, which must already see `monitor`;
+ * `prepareClaudeLaunch` runs after the catalog warm and before the advisor
+ * check and the proxy.
+ *
+ * A launch with listing entries (`--model devin@`) is decided one step
+ * earlier, right after endpoint registration: `decideModelListings` resolves
+ * the providers it lists in Claude Code's `/model` and refuses the forms whose
+ * rows could never be routed.
+ */
+
+import {
+  type ClaudeCodeStartupCredential,
+  claudeCodeStartupCredential,
+} from "../auth/claude-code-login.js";
+import { isClaudishPlaceholderCredential } from "../auth/claudish-placeholder.js";
+import type { CredentialAuthority } from "../auth/credentials/authority.js";
+import { classifierPassthroughEnabled } from "../classifier-passthrough.js";
+import {
+  type SettingsFinding,
+  type SettingsLoginToken,
+  hasNativeAnthropicMapping,
+  isProxyAuthMode,
+  managedSettingsForcesClaudeAi,
+  settingsArgsForcingClaudeAi,
+  settingsClaudeLoginToken,
+  settingsCredentialFindings,
+  startsOnClaudeSubscription,
+  unreadableSettingsArgs,
+  wantsAnthropicApiBilling,
+} from "../claude-runner.js";
+import {
+  CLAUDE_LOGIN_BEARER,
+  LOGIN_ONLY_SIGNING,
+  type NativeSigning,
+} from "../handlers/shared/anthropic-forward.js";
+import { isPaneChild } from "../pane/child-env.js";
+import { resolveModelNameSync } from "../providers/catalog-client.js";
+import { normalizeNativeModelSpec } from "../providers/claude-code-aliases.js";
+import {
+  MODEL_CHAIN_SEPARATOR,
+  type ParsedModelFlags,
+  parseModelSpec,
+} from "../providers/model-parser.js";
+import {
+  CLAUDE_SUBSCRIPTION_LABEL,
+  claudeLaunchMarkersRefusal,
+  claudeSubscriptionInner,
+  claudeSubscriptionSpecRefusal,
+  nativeRouteFor,
+} from "../providers/native-route.js";
+import { shadowedEndpointRefusal } from "../providers/shadowed-endpoint.js";
+import {
+  describeUnknownShortcut,
+  isKnownProviderName,
+  typedShortcutOf,
+} from "../providers/unknown-shortcut.js";
+import { acquireSigningLease, redactSecrets } from "../redact.js";
+import type { ClaudishConfig, ModelTier, ProviderListing } from "../types.js";
+
+export interface LaunchSigningDeps {
+  /** Default `wantsAnthropicApiBilling` (flag, env, config). */
+  wantsApiBilling?: (config: ClaudishConfig) => boolean;
+}
+
+/**
+ * The launch's native signing; undefined is the proxy's `inbound` rule.
+ *
+ * - `login-only` on a launch pinned to the Claude subscription
+ *   (`claudeSubscriptionPin`: `claude@` as a pane child's model, or as any
+ *   tier), whatever the API-billing opt-in says.
+ * - `login-only` when the main model or any tier is a Claude model and the
+ *   user did not opt into API billing.
+ * - Else undefined.
+ *
+ * A top-level `claude@` or `anthropic@` main model never reaches this function:
+ * `prepareClaudeLaunch` decides both as monitor sessions first.
+ */
+export function launchSigningFor(
+  config: ClaudishConfig,
+  deps: LaunchSigningDeps = {}
+): NativeSigning | undefined {
+  if (config.claudeSubscriptionPin) return LOGIN_ONLY_SIGNING;
+  if (!hasNativeAnthropicMapping(config)) return undefined;
+  const wantsApiBilling =
+    deps.wantsApiBilling ?? ((c: ClaudishConfig) => wantsAnthropicApiBilling(c));
+  return wantsApiBilling(config) ? undefined : LOGIN_ONLY_SIGNING;
+}
+
+/**
+ * Whether a Claude row picked in `/model` runs as picked: a launch with listing
+ * entries whose child keeps the user's login (not proxy auth) and starts on a
+ * Claude model or on none. The proxy then sends a Claude-named request that no
+ * role mapping caught to the native passthrough as requested, instead of
+ * replacing it with the start model. A foreign start keeps the start model.
+ */
+export function claudeRowsAsPicked(config: ClaudishConfig): boolean {
+  if ((config.modelListings?.length ?? 0) === 0) return false;
+  if (isProxyAuthMode(config)) return false;
+  if (typeof config.model !== "string" || config.model.length === 0) return true;
+  return nativeRouteFor(config.model) !== null;
+}
+
+/**
+ * Whether a Claude advisor member of this launch may fall back to
+ * ANTHROPIC_API_KEY when its request carries no Claude login. Not on a launch
+ * with no main model (plain `--monitor`, `--advisor` alone) unless the user
+ * opted into API billing: such a session runs on Claude Code's own credential,
+ * the Claude subscription for a login, and is never moved onto the key.
+ */
+export function advisorKeyLookupAllowed(
+  config: ClaudishConfig,
+  deps: LaunchSigningDeps = {}
+): boolean {
+  const tiers = [config.modelOpus, config.modelSonnet, config.modelHaiku, config.modelSubagent];
+  const hasMainModel =
+    (config.modelChain?.length ?? 0) > 0 ||
+    Boolean(config.model) ||
+    tiers.some((m) => typeof m === "string" && m.length > 0);
+  if (hasMainModel) return true;
+  const wantsApiBilling =
+    deps.wantsApiBilling ?? ((c: ClaudishConfig) => wantsAnthropicApiBilling(c));
+  return wantsApiBilling(config);
+}
+
+/** What a Claude subscription launch does about the settings findings it read. */
+export interface SubscriptionSettingsCheck {
+  /** The refusal naming every finding that could hand the child a key; null when none can. */
+  refusal: string | null;
+  /** One line per finding that changes where requests go, not who signs them. */
+  notices: string[];
+}
+
+/** The clause one refused finding contributes, naming its file and never a value. */
+function refusedClause(finding: SettingsFinding): string | null {
+  switch (finding.kind) {
+    case "api-key":
+      return `${finding.where} sets ANTHROPIC_API_KEY, which Claude Code would sign with instead of your login`;
+    case "api-key-helper":
+      return `${finding.where} sets an apiKeyHelper, whose output Claude Code would send as an API key instead of your login`;
+    case "custom-headers-auth":
+      return `${finding.where} sets ANTHROPIC_CUSTOM_HEADERS with an x-api-key or a non-login authorization header, which Claude Code would attach to every request`;
+    case "auth-token":
+      return `${finding.where} sets ANTHROPIC_AUTH_TOKEN, which Claude Code would send instead of your login`;
+    case "unreadable":
+      return `${finding.where} could not be read or parsed, so claudish cannot confirm it hands Claude Code no API key`;
+    case "base-url":
+      return null;
+  }
+}
+
+/**
+ * The Claude subscription is never signed with an Anthropic API key, so a
+ * settings layer that would hand the child one REFUSES the launch, naming every
+ * such file; it is never a warning that spawns anyway. A real settings
+ * ANTHROPIC_AUTH_TOKEN is refused the same way: Claude Code would send it
+ * instead of the login, and every request would then fail naming the wrong
+ * cause. A settings ANTHROPIC_BASE_URL is a notice: it moves where the login's
+ * requests go, not which credential signs them.
+ *
+ * `bareName`: the launch named a bare Claude model, so the user may also opt
+ * into API billing instead. `cause`: why the launch is the Claude subscription,
+ * when the main model does not say it (`subscriptionCause`).
+ */
+export function subscriptionSettingsCheck(
+  findings: readonly SettingsFinding[],
+  opts: { bareName: boolean; cause?: string }
+): SubscriptionSettingsCheck {
+  const clauses: string[] = [];
+  const files: string[] = [];
+  const notices: string[] = [];
+  for (const finding of findings) {
+    const clause = refusedClause(finding);
+    if (clause) {
+      clauses.push(clause);
+      if (!files.includes(finding.where)) files.push(finding.where);
+    } else if (finding.kind === "base-url") {
+      notices.push(
+        `${finding.where} sets ANTHROPIC_BASE_URL, so this session's requests bypass claudish`
+      );
+    }
+  }
+  if (clauses.length === 0) return { refusal: null, notices };
+  const remedy =
+    `Remove ${clauses.length === 1 ? "it" : "them"} from ${files.join(", ")}, or use ` +
+    `anthropic@<id> for the Claude API${opts.bareName ? ", or pass --anthropic-api-billing" : ""}.`;
+  return {
+    refusal: `${subscriptionPrefix(opts.cause)}: ${clauses.join("; ")}. ${remedy}`,
+    notices,
+  };
+}
+
+/** `Claude subscription`, with the reason the launch is one when given. */
+function subscriptionPrefix(cause: string | undefined): string {
+  return cause ? `${CLAUDE_SUBSCRIPTION_LABEL}, ${cause}` : CLAUDE_SUBSCRIPTION_LABEL;
+}
+
+/**
+ * Why a launch whose main model is not a Claude model is the Claude
+ * subscription: each tier that names a Claude model, with where it came from
+ * (`because the haiku model claude-haiku-x from profile "work" is a Claude
+ * model`). Undefined when the main model is a Claude model or no tier is one.
+ *
+ * A launch that only lists providers names no model at all, so its cause is
+ * that it starts on Claude's default model (`because --model devin@ names no
+ * start model, …`), the listing entries as typed.
+ */
+export function subscriptionCause(config: ClaudishConfig): string | undefined {
+  if (startsOnClaudeSubscription(config)) {
+    const typed = (config.modelListings ?? []).map((listing) => listing.typed);
+    const verb = typed.length === 1 ? "names" : "name";
+    return `because --model ${typed.join(", ")} ${verb} no start model, so the session starts on Claude's default model`;
+  }
+  const main = typeof config.model === "string" ? config.model : undefined;
+  if (main && nativeRouteFor(main) !== null) return undefined;
+  const named = TIER_FIELDS.flatMap(([tier, field]) => {
+    const spec = config[field];
+    if (!isClaudeTier(spec)) return [];
+    const source = config.modelTierSources?.[tier];
+    return [`the ${tier} model ${spec}${source ? ` from ${source}` : ""}`];
+  });
+  if (named.length === 0) return undefined;
+  return `because ${named.join(", ")} ${named.length === 1 ? "is a Claude model" : "are Claude models"}`;
+}
+
+function isClaudeTier(spec: string | undefined): spec is string {
+  return typeof spec === "string" && spec.length > 0 && nativeRouteFor(spec) !== null;
+}
+
+/**
+ * The refusal for a Claude subscription launch whose Claude Code has no
+ * Claude login, or null. A stored Console key is not one: Claude Code would
+ * send it as `x-api-key` (no login screen, measured on 2.1.325) and every
+ * request would be refused. `unknown` (a store that did not answer) is not
+ * refused: each request is still checked.
+ */
+export function claudeLoginRefusal(
+  credential: ClaudeCodeStartupCredential,
+  opts: { bareName: boolean; cause?: string }
+): string | null {
+  const optIn = opts.bareName ? ", or pass --anthropic-api-billing to bill the key" : "";
+  switch (credential.kind) {
+    case "login":
+    case "unknown":
+      return null;
+    case "api-key":
+      return (
+        `${subscriptionPrefix(opts.cause)}: Claude Code's own credential is an Anthropic API key ` +
+        `(stored in ${credential.where}), not a Claude login, and claudish never signs a Claude ` +
+        `subscription request with an API key. Use anthropic@<id> for the Claude API${optIn}, ` +
+        "or sign in to your Claude subscription with /login in Claude Code."
+      );
+    case "none":
+      return (
+        `${subscriptionPrefix(opts.cause)}: Claude Code has no Claude login on this machine, and ` +
+        "claudish never signs a Claude subscription request with an API key. Sign in with /login " +
+        `in Claude Code, or use anthropic@<id> for the Claude API${optIn}.`
+      );
+  }
+}
+
+/** True when `spec` names a bare Claude model, not `claude@` before one. */
+export function isBareClaudeName(spec: string): boolean {
+  return nativeRouteFor(spec) !== null && !parseModelSpec(spec).isExplicitProvider;
+}
+
+/** True when `spec` is `claude@` before a name: the Claude subscription named explicitly. */
+function isClaudeSubscriptionSpec(spec: string): boolean {
+  const parsed = parseModelSpec(spec);
+  return parsed.isExplicitProvider && parsed.provider === "native-anthropic";
+}
+
+/** True when `spec` is `anthropic@`, `a@` or `api@` before a name: the Claude API. */
+function isClaudeApiSpec(spec: string): boolean {
+  const parsed = parseModelSpec(spec);
+  return parsed.isExplicitProvider && parsed.provider === CLAUDE_API_PROVIDER;
+}
+
+/** The claudish provider of the Claude API. */
+const CLAUDE_API_PROVIDER = "anthropic";
+
+/**
+ * The refusal for a top-level Claude API spec that carries a speed or mode
+ * marker or a `:N` suffix, or null. Monitor mode forwards Claude Code's own
+ * requests, so neither could apply: each would be dropped silently.
+ */
+function claudeApiLaunchRefusal(spec: string): string | null {
+  const markerRefusal = claudeLaunchMarkersRefusal(spec);
+  if (markerRefusal) return markerRefusal;
+  if (/:\d+$/.test(spec)) {
+    return `${spec}: a Claude API launch is one Claude Code session on Anthropic's API, so a :N concurrency suffix cannot apply.`;
+  }
+  return null;
+}
+
+/** Each tier field, by the Claude Code role it maps. */
+const TIER_FIELDS: ReadonlyArray<
+  readonly [ModelTier, "modelOpus" | "modelSonnet" | "modelHaiku" | "modelSubagent"]
+> = [
+  ["opus", "modelOpus"],
+  ["sonnet", "modelSonnet"],
+  ["haiku", "modelHaiku"],
+  ["subagent", "modelSubagent"],
+];
+
+/** How to remove one tier, from where it came from. */
+function tierRemedy(tier: ModelTier, source: string | undefined): string {
+  if (source === undefined) return `remove the ${tier} mapping`;
+  if (source.startsWith("--")) return `drop ${source}`;
+  if (source.startsWith("profile ") || source === "a profile") {
+    return `remove the ${tier} mapping from ${source}`;
+  }
+  return `unset ${source}`;
+}
+
+/**
+ * The refusal for a top-level Claude launch (`claude@` or `anthropic@` main
+ * model) that also maps a tier, or null. Such a launch is one Claude Code
+ * session on one route, forwarded unchanged, so no role mapping can apply: a
+ * `claude@` tier would be signed with the Claude API launch's key, and any
+ * other tier would be dropped silently. Names every tier and where it came from.
+ */
+function claudeLaunchTierRefusal(
+  config: ClaudishConfig,
+  main: string,
+  launch: "subscription" | "api"
+): string | null {
+  const mapped = TIER_FIELDS.flatMap(([tier, field]) => {
+    const spec = config[field];
+    return typeof spec === "string" && spec.length > 0 ? [{ tier, spec }] : [];
+  });
+  if (mapped.length === 0) return null;
+  const sourceOf = (tier: ModelTier) => config.modelTierSources?.[tier];
+  const described = mapped.map(({ tier, spec }) => {
+    const source = sourceOf(tier);
+    return `the ${tier} model ${spec}${source ? ` (from ${source})` : ""}`;
+  });
+  const remedies = [...new Set(mapped.map(({ tier }) => tierRemedy(tier, sourceOf(tier))))];
+  const label = launch === "api" ? "Claude API" : CLAUDE_SUBSCRIPTION_LABEL;
+  return (
+    `${main} is a ${label} launch: one Claude Code session that does not use role mappings, ` +
+    `so ${described.join(", ")} cannot apply. To launch it, ${remedies.join(", ")}.`
+  );
+}
+
+/** Whether the launch may go on; when it may, `decideClaudeLaunch` has updated the config. */
+export type ClaudeLaunchDecision = { ok: true } | { ok: false; message: string };
+
+export interface DecideClaudeLaunchDeps {
+  /** Default `isPaneChild()`: this process is the claudish of a `team` or MCP session pane. */
+  paneChild?: boolean;
+  /** Default `shadowedEndpointRefusal`: a spec on a custom endpoint name a Claude builtin took over. */
+  shadowedEndpointRefusal?: (specs: readonly string[]) => string | null;
+}
+
+/**
+ * Step 1, before the launch's catalog verdict and key validation. Reads the
+ * whole `--model` chain (`modelChain`, else `model`) and the four tier fields.
+ *
+ * - A spec on a custom endpoint name a Claude builtin took over (`anthropic@`
+ *   while `customEndpoints.anthropic` exists) refuses the launch, naming the
+ *   rename: it would reach the builtin, not the user's endpoint.
+ * - A `claude@` spec the subscription cannot serve (a name Claude Code does not
+ *   own, a marker, a `:N` suffix) refuses the launch, and so does `claude@`
+ *   inside a chain: the Claude subscription is served by Claude Code itself.
+ * - A `claude@X` tier sets `claudeSubscriptionPin`; the tier keeps its spec.
+ * - One `claude@X` main model: in a pane child, or on a launch with listing
+ *   entries (`config.modelListings`), the model becomes the bare `X`
+ *   and `claudeSubscriptionPin` is set; otherwise the launch becomes a monitor session, `claudeLaunch:
+ *   "subscription"`, and `model` keeps the user's spec for every later reader
+ *   (the end-of-session card, the advisor notice).
+ * - One `anthropic@X` (`a@X`, `api@X`) main model at top level: a monitor
+ *   session, `claudeLaunch: "api"`; a speed or mode marker or a `:N` suffix
+ *   refuses it. In a pane child, and inside a chain, it stays a proxied hop.
+ * - Either top-level monitor session with any tier set (a flag, an
+ *   environment variable or a profile) refuses the launch, naming each tier
+ *   and its source: the session forwards Claude Code's requests unchanged on
+ *   one route, so a tier could only be dropped, or, for a `claude@` tier on
+ *   the Claude API, signed with the launch's key.
+ * - Anything else is left as it is.
+ */
+export function decideClaudeLaunch(
+  config: ClaudishConfig,
+  deps: DecideClaudeLaunchDeps = {}
+): ClaudeLaunchDecision {
+  const specs = config.modelChain ?? (typeof config.model === "string" ? [config.model] : []);
+  const tiers = [config.modelOpus, config.modelSonnet, config.modelHaiku, config.modelSubagent];
+  const named = [...specs, ...tiers].filter(
+    (spec): spec is string => typeof spec === "string" && spec.length > 0
+  );
+  const shadowed = (deps.shadowedEndpointRefusal ?? shadowedEndpointRefusal)(named);
+  if (shadowed) return { ok: false, message: shadowed };
+  for (const spec of [...specs, ...tiers]) {
+    if (typeof spec !== "string" || spec.length === 0) continue;
+    const refusal = claudeSubscriptionSpecRefusal(spec);
+    if (refusal) return { ok: false, message: refusal };
+  }
+  // A `claude@` tier is the Claude subscription named explicitly: the proxy
+  // serves it on the native passthrough, and the whole launch keeps the login.
+  if (tiers.some((spec) => typeof spec === "string" && isClaudeSubscriptionSpec(spec))) {
+    config.claudeSubscriptionPin = true;
+  }
+  if (specs.length > 1) {
+    const refusal = claudeSubscriptionSpecRefusal(specs.join(MODEL_CHAIN_SEPARATOR));
+    return refusal ? { ok: false, message: refusal } : { ok: true };
+  }
+  const main = specs[0];
+  if (main === undefined) return { ok: true };
+
+  if (isClaudeApiSpec(main)) {
+    // A pane child keeps the proxied hop, which honours markers: a headless
+    // pane is never given a key, and claudish signs that hop itself.
+    if (deps.paneChild ?? isPaneChild()) return { ok: true };
+    const refusal = claudeApiLaunchRefusal(main) ?? claudeLaunchTierRefusal(config, main, "api");
+    if (refusal) return { ok: false, message: refusal };
+    config.monitor = true;
+    config.claudeLaunch = "api";
+    return { ok: true };
+  }
+
+  if (!isClaudeSubscriptionSpec(main)) return { ok: true };
+
+  // A launch that lists providers runs `claude@<id>` as the bare `<id>` pinned
+  // to the Claude subscription, as a pane child does: a monitor session would
+  // send every listed model's request to Anthropic.
+  const hasListings = (config.modelListings?.length ?? 0) > 0;
+  if (hasListings || (deps.paneChild ?? isPaneChild())) {
+    config.model = normalizeNativeModelSpec(claudeSubscriptionInner(main));
+    config.claudeSubscriptionPin = true;
+    return { ok: true };
+  }
+  const tierRefusal = claudeLaunchTierRefusal(config, main, "subscription");
+  if (tierRefusal) return { ok: false, message: tierRefusal };
+  config.monitor = true;
+  config.claudeLaunch = "subscription";
+  return { ok: true };
+}
+
+/** Why a listing entry names no provider whose models can be listed, or null. */
+function listingProviderRefusal(typed: string, provider: string): string | null {
+  if (provider === "native-anthropic") {
+    return `--model ${typed}: Claude Code lists the Claude subscription's models in /model already, so claude@ cannot be a listing entry.`;
+  }
+  if (provider === "custom-url") {
+    return `--model ${typed}: a raw URL has no model list. Declare the endpoint under customEndpoints and list it by name (--model <name>@).`;
+  }
+  return null;
+}
+
+/** The refusal for a shortcut claudish does not know, worded as everywhere else. */
+function unknownShortcutRefusal(shortcut: string, typed: string): string {
+  const { reason, hint } = describeUnknownShortcut(shortcut, "", undefined, typed);
+  return `${reason} ${hint}`;
+}
+
+export interface DecideModelListingsDeps {
+  /** Default `isKnownProviderName`. */
+  isKnownProvider?: (name: string) => boolean;
+  /** Default `!isProxyAuthMode(config)`: the child keeps the user's own Claude login. */
+  keepsLogin?: (config: ClaudishConfig) => boolean;
+  /** Default `settingsCredentialFindings(config, process.env)`: files, environment, no network. */
+  settingsFindings?: (config: ClaudishConfig) => SettingsFinding[];
+  /** Default `classifierPassthroughEnabled(config)`. */
+  classifierPassthrough?: (config: ClaudishConfig) => boolean;
+  /** Default `unreadableSettingsArgs(config)`: 1-based passthrough `--settings` occurrences claudish cannot read. */
+  unreadableSettings?: (config: ClaudishConfig) => number[];
+}
+
+/**
+ * The refusal for a lineup launch with a passthrough `--settings` value
+ * claudish cannot read or parse, or null. A lineup merges every `--settings`
+ * into claudish's one file: forwarded instead, the value might outrank the
+ * lineup's `modelPicker`; dropped, the user would lose settings they passed.
+ * Names the occurrence, never the value: an inline value may hold a secret.
+ */
+function unreadableSettingsRefusal(
+  config: ClaudishConfig,
+  deps: DecideModelListingsDeps
+): string | null {
+  const unreadable = (
+    deps.unreadableSettings ?? ((c: ClaudishConfig) => unreadableSettingsArgs(c))
+  )(config);
+  if (unreadable.length === 0) return null;
+  const which =
+    unreadable.length === 1
+      ? `occurrence ${unreadable[0]}`
+      : `occurrences ${unreadable.join(", ")}`;
+  return (
+    `claudish cannot read --settings (${which}); a /model lineup merges every --settings into ` +
+    `one file. Fix or remove ${unreadable.length === 1 ? "it" : "them"}.`
+  );
+}
+
+/**
+ * The refusal for a lineup launch whose child keeps the user's login while a
+ * settings layer sets `ANTHROPIC_BASE_URL`, or null. That child is not
+ * host-managed, so the settings value replaces claudish's proxy address and
+ * every `/model` pick of a listed model would go to the settings address
+ * instead of claudish. A proxy-auth launch is host-managed: a settings `env`
+ * block cannot set its base URL, so it is never refused here.
+ */
+function settingsBaseUrlRefusal(
+  config: ClaudishConfig,
+  deps: DecideModelListingsDeps
+): string | null {
+  const keepsLogin = deps.keepsLogin ?? ((c: ClaudishConfig) => !isProxyAuthMode(c));
+  if (!keepsLogin(config)) return null;
+  const findingsOf =
+    deps.settingsFindings ?? ((c: ClaudishConfig) => settingsCredentialFindings(c, process.env));
+  const files = [
+    ...new Set(
+      findingsOf(config)
+        .filter((finding) => finding.kind === "base-url")
+        .map((finding) => finding.where)
+    ),
+  ];
+  if (files.length === 0) return null;
+  const classifierOn =
+    deps.classifierPassthrough ?? ((c: ClaudishConfig) => classifierPassthroughEnabled(c));
+  // Classifier passthrough is what keeps the login only when nothing else does.
+  const classifierIsCause = !hasNativeAnthropicMapping(config) && classifierOn(config);
+  const remedy = classifierIsCause
+    ? "launch without classifier passthrough."
+    : "start on a foreign model (--model <provider>@<id>), whose launch claudish routes.";
+  return (
+    `${files.join(", ")} ${files.length === 1 ? "sets" : "set"} ANTHROPIC_BASE_URL, so /model picks ` +
+    `would bypass claudish. Remove ${files.length === 1 ? "it" : "them"}, or ${remedy}`
+  );
+}
+
+/**
+ * The lineup of a launch with listing entries, decided after endpoint
+ * registration and before the picker, key validation, catalog warm and any
+ * fetch. Resolves every shortcut to its claudish provider and builds
+ * `config.modelListings`: one entry per provider, the start model's provider
+ * first when it can be listed (its models are listed too), then the listing
+ * entries in flag order, then the providers of pinned specs. `x@*` wins over
+ * `x@` for one provider. Refused, each naming the value and the form to use:
+ *
+ * - a listing entry or pinned spec whose shortcut claudish does not know;
+ * - `claude@` (Claude Code lists those models itself) and `custom-url@` as a
+ *   listing entry;
+ * - `--monitor`, and an `anthropic@<id>` start: either forwards every request
+ *   to Anthropic, so no listed model could be routed;
+ * - a launch whose child keeps the user's login (`!isProxyAuthMode`: a Claude
+ *   start, with or without the API-billing opt-in, or classifier passthrough
+ *   with a resolvable login) while a settings layer sets `ANTHROPIC_BASE_URL`:
+ *   every pick would bypass claudish. Reads settings files, the environment
+ *   and the local login check only;
+ * - a passthrough `--settings` value claudish cannot read: the lineup merges
+ *   every `--settings` into one file.
+ *
+ * A launch with no listing entry is left as it is.
+ */
+export function decideModelListings(
+  config: ClaudishConfig,
+  parsed: ParsedModelFlags | undefined,
+  deps: DecideModelListingsDeps = {}
+): ClaudeLaunchDecision {
+  if (!parsed?.hasLineup) return { ok: true };
+  const isKnown = deps.isKnownProvider ?? isKnownProviderName;
+
+  if (config.monitor) {
+    return {
+      ok: false,
+      message:
+        "--monitor cannot be combined with a listing entry (--model <provider>@): a monitor session sends every request to Anthropic, so no listed model could be routed.",
+    };
+  }
+  const start = parsed.start;
+  if (start && isClaudeApiSpec(start)) {
+    return {
+      ok: false,
+      message: `--model ${start} starts a Claude API session that forwards every request to Anthropic, so no listed model could be routed. Start on another model, or drop the listing entries.`,
+    };
+  }
+
+  const byProvider = new Map<string, ProviderListing>();
+  const add = (provider: string, typed: string, scope: ProviderListing["scope"]) => {
+    const existing = byProvider.get(provider);
+    if (existing) {
+      if (scope === "all") existing.scope = "all";
+      return existing;
+    }
+    const listing: ProviderListing = { provider, typed, scope, pinnedSpecs: [] };
+    byProvider.set(provider, listing);
+    return listing;
+  };
+
+  if (start) {
+    const parsedStart = parseModelSpec(start);
+    if (
+      parsedStart.isExplicitProvider &&
+      listingProviderRefusal(start, parsedStart.provider) === null &&
+      isKnown(typedShortcutOf(start))
+    ) {
+      // The start spec is its provider's first row, so a later pick can go back to it.
+      add(parsedStart.provider, start, "recommended").pinnedSpecs.push(start);
+    }
+  }
+
+  for (const entry of parsed.listings) {
+    const typed = `${entry.shortcut}@${entry.scope === "all" ? "*" : ""}`;
+    if (!isKnown(entry.shortcut)) {
+      return { ok: false, message: unknownShortcutRefusal(entry.shortcut, typed) };
+    }
+    const provider = parseModelSpec(`${entry.shortcut}@x`).provider;
+    const refusal = listingProviderRefusal(typed, provider);
+    if (refusal) return { ok: false, message: refusal };
+    const listing = add(provider, typed, entry.scope);
+    // The start model's provider was added first with the spec as `typed`; a
+    // listing entry for the same provider is how the user wrote the listing.
+    if (listing.typed === start) listing.typed = typed;
+  }
+
+  for (const spec of parsed.pinned) {
+    const shortcut = typedShortcutOf(spec);
+    if (!isKnown(shortcut)) {
+      const parsedPin = parseModelSpec(spec);
+      const { reason, hint } = describeUnknownShortcut(shortcut, parsedPin.model, undefined, spec);
+      return { ok: false, message: `${reason} ${hint}` };
+    }
+    const provider = parseModelSpec(spec).provider;
+    const refusal = listingProviderRefusal(spec, provider);
+    if (refusal) return { ok: false, message: refusal };
+    add(provider, spec, "recommended").pinnedSpecs.push(spec);
+  }
+
+  // Set before the base-URL check: a launch that only lists providers keeps
+  // the login because of the listings themselves (`startsOnClaudeSubscription`).
+  const settingsRefusal = unreadableSettingsRefusal(config, deps);
+  if (settingsRefusal) return { ok: false, message: settingsRefusal };
+
+  config.modelListings = [...byProvider.values()];
+  const baseUrlRefusal = settingsBaseUrlRefusal(config, deps);
+  if (baseUrlRefusal) {
+    delete config.modelListings;
+    return { ok: false, message: baseUrlRefusal };
+  }
+  return { ok: true };
+}
+
+/** A hold on a credential the launch signs with, released when the session ends. */
+export interface LaunchLease {
+  release(): void;
+}
+
+export type PreparedClaudeLaunch =
+  | {
+      ok: true;
+      /** Lines for stderr, printed unless the launch is quiet. */
+      banner: string[];
+      /** The launch's native signing; absent means the proxy's own `inbound` rule. */
+      signing?: NativeSigning;
+      lease?: LaunchLease;
+    }
+  | { ok: false; message: string };
+
+export interface PrepareClaudeLaunchDeps {
+  /** Default `settingsCredentialFindings(config, env)`. */
+  settingsFindings?: (config: ClaudishConfig, env: NodeJS.ProcessEnv) => SettingsFinding[];
+  /** Default `wantsAnthropicApiBilling` (flag, env, config). */
+  wantsApiBilling?: (config: ClaudishConfig) => boolean;
+  /** Default `process.env`: the launch environment, read for settings and scrubbed of claudish's placeholder key. */
+  env?: NodeJS.ProcessEnv;
+  /** Default the credential authority: resolves the Claude API launch's key. */
+  credentials?: Pick<CredentialAuthority, "resolveForUse">;
+  /** Default `managedSettingsForcesClaudeAi()`: the OS managed tier forces the claude.ai login. */
+  managedForcesClaudeAi?: () => boolean;
+  /** Default `settingsArgsForcingClaudeAi(config)`: the `--settings` values that force it. */
+  settingsForcingClaudeAi?: (config: ClaudishConfig) => string[];
+  /** Default `resolveModelNameSync(name, "anthropic").resolvedId`: the wire id Claude Code is given. */
+  wireIdFor?: (name: string) => string;
+  /** Default `claudeCodeStartupCredential({env})`: the credential Claude Code would start with. */
+  claudeCodeCredential?: (env: NodeJS.ProcessEnv) => ClaudeCodeStartupCredential;
+  /** Default `settingsClaudeLoginToken(config, env)`: a settings layer's CLAUDE_CODE_OAUTH_TOKEN, by presence. */
+  settingsLoginToken?: (config: ClaudishConfig, env: NodeJS.ProcessEnv) => SettingsLoginToken;
+}
+
+/**
+ * The credential Claude Code would start with, from the environment it will
+ * hold: a settings layer's non-empty CLAUDE_CODE_OAUTH_TOKEN is a login, an
+ * empty one replaces the launch environment's, and a layer that could not be
+ * read makes anything short of a stored login `unknown`.
+ */
+function effectiveStartupCredential(
+  config: ClaudishConfig,
+  env: NodeJS.ProcessEnv,
+  deps: PrepareClaudeLaunchDeps
+): ClaudeCodeStartupCredential {
+  const credentialOf =
+    deps.claudeCodeCredential ??
+    ((e: NodeJS.ProcessEnv) => claudeCodeStartupCredential({ env: e }));
+  const fromSettings = (deps.settingsLoginToken ?? settingsClaudeLoginToken)(config, env);
+  if (fromSettings === "set") return { kind: "login" };
+  if (fromSettings === "cleared") {
+    const withoutToken = { ...env };
+    delete withoutToken.CLAUDE_CODE_OAUTH_TOKEN;
+    return credentialOf(withoutToken);
+  }
+  const stored = credentialOf(env);
+  if (fromSettings === "unknown" && stored.kind !== "login") return { kind: "unknown" };
+  return stored;
+}
+
+/**
+ * Step 2, after the catalog warm and before the advisor check and the proxy.
+ *
+ * - `claudeLaunch: "api"`: the key is resolved now, Claude Code is given the
+ *   catalog's wire id, and the proxy signs with the key (`launch-key`); the
+ *   returned lease keeps the key redacted until the caller releases it, after
+ *   the session ends.
+ * - `claudeLaunch: "subscription"`: Claude Code is given the bare Claude name
+ *   (`claudeLaunchModel`; Claude Code resolves its own aliases), a settings
+ *   layer that would hand it an API key refuses the launch, an inherited
+ *   placeholder `ANTHROPIC_API_KEY` is scrubbed as `--monitor` scrubs it, and
+ *   every request is signed `login-only`.
+ * - Any other launch `launchSigningFor` signs `login-only` (a bare Claude main
+ *   model or tier without the API-billing opt-in, a `claude@` tier, a pinned
+ *   pane child): the same settings refusal, a real shell ANTHROPIC_AUTH_TOKEN
+ *   that is not a Claude login token refused the same way, and `login-only`.
+ *   An opt-in a pin overrides is named in a notice. Each refusal names the tier
+ *   that made a foreign launch the Claude subscription.
+ * - Both login-only branches refuse when Claude Code has no Claude login
+ *   (`claudeLoginRefusal`): a stored Console key alone, or nothing at all. A
+ *   settings layer's CLAUDE_CODE_OAUTH_TOKEN counts (`effectiveStartupCredential`).
+ * - Anything else: no effect.
+ */
+export async function prepareClaudeLaunch(
+  config: ClaudishConfig,
+  deps: PrepareClaudeLaunchDeps = {}
+): Promise<PreparedClaudeLaunch> {
+  const env = deps.env ?? process.env;
+  const findingsOf =
+    deps.settingsFindings ??
+    ((c: ClaudishConfig, e: NodeJS.ProcessEnv) => settingsCredentialFindings(c, e));
+  const main = typeof config.model === "string" ? config.model : undefined;
+
+  if (config.claudeLaunch === "api" && main) {
+    return prepareClaudeApiLaunch(config, main, env, deps);
+  }
+
+  if (config.claudeLaunch === "subscription" && main) {
+    const check = subscriptionSettingsCheck(findingsOf(config, env), { bareName: false });
+    if (check.refusal) return { ok: false, message: check.refusal };
+    const loginRefusal = claudeLoginRefusal(effectiveStartupCredential(config, env, deps), {
+      bareName: false,
+    });
+    if (loginRefusal) return { ok: false, message: loginRefusal };
+    if (isClaudishPlaceholderCredential("ANTHROPIC_API_KEY", env.ANTHROPIC_API_KEY)) {
+      delete env.ANTHROPIC_API_KEY;
+    }
+    config.claudeLaunchModel = normalizeNativeModelSpec(claudeSubscriptionInner(main));
+    return {
+      ok: true,
+      banner: [
+        `[claudish] Monitor mode · ${CLAUDE_SUBSCRIPTION_LABEL} · Claude Code's own login`,
+        ...noticeLines(check.notices),
+      ],
+      signing: LOGIN_ONLY_SIGNING,
+    };
+  }
+
+  const wantsApiBilling =
+    deps.wantsApiBilling ?? ((c: ClaudishConfig) => wantsAnthropicApiBilling(c));
+  const signing = launchSigningFor(config, { wantsApiBilling });
+  if (signing?.kind !== "login-only") {
+    return signing ? { ok: true, banner: [], signing } : { ok: true, banner: [] };
+  }
+  // The opt-in is offered only where it could apply: a pin keeps the login.
+  const bareName = !config.claudeSubscriptionPin;
+  const cause = subscriptionCause(config);
+  const shellToken = shellAuthToken(env);
+  const findings = findingsOf(config, env);
+  if (shellToken === "other") {
+    findings.push({ where: "your shell environment", kind: "auth-token" });
+  }
+  const check = subscriptionSettingsCheck(findings, { bareName, cause });
+  if (check.refusal) return { ok: false, message: check.refusal };
+  if (shellToken !== "login") {
+    const loginRefusal = claudeLoginRefusal(effectiveStartupCredential(config, env, deps), {
+      bareName,
+      cause,
+    });
+    if (loginRefusal) return { ok: false, message: loginRefusal };
+  }
+  const notices = [...check.notices];
+  if (
+    config.claudeSubscriptionPin &&
+    wantsApiBilling({ ...config, claudeSubscriptionPin: false })
+  ) {
+    notices.push(
+      "the API-billing opt-in does not apply: claude@ names the Claude subscription, so this " +
+        "session keeps Claude Code's own login and ANTHROPIC_API_KEY is hidden from it"
+    );
+  }
+  return { ok: true, banner: noticeLines(notices), signing };
+}
+
+/**
+ * The Claude API launch. Claude Code holds only claudish's placeholder token;
+ * the monitor proxy signs every request with the key resolved here, which is
+ * held by the returned signing and lease and nowhere else: never in an
+ * environment, `config.anthropicApiKey` or a file.
+ *
+ * Refused before any key is read when Claude Code could not start on it: the OS
+ * managed tier, or a `--settings` value, forcing the claude.ai login. Then
+ * refused when no source has a key (naming the sources searched) or a vault
+ * that has one could not be read (its reason).
+ */
+async function prepareClaudeApiLaunch(
+  config: ClaudishConfig,
+  main: string,
+  env: NodeJS.ProcessEnv,
+  deps: PrepareClaudeLaunchDeps
+): Promise<PreparedClaudeLaunch> {
+  const managedForcesClaudeAi = deps.managedForcesClaudeAi ?? managedSettingsForcesClaudeAi;
+  if (managedForcesClaudeAi()) {
+    return {
+      ok: false,
+      message:
+        'your organization\'s managed Claude Code settings force the claude.ai login method (forceLoginMethod: "claudeai"), ' +
+        "which a Claude API session cannot start under, and managed settings cannot be overridden. " +
+        "Use claude@<id> for the Claude subscription.",
+    };
+  }
+  const forcing = (deps.settingsForcingClaudeAi ?? settingsArgsForcingClaudeAi)(config);
+  if (forcing.length > 0) {
+    return {
+      ok: false,
+      message:
+        `${forcing.join(", ")} ${forcing.length === 1 ? "sets" : "set"} forceLoginMethod: "claudeai", ` +
+        "which overrides the console login a Claude API session starts under. " +
+        "Remove it, or use claude@<id> for the Claude subscription.",
+    };
+  }
+
+  const authority =
+    deps.credentials ?? (await import("../auth/credentials/authority.js")).credentials;
+  const resolution = await authority.resolveForUse(CLAUDE_API_PROVIDER, {
+    allowOpPrompt: config.interactive,
+  });
+  if (resolution.state === "absent") {
+    return {
+      ok: false,
+      message:
+        `No Anthropic API key for the Claude API (looked in ${resolution.searched.join(", ")}). ` +
+        "Store one with claudish keychain set ANTHROPIC_API_KEY, or export it.",
+    };
+  }
+  if (resolution.state === "failed") {
+    return {
+      ok: false,
+      message: `The Anthropic API key for the Claude API could not be read: ${redactSecrets(resolution.reason)}`,
+    };
+  }
+
+  const key = resolution.key;
+  // Claude Code is given the wire id the catalog publishes for this model on
+  // the Claude API; `model` keeps the user's spec. Resolved before the lease is
+  // taken, so a throw here leaves no lease behind.
+  const inner = parseModelSpec(main).model;
+  const wireIdFor =
+    deps.wireIdFor ??
+    ((name: string) => resolveModelNameSync(name, CLAUDE_API_PROVIDER).resolvedId);
+  const launchModel = wireIdFor(inner);
+
+  const lease = acquireSigningLease();
+  lease.add([key]);
+  config.claudeLaunchModel = launchModel;
+  config.claudeLaunchKeySource = resolution.source;
+  // The proxy receives no key of its own on this launch, and the parse-time
+  // capture of the launch environment's key is not the one that signs.
+  config.anthropicApiKey = undefined;
+  if (isClaudishPlaceholderCredential("ANTHROPIC_API_KEY", env.ANTHROPIC_API_KEY)) {
+    delete env.ANTHROPIC_API_KEY;
+  }
+
+  return {
+    ok: true,
+    banner: [
+      `[claudish] Monitor mode · Claude API · ANTHROPIC_API_KEY from ${resolution.source} · signed by claudish`,
+    ],
+    signing: { kind: "launch-key", key: () => key },
+    lease,
+  };
+}
+
+/**
+ * The user's own ANTHROPIC_AUTH_TOKEN, which a login-only launch that is not a
+ * monitor session keeps for the child: Claude Code sends it instead of its
+ * login. `login` when it is a Claude login token itself, `other` for any other
+ * real value, `none` when unset or claudish's placeholder.
+ */
+function shellAuthToken(env: NodeJS.ProcessEnv): "none" | "login" | "other" {
+  const token = env.ANTHROPIC_AUTH_TOKEN;
+  if (typeof token !== "string" || token.trim().length === 0) return "none";
+  if (isClaudishPlaceholderCredential("ANTHROPIC_AUTH_TOKEN", token)) return "none";
+  return CLAUDE_LOGIN_BEARER.test(`Bearer ${token}`) ? "login" : "other";
+}
+
+function noticeLines(notices: readonly string[]): string[] {
+  return notices.map((notice) => `[claudish] Note: ${notice}`);
+}

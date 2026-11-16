@@ -45,6 +45,12 @@ Claude Code standard. Fallback if `CLAUDISH_MODEL` isn't set.
 export ANTHROPIC_MODEL='gpt-4o'  # Auto-detected → OpenAI
 ```
 
+A claudish started inside another claudish session does not take the `ANTHROPIC_MODEL` that
+the parent claudish set. The parent records the values it set in `CLAUDISH_SET_MODEL_VARS`;
+a nested launch skips `ANTHROPIC_MODEL` while it still holds that recorded value. Give the
+nested launch `--model`, `CLAUDISH_MODEL` or a profile model. A value you export yourself in
+that shell is still used.
+
 ---
 
 ## Model Mapping

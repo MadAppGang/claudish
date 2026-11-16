@@ -132,6 +132,40 @@ effort detection. It guessed a fact that the calling agent already had. The work
 gitignored session `dev-feature-recommended-effort-20261021-101332-a05a`, under
 `backup-before-rework-*`.
 
+### No effort on a connection that carries the effort in the model id
+
+The task-type rule above has one exception. On a connection with a `modelIdEffort` map (Devin,
+Antigravity: each level is its own model id), a request that names the base (`dv@claude-opus-5-5`,
+`ag@gemini-4-carbon`) and carries NO effort still needs a level, because the id is the level. The
+user sees and types the base; claudish decides what is sent (Jack, 2026-11-12), in
+`chooseConnectionModelId` (`providers/model-id-effort-choice.ts`), the one function every Devin and
+Antigravity path calls:
+
+1. The user's effort always wins: the `--effort` pin, else the effort Claude Code sends
+   (`output_config.effort`, `thinking.budget_tokens`; reasoning off is `none`, which sends `off`).
+2. With none, the table's `default` task type for the connection's CANONICAL model id (the catalog
+   entry's `modelId`, never the wire id), when that cell's `sendableOn` names this connection: the
+   same `routeId`, `routeProfileId` and `externalModelId`, with `encoding: "model_id_switch"`. A
+   cell for another connection, another encoding or a wire-id key does not count. The cell comes
+   from the table of the SAME generation as the catalog the connection was read from
+   (`ModelIdEffortConnection.catalogGenerationId`): `lookupModelEfforts(modelId, generationId)`,
+   or the bundled list's own table when the connection came from the bundled list. A sidecar that
+   lacks that generation is a miss, never the newest other generation (which is what
+   `currentEffortRecommendations` falls back to for display), so a refresh or an evicted
+   generation cannot change the level with another publication's recommendation.
+3. Else `medium`.
+
+The level then maps through the connection's `values`: the exact level, else the next higher listed
+level, else the highest. The provider server's own default (Devin `is_default_model_in_family`,
+Antigravity `defaultAgentModelId`) and the catalog's `modelIdEffort.default` no longer decide for a
+mapped base; `readModelIdEffort` keeps a string `default` as published. The account still decides
+entitlement: an id its dynamic models catalog does not list (or a speed premium, or an id Antigravity
+declares unselectable) is never sent, and the provider's existing resolution answers instead. A map
+with no `values` (only `off`) leaves a no-effort request to that existing resolution too. A served
+base requested with no effort is sent as itself, unless Antigravity declares it unselectable; then
+the map decides as above. Until the backend publishes the `default` column,
+step 3 is the common case.
+
 ## Speed: `#<speed>`, Claude Code's `/fast`, and the Codex service tier
 
 **Two inputs.** A `#<speed>` marker is EXPLICIT: a connection that does not offer it refuses the
@@ -225,6 +259,10 @@ by that field.
   OpenRouter/Poe models the catalog does not publish get the same default.
 - **Dynamic subscriptions** (`gk@`, `ag@`, `dv@`) publish no wire; the account decides what they
   serve. Only `gk@` names a dialect, explicitly in its profile (Grok effort with learn-on-400).
+  The Gemini dialect writes no `thinkingConfig` of its own: step 5w writes the wire's effort path,
+  and a wire with none sends no reasoning field. Only the Antigravity handler keeps the model-name
+  rule (`thinkingFromModelName`): `thinkingLevel` for `gemini-3` names, else `thinkingBudget`,
+  capped below a Claude model's `max_tokens`.
   Nothing picks a dialect by model name any more; `dialect-manager.ts` serves local models only.
   One model quirk no wire field describes stays, keyed on the catalog VENDOR: a `minimax` model
   on any connection gets the MiniMax dialect for its temperature clamp (its reasoning fields are

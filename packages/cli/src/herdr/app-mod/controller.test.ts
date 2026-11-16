@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import type { ViewItem } from "../../pane/view-contract.js";
-import { sessionItem } from "../test-helpers/placer-harness.js";
+import { sessionItem } from "../test-helpers/view-items.js";
 import { INSTALL_LINE, type ModHost, PanelController, PanelSeat } from "./controller.js";
 import {
   type ExecResult,
@@ -193,6 +193,24 @@ describe("PanelController", () => {
     expect(host.claudishRuns()).toEqual([]);
   });
 
+  test("the mod's settings.json names another claudish command; an unsafe name is ignored", async () => {
+    const settings = "/Users/u/.config/herdr-app/mods/claudish/settings.json";
+    const probeOf = (host: FakeHost): string =>
+      host.calls.find((c) => c.argv[0] === "/bin/sh")?.argv[2] ?? "";
+    const dev = new FakeHost();
+    dev.files.set(settings, '{ "command": "claudishD" }');
+    await ready(dev);
+    expect(probeOf(dev)).toContain("command -v claudishD &&");
+    const unsafe = new FakeHost();
+    unsafe.files.set(settings, '{ "command": "x; rm -rf ~" }');
+    await ready(unsafe);
+    expect(probeOf(unsafe)).toContain("command -v claudish &&");
+    expect(probeOf(unsafe)).not.toContain("rm -rf");
+    const none = new FakeHost();
+    await ready(none);
+    expect(probeOf(none)).toContain("command -v claudish &&");
+  });
+
   test("a claudish without the view command is named with its version and an update line, not as missing", async () => {
     const host = new FakeHost();
     host.noView = true;
@@ -355,7 +373,7 @@ describe("PanelController", () => {
     expect(host.live.map((t) => t.name)).toEqual([FEED_TERMINAL]);
   });
 
-  test("reselecting a row whose viewer runs takes the view back: Enter is pressed in that viewer", async () => {
+  test("reselecting a row whose viewer runs shows it again and sends that viewer no key", async () => {
     const host = new FakeHost();
     host.relayAlive = { alive: true, relay: { pid: 7, start36: "b" } };
     host.writeFeed({ pid: 7, start36: "b" }, [sessionItem("a")]);
@@ -363,11 +381,10 @@ describe("PanelController", () => {
     ctl.setVisible(true);
     await ctl.tick();
     await ctl.select("s:a");
-    // a fresh viewer claims at its own start: no key is needed
-    expect(host.hcRuns().filter((a) => a[0] === "keys")).toEqual([]);
-    // the view went elsewhere meanwhile; the user selects the row again
     await ctl.select("s:a");
-    expect(host.hcRuns().filter((a) => a[0] !== "run")).toEqual([["keys", "t10", "enter"]]);
+    // a viewer only watches: nothing is typed into it to take the view
+    expect(host.hcRuns().filter((a) => a[0] !== "run")).toEqual([]);
+    expect(host.hcRuns().filter((a) => a[0] === "run")).toHaveLength(1);
     expect(host.overlays).toHaveLength(2);
   });
 

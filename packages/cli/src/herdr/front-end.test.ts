@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { detectFrontEnd, herdrPaneEnv, workspaceKeyOf, workspaceLockName } from "./front-end.js";
+import { detectFrontEnd, herdrPaneEnv } from "./front-end.js";
 
 const HERDR = {
   TERM_PROGRAM: "herdr",
@@ -42,20 +42,6 @@ describe("detectFrontEnd", () => {
     expect(herdrPaneEnv(HERDR)).toEqual({
       socketPath: "/tmp/x/herdr.sock",
       paneId: "w1:p2",
-      workspaceId: "w1",
     });
-  });
-});
-
-describe("workspaceKeyOf", () => {
-  test("two herdr servers with the same workspace id get two keys", () => {
-    const a = workspaceKeyOf("/a/herdr.sock", "w1");
-    const b = workspaceKeyOf("/b/herdr.sock", "w1");
-    expect(a).not.toBe(b);
-    expect(a).toMatch(/^[0-9a-f]{8}\/w1$/);
-  });
-
-  test("the lock file name has no slash", () => {
-    expect(workspaceLockName("0123abcd/w1")).toBe("0123abcd-w1.lock");
   });
 });

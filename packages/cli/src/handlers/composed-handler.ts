@@ -174,8 +174,16 @@ import {
   classifyConnectionError,
 } from "./shared/connection-error.js";
 import { sniffDevinStreamHead } from "./shared/devin-stream-head-sniffer.js";
+import {
+  identityHeadFor,
+  keepsClaudeIdentity,
+  scrubHarnessIdentity,
+} from "./shared/format/identity-filter.js";
+import { inlineSystemAsUserText } from "./shared/format/inline-system.js";
+import { removeProviderRefusedText } from "./shared/format/provider-refused-text.js";
+import { aliasToolsForProvider } from "./shared/format/tool-name-alias.js";
+import { toolReferencesAsText } from "./shared/format/tool-reference-text.js";
 import { hasActionableLink, hasModelUnsupportedWording } from "./shared/model-unsupported.js";
-import { filterIdentity } from "./shared/openai-compat.js";
 import { hasPlanLimitWording, isQuotaExhaustionError } from "./shared/quota-exhaustion.js";
 import { connectionFaultHeaders, recoveryHoldHeaders } from "./shared/recovery-marker.js";
 import {
@@ -565,6 +573,9 @@ export class ComposedHandler implements ModelHandler {
       )) {
         (dialect as BaseAPIFormat).setEffortOverride(options.effortOverride);
       }
+      // A transport that carries the level outside the body (Antigravity puts it
+      // in the model id) takes the same pin.
+      this.provider.setEffortOverride?.(options.effortOverride);
       log(
         `[ComposedHandler] --effort ${options.effortOverride} pinned for ${this.targetModel} (catalog clamp skipped)`
       );
@@ -1576,8 +1587,77 @@ export class ComposedHandler implements ModelHandler {
     const adapter = this.getAdapter();
     if (typeof adapter.reset === "function") adapter.reset();
 
-    // 3. Convert messages and tools
-    let messages = adapter.convertMessages(claudeRequest, filterIdentity);
+    // 2a. Remove Claude Code's identity from the text it injects (system
+    // prompt, reminders, tool descriptions) unless the upstream model really
+    // is Claude. After hook stage A, which reads the original system text.
+    const keepIdentity = keepsClaudeIdentity({
+      native: this.routeInfo().native,
+      vendor: this.upstreamFacts()?.vendor ?? null,
+      model: this.bareModelName,
+    });
+    if (!keepIdentity) {
+      claudeRequest = scrubHarnessIdentity(claudeRequest, identityHeadFor(this.provider.name));
+    }
+
+    // 2a'. Remove the system-prompt paragraphs this provider's server refuses
+    // (antigravity only). Outside the `keepIdentity` test on purpose: the
+    // server's filter is in front of every model it serves, Claude included.
+    claudeRequest = removeProviderRefusedText(claudeRequest, this.provider.name);
+
+    // 2b. Rename tools to the provider's own names (antigravity only): in the
+    // definitions, in `tool_choice` and in assistant-history tool_use blocks.
+    // The alias is this request's own: stage B looks a hook's tool up through
+    // `forward`, and the gemini-sse case undoes the rename on the response with
+    // `restore`. A name sent out must come back, or Claude Code gets a tool_use
+    // it never declared.
+    const toolAlias = aliasToolsForProvider(claudeRequest, this.provider.name);
+    claudeRequest = toolAlias.request;
+
+    // 2c. Give inline `role: "system"` messages to the model. Claude Code
+    // sends the skill list, MCP server instructions and background-task
+    // notifications that way, and the Gemini, Chat Completions and Responses
+    // converters convert only `user` and `assistant` messages: without this the
+    // text never reaches the model. Each one becomes a text block in the user
+    // message beside it, at its own position (see `inline-system.ts` for why
+    // not the system prompt). After 2a, so the text is already scrubbed.
+    const withInlineSystem = inlineSystemAsUserText(claudeRequest.messages);
+    if (withInlineSystem !== claudeRequest.messages) {
+      claudeRequest = { ...claudeRequest, messages: withInlineSystem };
+    }
+
+    // 2d. Say in text what a `tool_reference` item of a tool result means.
+    // Claude Code answers `ToolSearch` with that pointer and no text, and no
+    // converter carries it: the Anthropic-shaped one removes it for every
+    // host, the others never read it. So the model read an empty result.
+    // Outside the `keepIdentity` test: a Claude model behind a gateway or
+    // `antigravity` is on the same wires. The sentence names the tool as the
+    // body will declare it: after the 2b alias, under the name the converter
+    // answers for it (`declaredToolNames`). A tool the request does not
+    // declare, one the converter declares under no name, or one past its
+    // tool-count cap is not declared, and the sentence says so. The names are
+    // asked for once, and only when a result holds a reference.
+    let declaredNames: Map<string, string | null> | undefined;
+    const sentName = (name: string): string | null => {
+      declaredNames ??= adapter.declaredToolNames(
+        (claudeRequest.tools ?? [])
+          .slice(0, adapter.getMaxToolCount() ?? undefined)
+          .map((tool: any) => tool?.name)
+          .filter((toolName: unknown): toolName is string => typeof toolName === "string")
+      );
+      return declaredNames.get(toolAlias.forward(name)) ?? null;
+    };
+    const withToolReferences = toolReferencesAsText(claudeRequest.messages, {
+      nameOf: (name) => sentName(name) ?? toolAlias.forward(name),
+      isDeclared: (name) => sentName(name) !== null,
+    });
+    if (withToolReferences !== claudeRequest.messages) {
+      claudeRequest = { ...claudeRequest, messages: withToolReferences };
+    }
+
+    // 3. Convert messages and tools. No identity filter here: step 2a already
+    // scrubbed `claudeRequest` (or `keepIdentity` left it alone), so a second
+    // pass would only risk re-adding a header to the cleaned prompt.
+    let messages = adapter.convertMessages(claudeRequest, undefined);
     let tools = adapter.convertTools(claudeRequest, this.options.summarizeTools);
 
     // Per-API tool-count cap (e.g. OpenAI Chat Completions hard-caps `tools` at
@@ -1690,7 +1770,7 @@ export class ComposedHandler implements ModelHandler {
     // changes the Claude-format copy only, journaled `capped`). It runs before
     // the raw tier on purpose: a raw `providerRequest` hook sees the request the
     // closed actions produced.
-    hookScope?.applyToolDescriptions(claudeRequest.tools ?? [], tools);
+    hookScope?.applyToolDescriptions(claudeRequest.tools ?? [], tools, toolAlias.forward);
 
     // 3b. Raw `providerRequest` hooks (the unsafe tier; the Gemini
     // thought-signature built-in lives here), after stage B so they see the
@@ -2071,8 +2151,17 @@ export class ComposedHandler implements ModelHandler {
     }
 
     // 5c. Provider payload transformation (e.g., CodeAssist envelope wrapping)
+    // `transportRequest` is THIS request's transport value: the exact value the
+    // transform returned, or (no transform) the payload first serialized at 6a.
+    // Every per-request transport hook gets it (`serializeBody`,
+    // `enqueueRequest` `opts.request`, `getActiveModelName`,
+    // `rewriteInStreamError`), so a transport serving overlapping requests
+    // reads this request's own state. `requestPayload` is reassigned later and
+    // is no key.
+    let transportRequest: unknown;
     if (this.provider.transformPayload) {
       requestPayload = this.provider.transformPayload(requestPayload, claudeRequest, binding);
+      transportRequest = requestPayload;
     }
 
     // 5s. Codex speed (deferred at 5w): the tier the account's dynamic models
@@ -2285,8 +2374,9 @@ export class ComposedHandler implements ModelHandler {
     // Always the encoding of the CURRENT `requestPayload`: parameter recovery
     // replaces the payload and re-encodes it here, so the 401 auth retry below
     // never resends bytes the provider already rejected.
+    if (!this.provider.transformPayload) transportRequest = requestPayload;
     const serialize = () =>
-      this.provider.serializeBody?.(requestPayload) ?? {
+      this.provider.serializeBody?.(requestPayload, transportRequest) ?? {
         body: JSON.stringify(requestPayload),
         contentType: "application/json",
       };
@@ -2479,7 +2569,10 @@ export class ComposedHandler implements ModelHandler {
       );
       const fetchCurrent = () => {
         if (callSignal?.aborted) return Promise.reject(callAbortError());
-        return fetch(
+        const send = this.provider.fetch
+          ? (url: string, init: RequestInit) => this.provider.fetch!(url, init)
+          : fetch;
+        return send(
           activeEndpoint,
           mergeSignalIntoInit(
             {
@@ -2496,7 +2589,10 @@ export class ComposedHandler implements ModelHandler {
       let received: Response;
       try {
         received = await (this.provider.enqueueRequest
-          ? this.provider.enqueueRequest(fetchCurrent, { signal: attemptSignal })
+          ? this.provider.enqueueRequest(fetchCurrent, {
+              signal: attemptSignal,
+              request: transportRequest,
+            })
           : fetchCurrent());
       } catch (error) {
         clamp.disarm();
@@ -2625,8 +2721,8 @@ export class ComposedHandler implements ModelHandler {
     if (episodeCount() > 0) noteTargetReachable(this.provider.name, endpoint);
 
     // Check if the transport fell back to a different model (e.g., capacity exhaustion)
-    if (this.provider.getActiveModelName?.()) {
-      const activeModel = this.provider.getActiveModelName()!;
+    const activeModel = this.provider.getActiveModelName?.(transportRequest);
+    if (activeModel) {
       this.tokenTracker.setActiveModelName(activeModel);
       log(`[ComposedHandler] Transport fell back to model: ${activeModel}`);
     }
@@ -3593,7 +3689,11 @@ export class ComposedHandler implements ModelHandler {
         // doctrine as 7b — retry the transient class, and surface the terminal class
         // as a 400 rendered inline rather than a status Claude Code silently retries.
         if (this.resolveStreamFormat() === "connect-proto") {
-          const settled = await this.settleDevinStreamHead(response, () => attempt());
+          const settled = await this.settleDevinStreamHead(
+            response,
+            () => attempt(),
+            transportRequest
+          );
           if (callAborted(c)) {
             if (settled.kind === "ok") await settled.response.body?.cancel().catch(() => {});
             return this.respondCallAborted(startTime, fallbackMeta);
@@ -3801,7 +3901,7 @@ export class ComposedHandler implements ModelHandler {
         // dropped fields, and a leg re-sends the body that was accepted.
         serializeBody: (body) => {
           const b = body ?? requestPayload;
-          const s = this.provider.serializeBody?.(b);
+          const s = this.provider.serializeBody?.(b, transportRequest);
           return {
             body: s?.body ?? JSON.stringify(b),
             contentType: s?.contentType ?? "application/json",
@@ -3809,7 +3909,7 @@ export class ComposedHandler implements ModelHandler {
         },
         getRequestInit: () => (this.provider.getRequestInit?.() || {}) as Record<string, unknown>,
         enqueueRequest: this.provider.enqueueRequest
-          ? (fn, o) => this.provider.enqueueRequest!(fn, o)
+          ? (fn, o) => this.provider.enqueueRequest!(fn, { ...o, request: transportRequest })
           : undefined,
         settleStreamHead: async (res, reissue, signal) => {
           const settled = await this.settleResponsesStreamHead(res, reissue, { signal });
@@ -3944,7 +4044,8 @@ export class ComposedHandler implements ModelHandler {
             output: u.output,
           };
           ledger.finalInput = u.finalInput;
-        }
+        },
+        toolAlias.restore
       ),
       () => {
         clientCancelled = true;
@@ -4118,7 +4219,8 @@ export class ComposedHandler implements ModelHandler {
    */
   private async settleDevinStreamHead(
     initial: Response,
-    reissue: () => Promise<Response>
+    reissue: () => Promise<Response>,
+    request?: unknown
   ): Promise<
     | { kind: "ok"; response: Response }
     | { kind: "terminal"; code: string; message: string }
@@ -4127,8 +4229,12 @@ export class ComposedHandler implements ModelHandler {
     // Optional-method probe rather than a `ProviderTransport` member: this whole
     // branch is Devin-specific by construction, and widening the shared
     // interface for one consumer would invite the next provider to add another.
+    // `request` is the request's transport value, so the rewrite names the uid
+    // THIS request sent.
     const rewrite = (
-      this.provider as { rewriteInStreamError?: (code: string, message: string) => string }
+      this.provider as {
+        rewriteInStreamError?: (code: string, message: string, request?: unknown) => string;
+      }
     ).rewriteInStreamError?.bind(this.provider);
 
     let response = initial;
@@ -4138,7 +4244,7 @@ export class ComposedHandler implements ModelHandler {
       if (verdict.kind === "clean") return { kind: "ok", response: verdict.response };
 
       if (verdict.kind === "terminal") {
-        const message = rewrite?.(verdict.code, verdict.message) ?? verdict.message;
+        const message = rewrite?.(verdict.code, verdict.message, request) ?? verdict.message;
         log(`[${this.provider.displayName}] terminal in-stream error ${verdict.code}`);
         return { kind: "terminal", code: verdict.code, message };
       }
@@ -4262,7 +4368,9 @@ export class ComposedHandler implements ModelHandler {
      * reports it once over every leg (`onTurnBilled`); every other format
      * reports it from `onTokenUpdate`.
      */
-    onBilled?: (u: TurnBilledUsage) => void
+    onBilled?: (u: TurnBilledUsage) => void,
+    /** Undoes this request's tool-name alias on a tool call the provider returns. */
+    restoreToolName?: (name: string) => string
   ): Response {
     // Local mutable copy so we can null it out after firing (prevents double-firing)
     // without reassigning the function parameter.
@@ -4410,9 +4518,14 @@ export class ComposedHandler implements ModelHandler {
 
       case "gemini-sse": {
         // Build onToolCall callback to register tool calls + thoughtSignatures on the adapter
-        const onToolCall = (toolId: string, name: string, thoughtSignature?: string) => {
+        const onToolCall = (
+          toolId: string,
+          name: string,
+          thoughtSignature?: string,
+          callId?: string
+        ) => {
           if (typeof (adapter as any).registerToolCall === "function") {
-            (adapter as any).registerToolCall(toolId, name, thoughtSignature);
+            (adapter as any).registerToolCall(toolId, name, thoughtSignature, callId);
           }
         };
         return createGeminiSseStream(c, response, {
@@ -4424,6 +4537,7 @@ export class ComposedHandler implements ModelHandler {
           onToolCallObserved: observeToolCall,
           unwrapResponse: this.options.unwrapGeminiResponse,
           priorInputTokens,
+          mapToolName: restoreToolName,
         });
       }
 

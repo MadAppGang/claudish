@@ -167,7 +167,10 @@ export const geminiProfile: ProviderProfile = {
 export const antigravityProfile: ProviderProfile = {
   createHandler(ctx) {
     const transport = new AntigravityProviderTransport(ctx.modelName);
-    const adapter = new GeminiAPIFormat(ctx.modelName);
+    const adapter = new GeminiAPIFormat(ctx.modelName, undefined, {
+      thinkingFromModelName: true,
+      serverCallIds: true,
+    });
     const handler = new ComposedHandler(transport, ctx.targetModel, ctx.modelName, ctx.port, {
       adapter,
       unwrapGeminiResponse: true,

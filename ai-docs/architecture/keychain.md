@@ -68,6 +68,40 @@ Keychain Access.app and another claudish process can write it while this one run
 collapsing a burst inside one operation, not caching across a session — the same reasoning, and
 the same TTL, as `antigravity-token.ts`'s shared-token memo.
 
+### Read-at-use keys: presence for readiness, the value only when a request signs
+
+A provider declared `vaultKeyReadAtUse` (`ApiKeyDescriptor.readAtUse` in the authority) applies the
+split above to readiness itself. `describeReadiness` answers from env and config, then from
+`keychainHasAnyOf` (enumeration: `present`, detail `macOS Keychain (read when used)`), then from the
+1Password step; it never reads a Keychain value, so a picker open, `--probe --no-probe` or MCP
+`preflight` raises no access dialog for it. The value is read by `getRequestAuth` (a request being
+signed) and by the authority's `resolveForUse` (a launch, a probe send), and it is kept in the
+credential provider: neither vault step writes it into `process.env` or records it as hydrated.
+
+The reason is the environment, not the cost. Every other API-key provider writes a vault key
+through into `process.env` so spawned children inherit it, and for a key that Claude Code itself
+reads that is the bug: `ANTHROPIC_API_KEY` in `process.env` reaches every child Claude Code claudish
+starts and moves a session on the user's Claude login onto metered billing. A read-at-use
+provider's key never leaves the process. `anthropic`, the Claude API, is the provider that
+declares it.
+
+The resolving step is recorded as the key's origin (`describeOrigin`: the source and a masked
+value, never the key), so `--probe` provenance names `macOS Keychain` or `1Password` for a key no
+environment layer shows, and `macOS Keychain (not read yet)` for one enumeration found and nothing
+has read.
+
+Where the value is read for `anthropic`: the Claude API launch (`anthropic@<id>` at top level)
+calls `resolveForUse("anthropic", {allowOpPrompt})` once before spawn, with a 1Password prompt
+allowed only on an interactive launch, and hands the key to the proxy's signer, never to an
+environment; `--probe` reads it when it sends the Claude API row (`probeSendRefusal`, which turns
+a read that throws into a dropped row); a proxied `anthropic@` hop reads it through
+`getRequestAuth`. The picker's Claude API row, `--probe --no-probe` and MCP `preflight` read only
+presence, and the picker's hint row names the stores searched (`looked in: env, config, Keychain,
+1Password`, `keySourcesSearched`).
+
+Every other provider's readiness still reads its Keychain value, which is the access-dialog path
+this section warns about.
+
 ## `security` behaviours that are traps
 
 ### 1. `-w` returns HEX for values containing control characters
@@ -315,6 +349,22 @@ The op source draws the same line for denied handshakes, for the same reason.
   roughly one read's wall clock, not ten). Needed because `describeSourceSync` — which decides the
   readiness dot, the "configured first" sort and the not-configured divider — cannot await, so a
   keychain-only provider would render as unconfigured despite working at request time.
+- **Hydration skips read-at-use keys.** `hydrateKeychainIntoEnv`, the 1Password add path
+  (`runOpAdd`) and the Providers-tab key save never write the key variable of a
+  `vaultKeyReadAtUse` provider (`readAtUseKeyEnvVars()`, today `ANTHROPIC_API_KEY`) into
+  `process.env`: there it would reach every child the TUI starts. The tab sees such a key by
+  presence (`readAtUseVaultSource`, `tui/providers.ts`): the vault the authority last resolved it
+  from (`describeOrigin`, which is how a 1Password Environment or set the config cannot name
+  shows up), else a Keychain item (`keychainHasAnyOf`), else a single op:// reference
+  (`configHasOpReferenceFor`). The mount-time `isAvailable` pass asks for it with
+  `allowOpPrompt: false`. The detail pane's `From:` names that vault `(used)` and its `Key:` the
+  masked value once resolved; a placeholder in the environment or `config.json` counts as no key
+  (`realValueFor`).
+- **A saved key signs at once.** A key typed in the tab goes to the authority as a replacement
+  (`credentials.replaceKey`): the provider signs with it ahead of every other store until its next
+  invalidation, without any `process.env` write. A store that still outranks it in a new launch
+  (a shell export this process did not hydrate, or a `config.json` entry for a Keychain save,
+  `sourcesOutranking`) is named in the status line.
 - **Hydration filters on `resolveLocalApiKey`, NOT on `process.env`.** This is subtle and was a
   real bug. `config.json` outranks the keychain but does not live in `process.env`, so skipping
   only variables "absent from env" pushed the keychain value into env — where step 1 of the chain

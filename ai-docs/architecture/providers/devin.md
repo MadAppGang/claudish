@@ -28,14 +28,14 @@ handler is never built and the model **silently falls through to OpenRouter**. A
 quietly succeeding is worse than a crash. Same pattern as Antigravity: empty env var + a dedicated
 `CredentialProvider` + transport-side `credentials.getRequestAuth()`.
 
-**A bare name reaches Devin only through the account's own dynamic models catalog.** The
-definition declares no `nativeModelPatterns`, and no regex claim sends a name to Devin. Devin is
-a dynamic subscription that publishes no catalog connection, and its vendor (`cognition`) has no
-catalog entries, so it gets no vendor claim either. Its candidate is an account-listed one
-(`route-candidates.ts`): the stored or live list carries the name in Devin's own spelling
-(`swe-1.7` resolves to `swe-1-7-medium`), and the catalog publishes no Devin connection for the
-model. That holds for Cognition's `swe-*` line, which the catalog lacks, and for a re-served
-catalog model such as `kimi-k3` (sent as `kimi-k3-high`). A re-served Claude uid
+**A bare name reaches Devin through a catalog connection or the account's own dynamic models
+catalog, never a pattern.** The definition declares no `nativeModelPatterns`, and no regex claim
+sends a name to Devin. The cloud models catalog publishes Devin connections; where it publishes one
+for a model, that connection is the candidate. Its vendor (`cognition`) has no catalog entries, so
+Devin gets no vendor claim. Where the catalog publishes no Devin connection, the candidate is an
+account-listed one (`route-candidates.ts`): the stored or live list carries the name in Devin's own
+spelling (`swe-1.7` resolves to `swe-1-7-medium`). That holds for Cognition's `swe-*` line, which
+the catalog lacks, and for a re-served catalog model with no Devin connection. A re-served Claude uid
 (`claude-opus-5-medium`) adds nothing: a bare `claude-*` name never reaches `route()`. The
 `DEFAULT_ROUTING_RULES` table that once held a `"swe-*": ["devin"]` entry is deleted.
 
@@ -44,7 +44,34 @@ effort `high` resolves to the uid `claude-opus-5-high` via `resolveDevinModelUid
 dynamic models catalog (`getServedDevinModels` = `GetCliModelConfigs` ∩
 `GetCliTeamSettings.allowed_model_uids`, minus `contextWindow === 0`, which is what drops the
 `adaptive` router pseudo-model). No model list, window, family, or tier is ever hardcoded —
-167 models on the developer's own account. Note the two
+167 models on the developer's own account.
+
+**The connection's effort map decides the uid first** (`modelIdEffort` on the catalog connection,
+found by `findModelIdEffortConnection` in `adapters/model-catalog.ts`, chosen by
+`chooseConnectionModelId` in `providers/model-id-effort-choice.ts`, the function Antigravity uses
+too). Only the Devin connection whose `externalModelId` equals the requested base supplies a map; a
+sibling connection (the 1M base beside the default-context one, another provider's connection) never
+does. At effort `e` the uid is `values[e]`; an effort the map does not list moves UP to the next
+listed level, else to the highest (`glm-5-2` with only `max` at `high` → `glm-5-2-max`). `none`
+sends the published `off` uid. With no effort, a listed base is sent as itself; otherwise claudish
+decides the level: the efforts table's `default` cell for the connection's canonical model id when
+its `sendableOn` names this connection as a `model_id_switch`, else `medium`, mapped as above
+(`wire.md` "Recommended effort"). `is_default_model_in_family`, the cheapest uid and the catalog's
+`modelIdEffort.default` do not decide for a mapped base. A map uid the account does not list, or a
+speed-premium uid, is never sent: the resolver's own rules below answer instead. A uid that names a
+tier (`claude-opus-5-5-medium`) is that tier at any effort; it is never re-resolved.
+
+**The picker shows the base of a mapped group.** `DevinModelResolver.collapse` gives a group whose
+ids a Devin connection's effort map lists that connection's `externalModelId` as the row id
+(`claude-opus-5-5`, not `claude-opus-5-5-medium`), so launching the row leaves the level to the
+request's effort and, with none, to the rule above. Matching by listed id keeps a 1M group on its own
+connection's base; a 1M group no map lists keeps its representative. A connection lends its base
+only to a group it alone matches: one map listing both a 200K uid and a 1M uid of the same label
+would give the two rows one id, and launching the 1M row would then resolve to a 200K uid, so both
+groups keep their representatives. No two rows ever share an id. A group with no map keeps
+`defaultOf` (Devin's declared family default, `is_default_model_in_family`, else the cheapest
+tier-less uid). The label, window and
+cost still come from `defaultOf`. Note the two
 metadata rpcs are **unary and BARE** (`application/proto`, no envelope), field 1 is `"chisel"` there
 versus `"devin-cli"` on `GetChatMessage`, `GetCliTeamSettings` lives on `SeatManagementService` not
 `ApiServerService`, and metadata field 7 is required (dropping it → HTTP 400).

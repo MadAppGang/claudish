@@ -15,14 +15,20 @@
  *  - User-Agent: antigravity/cli/<version> (...), the version the installed agy
  *    reports, captured per auth session by getValidAntigravityAccessToken()
  *    (see auth/antigravity-client-version.ts)
- *  - x-activity-request-id: short random id (matches the Antigravity CLI logger)
- *  - payload wrapped in the CodeAssist envelope
- *    {model, project, user_prompt_id, request: <inner>} (+ enabled_credit_types
- *    for paid tiers).
+ *  - payload wrapped in the CodeAssist envelope the Antigravity CLI sends
+ *    (providers/antigravity-envelope.ts).
  */
 
-import { randomUUID } from "node:crypto";
-import { resolveAntigravityServedModel } from "../../providers/transport/antigravity.js";
+import type { EffortLevel } from "../../adapters/base-api-format.js";
+import {
+  antigravityConversations,
+  buildAntigravityEnvelope,
+} from "../../providers/antigravity-envelope.js";
+import type { ModelIdChoice } from "../../providers/model-id-effort-choice.js";
+import {
+  antigravityBodyForModelId,
+  chooseAntigravityServedModel,
+} from "../../providers/transport/antigravity.js";
 import {
   antigravityTokenLineageMaterial,
   getValidAntigravityAccessToken,
@@ -41,11 +47,6 @@ import type {
   RequestAuthContext,
 } from "./types.js";
 import { readinessDetail } from "./types.js";
-
-/** Generate a short random request ID (matches the Antigravity CLI activity logger). */
-function createActivityRequestId(): string {
-  return Math.random().toString(36).substring(7);
-}
 
 export class AntigravityCredentialProvider implements CredentialProvider {
   readonly catalogName = "antigravity";
@@ -96,30 +97,39 @@ export class AntigravityCredentialProvider implements CredentialProvider {
 
   async getRequestAuth(ctx: RequestAuthContext): Promise<RequestAuth> {
     const token = await getValidAntigravityAccessToken();
-    const { projectId, tierId } = await setupAntigravityUser(token);
+    const { projectId } = await setupAntigravityUser(token);
     // Resolve the requested id against the account's dynamic models catalog
-    // (fetchAvailableModels).
-    const servedModel = resolveAntigravityServedModel(
-      ctx.model,
-      await getServedAntigravityModels(token, projectId)
-    );
+    // (fetchAvailableModels), at each request's effort, which the envelope
+    // builder receives: the level can be carried in the model id. The same
+    // function the transport and the availability check use, so all three
+    // choose the same id.
+    const served = await getServedAntigravityModels(token, projectId);
     return {
       headers: {
         Authorization: `Bearer ${token}`,
         "User-Agent": buildAntigravityUserAgent(),
-        "x-activity-request-id": createActivityRequestId(),
       },
-      transformPayload: (inner: any) => {
-        const env: any = {
-          model: servedModel,
-          project: projectId,
-          user_prompt_id: randomUUID(),
-          request: inner,
-        };
-        if (tierId && tierId !== "free-tier") {
-          env.enabled_credit_types = ["GOOGLE_ONE_AI"];
+      transformPayload: (
+        inner: any,
+        request?: {
+          effort?: EffortLevel;
+          onModelChoice?: (choice: ModelIdChoice) => void;
+          conversationScope?: string;
         }
-        return env;
+      ) => {
+        const choice = chooseAntigravityServedModel(ctx.model, served, request?.effort);
+        request?.onModelChoice?.(choice);
+        const model = choice.id;
+        return buildAntigravityEnvelope({
+          // When the id sent carries the effort, the body carries none beside
+          // it; otherwise the dialect's control stays.
+          inner: antigravityBodyForModelId(inner, model, served.meta?.[model]?.thinkingLevel),
+          model,
+          projectId,
+          meta: served.meta?.[model],
+          conversation: antigravityConversations.of(inner, request?.conversationScope),
+          sessionId: antigravityConversations.sessionId,
+        });
       },
     };
   }

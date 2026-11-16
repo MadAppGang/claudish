@@ -10,7 +10,7 @@
  * constraints, not model metadata.
  */
 
-import type { ReasoningModeCapabilities } from "../model-loader.js";
+import type { AggregatorEntry, ModelIdEffort, ReasoningModeCapabilities } from "../model-loader.js";
 import {
   type CachedSubscriptionPlan,
   type ReasoningCapability,
@@ -20,6 +20,7 @@ import {
   reasoningStatusOf,
 } from "../providers/all-models-cache.js";
 import { catalogRouteMatchesProvider } from "../providers/catalog-route-bindings.js";
+import { readModelIdEffort } from "../providers/model-id-effort.js";
 import { compareByReleaseDateDesc } from "../providers/model-ordering.js";
 import { getProviderByName, getShortcuts } from "../providers/provider-definitions.js";
 
@@ -183,6 +184,120 @@ export function lookupRouteReasoningMode(
   return findCacheEntry(modelId, cachePath)?.aggregators?.find((aggregator) =>
     catalogRouteMatchesProvider(aggregator.route, provider)
   )?.reasoning?.mode;
+}
+
+/** A mapped connection that publishes an effort map, with its entry's canonical model id. */
+export interface ModelIdEffortConnection {
+  /** The canonical model id of the catalog entry the connection belongs to. */
+  modelId: string;
+  /**
+   * The generation of the catalog the connection was read from
+   * (`catalogGenerationId`), so a table read beside it is of the same one.
+   */
+  catalogGenerationId: string;
+  /** Set when that catalog is the bundled recommended list. */
+  origin?: "bundled";
+  connection: AggregatorEntry;
+  map: ModelIdEffort;
+}
+
+/** Every mapped connection on `provider`'s route, with its entry and catalog provenance. */
+function providerConnections(
+  provider: string,
+  cachePath?: string
+): Array<Omit<ModelIdEffortConnection, "map">> {
+  const cache = readAllModelsCache(cachePath);
+  if (!cache) return [];
+  const provenance = {
+    catalogGenerationId: cache.catalogGenerationId,
+    ...(cache.origin === "bundled" ? { origin: "bundled" as const } : {}),
+  };
+  return cache.entries.flatMap((entry) =>
+    (entry.aggregators ?? [])
+      .filter(
+        (connection) =>
+          connection.routeStatus === "mapped" &&
+          catalogRouteMatchesProvider(connection.route, provider)
+      )
+      .map((connection) => ({ modelId: entry.modelId, ...provenance, connection }))
+  );
+}
+
+/**
+ * The ONE connection that names `wireId` as its base on `provider`'s route, with
+ * its effort map (`modelIdEffort`): the connection whose route binding matches
+ * the provider and whose `externalModelId` equals the requested id.
+ *
+ * Searched by `externalModelId` across every entry, because the requested id is
+ * the provider's wire id, not necessarily a canonical model id or alias. A
+ * connection spelled exactly as requested decides, with a map or without one;
+ * a case-folded spelling is consulted only when no connection has the exact
+ * one. A sibling connection (the 1M base beside the default-context one, another
+ * provider's connection for the same model) never supplies the map, so a base
+ * whose own connection publishes none has no map. Undefined for a cold cache,
+ * no such connection, or a malformed map.
+ */
+export function findModelIdEffortConnection(
+  wireId: string,
+  provider: string,
+  cachePath?: string
+): ModelIdEffortConnection | undefined {
+  const wanted = wireId.trim();
+  if (!wanted) return undefined;
+  const connections = providerConnections(provider, cachePath);
+  const exact = connections.filter(({ connection }) => connection.externalModelId === wanted);
+  const lowered = wanted.toLowerCase();
+  const candidates =
+    exact.length > 0
+      ? exact
+      : connections.filter(
+          ({ connection }) => connection.externalModelId?.toLowerCase() === lowered
+        );
+  for (const candidate of candidates) {
+    const map = readModelIdEffort(candidate.connection.modelIdEffort);
+    if (map) return { ...candidate, map };
+  }
+  return undefined;
+}
+
+/** The effort map of the connection {@link findModelIdEffortConnection} finds. */
+export function lookupConnectionModelIdEffort(
+  wireId: string,
+  provider: string,
+  cachePath?: string
+): ModelIdEffort | undefined {
+  return findModelIdEffortConnection(wireId, provider, cachePath)?.map;
+}
+
+/** Every connection on `provider`'s route that publishes a well-formed effort map. */
+export function listModelIdEffortConnections(
+  provider: string,
+  cachePath?: string
+): ModelIdEffortConnection[] {
+  const out: ModelIdEffortConnection[] = [];
+  for (const candidate of providerConnections(provider, cachePath)) {
+    const map = readModelIdEffort(candidate.connection.modelIdEffort);
+    if (map) out.push({ ...candidate, map });
+  }
+  return out;
+}
+
+/**
+ * Whether `wireId`, as SENT on `provider`, carries the effort in the model id:
+ * it is exactly one of the ids an effort map of that provider lists (a level or
+ * `off`). A connection's base is not one: sent as itself, or chosen by the
+ * provider's own resolution, it carries no effort.
+ */
+export function carriesEffortInModelId(
+  wireId: string,
+  provider: string,
+  cachePath?: string
+): boolean {
+  const wanted = wireId.trim();
+  if (!wanted) return false;
+  return listModelIdEffortConnections(provider, cachePath).some(
+    ({ map }) => map.off === wanted || Object.values(map.values).includes(wanted)
+  );
 }
 
 /**

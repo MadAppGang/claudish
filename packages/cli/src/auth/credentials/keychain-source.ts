@@ -36,6 +36,7 @@ import {
   readKeychainSecret,
   readKeychainSecretAsync,
 } from "../../providers/keychain.js";
+import { readAtUseKeyEnvVars } from "../../providers/provider-definitions.js";
 import { resolveLocalApiKey } from "./local-api-key.js";
 
 /**
@@ -248,8 +249,12 @@ export async function hydrateKeychainIntoEnv(): Promise<number> {
 
   // `resolveLocalApiKey` is steps 1-3 of the authority's own chain (env →
   // aliases → config.apiKeys) — the exact set of sources that outrank the
-  // keychain. Anything it can already answer must be left alone.
-  const missing = names.filter((n) => !resolveLocalApiKey({ envVar: n }));
+  // keychain. Anything it can already answer must be left alone. A read-at-use
+  // key (`vaultKeyReadAtUse`, ANTHROPIC_API_KEY) is never read here: its value
+  // stays out of `process.env`, where every child Claude Code would inherit it,
+  // and readiness answers it from enumeration alone.
+  const readAtUse = readAtUseKeyEnvVars();
+  const missing = names.filter((n) => !readAtUse.has(n) && !resolveLocalApiKey({ envVar: n }));
   if (missing.length === 0) return 0;
 
   const results = await Promise.all(

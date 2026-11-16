@@ -48,6 +48,7 @@
 import { OllamaAPIFormat } from "./adapters/ollama-api-format.js";
 import type { AdvisorToolEnv, ChildAuthControl } from "./claude-runner.js";
 import { ADVISOR_TOOL_ENV_VAR, childAuthControl } from "./claude-runner.js";
+import { advisorKeyArmFor } from "./handlers/advisor-decorator.js";
 import type { AdvisorRuntime } from "./handlers/advisor-panel-gateway.js";
 import {
   type AdvisorChainBuild,
@@ -63,6 +64,7 @@ import {
 } from "./handlers/advisor-route-plan.js";
 import { type HandlerSet, createHandlerSet } from "./handlers/handler-set.js";
 import { resolveAdvisorCredential } from "./handlers/native-handler-advisor.js";
+import type { NativeSigning } from "./handlers/shared/anthropic-forward.js";
 import { parseModelSpec } from "./providers/model-parser.js";
 import { nativeRouteFor } from "./providers/native-route.js";
 import { type TransportType, getProviderByName } from "./providers/provider-definitions.js";
@@ -484,6 +486,16 @@ export interface AdvisorStartupDeps {
   childAuth?: ChildAuthControl;
   /** Presence of ANTHROPIC_API_KEY; default the advisor's own lookup, value dropped. */
   anthropicKeyPresent?: () => Promise<boolean>;
+  /**
+   * The launch's native signing, the object the proxy signs with. Planning reads
+   * its advisor key arm (`advisorKeyArmFor`). Absent ⇒ `inbound`: `"lookup"`.
+   */
+  launchSigning?: NativeSigning;
+  /**
+   * `advisorKeyLookupAllowed(config)`: false keeps a Claude member off
+   * ANTHROPIC_API_KEY on an `inbound` launch. Default true.
+   */
+  advisorKeyLookup?: boolean;
   /** Default `planAdvisorModel`. */
   plan?: (spec: string, role: AdvisorRole, deps: PlanAdvisorDeps) => Promise<AdvisorModelPlan>;
   /** Default: a fresh advisor handler set (`requestRole: "advisor"`, no token file). */
@@ -531,6 +543,11 @@ export async function evaluateAdvisorStartup(
   const planDeps: PlanAdvisorDeps = {
     childAuth,
     anthropicKeyPresent: deps.anthropicKeyPresent ?? anthropicKeyPresent,
+    keyArm: deps.launchSigning
+      ? advisorKeyArmFor(deps.launchSigning, { keyLookup: deps.advisorKeyLookup !== false })
+      : deps.advisorKeyLookup === false
+        ? "request-key"
+        : "lookup",
   };
   const plan = deps.plan ?? planAdvisorModel;
 

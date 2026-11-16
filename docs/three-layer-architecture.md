@@ -265,23 +265,44 @@ async getHeaders(): Promise<Record<string, string>> {
 }
 ```
 
-**New providers via `PROVIDER_PROFILES`** (`providers/provider-profiles.ts`):
+**New providers via `ProviderDefinition.createHandler`** (`providers/provider-definitions.ts`):
 
-Most transports don't need a new class. Adding a single entry to
-`PROVIDER_PROFILES` creates a fully functional transport:
+Most transports don't need a new class. A provider is one entry in
+`BUILTIN_PROVIDERS`, and that entry's required `createHandler` field says how
+it builds a handler: a `lazyHandler(...)` thunk that names a profile in
+`providers/provider-profiles.ts`, or a `NoHandler` value that states why it
+builds none. Several providers can share one profile:
 
 ```typescript
-// One entry = one new provider
-"my-provider": {
-  createHandler(ctx: ProfileContext): ModelHandler {
-    const transport = new AnthropicCompatProvider(
-      ctx.apiKey,
-      "https://api.my-provider.com"
-    );
-    return new ComposedHandler(transport, ctx.targetModel, ctx.modelName, ctx.port, ctx.sharedOpts);
-  }
-}
+// providers/provider-profiles.ts — the builder
+export const myProviderProfile: ProviderProfile = {
+  createHandler(ctx) {
+    const transport = new AnthropicProviderTransport(ctx.provider, ctx.apiKey);
+    const adapter = new AnthropicAPIFormat(ctx.modelName, ctx.provider.name);
+    return new ComposedHandler(transport, ctx.targetModel, ctx.modelName, ctx.port, {
+      adapter,
+      ...ctx.sharedOpts,
+    });
+  },
+};
+
+// providers/provider-definitions.ts — the provider entry
+const myProviderHandler = lazyHandler((m) => m.myProviderProfile);
+
+export const BUILTIN_PROVIDERS: TieredProviderDefinition[] = [
+  // ...
+  {
+    createHandler: myProviderHandler, // required: the compiler refuses an entry without it
+    tier: "native",
+    name: "my-provider",
+    // ...
+  },
+];
 ```
+
+A catalog-routed provider is built from its connection's wire first
+(`createHandlerForProvider` → `buildWireHandler`); the profile serves the
+providers and models the catalog does not route.
 
 ---
 
@@ -470,19 +491,22 @@ export class MyFormatAPIFormat implements FormatConverter {
 }
 ```
 
-**2. Register it in a `ProviderProfile`:**
+**2. Use it in a `ProviderProfile`, and point the provider's `createHandler` at it:**
 
 ```typescript
 // providers/provider-profiles.ts
-"my-provider": {
-  createHandler(ctx: ProfileContext): ModelHandler {
-    const transport = new OpenAIProvider(ctx.apiKey, "https://api.my-provider.com/v1");
+export const myProviderProfile: ProviderProfile = {
+  createHandler(ctx) {
+    const transport = new OpenAIProviderTransport(ctx.provider, ctx.modelName, ctx.apiKey);
     return new ComposedHandler(transport, ctx.targetModel, ctx.modelName, ctx.port, {
       ...ctx.sharedOpts,
       adapter: new MyFormatAPIFormat(),
     });
-  }
-}
+  },
+};
+
+// providers/provider-definitions.ts, in the provider's BUILTIN_PROVIDERS entry
+createHandler: lazyHandler((m) => m.myProviderProfile),
 ```
 
 ---
@@ -539,24 +563,32 @@ ID. `shouldHandle()` must be specific enough to avoid false positives.
 
 ### Adding a new provider (new Layer 3)
 
-Most new providers need only a `PROVIDER_PROFILES` entry — no new class
-required. Use an existing transport if the provider speaks an existing
+Most new providers need only a `BUILTIN_PROVIDERS` entry in
+`providers/provider-definitions.ts` — no new class required. Its
+`createHandler` field is required, so an entry without a handler does not
+compile. Use an existing transport if the provider speaks an existing
 protocol.
 
-**Option A — reuse `AnthropicCompatProvider`** (for Anthropic-protocol endpoints):
+**Option A — reuse an existing profile** (for Anthropic-protocol endpoints,
+`anthropicCompatProfile`):
 
 ```typescript
-// providers/provider-profiles.ts
-"new-byok-provider": {
-  createHandler(ctx: ProfileContext): ModelHandler {
-    const transport = new AnthropicCompatProvider(
-      ctx.apiKey,
-      "https://api.new-provider.com/v1"
-    );
-    return new ComposedHandler(transport, ctx.targetModel, ctx.modelName, ctx.port, ctx.sharedOpts);
-  }
-}
+// providers/provider-definitions.ts
+{
+  createHandler: anthropicCompatHandler, // lazyHandler((m) => m.anthropicCompatProfile)
+  tier: "native",
+  name: "new-byok-provider",
+  displayName: "New Provider",
+  transport: "anthropic",
+  baseUrl: "https://api.new-provider.com",
+  // ...
+},
 ```
+
+A provider that builds no handler on this path states why instead:
+`createHandler: noHandler("local", "...")`. The reasons are the
+`NoHandlerReason` values: `renamed-at-runtime`, `dedicated-handler`, `local`,
+`virtual`, `unimplemented`.
 
 **Option B — new `ProviderTransport` class** (for providers with custom auth or rate limits):
 
@@ -584,7 +616,8 @@ export class NewProviderTransport implements ProviderTransport {
 }
 ```
 
-Then register it in `PROVIDER_PROFILES` the same way as Option A.
+Then build it in a profile in `providers/provider-profiles.ts` and set the
+provider's `createHandler` to `lazyHandler((m) => m.newProviderProfile)`.
 
 **Verify the wiring** after adding any layer:
 

@@ -8,7 +8,130 @@
  * primary envelope), the availability check and route gathering all share it.
  */
 
-import { lookupFamilyDefaultVariant } from "../adapters/model-catalog.js";
+import type { EffortLevel } from "../adapters/base-api-format.js";
+import {
+  carriesEffortInModelId,
+  findModelIdEffortConnection,
+  lookupFamilyDefaultVariant,
+} from "../adapters/model-catalog.js";
+import {
+  type ConnectionMapDecision,
+  type ModelIdChoice,
+  chooseConnectionModelId,
+  existingResolutionChoice,
+} from "./model-id-effort-choice.js";
+
+/**
+ * The account's dynamic models catalog as model-id resolution reads it: every
+ * served id, the backend's default, and the ids the backend declares are not
+ * selectable (internal, role-bound, retired), which discovery also drops.
+ */
+export interface AntigravityServedSet {
+  servedIds: string[];
+  defaultId: string | null;
+  excludedIds?: ReadonlySet<string>;
+}
+
+/**
+ * The served ids a dynamic models catalog describes, for a reader that holds
+ * the list but not the in-process list of the account's served and excluded
+ * ids (`peekServedAntigravityModels`): the
+ * listed ids plus the served ids the backend excludes, which discovery keeps
+ * beside the list (`AccountModelsList.excludedIds`) rather than in it. Without
+ * them a requested excluded id looks unlisted, the exact-id step of
+ * {@link resolveAntigravityServedModel} cannot see it, and a family default
+ * answers with a sibling instead. No backend default: only the in-process
+ * list carries one.
+ */
+export function antigravityServedSetOfList(
+  listedIds: readonly string[],
+  excludedIds: readonly string[] = []
+): AntigravityServedSet {
+  const listed = new Set(listedIds);
+  const servedIds = [...listedIds, ...excludedIds.filter((id) => !listed.has(id))];
+  return excludedIds.length > 0
+    ? { servedIds, defaultId: null, excludedIds: new Set(excludedIds) }
+    : { servedIds, defaultId: null };
+}
+
+/** Whether the backend declares `id` not selectable for this account. */
+function isExcluded(served: AntigravityServedSet, id: string): boolean {
+  return served.excludedIds?.has(id) ?? false;
+}
+
+/**
+ * Whether the account serves `id` and the backend does not exclude it: the test
+ * for sending a requested id as itself. An excluded id is never sent that way,
+ * so a mapped base the backend excludes goes through its map instead.
+ */
+function servesSelectable(served: AntigravityServedSet, id: string): boolean {
+  return served.servedIds.includes(id) && !isExcluded(served, id);
+}
+
+/**
+ * What the connection's effort map decides for `req`: the id it chooses, the
+ * level it looked up when that id cannot be sent, or undefined when the
+ * connection publishes no map. A map id is sendable only when the account
+ * serves it and the backend does not exclude it. Its spelling decides nothing:
+ * a `-fast` id the map names is sent like any other.
+ */
+function mappedAntigravityModelId(
+  req: string,
+  served: AntigravityServedSet,
+  effort: EffortLevel | undefined
+): ConnectionMapDecision | undefined {
+  return chooseConnectionModelId(req, "antigravity", effort, {
+    sendable: (id) => (servesSelectable(served, id) ? id : undefined),
+  });
+}
+
+/**
+ * Whether the id `sent` carries the effort, so the body must carry no effort
+ * control beside it: `sent` is an id an Antigravity effort map lists (a level or
+ * `off`). Decided by the id actually sent on an attempt, never by the requested
+ * one: a mapped base that falls back to an unmapped id, or a capacity retry to
+ * one, still needs the body's control.
+ */
+export function antigravityCarriesEffortInModelId(sent: string): boolean {
+  return carriesEffortInModelId(sent.trim(), "antigravity");
+}
+
+/**
+ * The `thinkingLevel` string for the number the backend reports on a model
+ * record. Recorded: the Antigravity CLI sent "MEDIUM" for `gemini-4-argon-medium`,
+ * whose record says 2. 1 and 3 are the `-low` and `-high` records. Any other
+ * number (100 on `-xhigh`) has no recorded string and gives none.
+ */
+const BACKEND_THINKING_LEVELS: Record<number, string> = { 1: "LOW", 2: "MEDIUM", 3: "HIGH" };
+
+/**
+ * The Gemini body for an attempt that sends `sent`. When `sent` carries the
+ * effort, the request's own effort controls (`thinkingLevel`, `thinkingBudget`)
+ * are removed, and a Gemini id gets the level the backend reports for that id
+ * (`backendLevel`), as the Antigravity CLI sends it. Unchanged otherwise.
+ * `includeThoughts` and every other field are kept. Never mutates `inner`, so
+ * every attempt shapes the same original dialect payload.
+ */
+export function antigravityBodyForModelId<T>(inner: T, sent: string, backendLevel?: number): T {
+  const body = inner as
+    | { generationConfig?: { thinkingConfig?: Record<string, unknown> } }
+    | null
+    | undefined;
+  const thinking = body?.generationConfig?.thinkingConfig;
+  if (!thinking || typeof thinking !== "object") return inner;
+  if (!antigravityCarriesEffortInModelId(sent)) return inner;
+  const level =
+    backendLevel !== undefined && sent.trim().startsWith("gemini")
+      ? BACKEND_THINKING_LEVELS[backendLevel]
+      : undefined;
+  if (!level && !("thinkingLevel" in thinking) && !("thinkingBudget" in thinking)) return inner;
+  const { thinkingLevel: _level, thinkingBudget: _budget, ...kept } = thinking;
+  if (level) kept.thinkingLevel = level;
+  const generationConfig: Record<string, unknown> = { ...body?.generationConfig };
+  if (Object.keys(kept).length > 0) generationConfig.thinkingConfig = kept;
+  else delete generationConfig.thinkingConfig;
+  return { ...body, generationConfig } as T;
+}
 
 /**
  * Reasoning-tier RANK — a LAST-RESORT rule, used only when neither the backend
@@ -118,9 +241,31 @@ export function resolveAntigravityModelId(
 }
 
 /**
- * The id a request for `requested` is SENT as: {@link resolveAntigravityModelId}
- * over the account's full dynamic models catalog (`servedIds`), with the cloud models catalog's family default
- * (`lookupFamilyDefaultVariant`) as its second rule.
+ * The id a request for `requested` at `effort` is SENT as.
+ *
+ * First the connection's effort map (`modelIdEffort`), when the cloud models
+ * catalog publishes one for the Antigravity connection whose `externalModelId`
+ * is `requested` (`chooseConnectionModelId`):
+ *  - an effort level → `values[effort]`, else the next higher listed level,
+ *    else the highest listed level;
+ *  - `none` → the published `off` id;
+ *  - no effort → the recommended-effort table's `default` level for this
+ *    connection, else `medium`, then as an effort level. The backend's
+ *    `defaultId` does not decide. A served base with no effort is sent as itself,
+ *    unless the backend excludes it.
+ * Only an id the account's dynamic models catalog lists and the backend does
+ * not exclude is sent. Otherwise, and with no map, it is
+ * {@link resolveAntigravityModelId} over the account's selectable ids (served
+ * and not excluded), with the cloud models catalog's family default
+ * (`lookupFamilyDefaultVariant`) as its second rule. No rule reads the id's
+ * spelling: a `-fast` or `-priority` id is chosen or avoided only by that data
+ * (the account's list, `excludedIds`, the effort map), never by its name.
+ *
+ * A requested id the account lists that is NOT a mapped base (an exact
+ * `gemini-4-carbon-low`) is sent unchanged before any of that: at any effort,
+ * and even when the backend excludes it, so neither the family default nor a
+ * variant rule replaces it. Exclusion gates only the mapped-base shortcut (an
+ * excluded base goes through its map) and every automatic choice.
  *
  * The ONE resolution the transport, the credential (which builds the primary
  * envelope), the routing availability check (`providerServesModel`) and route
@@ -131,12 +276,45 @@ export function resolveAntigravityModelId(
  */
 export function resolveAntigravityServedModel(
   requested: string,
-  served: { servedIds: string[]; defaultId: string | null }
+  served: AntigravityServedSet,
+  effort?: EffortLevel
 ): string {
-  return resolveAntigravityModelId(
+  return chooseAntigravityServedModel(requested, served, effort).id;
+}
+
+/**
+ * {@link resolveAntigravityServedModel} with what decided the id: the level the
+ * choice used and its source, for the envelope builders' debug line.
+ */
+export function chooseAntigravityServedModel(
+  requested: string,
+  served: AntigravityServedSet,
+  effort?: EffortLevel
+): ModelIdChoice {
+  const req = requested.trim();
+  // An exact listed id that is no connection's base is a fixed model: sent as
+  // itself at any effort, excluded or not, before any family rule can move it.
+  const isMappedBase = findModelIdEffortConnection(req, "antigravity") !== undefined;
+  if (!isMappedBase && served.servedIds.includes(req)) {
+    return { id: req, effort, source: "exact id" };
+  }
+  // A mapped base the account lists, requested with no effort, is sent as
+  // itself: the backend then serves it at its own default.
+  if (isMappedBase && !effort && servesSelectable(served, req)) {
+    return { id: req, effort: undefined, source: "served base" };
+  }
+  const decision = mappedAntigravityModelId(req, served, effort);
+  if (decision?.usable) return decision.choice;
+  if (servesSelectable(served, req)) return existingResolutionChoice(req, effort, decision);
+  // An automatic choice is never an id the backend excludes.
+  const selectable = served.servedIds.filter((id) => !isExcluded(served, id));
+  const defaultId =
+    served.defaultId && selectable.includes(served.defaultId) ? served.defaultId : null;
+  const id = resolveAntigravityModelId(
     requested,
-    served.servedIds,
-    served.defaultId,
+    selectable,
+    defaultId,
     lookupFamilyDefaultVariant(requested, "antigravity")
   );
+  return existingResolutionChoice(id, effort, decision);
 }

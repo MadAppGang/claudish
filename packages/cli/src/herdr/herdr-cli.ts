@@ -8,11 +8,16 @@
  * written under a hidden name and renamed, so Herdr, which reloads a mod on every save and skips
  * hidden files, never loads half a file.
  *
+ * `claudish herdr show-panel`: opens the claudish mod as a pane right of Herdr.app's focused pane.
+ * Herdr.app docks a mod into the layout only the first time it sees the mod's folder; once a
+ * layout no longer holds it, the app's own menus have no way back to it.
+ *
  * herdr applies `rows_by_agent` only to its own canonical agent ids, never to a reported agent such
  * as `claudish`, so the rows go into the global `ui.sidebar.agents.rows`. A `$name` token a pane
  * does not report disappears with its separator, so other agents' rows are unchanged.
  */
 
+import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -21,12 +26,14 @@ import { SIDEBAR_TOKENS } from "./state-map.js";
 const USAGE = [
   "usage: claudish herdr rows",
   "       claudish herdr install-app-mod [--from <dir>]",
+  "       claudish herdr show-panel",
   "",
   "  rows             print herdr Agent sidebar rows showing each claudish viewer's model,",
   "                   activity and tokens; paste them into herdr's config.toml (claudish does",
   "                   not edit it)",
   "  install-app-mod  copy the claudish mod into Herdr.app's mods/claudish/ ($HERDR_APP_HOME,",
   "                   else ~/.config/herdr-app); --from names another built mod folder",
+  "  show-panel       open the claudish panel in Herdr.app, right of the focused pane",
   "",
 ].join("\n");
 
@@ -39,6 +46,57 @@ export interface HerdrCliDeps {
   /** the folder holding the built mod; default: searched upward from this module */
   modSource?: string;
   err?: (s: string) => void;
+  /** runs `herdr-app <args>`; null when it could not run. Default: spawns `herdr-app` */
+  runApp?: (args: string[]) => AppRun | null;
+}
+
+interface AppRun {
+  code: number | null;
+  stdout?: string;
+  stderr?: string;
+}
+
+function spawnHerdrApp(args: string[]): AppRun | null {
+  const r = spawnSync("herdr-app", args, { encoding: "utf-8", timeout: 10_000 });
+  if (r.error) return null;
+  return { code: r.status, stdout: r.stdout, stderr: r.stderr };
+}
+
+/** What `herdr-app do` printed: `{ "pane": … }` or `{ "error": … }`. */
+function appReply(text: string | undefined): { pane?: unknown; error?: unknown } {
+  try {
+    const v = JSON.parse(text?.trim() ?? "") as unknown;
+    return v && typeof v === "object" ? (v as { pane?: unknown; error?: unknown }) : {};
+  } catch {
+    return {};
+  }
+}
+
+function showPanelCommand(rest: string[], out: (s: string) => void, deps: HerdrCliDeps): number {
+  const err = deps.err ?? ((s: string) => process.stderr.write(s));
+  if (rest.length > 0) {
+    err(USAGE);
+    return 2;
+  }
+  const split = JSON.stringify({ direction: "right", mod: APP_MOD_NAME });
+  const r = (deps.runApp ?? spawnHerdrApp)(["do", "pane.split", split]);
+  if (!r) {
+    err(
+      "claudish herdr show-panel: herdr-app is not installed or did not run; open Herdr.app first\n"
+    );
+    return 1;
+  }
+  const reply = appReply(r.stdout);
+  if (r.code === 0 && typeof reply.pane === "string") {
+    out(`opened the claudish panel in Herdr.app pane ${reply.pane}\n`);
+    return 0;
+  }
+  const why =
+    typeof reply.error === "string"
+      ? reply.error
+      : r.stderr?.trim() || r.stdout?.trim() || `herdr-app exited ${r.code}`;
+  err(`claudish herdr show-panel: ${why}\n`);
+  return 1;
 }
 
 /** The built mod beside this claudish: `<package>/herdr-app-mod/claudish`, from src/ or dist/. */
@@ -141,6 +199,7 @@ export function herdrCommand(
     return 0;
   }
   if (sub === "install-app-mod") return installCommand(rest, out, deps);
+  if (sub === "show-panel") return showPanelCommand(rest, out, deps);
   if (sub === "--help" || sub === "-h" || sub === undefined) {
     out(USAGE);
     return sub === undefined ? 2 : 0;

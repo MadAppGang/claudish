@@ -86,6 +86,7 @@ import {
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, relative } from "node:path";
+import { HOME_BYPASS_OVERRIDES } from "./home-bypass-overrides.ts";
 import { SESSION_ENV_VARS } from "./session-env-vars.ts";
 
 /**
@@ -557,12 +558,6 @@ for (const g of GUARDED) {
 // HOME to wherever the developer's shell points them, so they are removed.
 const sentinelDir = mkdtempSync(join(tmpdir(), "claudish-guard-sentinel-"));
 const runHome = mkdtempSync(join(tmpdir(), "claudish-guard-home-"));
-const HOME_BYPASS_OVERRIDES = [
-  "CLAUDISH_ACCOUNTS_DIR",
-  "CLAUDISH_CONFIG",
-  "CLAUDISH_DYNAMIC_CATALOG_DIR",
-  "CLAUDISH_DYNAMIC_CATALOG_KEY",
-] as const;
 const childEnv: Record<string, string | undefined> = {
   ...process.env,
   HOME: runHome,
@@ -571,6 +566,7 @@ const childEnv: Record<string, string | undefined> = {
   CLAUDISH_DISABLE_OP: "1",
   CLAUDISH_DISABLE_CATALOG_WARM: "1",
   CLAUDISH_DISABLE_BUNDLED_LIST: "1",
+  CLAUDISH_ANTIGRAVITY_PLAIN_FETCH: "1",
   CLAUDISH_CATALOG_INCOMPATIBLE_PATH: join(sentinelDir, "catalog-incompatible.json"),
 };
 for (const name of HOME_BYPASS_OVERRIDES) delete childEnv[name];

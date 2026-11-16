@@ -1,15 +1,19 @@
 /**
  * The viewer against a fake endpoint and a fake magmux view socket, both real unix sockets: the
- * claim is taken, renewed and released in that order; losing it shows the band and unwatches the
- * frames; no key ever travels down either socket; the viewer exits on `item.remove`, on a
- * terminal row, on `server.closing`, and when the server that owns the endpoint is killed.
+ * viewer only watches, whoever holds the view, and never claims or resizes; no key ever travels
+ * down either socket; the viewer exits on `item.remove`, on a terminal row, on `server.closing`,
+ * and when the server that owns the endpoint is killed.
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { HerdrSocket } from "../herdr/herdr-socket.js";
+import { HerdrReporter } from "../herdr/reporter.js";
+import { sessionItem as fullSessionItem } from "../herdr/test-helpers/view-items.js";
 import type { ViewHolder } from "../pane/contract.js";
+import { FakeHerdr } from "../pane/test-helpers/fake-herdr.js";
 import type { ViewItem } from "../pane/view-contract.js";
 import { capturedFrames } from "./test-data/captured-frames.js";
 import {
@@ -17,13 +21,7 @@ import {
   FakeViewEndpoint,
   makeViewRoot,
 } from "./test-helpers/fake-view-endpoint.js";
-import {
-  Viewer,
-  type ViewerIo,
-  type ViewerOutcome,
-  bandText,
-  normalizeViewTarget,
-} from "./viewer.js";
+import { Viewer, type ViewerIo, type ViewerOutcome, normalizeViewTarget } from "./viewer.js";
 
 const T = 20_000;
 const FAKE_ENDPOINT_SCRIPT = join(import.meta.dir, "test-helpers", "fake-view-endpoint.ts");
@@ -113,18 +111,16 @@ function newRoot(): string {
   return root;
 }
 
-async function rig(o: { passive?: boolean } = {}): Promise<Rig> {
+async function rig(): Promise<Rig> {
   const root = newRoot();
   const viewPath = join(root, "magmux-pv.view");
   const mag = await FakeMagmuxView.start({ path: viewPath, frames: capturedFrames("sgr-runs") });
-  const ep = await FakeViewEndpoint.start({ root, item: sessionItem(viewPath), label: "TestTerm" });
+  const ep = await FakeViewEndpoint.start({ root, item: sessionItem(viewPath) });
   const io = fakeIo();
   const viewer = new Viewer({
     root,
     target: "sess-1",
-    passive: o.passive,
     io,
-    renewMs: 40,
     verdictMs: 20,
     resizeDebounceMs: 5,
   });
@@ -156,30 +152,78 @@ describe("target spellings", () => {
     expect(normalizeViewTarget("  ")).toBeNull();
     expect(normalizeViewTarget("t:nослот/")).toBeNull();
   });
+});
 
-  test("the band names the holder, or only the key when nobody holds the view", () => {
-    expect(bandText(otherHolder)).toBe("viewing in herdr — Enter to view here");
-    expect(bandText(null)).toBe("Enter to view here");
-  });
+const claudeCodeHolder: ViewHolder = {
+  holder: "claude_code",
+  label: "Claude Code",
+  since: "2026-11-14T00:00:00.000Z",
+  claim_id: "claude-code-grant",
+};
+
+describe("a viewer only watches", () => {
+  test(
+    "started by hand it never claims, at start, on Enter or on herdr focus; the view stays as Claude Code set it",
+    async () => {
+      const root = newRoot();
+      const viewPath = join(root, "magmux-pv.view");
+      const mag = await FakeMagmuxView.start({
+        path: viewPath,
+        frames: capturedFrames("sgr-runs"),
+      });
+      const ep = await FakeViewEndpoint.start({
+        root,
+        item: {
+          ...fullSessionItem("sess-1", { viewSocket: viewPath, state: "AWAITING_INPUT" }),
+          view: claudeCodeHolder,
+        } as ViewItem,
+      });
+      const herdr = await FakeHerdr.start();
+      const { paneId } = herdr.addWorkspace("w1");
+      const io = fakeIo();
+      const viewer = new Viewer({
+        root,
+        target: "sess-1",
+        io,
+        verdictMs: 20,
+        resizeDebounceMs: 5,
+        frontEnd: new HerdrReporter({ herdr: new HerdrSocket(herdr.path, 500), paneId }),
+      });
+      const run = viewer.run();
+      cleanups.push(async () => {
+        viewer.quit();
+        await run;
+        await ep.close();
+        await mag.close();
+        await herdr.stop();
+      });
+      // the picture is painted although Claude Code holds the view
+      await until(() => io.output.includes("bold red"), "the session's screen");
+      io.press("\r");
+      herdr.emitForTest("pane_focused", { pane_id: paneId, workspace_id: "w1" });
+      io.resizeTo(100, 31);
+      await Bun.sleep(150);
+      io.press("q");
+      expect(await run).toEqual({ code: 0, message: "" });
+      const claimOps = ["claim", "renew", "release", "resize"];
+      expect(ep.ops().filter((op) => claimOps.includes(op))).toEqual([]);
+      expect(ep.item.view).toEqual(claudeCodeHolder);
+      expect(herdr.callsOf("events.subscribe")).toHaveLength(0);
+    },
+    T
+  );
 });
 
 describe("Viewer", () => {
   test(
-    "claims at start, renews while holding, releases on q, in that order",
+    "watches from the start and unwatches on q; the endpoint hears only hello, list and subscribe",
     async () => {
       const r = await rig();
-      await until(() => r.ep.ops().filter((op) => op === "renew").length >= 2, "two renewals");
       await until(() => r.io.output.includes("bold red"), "the session's screen");
       r.io.press("q");
       const outcome = await r.run;
       expect(outcome).toEqual({ code: 0, message: "" });
-      const claimOps = r.ep.ops().filter((op) => ["claim", "renew", "release"].includes(op));
-      expect(claimOps[0]).toBe("claim");
-      expect(claimOps.at(-1)).toBe("release");
-      expect(claimOps.slice(1, -1).every((op) => op === "renew")).toBe(true);
-      const claim = r.ep.received.find((m) => m.op === "claim");
-      // the whole terminal but its status row
-      expect(claim?.args).toEqual({ target: "s:sess-1", cols: 80, rows: 24 });
+      expect(r.ep.ops()).toEqual(["hello", "list", "hello", "subscribe"]);
       expect(r.mag.types()).toEqual(["capabilities", "watch", "unwatch"]);
       expect(r.io.output.endsWith("\x1b[0m\x1b[?25h\x1b[?1049l")).toBe(true);
     },
@@ -187,38 +231,20 @@ describe("Viewer", () => {
   );
 
   test(
-    "losing the claim shows the band, unwatches, stops renewing; Enter takes it back",
+    "whoever holds the view, the picture keeps painting and the frames stay watched",
     async () => {
       const r = await rig();
       await until(() => r.io.output.includes("bold red"), "the session's screen");
       r.ep.steal(otherHolder);
-      await until(() => r.mag.types().includes("unwatch"), "unwatch");
-      await until(() => r.io.output.includes("viewing in herdr — Enter to view here"), "the band");
-      const renewsAtLoss = r.ep.ops().filter((op) => op === "renew").length;
-      await Bun.sleep(150);
-      expect(r.ep.ops().filter((op) => op === "renew").length).toBe(renewsAtLoss);
-      // frames that still arrive while unwatched are not painted
+      await Bun.sleep(100);
+      expect(r.mag.types()).toEqual(["capabilities", "watch"]);
+      expect(r.io.output).not.toContain("Enter to view here");
       r.io.output = "";
       r.mag.push({ ...capturedFrames("sgr-runs")[0], seq: 99 });
-      await Bun.sleep(50);
-      expect(r.io.output).not.toContain("bold red");
-
+      await until(() => r.io.output.includes("bold red"), "the next frame painted");
       r.io.press("\r");
-      await until(() => r.ep.ops().filter((op) => op === "claim").length === 2, "a second claim");
-      await until(() => r.mag.types().filter((t) => t === "watch").length === 2, "a new watch");
-      await until(() => r.io.output.includes("bold red"), "the screen again");
-    },
-    T
-  );
-
-  test(
-    "a refused renewal is a lost claim",
-    async () => {
-      const r = await rig();
-      await until(() => r.mag.types().includes("watch"), "watch");
-      r.ep.refuseRenew = true;
-      await until(() => r.mag.types().includes("unwatch"), "unwatch after view_not_held");
-      await until(() => r.io.output.includes("Enter to view here"), "the band");
+      await Bun.sleep(100);
+      expect(r.ep.ops().filter((op) => op === "claim")).toEqual([]);
     },
     T
   );
@@ -234,7 +260,7 @@ describe("Viewer", () => {
       await Bun.sleep(100);
       r.io.press("q");
       await r.run;
-      const allowedOps = new Set(["hello", "list", "subscribe", "claim", "renew", "release"]);
+      const allowedOps = new Set(["hello", "list", "subscribe"]);
       expect(r.ep.ops().filter((op) => !allowedOps.has(op))).toEqual([]);
       expect(
         r.mag.types().filter((t) => !["capabilities", "watch", "unwatch"].includes(t))
@@ -242,44 +268,20 @@ describe("Viewer", () => {
       const wire = JSON.stringify([r.ep.received, r.mag.received]);
       for (const typed of ["hello world", "ls -la", "123", "\\t"])
         expect(wire).not.toContain(typed);
-      // Enter while holding takes nothing again
-      expect(r.ep.ops().filter((op) => op === "claim")).toHaveLength(1);
     },
     T
   );
 
   test(
-    "a passive viewer does not claim at start and shows the band",
-    async () => {
-      const r = await rig({ passive: true });
-      await until(() => r.io.output.includes("Enter to view here"), "the band");
-      await Bun.sleep(100);
-      expect(r.ep.ops()).not.toContain("claim");
-      expect(r.mag.received).toEqual([]);
-      r.io.press("\r");
-      await until(() => r.io.output.includes("bold red"), "the screen after Enter");
-      expect(r.ep.ops().filter((op) => op === "claim")).toHaveLength(1);
-    },
-    T
-  );
-
-  test(
-    "a resized terminal resizes the pane only while this viewer holds the view",
+    "a resized terminal never resizes the pane: the picture is clipped to it instead",
     async () => {
       const r = await rig();
-      await until(() => r.mag.types().includes("watch"), "watch");
-      r.io.resizeTo(100, 31);
-      await until(() => r.ep.ops().includes("resize"), "resize");
-      expect(r.ep.received.find((m) => m.op === "resize")?.args).toEqual({
-        target: "s:sess-1",
-        cols: 100,
-        rows: 30,
-      });
-      r.ep.steal(otherHolder);
-      await until(() => r.mag.types().includes("unwatch"), "unwatch");
-      r.io.resizeTo(60, 20);
+      await until(() => r.io.output.includes("bold red"), "the session's screen");
+      r.io.resizeTo(200, 11);
+      await until(() => r.io.output.includes("CLIPPED to 200x10"), "the clipped status");
+      r.io.resizeTo(120, 40);
       await Bun.sleep(100);
-      expect(r.ep.ops().filter((op) => op === "resize")).toHaveLength(1);
+      expect(r.ep.ops().filter((op) => op === "resize" || op === "claim")).toEqual([]);
     },
     T
   );
@@ -292,7 +294,7 @@ describe("Viewer", () => {
       r.ep.remove("evicted");
       const outcome = await r.run;
       expect(outcome).toEqual({ code: 0, message: "s:sess-1 is no longer listed" });
-      expect(r.ep.ops().at(-1)).toBe("release");
+      expect(r.ep.ops()).not.toContain("release");
     },
     T
   );
@@ -326,7 +328,7 @@ describe("Viewer", () => {
   );
 
   test(
-    "a finished target is opened as a replay on the server that lists it; a passive viewer never opens one",
+    "a finished target is opened as a replay on the server that lists it",
     async () => {
       const root = newRoot();
       const ep = await FakeViewEndpoint.start({
@@ -339,8 +341,33 @@ describe("Viewer", () => {
       const outcome = await new Viewer({ root, target: "s:sess-1", io }).run();
       expect(outcome.code).toBe(1);
       expect(ep.ops()).toEqual(["hello", "list", "hello", "replay.open"]);
-      const passive = await new Viewer({ root, target: "s:sess-1", io, passive: true }).run();
-      expect(passive).toEqual({ code: 1, message: "s:sess-1 has finished" });
+    },
+    T
+  );
+
+  test(
+    "a finished slot that only the records list is opened with its record's run path",
+    async () => {
+      const root = newRoot();
+      const ep = await FakeViewEndpoint.start({ root, item: sessionItem(null) });
+      cleanups.push(() => ep.close());
+      const record = {
+        ...sessionItem(null, { state: "COMPLETED" }),
+        kind: "team_slot",
+        target: "t:run-old/02",
+        run_id: "run-old",
+        run_path: "/work/reviews/run-old",
+        run_kind: "run",
+      } as unknown as ViewItem;
+      const io = fakeIo();
+      await new Viewer({
+        root,
+        target: "t:run-old/02",
+        io,
+        recorded: (t) => (t === record.target ? record : null),
+      }).run();
+      const open = ep.received.find((m) => m.op === "replay.open");
+      expect(open?.args).toEqual({ run_id: "run-old", slot: "02", path: "/work/reviews/run-old" });
     },
     T
   );
@@ -413,7 +440,7 @@ describe("Viewer", () => {
       const first = await reader.read();
       expect(new TextDecoder().decode(first.value)).toContain("ready");
       const io = fakeIo();
-      const viewer = new Viewer({ root, target: "s:sess-1", io, renewMs: 40 });
+      const viewer = new Viewer({ root, target: "s:sess-1", io });
       const run = viewer.run();
       cleanups.push(async () => {
         viewer.quit();

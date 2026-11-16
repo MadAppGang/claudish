@@ -111,6 +111,21 @@ describe.skipIf(!MAGMUX_AVAILABLE)("pane scroll through MCP", () => {
   async function capture(id: string): Promise<CaptureResult> {
     return (await call("capture_session", { session_id: id })) as unknown as CaptureResult;
   }
+  /**
+   * A capture that two reads 500 ms apart agree on. The row state comes from the transcript and
+   * can lead the screen: a dialog's state is reported while the pane still paints the spinner.
+   */
+  async function stableCapture(id: string): Promise<CaptureResult> {
+    const end = Date.now() + 20_000;
+    let prev = await capture(id);
+    for (;;) {
+      await Bun.sleep(500);
+      const cur = await capture(id);
+      if (JSON.stringify(cur.lines) === JSON.stringify(prev.lines)) return cur;
+      if (Date.now() > end) throw new Error("the pane screen did not settle within 20 s");
+      prev = cur;
+    }
+  }
   async function settled(id: string, turns: number): Promise<void> {
     await waitFor(
       async () => {
@@ -285,8 +300,8 @@ describe.skipIf(!MAGMUX_AVAILABLE)("pane scroll through MCP", () => {
           },
           { what: dialog.activity, timeoutMs: 20_000, intervalMs: 50 }
         );
+        const before = await stableCapture(id);
         const beforeKeys = keys();
-        const before = await capture(id);
         await assertScrollBytes(id, { by: -1 }, UP.repeat(2));
         await assertScrollBytes(id, { to: "end" }, END);
         expect(keys()).toBe(beforeKeys);

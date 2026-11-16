@@ -37,13 +37,20 @@ import type { DevinModelConfig } from "./devin-models.js";
  * backend can answer for itself, which is what lets the error rewrite name what
  * IS served (from the dynamic models catalog) rather than silently substituting
  * a model.
+ *
+ * Writes the debug line naming the uid sent, unless `options.quiet` (a caller
+ * that sends nothing, such as the context-window read).
  */
 export function resolveDevinModelUid(
   requested: string,
   effort: EffortLevel | undefined,
-  served: DevinModelConfig[]
+  served: DevinModelConfig[],
+  options: { quiet?: boolean } = {}
 ): string {
   const trimmed = requested.trim();
-  if (!trimmed || served.length === 0) return trimmed || requested;
-  return expandSelection("devin", trimmed, served.map(devinModelsCatalogEntry), { effort });
+  if (!trimmed) return requested;
+  return expandSelection("devin", trimmed, served.map(devinModelsCatalogEntry), {
+    effort,
+    quiet: options.quiet,
+  });
 }

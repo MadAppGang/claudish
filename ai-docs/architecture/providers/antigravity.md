@@ -186,10 +186,109 @@ full `servedIds` and the backend's `defaultAgentModelId`, from the `getServedAnt
 the discovery just filled (`peekServedAntigravityModels`), and then asks whether
 the resolved id is in the dynamic models catalog. An id the backend declares
 unselectable therefore still reads as not served. With no cache (a fetch that
-never succeeded under this client version) it resolves against the dynamic models
-catalog's ids with no backend default. Antigravity stays out of the resolver
+never succeeded under this client version) it resolves against the served set the
+dynamic models catalog describes, with no backend default: its ids plus the served
+ids the backend excludes, which discovery stores beside the list (`excludedIds` on
+the stored entry and on `AccountModelsList`) and never in it
+(`antigravityServedSetOfList`). Antigravity stays out of the resolver
 registry: a resolver there receives neither the full `servedIds` nor the backend
 default.
+
+**The effort level chooses the id, from the connection's effort map** (2026-11-12).
+Before this, effort never reached the id: `low` still sent `gemini-4-carbon-high`.
+`resolveAntigravityServedModel(requested, served, effort?)` now reads the
+`modelIdEffort` map of the Antigravity connection whose `externalModelId` equals
+`requested` (`findModelIdEffortConnection`, `adapters/model-catalog.ts`; never a
+sibling connection, so a 1M base never takes the default-context map). A connection
+spelled exactly as requested decides even when it publishes no map; a case-folded
+spelling is consulted only when no connection has the exact one. The choice itself
+is `chooseConnectionModelId` (`providers/model-id-effort-choice.ts`), the function
+Devin uses too. At effort `e` it sends `values[e]`, else the next higher listed
+level, else the highest; `none` sends the published `off` id. With no effort a
+served base the backend does not exclude is sent as itself (an excluded base is
+never sent: exclusion is checked before that shortcut, in the map step and in the
+exact-id step, so the transport, `providerServesModel` and the account-listed
+route candidate all reach the same map id); otherwise claudish decides the level (`wire.md`
+"Recommended effort": the efforts table's `default` cell for this connection, else
+`medium`) and maps it as above. The backend's `defaultAgentModelId` and the
+catalog's `modelIdEffort.default` do not decide for a mapped base. An id the
+account does not serve, or an id the backend declares unselectable (`excludedIds`:
+internal, role-bound, retired; the set discovery drops), is never chosen from the
+map: the rules above answer instead, over the selectable ids only (served and not
+excluded), so neither the backend default nor the catalog's family default
+(`lookupFamilyDefaultVariant`) can pick an id the map just refused.
+The spelling of an id decides nothing on `ag@`. A `-fast` or `-priority` id is
+chosen or avoided only by data: the account's dynamic models catalog, `excludedIds`
+and the connection's effort map, so a map that names `carbon-high-fast` for `high`
+sends it, and a family default naming a served `-fast` id is taken like any other.
+A suffix rule here would be a name pattern in candidate gathering, which routing
+rulebook RB-5 forbids: `route-candidates.ts` reaches this resolution for every
+account-listed candidate, and a name cannot tell what the account is billed for.
+Devin is different: its premium check reads Devin's own discovery data (the
+`Fast Mode` axis flag, `devin/devin-models.ts`), not a name (`devin.md`). The availability
+check reads the same `excludedIds` from the `peekServedAntigravityModels` cache, so
+it agrees with the transport. An exact id the account lists that is not a mapped
+base (`gemini-4-carbon-low`) is a fixed model: it is sent unchanged at any effort,
+and even when the backend excludes it, checked FIRST, before the map, the family
+default and the variant rule. Without that order an excluded `gemini-3.1-pro-high`
+fell through to the family default and went out as `gemini-3.1-pro-medium`.
+The routing readers need the excluded ids for the same reason. Discovery drops
+excluded ids from the list, so a reader that rebuilt the served set from the list
+alone (availability with no `peekServedAntigravityModels` cache, and account-listed
+gathering, which always reads the list) did not see `gemini-3.1-pro-high` as
+listed, let the family default answer `gemini-3.1-pro-medium`, and reported the
+excluded id served, while a warm process answered not served and the transport
+sent `gemini-3.1-pro-high`. The list now carries the served excluded ids beside its
+rows (`excludedIds`, an optional field of the stored entry, so a file written
+before it reads as having none until the next refresh), and both readers build
+their served set from it with `antigravityServedSetOfList`: an excluded exact id
+that is not a mapped base resolves as itself, which no row carries, so it reads
+not served and gets no account-listed candidate, warm or cold. A family base the
+account lists only as a variant (`gemini-3.8-flash` → `gemini-3.8-flash-tiered`)
+still resolves to that row on both readers.
+Exclusion gates only what claudish chooses itself: the mapped-base shortcut and
+every automatic pick.
+
+The effort reaches the one decision on both paths. The credential's envelope
+builder takes the request's effort as `transformPayload(payload, {effort})`, because
+one artifact serves turns with different levels; `RequestAuthContext` carries no
+effort. The transport reads the level in `transformPayload` and hands it
+to the credential's builder, or resolves with the same function for its local
+builder. The level is the `--effort` pin when one is set (`ComposedHandler` pins it
+on the dialects and on the transport, `ProviderTransport.setEffortOverride`); else
+`none` when the Claude request turns reasoning off (`thinking.type: "disabled"`,
+effort `none`, `budget_tokens: 0`); else `output_config.effort`, else the legacy
+`thinking.budget_tokens` bucket (`wireChoicesFromClaudeRequest`). `none` is kept
+rather than dropped, because it is what selects the `off` id. A call with no Claude
+request and no pin is a request with no effort and is resolved afresh on both
+builders; it never reuses the previous turn's id. `refreshAuth` resolves
+`servedModelName` at the pin, and `servedModelName` then follows the id actually
+sent.
+
+**No effort in the body beside an effort-carrying id.** The catalog contract says
+the effort is never written into the request body. The body follows the id
+actually SENT on each attempt, never the requested one: when the sent id is one an
+Antigravity effort map lists (a level or `off`), `antigravityBodyForModelId`
+removes the request's own `thinkingLevel` and `thinkingBudget` from
+`generationConfig.thinkingConfig` (dropping the object when nothing else is left) and keeps
+`includeThoughts`; any other sent id keeps the dialect's control. Beside a Gemini id it then
+writes the level the backend reports for that id, which is the id's own level and not the
+request's (see "The thinking level" below). Deciding by the requested base lost the
+effort twice: a mapped base whose map id the account does not serve falls back to
+an unmapped id (`gemini-3.7-flash` at `low` sending `gemini-3.7-flash-tiered`),
+which then carried no effort anywhere; and a capacity retry reused the primary's
+body, shaped for a different id. Both builders shape the primary from the original
+dialect payload, and the transport keeps that payload (`lastPayload`) so every
+capacity retry shapes it again for its own id.
+
+**The capacity fallback never picks an excluded id.** On
+`MODEL_CAPACITY_EXHAUSTED` the retry candidates are the served ids minus the one
+that failed and minus every id in `excludedIds`. The spelling decides nothing here
+either: a served, not excluded `-fast` id is an ordinary candidate (RB-5, as above).
+With none left, the original capacity failure is returned. `getActiveModelName()` names
+the retry id that served the CURRENT request only: `enqueueRequest` clears it as
+each request starts, so a later request served on its primary id never reports an
+earlier retry to the status line.
 
 ## Ordering: cloud models catalog dates are poison for Antigravity's models
 
@@ -217,6 +316,13 @@ That rule now governs only the fallback list. When the backend sends
 - **Degradation**: no store (agy not installed / not signed in) or non-macOS → actionable error pointing at `g@` + `GEMINI_API_KEY`.
 
 **Model ids — LIVE discovery, no hardcoded map**: the Antigravity backend requires a reasoning-tier suffix (bare `gemini-3.6-flash` → 404), but which variants a subscription serves is **per-account and drifts**, so claudish never hardcodes a model list. `getServedAntigravityModels()` fetches the live set from the backend's own `v1internal:fetchAvailableModels` (body `{project}`) — the served ids are the response `models` keys, plus a backend `defaultAgentModelId` — cached with a TTL. `resolveAntigravityModelId(requested, servedIds, defaultId)` then resolves against that LIVE set: exact match passes through; a bare family (e.g. `gemini-3.6-flash`) resolves to the backend's `defaultAgentModelId` when it's a variant of that family, else to the strongest reasoning tier by a *rank rule* (`high>medium>low>extra-low>tiered` — a rule, like `rankCodeAssistModel`, not pinned ids); anything else passes through to the F1–F7 404 rewrite. The only literals are the tier-rank ordering and endpoint strings — no concrete model ids in source.
+
+**Identity in the request body**: besides the transport identity below, two body-level scrubs run
+for `ag@` in `ComposedHandler` (both in `handlers/shared/format/`, both detailed in `adapters.md`):
+the system prompt and injected text lose Claude Code's identity and open with Antigravity's own
+header (`identity-filter.ts`), and the tools with a true agy equivalent are renamed to agy's names
+and restored on the response (`tool-name-alias.ts`). The tool rename is names only, not argument
+schemas — see the honest limit in `adapters.md`.
 
 **Identity strings**: `User-Agent: antigravity/cli/<ver> (aidev_client; os_type=<platform>; arch=<arch>; auth_method=consumer)` + `metadata: { ideType: "ANTIGRAVITY" }`. The transport keeps all the F1–F7 improvements from the old codeassist path (terminal-error → 400 surfaced inline, the 404 rewrite that checks the dynamic models catalog, `rankCodeAssistModel`). Full reverse-engineering write-up: `ai-docs/sessions/antigravity-refactor-20260803-125333-d0791562/architecture.md` (write-up lost — predates the ai-docs tracking fix).
 
@@ -391,9 +497,10 @@ model-list command (platform, bounded keychain read, observed token refresh, cli
 - One `POST <host>/v1internal:generateContent`, non-streamed. Measured 2026-11-02 on
   `daily-cloudcode-pa`: 200 with a complete body (`gemini-3-flash`), and 404 `NOT_FOUND` for an
   unserved id. No SSE collection is needed.
-- The CodeAssist envelope and headers are the ones `AntigravityCredentialProvider` builds for `ag@`:
-  `{model, project, user_prompt_id, request}`, plus `enabled_credit_types: ["GOOGLE_ONE_AI"]` on a
-  paid tier; `Authorization`, the agy `User-Agent`, `x-activity-request-id`.
+- The CodeAssist envelope keys and headers are the Antigravity CLI's, as for `ag@`:
+  `{project, requestId, request, model, userAgent, requestType}`; `Authorization`, the agy
+  `User-Agent`, `Content-Type`. Nothing is added inside `request` (no `labels`, no `sessionId`):
+  the file is the request.
 - `request` is the file's own text spliced into the envelope, never parsed and re-serialized (a
   round trip turns `1.0` into `1`). The file is parsed once, only to check it is a JSON object.
 - No retry, no model-id rewrite (the `ag@` path resolves the id against the dynamic models
@@ -492,3 +599,233 @@ break one line on every exit.
 `secret_guard` line would then carry it too; instead of printing nothing, that line drops every
 fact except `schema`, `claudishVersion`, `tokenRefreshed` and `failure`. One line on every exit
 holds.
+
+## What the `agy` CLI 1.5.9 puts on the wire (recorded 2026-11-15)
+
+Recorded through mitmproxy from `agy -p` on an Antigravity Pro account, one turn with two tool
+calls. Host `daily-cloudcode-pa.googleapis.com`, `POST /v1internal:streamGenerateContent?alt=sse`,
+about 53 KB per request.
+
+| Part | `agy` 1.5.9 | claudish 14.25.1 |
+|---|---|---|
+| Envelope keys | `model`, `project`, `request`, `requestId`, `requestType: "agent"`, `userAgent: "antigravity"` | `model`, `project`, `request`, `user_prompt_id`, `enabled_credit_types` on a paid tier |
+| `request` keys | `contents`, `generationConfig`, `labels`, `sessionId`, `systemInstruction`, `tools` | `contents`, `generationConfig`, `systemInstruction`, `tools` |
+| `requestId` | `agent/<cascade uuid>/<epoch ms>/<trajectory uuid>/<n>` | none |
+| `labels` | `cascade_id`, `root_cascade_id`, `trajectory_id`, `request_id`, `last_step_index`, `model_enum`, `used_claude`, `used_claude_conservative`, `used_non_gemini_model` | none |
+| `User-Agent` | `antigravity/cli/1.5.9 (aidev_client; os_type=darwin; arch=arm64; cl=1021519450; auth_method=consumer)` | the same without `cl=…`; also sends `x-activity-request-id` |
+| `systemInstruction` | `role: "user"`, one part, about 30 KB, opens with an `<identity>` block | no `role`, Claude Code's scrubbed prompt under the identity header |
+| `generationConfig` | `maxOutputTokens: 65536`, `thinkingConfig: {includeThoughts: true, thinkingLevel: "MEDIUM"}` | `temperature: 1`, `maxOutputTokens: 32000` |
+| `tools` | 17 entries, one `functionDeclarations` each | one entry holding every declaration |
+
+The identity block `agy` sends:
+
+```
+<identity>
+You are Antigravity, a powerful agentic AI assistant designed by the Google Deepmind team.
+You are working with a USER to solve their task.
+The USER will send you requests, which you must always prioritize addressing. User requests are enclosed within <USER_REQUEST> tags.
+</identity>
+```
+
+Its 17 tools: `read_file`, `run_command`, `manage_task`, `send_message`, `schedule`,
+`invoke_subagent`, `define_subagent`, `manage_subagents`, `write_file`, `edit_file`, `search_web`,
+`run_workflow`, `swarm`, `ask_question`, `call_mcp_tool`, `list_resources`, `read_resource`.
+Argument names are capitalised (`Path`, `CommandLine`, `Content`), unlike Claude Code's.
+
+**None of the differences in the table is what the server refused.** Each was put into a failing
+claudish request by replay and the answer stayed 429; `agy`'s whole body under claudish's own
+token and headers answered 200. The one thing the server refused was a paragraph of the system
+text: see `adapters.md` § "Antigravity refuses one paragraph of Claude Code's system prompt".
+The table is the state of claudish 14.25.1. claudish now sends the `agy` column for every row
+except the content of `systemInstruction` and of `tools`: see the next section.
+
+## The request claudish sends is the `agy` request, part for part
+
+Four places own it, and a change to the request goes into one of them.
+
+**The envelope: `providers/antigravity-envelope.ts`.** `buildAntigravityEnvelope` is the only
+builder; the credential provider, the transport's capacity retry and its tests call it.
+
+- Keys in `agy`'s order: `project`, `requestId`, `request`, `model`, `userAgent: "antigravity"`,
+  `requestType: "agent"`. `request` keys in order: `contents`, `systemInstruction`, `tools`, any
+  other dialect field (`toolConfig`), `labels`, `generationConfig`, `sessionId`.
+- `requestId` is `agent/<cascade>/<epoch ms>/<trajectory>/<last_step_index + 1>`. `agy` recorded
+  `/1` on a turn's first request and `/4` after one model turn with two tool results.
+  `last_step_index` counts, after the first content entry, one step per content entry and one per
+  `functionResponse` part. `labels.request_id` is `<trajectory>-<n>`, n counting the requests of
+  the conversation from 0.
+- A conversation is the requests of one Claude Code session (`conversationKey(claudeRequest)`)
+  that open with the same first content entry (its SHA-256). The session is part of the key so two
+  sessions on one process that open with the same words do not share ids and a request counter. The
+  64 most recent are kept per process, so a long session's requests share one `cascade_id` and
+  `trajectory_id` as `agy`'s do. `sessionId` is one random signed 64-bit integer per process, in
+  decimal.
+- `labels.model_enum` is the `model` field of the id's record in `fetchAvailableModels`
+  (`MODEL_PLACEHOLDER_M418` for `gemini-4-argon-medium`); it is left out when the backend reported
+  none. `used_claude` and `used_non_gemini_model` follow the id's first word.
+  `used_claude_conservative` was recorded only as `"false"` on a Gemini id; it is sent equal to
+  `used_claude`, which is a guess for a Claude id.
+- `generationConfig.maxOutputTokens` is the id's `maxOutputTokens` from `fetchAvailableModels`
+  (65536 recorded), not Claude Code's `max_tokens`; the request's value is kept only for an id the
+  backend reported nothing about. `temperature` is not sent.
+- `systemInstruction` carries `role: "user"`. `tools` is one entry per declaration.
+- Tool results go out as a content entry of their own with role `model`, holding only the
+  `functionResponse` parts, as recorded. Whatever else Claude Code put in that message (a
+  reminder, a tool result's image) follows in a `user` entry. The step count is taken before this
+  split, so it stays the recorded one.
+- `user_prompt_id` and `enabled_credit_types` are not sent. `agy` on a paid Pro account sent
+  neither. Whether `enabled_credit_types` changed which quota a paid account draws on after its
+  included quota is spent was never measured, in either direction.
+
+**The call parts: `adapters/gemini-api-format.ts`, option `serverCallIds`.** Only the
+Antigravity profile sets it. Recorded: the server puts an `id` on every `functionCall`
+(`call_1607774118844346888`), and `agy` repeats it first on the call and on its
+`functionResponse`, sends the result text under `response.output`, and sends the second of two
+parallel calls without a `thoughtSignature`, as the server sent it. The stream parser hands the
+server's id to `registerToolCall` beside the `toolu_` id it gives Claude Code. A call this
+process never read from a response (a resumed conversation) has no id to repeat and keeps the
+`skip_thought_signature_validator` placeholder.
+
+**The thinking level: `antigravityBodyForModelId` (`providers/antigravity-model-id.ts`).** Beside
+a Gemini id that carries the effort, the body carries the level of that id's own record in
+`fetchAvailableModels` (`thinkingLevel`: 1, 2, 3), sent as `LOW`, `MEDIUM`, `HIGH`. Recorded from
+`agy`: `"MEDIUM"` beside `gemini-4-argon-medium`, whose record says 2. `LOW` and `HIGH` were sent
+live on 2026-11-16 beside `gemini-4-argon-low` and `-high` and answered 200. The request's own
+level or budget is still removed first. Not sent: a number with no recorded name (100 on
+`gemini-4-hydrogen-xhigh`), a Claude or GPT id (their records carry a level or a budget, and no
+`agy` request on them was recorded), and an id that does not carry the effort, where the
+request's own effort decides.
+
+**The `User-Agent`: `auth/antigravity-user.ts`.** `cl=<number>` is the build changelist of the
+`agy` binary. `agy --version` prints only the version, and the number is in no file `agy` writes,
+so `readAgyBuildFromBinary` (`auth/antigravity-token.ts`) scans the binary for its build stamp
+`changelist <n> with baseline` (11 ms on the 223 MB 1.5.9 binary, read in 8 MB steps). It is read
+with the version, once per auth session, and sent only with that version: the 1.1.9 floor has no
+`cl`. `x-activity-request-id` is not sent.
+
+**The request head: `providers/transport/antigravity-fetch.ts`.** Measured on Bun 1.4.0 against a
+raw socket: `fetch` always adds `Accept` and `Connection: keep-alive`, offers
+`gzip, deflate, br, zstd`, and orders headers its own way; an empty-string override sends an empty
+header. `node:http` writes headers in the order they are set and adds only `Host`, once
+`Connection` is removed. So every Antigravity call (`loadCodeAssist`, `fetchAvailableModels`,
+`retrieveUserQuota`, generation, the capacity retry, the wire probe) goes through
+`antigravityFetch`, which writes `Host, User-Agent, Content-Length | Transfer-Encoding,
+Authorization, Content-Type, Accept-Encoding: gzip`: `Transfer-Encoding: chunked` on
+`streamGenerateContent`, `Content-Length` elsewhere, as recorded. The composed handler reaches it
+through the transport's optional `fetch` member.
+
+- It decodes a gzip body itself (`node:http` does not) and drops `Content-Encoding` and
+  `Content-Length` from the response it returns.
+- Errors keep the vocabulary `classifyConnectionError` reads: `ECONNREFUSED`, `ENOTFOUND`,
+  `ECONNRESET`. An abort rejects with the signal's own reason.
+- One connection per request. A pooled socket the server had closed answered the next request with
+  `ECONNRESET` in the measurement, which would start the connection hold for a healthy network.
+- Behind a proxy (`HTTPS_PROXY`, `ALL_PROXY`, minus `NO_PROXY`) it hands the request to `fetch`,
+  so the head is then the runtime's. **Do not build the tunnel by hand.** `http.request` with
+  `createConnection` returning a `tls.connect({socket})` wrapper wrote the request to the raw
+  socket under the wrapper on Bun 1.4.0: the request, bearer included, left unencrypted and Google
+  answered 403 "SSL is required to perform this operation."
+- The client is used only where `node:http` writes the head it is given: Node, and Bun 1.4.0 and
+  later (`nodeHttpWritesOwnHead`). Measured on Bun 1.3.10, the version CI pins: `node:http` sends
+  the request through the runtime's `fetch`, so the head is `fetch`'s (`Accept`, its own order), an
+  abort before the response never rejects, a socket timeout never fires, and the chunked call did
+  not complete against a raw socket. There the request goes to `fetch` and the head is the
+  runtime's, as it was before this client. 1.4.0 is the oldest Bun measured to work, not a known
+  boundary; versions between were not measured, and a prerelease of 1.4.0 counts as older. The hermetic jobs skip the client's tests on
+  1.3.10 and the Bun 1.4.0 job in `test.yml` runs them.
+- What `fetch` did for its callers and `node:http` does not, the client does itself. A connection
+  silent for `ANTIGRAVITY_IDLE_TIMEOUT_MS` (five minutes, the runtime's own idle limit) fails with
+  `ETIMEDOUT`, and so does a request whose response head has not arrived in that time (the socket
+  timeout starts only once a socket is connected, so a stalled lookup or an unanswered connection
+  needs the second limit): `loadCodeAssist`, model discovery and `retrieveUserQuota` pass no signal, and without
+  the limit a server that accepts and then says nothing held their sockets for the life of the
+  process. A 307 or 308 is followed with the same method and body, at most five times, and the
+  `Authorization` header is not sent to another origin; `redirect: "manual"` returns the answer as
+  it is. A header value the runtime refuses (a line break) rejects before anything is sent, and the
+  request is destroyed. A `NO_PROXY` entry may name a port (`host:443`), which then has to match.
+- `CLAUDISH_ANTIGRAVITY_PLAIN_FETCH=1` sends through `fetch`. The test preload sets it, because the
+  suites replace `globalThis.fetch`; `antigravity-fetch.test.ts` clears it and asserts the head
+  byte for byte against a raw socket.
+
+Live check, 2026-11-16, `ag@gemini-4-argon-medium`, one turn with two tool calls, recorded through
+mitmproxy as a local reverse proxy (`AICODE_ENDPOINT_URL=http://127.0.0.1:<port>`): all five
+requests 200; header names, order and values equal to the `agy` recording on `loadCodeAssist`,
+`fetchAvailableModels` and `streamGenerateContent` (`Host` excepted, which a reverse proxy
+rewrites); envelope and `request` keys in `agy`'s order; `requestId` ending `/1` then `/4`. A
+second run the same day: the tool round went back as `model` (calls with the server's ids, one
+signature), `model` (results with the same ids, `output`), and was answered 200.
+
+**Still different, by content and not by shape:**
+
+| Part | `agy` 1.5.9 | claudish |
+|---|---|---|
+| Tool result text | `agy`'s own wording (`Created At`, `Completed At`, the exit code, then the output) | the tool's output as Claude Code returns it |
+| Tool arguments | `agy`'s names (`CommandLine`, `Path`, `toolSummary`) | Claude Code's names (`command`, `file_path`) |
+| The user's text | wrapped in `<USER_REQUEST>` with an `<ADDITIONAL_METADATA>` block | Claude Code's own text |
+| System text and tools | `agy`'s own prompt and 17 tools with capitalised argument names | Claude Code's scrubbed prompt and tools, names aliased (`adapters.md` step 2b) |
+| Other endpoints | `fetchUserInfo`, `listExperiments`, `fetchAdminControls`, `retrieveUserQuotaSummary`, `writeTrajectoryAcls`, telemetry | `retrieveUserQuota` |
+
+The generation settings are different: one of them was a defect that no 429 replay could show.
+See the next section.
+
+## `includeThoughts`: without it the server is silent while the model thinks (measured 2026-11-15)
+
+Claudish 14.26.0 wrote no `includeThoughts`. The server then sends no byte until the think ends.
+A think longer than the request's first-byte deadline (270 s at the default settings,
+`network-recovery.md`) is aborted and answered as an unreachable host, and Claude Code retries the
+same request.
+
+| Run | Build | Request sent | First answer | Result |
+|---|---|---|---|---|
+| A | 14.26.0, no flag | 23:08:12.874Z | none in 269.98 s | `TimeoutError: request deadline`, `[Recovery] skipped (no-budget) … site=fetch`, `Cannot reach Antigravity Ultra` |
+| B | with `includeThoughts: true` | 23:20:11.217Z | `Response status: 200` at 23:20:17.373Z (6.2 s) | thought parts stream; the answer (18,079 characters) was complete at 23:25:31Z |
+
+Both runs: `ag@gemini-4-carbon` sent as `gemini-4-carbon-medium`, the same session context (five
+files read, about 86k input tokens) and the same prompt, a review that needs a long think. Run B
+thought for more than four minutes, as run A did. The only difference is that the stream carried
+bytes.
+
+Ruled out by a control on 14.26.0 before the change: four parallel tool calls with the placeholder
+thought signature on calls 2 to 4, and the 86k-token body, answer 200 in 10 s when the task needs
+no long think.
+
+What the code does (`GeminiAPIFormat.buildPayload`, the `thinkingFromModelName` branch, which only
+Antigravity uses): **every** body carries `thinkingConfig.includeThoughts: true`. A resolved effort
+adds the `thinkingLevel` or the `thinkingBudget` beside it. A request with no effort, with thinking
+disabled (and no effort pin), or with an effort that has no budget carries the flag alone. When the
+sent model id carries the effort, `antigravityBodyForModelId` removes the request's level or budget,
+keeps the flag, and beside a Gemini id writes the level the backend reports for that id. The table
+below was measured before that level was sent; its "flag alone" rows on an effort-carrying Gemini
+id now carry the flag and the id's level. The stream parser already turns a `thought: true` part into thinking output
+(`gemini-sse.ts`), and the converter does not send thinking blocks back on later requests.
+
+**The flag must not follow the effort this request resolved.** The transport chooses the model id
+that is sent, and that id can turn thinking on when the body names none: a request with no effort
+is sent as the connection's default level, and a level the effort map cannot serve falls to
+another. Measured: effort `none` on `ag@gemini-4-carbon` logged `sending model
+gemini-4-carbon-medium for gemini-4-carbon (effort none, from map id not usable)`. A first version
+of this repair wrote the flag only beside a level or budget, and such a request kept the silent
+think.
+
+Bodies measured with the flag, each from a one-line prompt:
+
+| Model spec | Effort | Sent id | `thinkingConfig` in the body | Answer |
+|---|---|---|---|---|
+| `ag@gemini-4-carbon` | medium | `gemini-4-carbon-medium` | flag alone | 200 |
+| `ag@gemini-4-carbon` | none | `gemini-4-carbon-medium` | flag alone | 200 |
+| `ag@gemini-3-flash` | medium | `gemini-3-flash` | `thinkingLevel` and flag | 200, three requests |
+| `ag@gemini-2.5-flash-lite` | none | `gemini-2.5-flash-lite` | flag alone | 200 |
+| `ag@gpt-oss-120b` | none | `gpt-oss-120b-medium` | flag alone | 200 |
+| `ag@gemini-2.5-pro` | none | `gemini-2.5-pro` | flag alone | 503 `No capacity available for model gemini-2.5-pro on the server` |
+| `ag@claude-sonnet-5-5` | medium | `claude-sonnet-5-5-medium` | flag alone | 429 `RESOURCE_EXHAUSTED` |
+
+The 503 is the server's capacity for that model, and no row is a 400. The Claude row is a 429 with
+the flag and, in a control on 14.26.0, without it: the flag is not the cause, and the Claude case
+stays unmeasured.
+
+Not measured: the other Gemini routes (`g@`, Vertex), which do not use this branch and can have
+the same silent think.
+
+One difference in the table is still open: `maxOutputTokens`. Thinking tokens count against it. Run
+B ended its first answer with `finishReason=MAX_TOKENS` at 32000 and Claude Code continued by
+itself. `agy` sends 65536.

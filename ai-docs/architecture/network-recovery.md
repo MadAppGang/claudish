@@ -70,7 +70,11 @@ and by `deadlineAt` specifically, **not** by `PER_ATTEMPT_CONNECT_CAP_MS`:
 - 45 s is a plausible time-to-first-byte for a thinking model behind a long prompt, and this ceiling
   sits on a possibly-HEALTHY call. Clamping it at 45 s would re-open RISK-6's first leak — a latency
   event reclassified as "the host is unreachable". At the default settings the ceiling is 270 s,
-  which no provider's first byte approaches, and it shortens only as the user's own knob does;
+  and it shortens only as the user's own knob does. A provider that streams while the model thinks
+  never approaches it. One that stays silent for the whole think does: Antigravity without
+  `includeThoughts` sent no byte for 270 s on a long review, and the request was answered as an
+  unreachable host (`providers/antigravity.md` § `includeThoughts`). The repair for such a provider
+  is to make it stream its thoughts, never to raise this ceiling;
 - firing AT the deadline is what makes it safe: there is by construction no budget left when the
   abort is classified, so `shouldSkipTier1`'s `no-budget` gate fires and the request answers. **This
   ceiling can never cause a re-issue.** An earlier firing time would not have that property.

@@ -66,7 +66,8 @@
         "bunjs@magus": "latest",
         "code-search@magus": "latest",
         "aside@magus": "latest",
-        "orchestrator@magus": "latest"
+        "orchestrator@magus": "latest",
+        "setup@magus": "latest"
       },
       "createdAt": "2026-09-28T04:06:00.113Z",
       "settings": {

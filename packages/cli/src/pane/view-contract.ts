@@ -79,8 +79,6 @@ export interface ReplayViewItem {
   final: boolean;
   magmux: ViewMagmux | null;
   view: ViewHolder | null;
-  /** workspace keys with a herdr viewer on this replay or a placement reserved */
-  herdr_workspaces: string[];
 }
 
 export type ViewItem = SessionViewItem | TeamSlotViewItem | ReplayViewItem;
@@ -123,12 +121,8 @@ export interface ViewClientHello {
   name: string;
   kind: ViewClientKind;
   front_end?: ViewFrontEnd;
-  term_program?: string;
-  workspace_key?: string;
   /** the caller's own endpoint file name; required for `kind: "peer"` */
   endpoint?: string;
-  /** a placed herdr viewer's placement transaction and attempt, `<txn>.<attempt>` */
-  placement?: string;
 }
 
 export interface ViewHelloResult {
@@ -139,7 +133,6 @@ export interface ViewHelloResult {
     started_at: string;
     endpoint: string;
     front_end: ViewFrontEnd;
-    workspace_id?: string;
   };
   contract_version: 1;
   capabilities: string[];
@@ -157,14 +150,11 @@ export type ViewCaptureAnswer = CaptureResult | CaptureUnchanged;
 export type ViewTranscriptAnswer = TranscriptResult | TeamTranscriptResult;
 export type ViewResizeAnswer = ResizeResult | TeamResizeResult;
 
+/** A peer's `replay.resize`: the resize, and whether its Claude Code now holds the view. */
 export interface ViewClaimResult {
   granted: boolean;
   view: ViewHolder | null;
   resize: ViewResizeAnswer;
-}
-
-export interface ViewHolderResult {
-  view: ViewHolder | null;
 }
 
 export type ViewRemoveReason = "evicted" | "replay_closed" | "run_pruned";
@@ -187,7 +177,6 @@ export type ViewErrorCode =
   | ContractError["error"]["code"]
   | "unknown_op"
   | "forbidden"
-  | "view_not_held"
   | "slow_consumer"
   | "too_many_connections"
   | "line_too_long"

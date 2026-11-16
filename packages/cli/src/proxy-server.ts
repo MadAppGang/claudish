@@ -11,6 +11,7 @@ import {
 import { type CodeModeSetting, parseCodeModeSetting } from "./code-mode/policy.js";
 import {
   type AdvisorPresenceMonitor,
+  advisorKeyArmFor,
   createAdvisorPresenceMonitor,
   withAdvisorSwap,
 } from "./handlers/advisor-decorator.js";
@@ -20,6 +21,11 @@ import {
 } from "./handlers/advisor-panel-gateway.js";
 import { shutdownAdvisorChains } from "./handlers/advisor-route-plan.js";
 import { bundledTaggedCache } from "./handlers/bundled-tagged-cache.js";
+import {
+  type ClaudeApiMeter,
+  claudeApiContextWindow,
+  createClaudeApiMeter,
+} from "./handlers/claude-api-meter.js";
 import type { ComposedHandlerOptions } from "./handlers/composed-handler.js";
 import { FallbackHandler } from "./handlers/fallback-handler.js";
 import type { FallbackCandidate } from "./handlers/fallback-handler.js";
@@ -27,13 +33,20 @@ import { ROUTED_HANDLER_KEY_PREFIX, createHandlerSet } from "./handlers/handler-
 import { loadAdvisorSwapConfig } from "./handlers/native-handler-advisor.js";
 import { NativeHandler } from "./handlers/native-handler.js";
 import { wrapAnthropicError } from "./handlers/shared/anthropic-error.js";
-import { buildForwardRequest, recordInboundBody } from "./handlers/shared/anthropic-forward.js";
+import {
+  LOGIN_ONLY_SIGNING,
+  type NativeSigning,
+  buildForwardRequest,
+  recordInboundBody,
+  setNativeSigning,
+} from "./handlers/shared/anthropic-forward.js";
 import {
   SIGNING_SECRETS_KEY,
   createSigningSecrets,
   releaseWhenBodyEnds,
 } from "./handlers/shared/call-context.js";
 import { UNHANDLED_ERROR_HEADER } from "./handlers/shared/hop-decision.js";
+import { clearTokenFileTotals } from "./handlers/shared/token-tracker.js";
 import type { ModelHandler } from "./handlers/types.js";
 import type { HookEngine } from "./hooks/engine.js";
 import { loadHooksOnce } from "./hooks/index.js";
@@ -57,7 +70,11 @@ import {
   getCustomEndpointResult,
 } from "./providers/endpoint-registration.js";
 import { parseModelSpec } from "./providers/model-parser.js";
-import { proxyRouteDecision } from "./providers/native-route.js";
+import {
+  claudeSubscriptionSpecRefusal,
+  nativeRouteFor,
+  proxyRouteDecision,
+} from "./providers/native-route.js";
 import { PROBE_HOP_ORIGIN_HEADER, probeHopOriginOf } from "./providers/probe-hop-origin.js";
 import { describeMissingCredential, getProviderByName } from "./providers/provider-definitions.js";
 import {
@@ -67,6 +84,7 @@ import {
   route,
   routingRuleProblems,
 } from "./providers/routing-rules.js";
+import { shadowedEndpointRefusal } from "./providers/shadowed-endpoint.js";
 import { discoverProviderProbeModel } from "./providers/transport/provider-model-discovery.js";
 import type { ProviderTransport } from "./providers/transport/types.js";
 import {
@@ -84,6 +102,7 @@ import {
 import { closeAllEpisodes } from "./recovery/coordinator.js";
 import { redactExactValues, redactForClient } from "./redact.js";
 import { warmPricingCache } from "./services/pricing-cache.js";
+import { resolveTokenFilePath } from "./session/token-file.js";
 import { resolveUpstreamUrl } from "./test-upstream.js";
 import type { ProxyServer } from "./types.js";
 
@@ -203,6 +222,48 @@ export interface ProxyServerOptions {
    */
   advisorRuntime?: AdvisorRuntime;
   /**
+   * Who signs this launch's native requests (`NativeSigning`): `login-only` for a
+   * Claude subscription launch, `launch-key` for the Claude API launch. Absent ⇒
+   * `inbound`: the request's own credentials, then `anthropicApiKey`, then the
+   * credential authority, for a request that arrived with none.
+   */
+  nativeSigning?: NativeSigning;
+  /**
+   * The Claude API launch's main model, the id Claude Code was given. Read only
+   * with `launch-key` signing: the meter that records every request the launch's
+   * key signs moves the status line's context occupancy on this model's turns.
+   */
+  claudeApiMainModel?: string;
+  /**
+   * The /model lineup of a launch with listing entries, and the user's own
+   * `modelPicker` rows that are explicit claudish model specs: each row's `model`
+   * is a full claudish model spec Claude Code sends verbatim when the user picks it.
+   * A request whose model equals one is routed as sent, before the role
+   * mappings and the `--model` fallback. Data only; absent on every other launch.
+   */
+  modelLineup?: ReadonlyArray<{ model: string; label: string }>;
+  /**
+   * True on a launch with listing entries whose child keeps the user's login
+   * and starts on a Claude model or none (`claudeRowsAsPicked`). A Claude-named
+   * request that no role mapping caught is sent to the native passthrough as
+   * requested, with the launch's signing, never replaced by the `--model`
+   * fallback: Claude Code's own `/model` rows run the model the user picked.
+   */
+  claudeRowsAsPicked?: boolean;
+  /**
+   * True when the launch opted into billing a native Claude model to the
+   * Anthropic API key (`--anthropic-api-billing`). Without it, a request for a
+   * native Claude name that this launch's own model mapping chose is signed
+   * `login-only`, never with a key.
+   */
+  apiBillingOptIn?: boolean;
+  /**
+   * `advisorKeyLookupAllowed(config)`: false (a launch with no main model and no
+   * API-billing opt-in) keeps a Claude advisor member off ANTHROPIC_API_KEY on
+   * an `inbound` request. Default true.
+   */
+  advisorKeyLookup?: boolean;
+  /**
    * Run hooks on this proxy's `/v1/messages` traffic. Default true. `--probe`
    * passes false: hooks never see probe traffic. Monitor mode and the
    * classifier passthrough never run hooks whatever this says.
@@ -259,6 +320,23 @@ function maybeCaptureClassifierRequest(c: Context, body: any): void {
     // Diagnostic capture is best-effort — never break the request path.
   }
 }
+
+/** What resolving one request's handler found besides the handler itself. */
+interface RequestResolution {
+  markers?: WireMarkers;
+  refusal?: string;
+  /** The bare model a `claude@<id>` target is sent as on the native passthrough. */
+  nativeModel?: string;
+  /** The request's own signing when it differs from the launch's (`login-only`). */
+  signing?: NativeSigning;
+}
+
+/**
+ * The `created` field (Unix seconds) of every `GET /v1/models` entry. A fixed
+ * value: the field is required by the list's shape, no model here has a real
+ * creation time, and the `serve` slot list must stay byte-identical.
+ */
+const MODEL_LIST_CREATED = 1716000000;
 
 export async function createProxyServer(
   port: number,
@@ -339,11 +417,52 @@ export async function createProxyServer(
   const withRequestHooks = (handler: ModelHandler): ModelHandler =>
     hookEngine ? withHooks(handler, hookEngine) : handler;
 
-  // Define handlers for different roles
+  /**
+   * The signing of a native request the routing step left undecided: the
+   * launch's `nativeSigning` (which `launchSigningFor` in
+   * `launcher/claude-launch.ts` chose), else `inbound`: the request's own credentials, and for a
+   * request that arrived with none, this process's key, then
+   * ANTHROPIC_API_KEY through the credential authority.
+   */
+  const defaultRequestSigning = (model: unknown): NativeSigning =>
+    options.nativeSigning ?? {
+      kind: "inbound",
+      fallbackKey: async () => {
+        if (anthropicApiKey) return anthropicApiKey;
+        try {
+          const auth = await credentials.getRequestAuth("native-anthropic", {
+            model: typeof model === "string" ? model : "",
+          });
+          return auth.headers["x-api-key"];
+        } catch (err) {
+          log(`[Native] no resolvable Anthropic credential: ${err}`);
+          return undefined;
+        }
+      },
+    };
+
+  // The Claude API launch signs every forwarded request with the user's key, so
+  // every one is metered: stats and claudish's cost line, each turn priced by
+  // its own model. The pricing lookup is registered first (a local read), or the
+  // first turn would be priced at the generic estimate.
+  let claudeApiMeter: ClaudeApiMeter | undefined;
+  if (options.nativeSigning?.kind === "launch-key") {
+    await warmPricingCache();
+    const mainModel = options.claudeApiMainModel ?? "";
+    claudeApiMeter = createClaudeApiMeter({
+      port,
+      mainModel,
+      contextWindow: mainModel ? claudeApiContextWindow(mainModel) : 0,
+    });
+  }
+
+  // Define handlers for different roles. Who signs each native request is set
+  // on its context (`setNativeSigning`); the handler holds no key.
   const nativeHandler = new NativeHandler(
-    anthropicApiKey,
+    undefined,
     options.advisorModels,
-    options.advisorCollector
+    options.advisorCollector,
+    claudeApiMeter
   );
 
   /**
@@ -366,15 +485,24 @@ export async function createProxyServer(
   // `--model` remap), no advisor wrapper.
   const advisorRuntime = options.advisorRuntime;
   const advisorPanel = advisorRuntime ? createAdvisorPanelGateway(advisorRuntime) : undefined;
-  const withAdvisor = (handler: ModelHandler, presence?: AdvisorPresenceMonitor): ModelHandler =>
+  const withAdvisor = (
+    handler: ModelHandler,
+    signing: NativeSigning,
+    presence?: AdvisorPresenceMonitor
+  ): ModelHandler =>
     withAdvisorSwap(
       handler,
       loadAdvisorSwapConfig(options.advisorModels, options.advisorCollector),
       {
         presence,
         ...(advisorPanel ? { panel: advisorPanel } : {}),
-        // Without a runtime no launch decision exists, so no bearer may sign.
-        ...(advisorRuntime ? { claude: { childAuth: advisorRuntime.childAuth } } : {}),
+        claude: {
+          // Without a runtime no launch decision exists, so no bearer may sign.
+          ...(advisorRuntime ? { childAuth: advisorRuntime.childAuth } : {}),
+          // A Claude member's key follows the request's signing: none on the
+          // Claude subscription, the launch key on the Claude API launch.
+          keyArm: advisorKeyArmFor(signing, { keyLookup: options.advisorKeyLookup !== false }),
+        },
       }
     );
   /**
@@ -477,13 +605,21 @@ export async function createProxyServer(
   //
   // `probeHopOrigin` is the probe's routed-hop mark, already filtered through
   // `probeHopOriginOf`: always absent on a proxy that is not a probe proxy.
+  //
+  // `resolved.nativeModel` is set when the target was a `claude@<id>` spec: the
+  // native passthrough forwards the request's own model, so the caller rewrites
+  // it to the bare `<id>` before the handler sees it (Anthropic answers a
+  // `claude@` string with a 400).
   const getHandlerForRequest = async (
     requestedModel: string,
-    probeHopOrigin?: "routed"
+    probeHopOrigin?: "routed",
+    resolved?: { nativeModel?: string; signing?: NativeSigning }
   ): Promise<ModelHandler> => {
-    const out: { markers?: WireMarkers; refusal?: string } = {};
+    const out: RequestResolution = {};
     const handler = await resolveHandlerForRequest(requestedModel, out, probeHopOrigin);
     if (out.refusal) return new RefusingHandler(out.refusal);
+    if (resolved && out.nativeModel) resolved.nativeModel = out.nativeModel;
+    if (resolved && out.signing) resolved.signing = out.signing;
     return out.markers && (out.markers.mode || out.markers.speed)
       ? new WireMarkerHandler(handler, out.markers)
       : handler;
@@ -493,9 +629,12 @@ export async function createProxyServer(
   const requestProbeHopOrigin = (c: Context): "routed" | undefined =>
     probeHopOriginOf(c.req.header(PROBE_HOP_ORIGIN_HEADER), options.probeProxy);
 
+  /** Every listed spec of this launch's /model lineup, matched exactly. */
+  const lineupSpecs = new Set((options.modelLineup ?? []).map((row) => row.model));
+
   const resolveHandlerForRequest = async (
     requestedModel: string,
-    out: { markers?: WireMarkers; refusal?: string },
+    out: RequestResolution,
     probeHopOrigin?: "routed"
   ): Promise<ModelHandler> => {
     // 1. Monitor Mode Override
@@ -505,6 +644,15 @@ export async function createProxyServer(
     // Priority: exact slot map > role mappings > default model (--model) > requested model (native)
     let target = requestedModel;
     let wasFromModelMap = false;
+    // True when this launch's configuration (slot map, role mapping or --model)
+    // chose the target, rather than the request passing its own model through.
+    let targetFromLaunch = false;
+
+    // 2-lineup. A /model pick of a listed model spec is routed as sent. Checked
+    // before the slot map, the role mappings (whose substring match would catch
+    // `or@anthropic/claude-opus-5` as `opus`) and the `--model` fallback (which
+    // would replace the pick with the start model).
+    const lineupMatched = lineupSpecs.has(requestedModel);
 
     // 2a. Exact slot-id map (claudish serve / Claude Desktop redirect).
     // Claude Desktop sends body.model = a Claude-recognized SLOT id; route it
@@ -515,22 +663,31 @@ export async function createProxyServer(
     // pipeline (explicit-provider path for pinned, auto-route + catalog
     // resolution for null-provider, native passthrough for claude-* reals).
     let slotMatched = false;
-    const slot = options.slotMap?.get(requestedModel);
+    const slot = lineupMatched ? undefined : options.slotMap?.get(requestedModel);
     if (slot) {
       target =
         slot.provider != null && slot.provider !== ""
           ? `${slot.provider}@${slot.model}`
           : slot.model;
       slotMatched = true;
+      targetFromLaunch = true;
       if (!options.quiet) {
         logStderr(`[Serve] slot ${requestedModel} → ${target}`);
       }
     }
 
+    // 2-claude-row. On a launch that lists providers and keeps the user's login
+    // with a Claude start model (or none), a Claude-named request is a row the
+    // user picked in /model: the `--model` fallback below must not replace it.
+    // A role mapping still catches it first.
+    const claudeRowPicked =
+      options.claudeRowsAsPicked === true && nativeRouteFor(requestedModel) !== null;
+
     const req = requestedModel.toLowerCase();
-    if (slotMatched) {
-      // Slot map already set `target` — skip the substring tier match and the
-      // --model fallback entirely so they can't override the exact mapping.
+    if (slotMatched || lineupMatched) {
+      // Slot map already set `target`, or the request names a listed spec — skip
+      // the substring tier match and the --model fallback entirely so they can't
+      // override it.
     } else if (modelMap) {
       // Role-specific mappings take highest priority
       if (req.includes("opus") && modelMap.opus) {
@@ -543,11 +700,14 @@ export async function createProxyServer(
         target = modelMap.haiku;
         wasFromModelMap = true;
       }
-      // Default model (--model) is fallback for all roles
-      else if (model) target = model;
-    } else if (model) {
+      // Default model (--model) is fallback for all roles, except a picked
+      // Claude row, which runs as requested with the launch's signing.
+      else if (model && !claudeRowPicked) target = model;
+      targetFromLaunch = wasFromModelMap || (Boolean(model) && !claudeRowPicked);
+    } else if (model && !claudeRowPicked) {
       // No role mappings at all - use default model
       target = model;
+      targetFromLaunch = true;
     }
 
     // A probe's routed mark applies to the spec the probe sent, never to one a
@@ -556,6 +716,25 @@ export async function createProxyServer(
       probeHopOrigin && !slotMatched && !wasFromModelMap && target === requestedModel
         ? probeHopOrigin
         : undefined;
+
+    // A `claude@` spec is checked whole, before its markers are split off: the
+    // Claude subscription honours no marker, no `:N` and no chain, and a
+    // `claude@` whose inner name Claude Code does not own is served by nothing.
+    // Refused here, it never reaches the routing below.
+    const claudeRefusal = claudeSubscriptionSpecRefusal(target);
+    if (claudeRefusal) {
+      out.refusal = claudeRefusal;
+      return nativeHandler;
+    }
+    // A spec on a custom endpoint name a Claude builtin took over would reach
+    // the builtin, not the user's endpoint: refused, naming the rename.
+    const shadowed = shadowedEndpointRefusal(
+      options.modelChain && target === options.modelChain[0] ? options.modelChain : [target]
+    );
+    if (shadowed) {
+      out.refusal = shadowed;
+      return nativeHandler;
+    }
 
     try {
       const markers = splitWireMarkers(target);
@@ -699,7 +878,9 @@ export async function createProxyServer(
     // spellings this single rewrite could never produce.
     {
       const parsedTarget = parseModelSpec(target);
-      if (parsedTarget.isExplicitProvider) {
+      // `claude@<id>` is the native decision of `<id>`: Claude Code serves it, so
+      // there is no wire id to look up.
+      if (parsedTarget.isExplicitProvider && proxyRouteDecision(target).type !== "native") {
         await ensureCatalogReady(5000);
         const outcome = resolveTargetForCatalog(
           target,
@@ -723,6 +904,16 @@ export async function createProxyServer(
     // other decision falls through to steps 3-7 below.
     {
       const decision = proxyRouteDecision(target);
+      // `claude@<id>`: the Claude subscription, on the native passthrough with the
+      // request's model rewritten to the bare `<id>`. A bare native name reaches
+      // the same handler at step 6.
+      if (decision.type === "native" && parseModelSpec(target).isExplicitProvider) {
+        out.nativeModel = decision.route.modelSpec;
+        // `claude@` names the Claude subscription: never signed with a key,
+        // whatever the launch.
+        out.signing = LOGIN_ONLY_SIGNING;
+        return nativeHandler;
+      }
       if (decision.type === "bare") {
         const cacheKey = `fallback:${target}`;
         const cachedChain = fallbackHandlerCache.get(cacheKey);
@@ -827,7 +1018,18 @@ export async function createProxyServer(
     const isNative = !target.includes("/") && !hasExplicitProvider;
 
     if (isNative) {
-      // If we mapped to a native string (unlikely) or passed through
+      // If we mapped to a native string (unlikely) or passed through. A native
+      // Claude name this launch's own mapping chose is the Claude subscription:
+      // on an `inbound` launch it is signed `login-only` unless the launch opted
+      // into API billing. A request passing its own model through keeps the
+      // launch's signing.
+      if (
+        targetFromLaunch &&
+        (options.nativeSigning?.kind ?? "inbound") === "inbound" &&
+        !options.apiBillingOptIn
+      ) {
+        out.signing = LOGIN_ONLY_SIGNING;
+      }
       return nativeHandler;
     }
 
@@ -1015,10 +1217,30 @@ export async function createProxyServer(
     return [...seen];
   })();
 
+  /**
+   * A launch with listing entries advertises exactly its /model lineup, each row
+   * with the label it has in /model. Claude Code's own `/model` does not read
+   * this route (it reads `modelPicker`); other clients of the proxy do. A label
+   * is upstream text, so it reaches the body only through `redactForClient`,
+   * applied per request so a signing value leased since startup is covered.
+   */
+  const lineupModels = () =>
+    (options.modelLineup ?? []).map((row) => ({
+      id: row.model,
+      type: "model",
+      object: "model",
+      display_name: redactForClient(row.label),
+      created: MODEL_LIST_CREATED,
+      owned_by: "claudish",
+    }));
+
   app.get("/v1/models", (c) => {
     // Slot mode wins whenever `serve` supplied ids: Claude Desktop only
     // recognizes the slot ids, and this branch must stay byte-identical to what
     // it has always returned.
+    if (servedSlotIds.length === 0 && options.modelLineup !== undefined) {
+      return c.json({ object: "list", has_more: false, data: lineupModels() });
+    }
     const ids = servedSlotIds.length > 0 ? servedSlotIds : discoverableModelIds;
     return c.json({
       object: "list",
@@ -1027,7 +1249,7 @@ export async function createProxyServer(
         id,
         object: "model",
         type: "model",
-        created: 1716000000,
+        created: MODEL_LIST_CREATED,
         owned_by: "claudish",
       })),
     });
@@ -1110,36 +1332,36 @@ export async function createProxyServer(
       if (typeof body?.model !== "string" || body.model.length === 0) {
         return c.json(wrapAnthropicError(400, "missing required field: model"), 400);
       }
-      const handler = await getHandlerForRequest(body.model, requestProbeHopOrigin(c));
+      const resolved: { nativeModel?: string; signing?: NativeSigning } = {};
+      const handler = await getHandlerForRequest(body.model, requestProbeHopOrigin(c), resolved);
+      if (resolved.nativeModel) body.model = resolved.nativeModel;
 
       // If native, we just forward. OpenRouter needs estimation.
       if (handler instanceof NativeHandler) {
         // Forwarded the SAME WAY `/v1/messages` is: Claude Code's own headers,
-        // its `?beta=true` and its body bytes, signed with the caller's own
-        // credentials first (Claude Code injects them), then this process's key,
-        // and only then the credential authority. Every credential sent goes on
-        // the request's signing lease, so a log line or an echoed upstream body
-        // that quotes it is redacted by value.
+        // its `?beta=true` and its body bytes, signed by the same rule
+        // (`NativeSigning`): on `inbound`, the caller's own credentials first
+        // (Claude Code injects them), then this process's key, and only then
+        // the credential authority. Every credential sent goes on the request's
+        // signing lease, so a log line or an echoed upstream body that quotes it
+        // is redacted by value.
         //
         // A subscription user has no API key at all, so a count signed only by
-        // key would reach api.anthropic.com unsigned and answer 401.
+        // key would reach api.anthropic.com unsigned and answer 401. A Claude
+        // subscription count with no login is refused here, with no upstream call.
         const forward = await buildForwardRequest(
           c,
           body,
           resolveUpstreamUrl("https://api.anthropic.com/v1/messages/count_tokens"),
-          async () => {
-            if (anthropicApiKey) return anthropicApiKey;
-            try {
-              const auth = await credentials.getRequestAuth("native-anthropic", {
-                model: body.model,
-              });
-              return auth.headers["x-api-key"];
-            } catch (err) {
-              log(`[CountTokens] no resolvable Anthropic credential: ${err}`);
-              return undefined;
-            }
-          }
+          resolved.signing ?? defaultRequestSigning(body.model)
         );
+        if ("refused" in forward) {
+          log(`[CountTokens] refused: ${forward.refused}`);
+          return c.json(
+            wrapAnthropicError(401, redactForClient(forward.refused), "authentication_error"),
+            401
+          );
+        }
 
         const res = await fetch(forward.url, {
           method: "POST",
@@ -1228,19 +1450,30 @@ export async function createProxyServer(
         // Rewrite onto the native Claude model + strip 400-prone fields (see
         // classifier-passthrough.ts). Log first — it reads the original body.model.
         rewriteClassifierForNative(body, options.classifier.model);
+        // Signed by the LAUNCH's rule, never a hard-wired `inbound`: on a Claude
+        // subscription launch the classifier carries the login or is refused,
+        // and on a foreign-model launch it keeps the user's own credential.
+        const classifierSigning = defaultRequestSigning(body.model);
+        setNativeSigning(c, classifierSigning);
         // Wrapped like every other request so the advisor work NativeHandler
         // used to do here still happens; not counted by the absent-tool
         // monitor, which watches the main loop.
-        return await withAdvisor(nativeHandler).handle(c, body);
+        return await withAdvisor(nativeHandler, classifierSigning).handle(c, body);
       }
 
       // The advisor wrapper goes on the RESOLVED handler (FallbackHandler
       // included), once per request, around the hooks. See `withAdvisor` and
       // `withRequestHooks` above.
-      const handler = withAdvisor(
-        withRequestHooks(await getHandlerForRequest(body.model, requestProbeHopOrigin(c))),
-        advisorPresence
+      const resolved: { nativeModel?: string; signing?: NativeSigning } = {};
+      const resolvedHandler = await getHandlerForRequest(
+        body.model,
+        requestProbeHopOrigin(c),
+        resolved
       );
+      const signing = resolved.signing ?? defaultRequestSigning(body.model);
+      setNativeSigning(c, signing);
+      const handler = withAdvisor(withRequestHooks(resolvedHandler), signing, advisorPresence);
+      if (resolved.nativeModel) body.model = resolved.nativeModel;
 
       // Route. The `await` is load-bearing: `return handler.handle(...)` hands
       // the promise back BEFORE it settles, so a rejection escapes this
@@ -1335,6 +1568,9 @@ export async function createProxyServer(
       // in-process, and would otherwise carry a stale episode — and its stale
       // banner — across the rebuild.
       closeAllEpisodes();
+      // This proxy's session totals end with it: its handlers' trackers wrote
+      // the file keyed by `port`, and a later proxy on that port starts at zero.
+      clearTokenFileTotals(resolveTokenFilePath(port));
     },
     invalidateHandlerCache: (providerSlug?: string) => {
       if (!providerSlug) {

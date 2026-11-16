@@ -822,7 +822,11 @@ async function readMagmuxVersion(found: string): Promise<string> {
  * process hung with it. On expiry the run rejects at once, the child is SIGKILLed, and its pipes
  * are released.
  */
-function runMagmuxVersion(found: string, timeoutMs: number): Promise<string> {
+export function runMagmuxVersion(
+  found: string,
+  timeoutMs: number,
+  drainMs: number = EXIT_DRAIN_MS
+): Promise<string> {
   return new Promise((resolveRun, rejectRun) => {
     let settled = false;
     let child: ChildProcess | undefined;
@@ -832,8 +836,16 @@ function runMagmuxVersion(found: string, timeoutMs: number): Promise<string> {
       // a timer on time with the child still running points at magmux itself
       const ranAt = Math.round(performance.now() - startedAt);
       const code = child?.exitCode ?? child?.signalCode ?? null;
-      const childState = code === null ? "still running" : `already exited (${code})`;
-      fail(`no answer in ${timeoutMs} ms (timer ran at ${ranAt} ms; child ${childState})`);
+      // an exited child is not hung: its exit handler's drain settles the run within `drainMs`,
+      // and an empty answer there gets the retry in `versionOf` that a refusal here would skip
+      if (code !== null) {
+        setTimeout(
+          () => fail(`exited (${code}) but no exit event within ${drainMs + EXIT_DRAIN_MS} ms`),
+          drainMs + EXIT_DRAIN_MS
+        );
+        return;
+      }
+      fail(`no answer in ${timeoutMs} ms (timer ran at ${ranAt} ms; child still running)`);
       try {
         child?.kill("SIGKILL");
       } catch {
@@ -879,7 +891,7 @@ function runMagmuxVersion(found: string, timeoutMs: number): Promise<string> {
         setTimeout(() => {
           if (code === 0 || VERSION_PATTERN.test(out)) return done();
           fail(`exited with ${code ?? signal}${out.trim() ? `: ${out.trim()}` : ""}`);
-        }, EXIT_DRAIN_MS);
+        }, drainMs);
       });
     } catch (e) {
       fail(e instanceof Error ? e.message : String(e));

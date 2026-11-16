@@ -259,7 +259,8 @@ if (process.env.CLAUDISH_W2_TEST_CHILD !== import.meta.path) {
       const report = renderPreflightReport([result], { probed: true });
       expect(report).toContain("native (not probed): 1");
       expect(report).toContain("not probed");
-      expect(report).toContain("own auth");
+      expect(report).toContain("Claude subscription");
+      expect(report).toContain("Claude Code's own login");
       expect(report).not.toContain("Drop or replace before running");
       expect(report).not.toContain("✅");
       expect(report).not.toContain("❌");

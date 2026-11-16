@@ -20,15 +20,19 @@ import { clearSignedArm, installBillingProbes } from "./billing-probe.js";
 import { makeCodexCredential } from "./codex-credential.js";
 import { DevinCredentialProvider } from "./devin-credential.js";
 import { GrokSubscriptionCredentialProvider } from "./grok-credential.js";
+import { keySourcesSearched } from "./key-sources.js";
 import { makeKimiCodingCredential, makeKimiCredential } from "./kimi-credential.js";
 import { LocalCredentialProvider } from "./local-credential.js";
 import { MuseCodeCredentialProvider } from "./muse-code-credential.js";
 import { NativeAnthropicCredentialProvider } from "./native-anthropic-credential.js";
 import type {
   CredentialProvider,
+  KeyOrigin,
+  KeySource,
   ReadinessResult,
   RequestAuth,
   RequestAuthContext,
+  UseResolution,
 } from "./types.js";
 import { readinessDetail } from "./types.js";
 import { VertexCredentialProvider } from "./vertex-credential.js";
@@ -39,7 +43,13 @@ import { VertexCredentialProvider } from "./vertex-credential.js";
  * consumers import it from here and never have to know which of the two files
  * declares it.
  */
-export type { CredentialReadiness, ReadinessResult } from "./types.js";
+export type {
+  CredentialReadiness,
+  KeyOrigin,
+  KeySource,
+  ReadinessResult,
+  UseResolution,
+} from "./types.js";
 export { readinessDetail } from "./types.js";
 
 /** Built-in local provider names that get a LocalCredentialProvider. */
@@ -185,6 +195,36 @@ export class CredentialAuthority {
     return (await this.describeReadiness(name, opts)).readiness === "present";
   }
 
+  /**
+   * Resolve `name`'s API key now, for a use that will sign with it: a launch, or
+   * a probe send. One resolution, so the source it reports is the step that
+   * produced THIS key, and a vault that could not be read says why instead of
+   * looking like a missing key. Never throws; never caches a failure.
+   *
+   * A provider that does not resolve an API key (an OAuth login, the native
+   * passthrough) answers `absent` with the sources an API key would be read from.
+   */
+  async resolveForUse(name: string, opts?: { allowOpPrompt?: boolean }): Promise<UseResolution> {
+    const provider = this.registry.get(name);
+    if (!provider?.resolveForUse) return { state: "absent", searched: keySourcesSearched() };
+    try {
+      return await provider.resolveForUse(opts);
+    } catch (err) {
+      return {
+        state: "failed",
+        reason: readinessDetail(err) ?? `the ${name} credential could not be resolved`,
+      };
+    }
+  }
+
+  /**
+   * Where the last key `name` resolved in this process came from, and its masked
+   * value. Never the key. undefined when nothing has been resolved yet.
+   */
+  describeOrigin(name: string): KeyOrigin | undefined {
+    return this.registry.get(name)?.describeOrigin?.();
+  }
+
   async getRequestAuth(name: string, ctx: RequestAuthContext): Promise<RequestAuth> {
     const p = this.registry.get(name);
     if (!p) throw new Error(`No credential provider for ${name}`);
@@ -293,6 +333,32 @@ export class CredentialAuthority {
     }
   }
 
+  /**
+   * Make a key the user just saved sign for `name` at once, in this process,
+   * without writing it into `process.env`: the provider's memo is dropped (as
+   * `invalidate` does) and the saved key outranks every other store until the
+   * next invalidation. A provider that cannot hold a replacement is only
+   * invalidated.
+   */
+  replaceKey(name: string, key: string, source: KeySource): void {
+    this.invalidate(name);
+    this.registry.get(name)?.replaceKey?.(key, source);
+  }
+
+  /**
+   * The local stores that will still outrank a key just saved to `savedTo`
+   * when a new process resolves `name`, so the caller can say so instead of
+   * presenting the saved key as the one every launch uses. Call it BEFORE the
+   * save touches `process.env` or `config.json`. Never throws.
+   */
+  sourcesOutranking(name: string, key: string, savedTo: KeySource): KeySource[] {
+    try {
+      return this.registry.get(name)?.sourcesOutranking?.(key, savedTo) ?? [];
+    } catch {
+      return [];
+    }
+  }
+
   async login(name: string): Promise<void> {
     await this.registry.get(name)?.login?.();
     // A new credential may sign with a different arm than the last request did.
@@ -389,6 +455,7 @@ export class CredentialAuthority {
           // provider now declares `authScheme: "none"`, which says no credential
           // is expected rather than inventing one. See provider-definitions.ts.)
           oauthFallback: def.oauthFallback,
+          ...(def.vaultKeyReadAtUse === true ? { readAtUse: true as const } : {}),
         }),
         [def.name, ...(RUNTIME_NAME_ALIASES[def.name] ?? [])]
       );

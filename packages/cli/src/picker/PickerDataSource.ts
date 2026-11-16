@@ -36,13 +36,12 @@
  *     multi-second 1Password handshake.
  */
 
-import { credentials } from "../auth/credentials/authority.js";
-import { isSubscriptionProvider } from "../handlers/shared/remote-provider-types.js";
 import {
   type ModelInfo,
   type PickerDiscoveryOutcome,
   buildDiscoveredModelOutcome,
   buildProviderChoices,
+  displayBillingOf,
   outcomeFromModelsCatalog,
   providerShortcut,
   servedModelsForProvider,
@@ -53,18 +52,15 @@ import { LIVE_MS } from "../providers/dynamic-models-catalog-store.js";
 import {
   type AccountModelsList,
   isPersistedListProvider,
+  liveOrStoredModelsCatalog,
   loadAccountModelsLists,
   onAccountModelsListChanged,
-  readAccountModelsList,
   refreshAccountModelsList,
 } from "../providers/dynamic-models-catalog.js";
 import { type CatalogClient, createCatalogClient } from "../providers/model-catalog.js";
 import { type DescriptionIndex, loadModelDescriptions } from "../providers/model-descriptions.js";
-import {
-  type ModelsCatalogOutcome,
-  discoverProviderModelsCatalog,
-  servedOutcomeOf,
-} from "../providers/model-discovery.js";
+import { type ModelsCatalogOutcome, servedOutcomeOf } from "../providers/model-discovery.js";
+import { pickerProviderReady } from "../providers/picker-readiness.js";
 import { getAllProviders, getProviderByName } from "../providers/provider-definitions.js";
 
 /** How a provider bills — the row's tag, and the reason a price may be absent. */
@@ -142,9 +138,12 @@ export interface PickerDataSource {
   descriptions(): Promise<DescriptionIndex>;
 }
 
-/** How a provider bills, from the two oracles that already answer it. */
+/**
+ * How a provider bills: the picker billing label (`displayBillingOf`, which
+ * counts the Claude subscription as `sub`), then the local-daemon flag.
+ */
 export function billingModeOf(provider: string): BillingMode {
-  if (isSubscriptionProvider(provider)) return "sub";
+  if (displayBillingOf(provider) === "sub") return "sub";
   return getProviderByName(provider)?.isLocal === true ? "local" : "metered";
 }
 
@@ -214,27 +213,9 @@ function storedOutcome(
   return outcome.kind === "rows" ? { ...outcome, listFetchedAt: list.fetchedAt } : null;
 }
 
-/**
- * The live leg for a provider that keeps a stored list: the account-bound
- * refresh, so the answer is written through for the next process. A list
- * younger than `LIVE_MS` is already the live answer and is read, not fetched.
- * With no credential the plain discovery runs, because its failure is the
- * notice that names the missing credential.
- */
-async function liveAccountModelsCatalog(provider: string): Promise<ModelsCatalogOutcome> {
-  const result = await refreshAccountModelsList(provider, "picker-provider", {
-    minAgeMs: LIVE_MS,
-  });
-  if (result.kind === "refreshed") {
-    return result.outcome.kind === "served"
-      ? servedOutcomeOf(result.outcome.models)
-      : result.outcome;
-  }
-  if (result.reason === "too-recent") {
-    const list = await readAccountModelsList(provider);
-    if (list) return servedOutcomeOf(list.models);
-  }
-  return discoverProviderModelsCatalog(provider);
+/** The picker's live leg for a provider that keeps a stored list (`liveOrStoredModelsCatalog`). */
+function pickerLiveModelsCatalog(provider: string): Promise<ModelsCatalogOutcome> {
+  return liveOrStoredModelsCatalog(provider, "picker-provider");
 }
 
 /**
@@ -340,9 +321,9 @@ export function createPickerDataSource(): PickerDataSource {
     probeCredentials(providers: string[]): AsyncIterable<[string, boolean]> {
       return inCompletionOrder(
         providers.map(async (name): Promise<[string, boolean]> => {
-          // Documented never to throw (`authority.ts:110-117`), guarded anyway:
-          // behind a live renderer an unhandled rejection has nowhere to surface.
-          const ready = await credentials.isAvailable(name).catch(() => false);
+          // The one picker readiness rule; it never throws, which matters
+          // behind a live renderer where a rejection has nowhere to surface.
+          const ready = await pickerProviderReady(name);
           if (ready && isPersistedListProvider(name) && !refreshed.has(name)) {
             refreshed.add(name);
             // Started, never awaited: the stored list is already on screen, and
@@ -375,7 +356,7 @@ export function createPickerDataSource(): PickerDataSource {
         provider,
         names.get(provider) ?? provider,
         catalog,
-        isPersistedListProvider(provider) ? liveAccountModelsCatalog : undefined
+        isPersistedListProvider(provider) ? pickerLiveModelsCatalog : undefined
       );
     },
 

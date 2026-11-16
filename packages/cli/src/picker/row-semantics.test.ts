@@ -171,7 +171,7 @@ describe("CHIP_FILL_CELLS — one fill width for the whole status column", () =>
     for (const inner of [76, 141]) {
       expect({
         inner,
-        billing: deriveProviderRowLayout(inner).billing >= CHIP_FILL_CELLS,
+        billing: deriveProviderRowLayout(inner, "anthropic@".length).billing >= CHIP_FILL_CELLS,
         price: deriveRowLayout(inner).price >= CHIP_FILL_CELLS,
       }).toEqual({ inner, billing: true, price: true });
     }
@@ -235,7 +235,7 @@ describe("providerCountText — the tail says what you GET, never how it is fetc
     // `deriveProviderRowLayout` gives the tail 25 cells at the narrowest supported
     // width and grows it from there. A phrase longer than that would be truncated with
     // an ellipsis and nothing would report it.
-    const tail = deriveProviderRowLayout(76).tail;
+    const tail = deriveProviderRowLayout(76, "anthropic@".length).tail;
     for (const billing of ["sub", "metered", "local"] as const) {
       const text = providerCountText({ count: 0, hasDiscovery: true, billing });
       expect({ billing, text, fits: displayWidth(text) <= tail }).toEqual({

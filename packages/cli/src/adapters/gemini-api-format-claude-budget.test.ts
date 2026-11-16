@@ -5,12 +5,13 @@ interface ThinkingPayload {
   generationConfig: {
     thinkingConfig?: {
       thinkingBudget?: number;
+      includeThoughts?: boolean;
     };
   };
 }
 
 function buildThinkingPayload(modelId: string, maxTokens: number, effort: string): ThinkingPayload {
-  return new GeminiAPIFormat(modelId).buildPayload(
+  return new GeminiAPIFormat(modelId, undefined, { thinkingFromModelName: true }).buildPayload(
     { max_tokens: maxTokens, output_config: { effort } },
     [],
     []
@@ -31,10 +32,10 @@ describe("Claude thinking budget below max_tokens", () => {
     ).toBe(expected);
   });
 
-  test("omits thinking when half the Claude output cap is below its minimum", () => {
+  test("omits the budget when half the Claude output cap is below its minimum", () => {
     expect(
       buildThinkingPayload("claude-sonnet-4-6", 1500, "high").generationConfig.thinkingConfig
-    ).toBeUndefined();
+    ).toEqual({ includeThoughts: true });
   });
 
   test("does not apply the Claude cap rule to Gemini", () => {

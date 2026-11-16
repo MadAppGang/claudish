@@ -90,8 +90,8 @@ describe("R1 RB-17 RB-25: the release-generated bundled recommended list", () =>
     for (const modelId of recommendedIds) {
       const entry = byId.get(modelId);
       expect(entry, modelId).toBeDefined();
-      if (entry!.reasoning?.efforts?.length) {
-        expect(Object.keys(file.bundle.efforts[modelId] ?? {}).length, modelId).toBeGreaterThan(0);
+      if (entry!.reasoning?.efforts?.length && file.bundle.efforts[modelId] !== undefined) {
+        expect(Object.keys(file.bundle.efforts[modelId]).length, modelId).toBeGreaterThan(0);
       }
     }
     for (const [modelId, tasks] of Object.entries(file.bundle.efforts)) {

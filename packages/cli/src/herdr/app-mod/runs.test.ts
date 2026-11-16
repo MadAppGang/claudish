@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { ViewItem } from "../../pane/view-contract.js";
-import { replayItem, sessionItem } from "../test-helpers/placer-harness.js";
+import { replayItem, sessionItem } from "../test-helpers/view-items.js";
 import {
   EARLIER_MIN_TABS,
   failureCard,
@@ -218,9 +218,7 @@ describe("the session view: tabs, footer, the failure card, the transcript", () 
 
   test("the footer says what the screen area shows, always read only", () => {
     const [claims, , failed] = runsOf(items, NOW);
-    expect(footerLine(claims!.rows[0]!, "screen")).toBe(
-      "read only · live screen of slot 02; focusing it takes the view"
-    );
+    expect(footerLine(claims!.rows[0]!, "screen")).toBe("read only · live screen of slot 02");
     expect(footerLine(claims!.rows[1]!, "screen")).toBe(
       "read only · finished: a replay of the real interface"
     );

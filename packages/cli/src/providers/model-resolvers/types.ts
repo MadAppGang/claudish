@@ -142,6 +142,12 @@ export interface ModelChoice {
 export interface ExpandContext {
   /** The level Claude Code asked for this turn, when it sent one. */
   effort?: EffortLevel;
+  /**
+   * True when the caller only asks which id a selection maps to and sends
+   * nothing (the picker, the availability check, route gathering): no debug
+   * line naming a sent id is written.
+   */
+  quiet?: boolean;
 }
 
 export interface ProviderModelResolver {

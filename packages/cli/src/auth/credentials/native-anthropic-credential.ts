@@ -9,6 +9,7 @@
  * op://) so even the native fallback no longer reads process.env directly.
  */
 
+import { realValueFor } from "../../env-placeholder.js";
 import { getApiKey } from "../../profile-config.js";
 import { hasOpSources, resolveOpKeyForEnvVars } from "./op-source.js";
 import type { CredentialProvider, RequestAuth, RequestAuthContext } from "./types.js";
@@ -24,10 +25,12 @@ export class NativeAnthropicCredentialProvider implements CredentialProvider {
   /** Resolve ANTHROPIC_API_KEY: env → config → op:// (lazy SDK). */
   private async resolveKey(): Promise<string> {
     if (this.cachedKey !== undefined) return this.cachedKey;
+    // claudish's own placeholder pair, inherited from a proxied parent session, is
+    // not a key: signing with it answers 401.
     const local =
-      process.env.ANTHROPIC_API_KEY ||
-      process.env.ANTHROPIC_AUTH_TOKEN ||
-      getApiKey("ANTHROPIC_API_KEY");
+      realValueFor("ANTHROPIC_API_KEY", process.env.ANTHROPIC_API_KEY) ||
+      realValueFor("ANTHROPIC_AUTH_TOKEN", process.env.ANTHROPIC_AUTH_TOKEN) ||
+      realValueFor("ANTHROPIC_API_KEY", getApiKey("ANTHROPIC_API_KEY"));
     if (local) {
       this.cachedKey = local;
       return local;
@@ -50,7 +53,12 @@ export class NativeAnthropicCredentialProvider implements CredentialProvider {
   }
 
   async isAvailable(): Promise<boolean> {
-    if (process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN) return true;
+    if (
+      realValueFor("ANTHROPIC_API_KEY", process.env.ANTHROPIC_API_KEY) ||
+      realValueFor("ANTHROPIC_AUTH_TOKEN", process.env.ANTHROPIC_AUTH_TOKEN)
+    ) {
+      return true;
+    }
     return !!(await this.resolveKey());
   }
 

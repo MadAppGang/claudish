@@ -109,3 +109,39 @@ describe.skipIf(process.platform === "win32")("the environment claudish gives Cl
     expect(env.CLAUDISH_SET_HOST_ROUTING_VARS).toBeUndefined();
   }, 30_000);
 });
+
+describe.skipIf(process.platform === "win32")("an X-Target-URL a gateway session set", () => {
+  const parentProxy = "http://127.0.0.1:54321";
+  // What a shell inside a session that went through harnessGateway hands a claudish it starts.
+  const fromGatewaySession = {
+    ANTHROPIC_CUSTOM_HEADERS: `X-Team: blue\nX-Target-URL: ${parentProxy}`,
+    CLAUDISH_SET_HARNESS_GATEWAY_TARGET: parentProxy,
+  };
+
+  for (const [label, args] of [
+    ["a --monitor launch", ["--monitor"]],
+    ["a foreign-model launch with no gateway", ["--model", "ollama@llama3.2"]],
+  ] as const) {
+    test(`is removed from ${label}, other header lines kept`, async () => {
+      const env = await childEnvFor([...args], fromGatewaySession);
+      expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe("X-Team: blue");
+      expect(env.CLAUDISH_SET_HARNESS_GATEWAY_TARGET).toBeUndefined();
+    }, 30_000);
+  }
+
+  test("is kept when the user set it, with no claudish record", async () => {
+    const env = await childEnvFor(["--monitor"], {
+      ANTHROPIC_CUSTOM_HEADERS: `X-Target-URL: ${parentProxy}`,
+    });
+    expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe(`X-Target-URL: ${parentProxy}`);
+  }, 30_000);
+
+  test("keeps a user's own X-Target-URL whose value differs from the record", async () => {
+    const env = await childEnvFor(["--monitor"], {
+      ANTHROPIC_CUSTOM_HEADERS: "X-Target-URL: http://127.0.0.1:9999",
+      CLAUDISH_SET_HARNESS_GATEWAY_TARGET: parentProxy,
+    });
+    expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe("X-Target-URL: http://127.0.0.1:9999");
+    expect(env.CLAUDISH_SET_HARNESS_GATEWAY_TARGET).toBeUndefined();
+  }, 30_000);
+});

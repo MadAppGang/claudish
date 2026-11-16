@@ -46,8 +46,10 @@ export type CredentialReadiness = "present" | "absent" | "failed";
 export interface ReadinessResult {
   readiness: CredentialReadiness;
   /**
-   * Why the credential could not be resolved. Set only for `failed`, and NEVER
-   * key material — these strings reach stderr and the routing warning.
+   * Why the credential could not be resolved, for `failed`. On `present` it may
+   * name where a key that has not been read yet will be read from
+   * (`macOS Keychain (read when used)`). NEVER key material — these strings
+   * reach stderr and the routing warning.
    */
   detail?: string;
   /** A typed account-list failure must reach Codex signing, never a metered hop. */
@@ -108,6 +110,8 @@ export function redactSecrets(text: string): string {
   );
 }
 
+import type { EffortLevel } from "../../adapters/base-api-format.js";
+import type { ModelIdChoice } from "../../providers/model-id-effort-choice.js";
 import type { SelectReason } from "../accounts/policy.js";
 import type { AccountRef, AccountSelectionContext } from "../accounts/types.js";
 
@@ -151,7 +155,16 @@ export interface RequestAuth {
   selectReason?: SelectReason;
   headers: Record<string, string>;
   endpoint?: string;
-  transformPayload?(payload: any): any;
+  /**
+   * Wrap the payload in the provider envelope. `request`, when given, carries
+   * THIS request's effort, so one artifact serves turns with different levels,
+   * and `onModelChoice`, told the model id the envelope sends and what decided
+   * it, where the envelope chooses one.
+   */
+  transformPayload?(
+    payload: any,
+    request?: { effort?: EffortLevel; onModelChoice?: (choice: ModelIdChoice) => void }
+  ): any;
   /**
    * Which half of a composite produced this. Set by the halves themselves and
    * passed through untouched by `CompositeCredentialProvider`, so a consumer can
@@ -171,6 +184,27 @@ export interface RequestAuth {
    */
   signer?: string;
 }
+
+/**
+ * Where a resolved API key came from: the step of the resolution chain that
+ * produced it. A label, never key material. A credential provider sees a
+ * `.env` value only once it is loaded into the environment, and reports that
+ * one as `environment`.
+ */
+export type KeySource = "environment" | "config" | "macOS Keychain" | "1Password";
+
+/** The origin of the key a provider last resolved: its source and a masked value. */
+export interface KeyOrigin {
+  source: KeySource;
+  /** `maskCredential` of the key: its first and last four characters. */
+  masked: string;
+}
+
+/** The answer to "resolve the key now, for a use that signs with it". */
+export type UseResolution =
+  | { state: "present"; key: string; source: KeySource }
+  | { state: "absent"; searched: string[] }
+  | { state: "failed"; reason: string };
 
 export interface CredentialProvider {
   readonly catalogName: string;
@@ -198,6 +232,14 @@ export interface CredentialProvider {
    * which is exactly the behaviour that existed before.
    */
   describeReadiness?(opts?: { allowOpPrompt?: boolean }): Promise<ReadinessResult>;
+  /**
+   * OPTIONAL: resolve the API key now, for a use that will sign with it, keeping
+   * the step that produced it, the vault's reason when a store could not be
+   * asked, or the sources searched. Implemented by API-key providers.
+   */
+  resolveForUse?(opts?: { allowOpPrompt?: boolean }): Promise<UseResolution>;
+  /** OPTIONAL: where the last key this provider resolved came from, masked. */
+  describeOrigin?(): KeyOrigin | undefined;
   /** ASYNC: the rich artifact for an outgoing request. Refreshes OAuth / pulls op:// internally. */
   getRequestAuth(ctx: RequestAuthContext): Promise<RequestAuth>;
   /**
@@ -213,6 +255,16 @@ export interface CredentialProvider {
   accountIdentity?(opts?: { allowOpPrompt?: boolean }): Promise<string | undefined>;
   /** Drop any memoized resolution so the next read re-resolves (TUI hydrate-on-add). */
   invalidate?(): void;
+  /**
+   * Sign with a key the user just saved to `source`, until the next
+   * `invalidate()`. Held in memory only, never written into `process.env`.
+   */
+  replaceKey?(key: string, source: KeySource): void;
+  /**
+   * The local stores that still outrank a key saved to `savedTo` in a new
+   * process (see `ApiKeyCredentialProvider.sourcesOutranking`).
+   */
+  sourcesOutranking?(key: string, savedTo: KeySource): KeySource[];
   login?(): Promise<void>;
   logout?(): Promise<void>;
 }

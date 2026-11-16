@@ -97,7 +97,7 @@ function fixtureDuplicateEffortCases(): DuplicateEffortCase[] {
   return cases;
 }
 
-function expectDuplicateEffortTieBreak(
+function expectDuplicateEffortResolution(
   duplicate: DuplicateEffortCase,
   permutations: ModelsCatalogEntry[][]
 ): void {
@@ -110,6 +110,16 @@ function expectDuplicateEffortTieBreak(
   expect(resolvedIds.size).toBe(1);
 
   const [resolvedId] = resolvedIds;
+  const representative = choice.variants.find((variant) => variant.wireId === choice.id);
+  if (
+    representative?.effort &&
+    choice.id.toLowerCase().split("-").includes(representative.effort)
+  ) {
+    // An exact effort uid is fixed even when it is the group's representative.
+    expect(resolvedId).toBe(choice.id);
+    return;
+  }
+
   const vendorDefault = candidates.find((entry) => entry.isFamilyDefault);
   if (vendorDefault) {
     expect(resolvedId).toBe(vendorDefault.wireId);
@@ -362,7 +372,18 @@ describe("DevinModelResolver expand", () => {
     );
   });
 
-  test("prefers the vendor default, then lower cost, for duplicate effort levels", () => {
+  test("honours exact effort ids before duplicate-effort tie-breaks", () => {
+    const explicitRepresentatives = choices.filter((choice) => {
+      const variant = choice.variants.find((candidate) => candidate.wireId === choice.id);
+      return variant?.effort && choice.id.toLowerCase().split("-").includes(variant.effort);
+    });
+    expect(explicitRepresentatives.length).toBeGreaterThan(0);
+    for (const choice of explicitRepresentatives) {
+      for (const effort of EFFORT_LEVELS) {
+        expect(resolver.expand(choice.id, modelsCatalog, { effort })).toBe(choice.id);
+      }
+    }
+
     const duplicateEffortCases = fixtureDuplicateEffortCases();
 
     // The property is fixture-derived: a future dynamic models catalog with no duplicate
@@ -373,7 +394,7 @@ describe("DevinModelResolver expand", () => {
       seededPermutation(modelsCatalog, index + 1)
     );
     for (const duplicate of duplicateEffortCases) {
-      expectDuplicateEffortTieBreak(duplicate, permutations);
+      expectDuplicateEffortResolution(duplicate, permutations);
     }
   });
 
