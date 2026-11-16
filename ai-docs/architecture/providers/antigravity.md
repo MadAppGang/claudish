@@ -269,9 +269,11 @@ sent.
 the effort is never written into the request body. The body follows the id
 actually SENT on each attempt, never the requested one: when the sent id is one an
 Antigravity effort map lists (a level or `off`), `antigravityBodyForModelId`
-removes `thinkingLevel` and `thinkingBudget` from `generationConfig.thinkingConfig`
-(dropping the object when nothing else is left) and keeps `includeThoughts`; any
-other sent id keeps the dialect's control. Deciding by the requested base lost the
+removes the request's own `thinkingLevel` and `thinkingBudget` from
+`generationConfig.thinkingConfig` (dropping the object when nothing else is left) and keeps
+`includeThoughts`; any other sent id keeps the dialect's control. Beside a Gemini id it then
+writes the level the backend reports for that id, which is the id's own level and not the
+request's (see "The thinking level" below). Deciding by the requested base lost the
 effort twice: a mapped base whose map id the account does not serve falls back to
 an unmapped id (`gemini-3.7-flash` at `low` sending `gemini-3.7-flash-tiered`),
 which then carried no effort anywhere; and a capacity retry reused the primary's
@@ -652,7 +654,9 @@ builder; the credential provider, the transport's capacity retry and its tests c
   `last_step_index` counts, after the first content entry, one step per content entry and one per
   `functionResponse` part. `labels.request_id` is `<trajectory>-<n>`, n counting the requests of
   the conversation from 0.
-- A conversation is the requests that open with the same first content entry (its SHA-256). The
+- A conversation is the requests of one Claude Code session (`conversationKey(claudeRequest)`)
+  that open with the same first content entry (its SHA-256). The session is part of the key so two
+  sessions on one process that open with the same words do not share ids and a request counter. The
   64 most recent are kept per process, so a long session's requests share one `cascade_id` and
   `trajectory_id` as `agy`'s do. `sessionId` is one random signed 64-bit integer per process, in
   decimal.
@@ -721,6 +725,14 @@ through the transport's optional `fetch` member.
   `createConnection` returning a `tls.connect({socket})` wrapper wrote the request to the raw
   socket under the wrapper on Bun 1.4.0: the request, bearer included, left unencrypted and Google
   answered 403 "SSL is required to perform this operation."
+- What `fetch` did for its callers and `node:http` does not, the client does itself. A connection
+  silent for `ANTIGRAVITY_IDLE_TIMEOUT_MS` (five minutes, the runtime's own idle limit) fails with
+  `ETIMEDOUT`: `loadCodeAssist`, model discovery and `retrieveUserQuota` pass no signal, and without
+  the limit a server that accepts and then says nothing held their sockets for the life of the
+  process. A 307 or 308 is followed with the same method and body, at most five times, and the
+  `Authorization` header is not sent to another origin; `redirect: "manual"` returns the answer as
+  it is. A header value the runtime refuses (a line break) rejects before anything is sent, and the
+  request is destroyed. A `NO_PROXY` entry may name a port (`host:443`), which then has to match.
 - `CLAUDISH_ANTIGRAVITY_PLAIN_FETCH=1` sends through `fetch`. The test preload sets it, because the
   suites replace `globalThis.fetch`; `antigravity-fetch.test.ts` clears it and asserts the head
   byte for byte against a raw socket.
@@ -771,8 +783,10 @@ What the code does (`GeminiAPIFormat.buildPayload`, the `thinkingFromModelName` 
 Antigravity uses): **every** body carries `thinkingConfig.includeThoughts: true`. A resolved effort
 adds the `thinkingLevel` or the `thinkingBudget` beside it. A request with no effort, with thinking
 disabled (and no effort pin), or with an effort that has no budget carries the flag alone. When the
-sent model id carries the effort, `antigravityBodyForModelId` removes the level or budget and keeps
-the flag. The stream parser already turns a `thought: true` part into thinking output
+sent model id carries the effort, `antigravityBodyForModelId` removes the request's level or budget,
+keeps the flag, and beside a Gemini id writes the level the backend reports for that id. The table
+below was measured before that level was sent; its "flag alone" rows on an effort-carrying Gemini
+id now carry the flag and the id's level. The stream parser already turns a `thought: true` part into thinking output
 (`gemini-sse.ts`), and the converter does not send thinking blocks back on later requests.
 
 **The flag must not follow the effort this request resolved.** The transport chooses the model id
