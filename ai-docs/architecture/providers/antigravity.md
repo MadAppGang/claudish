@@ -636,8 +636,9 @@ Argument names are capitalised (`Path`, `CommandLine`, `Content`), unlike Claude
 claudish request by replay and the answer stayed 429; `agy`'s whole body under claudish's own
 token and headers answered 200. The one thing the server refused was a paragraph of the system
 text: see `adapters.md` § "Antigravity refuses one paragraph of Claude Code's system prompt".
-The table is the state of claudish 14.25.1. claudish now sends the `agy` column for every row
-except the content of `systemInstruction` and of `tools`: see the next section.
+The table is the state of claudish 14.25.1. claudish now sends the `agy` column for every row;
+the content of `systemInstruction` and of `tools` is `agy`'s followed by the harness's own: see
+"The system prompt and the tool declarations" below.
 
 ## The request claudish sends is the `agy` request, part for part
 
@@ -788,10 +789,8 @@ process stamps the entries of a resumed conversation again.
 
 | Part | `agy` 1.5.9 | claudish |
 |---|---|---|
-| System text | `agy`'s own prompt, 30,247 characters, opening `<identity> You are Antigravity…` | Claude Code's scrubbed prompt (`adapters.md` step 2a) |
-| The identity header's third line | `The USER will send you requests, which you must always prioritize addressing. User requests are enclosed within <USER_REQUEST> tags.` | left out. Two runs with it and one without it got no answer in the same ten minutes of 2026-11-17, while the released build got none either, so the server's acceptance of the line is not measured |
-| Tools | 17 declarations (`manage_task`, `schedule`, `swarm`, `call_mcp_tool`, … ) with `agy`'s descriptions | Claude Code's tools and descriptions, names and the four tools' arguments aliased. A description still names Claude Code's arguments in its prose |
-| `WaitMsBeforeAsync` | required on `run_command` | not declared: `Bash` has no equivalent |
+| System text | `agy`'s own prompt, 30,726 characters with the recording machine's MCP servers and skills | `agy`'s prompt with those lists empty (14,571 characters before the values are filled), then Claude Code's scrubbed prompt. See the next section |
+| Tools | 17 declarations | the same 17, byte for byte, then Claude Code's other tools. Ten of the 17 have nothing behind them. See the next section |
 | Telemetry | six posts to `play.googleapis.com/log` per run | none, by decision: the body is an undocumented binary format holding an installation id and per-step conversation records |
 | A second generation request | a smaller `streamGenerateContent` (about 11 kB) between the turns of the 2026-11-17 recording | not sent; its purpose is not measured |
 
@@ -799,6 +798,74 @@ Live check, 2026-11-17, `ag@gemini-4-argon-medium`, one turn with two tool calls
 200, the calls came back with `CommandLine` and `Path`, Claude Code ran them, and the results went
 back in the wording above. An earlier run the same hour got `503 No capacity available for model
 gemini-4-argon-medium on the server` on its second generation request; the run after it was clean.
+
+### The system prompt and the tool declarations (2026-11-17)
+
+Decided by the owner: `agy`'s prompt and tools first, Claude Code's after, and `agy`'s text kept in
+the repository. `providers/antigravity-agy-request.json` holds both as recorded from `agy` 1.5.9;
+`providers/antigravity-agy-request.ts` applies them in `buildAntigravityEnvelope`. Only
+`packages/cli/scripts/generate-agy-request.ts` writes the JSON file, from a recording (a JSON Lines
+file of `{ url, request_body }`); it removes what came from the recording machine and fails if a
+home directory path is left. A new `agy` version means a new recording and a new run.
+
+**Which requests.** A request that declares at least one function. A request with no tools (a
+title, a summary) is left as it is: `agy`'s own requests of that kind carry an empty system
+instruction and no tools (recorded 2026-11-17).
+
+**System text.** One part: `agy`'s prompt, a line break, then the harness's text. The two-line
+identity the scrub writes at the head of the harness's text (`ANTIGRAVITY_IDENTITY_HEAD`) is
+removed there, because `agy`'s `<identity>` block states it, with the third line about
+`<USER_REQUEST>` tags that was left out before.
+
+What is not `agy`'s in the prompt:
+
+- The MCP server list, the skill list and the plugin subagents (`image-generator`,
+  `firestore-rules-author`) came from the recording machine and are not sent. The sections and
+  their fixed text are; `self` and `research` stay in the subagent list. What `agy` writes in
+  those sections for an install with no MCP server and no skill was not recorded.
+- `<user_information>`: `os` from the platform (`mac` recorded for macOS; `windows` and the
+  platform name elsewhere are a guess), the working directory of the claudish process as the one
+  workspace, the conversation's `cascade_id` as `Conversation ID`.
+- `App Data Directory` is `~/.claudish/antigravity`, not `agy`'s `~/.gemini/antigravity-cli`. The
+  prompt tells the model to write artifacts and scratch files under it, and `agy` keeps its own
+  conversations in its directory.
+
+The prompt describes things Claude Code does not have: the artifact directory's rendering, the
+transcript files, `agy`'s slash commands (`/goal`, `/boost`), its messaging system. The harness's
+text follows and is the later instruction. Nothing removes those sections.
+
+**Tools.** `agy`'s 17 declarations in `agy`'s order, each exactly as recorded (`run_command`'s
+description carries this machine's `Operating System` and `Shell`), then every other tool of the
+request in the request's order.
+
+| `agy` tool | Behind it |
+|---|---|
+| `run_command`, `read_file`, `write_file`, `edit_file`, `search_web`, `ask_question`, `send_message` | Claude Code's `Bash`, `Read`, `Write`, `Edit`, `WebSearch`, `AskUserQuestion`, `SendMessage`, when the request declares them. The tool-name alias translates the arguments both ways (`adapters.md` step 2b) |
+| `manage_task`, `schedule`, `invoke_subagent`, `define_subagent`, `manage_subagents`, `run_workflow`, `swarm`, `call_mcp_tool`, `list_resources`, `read_resource` | nothing. A call reaches Claude Code under the `agy` name and Claude Code answers that it has no such tool. `Agent` and `Workflow` are declared after, under their own names: `invoke_subagent` and `run_workflow` take arguments those tools cannot be given |
+
+- `agy`'s declaration replaces a declaration of the request only when that one carries `agy`'s
+  description, which the alias puts on the seven tools it renamed. A tool of the user's own under
+  an `agy` name (a custom `swarm`) is kept and `agy`'s declaration of that name is not sent. A
+  renamed tool whose description a hook changed is kept too.
+- What a translation drops on a returned call: `WaitMsBeforeAsync` (`Bash` has no wait before
+  background), `ByteOffset`, `Overwrite`, `ArtifactMetadata`, and `search_web`'s `domain`
+  (`WebSearch` can restrict to a site, not prefer one). `edit_file` replaces every occurrence, so
+  `Edit` gets `replace_all: true`. `ask_question` options become a label and a description with
+  the same text, under the header `Question <n>`.
+- A `write_file` call with `Append: true` is not translated. `Write` would replace the file, so
+  the call reaches it without `file_path` and fails.
+- Result wording (`Created At` / `Completed At`) is still only on the four file and shell tools.
+  `agy`'s wording of a web search, a question or a message was not recorded.
+
+The cost: about 36,000 characters more per agent request (14,600 of system text, 21,900 of
+declarations).
+
+Live check, 2026-11-17, `ag@gemini-4-argon-medium`, one turn with two tool calls: both generation
+requests 200; the first 17 declarations byte-equal to the `agy` recording and in its order; the
+system text equal to `agy`'s for its first 10,904 characters, where the recording's MCP list
+starts; the model called `run_command` with `CommandLine`, `toolSummary` and `WaitMsBeforeAsync`
+and `read_file` with `Path`, and Claude Code ran both. A call to one of the ten tools with nothing
+behind them was not observed in that run.
 
 The generation settings are different: one of them was a defect that no 429 replay could show.
 See the next section.

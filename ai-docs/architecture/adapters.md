@@ -221,8 +221,8 @@ narrower. `ComposedHandler` step 2b, right after the identity scrub.
 
 - `aliasToolsForProvider(req, provider)` renames the Claude Code built-ins that have a true agy
   equivalent — `Bash`→`run_command`, `Read`→`read_file`, `Write`→`write_file`,
-  `Edit`→`edit_file`, `Agent`→`invoke_subagent`, `AskUserQuestion`→`ask_question`,
-  `WebSearch`→`search_web`, `SendMessage`→`send_message`, `Workflow`→`run_workflow` — in the
+  `Edit`→`edit_file`, `AskUserQuestion`→`ask_question`, `WebSearch`→`search_web`,
+  `SendMessage`→`send_message` — in the
   tool definitions, in a forced `tool_choice`, and in assistant-history `tool_use` blocks. The
   table is `antigravity`-only; every other provider gets the request back unchanged. The names
   are the `functionDeclarations` the `agy` CLI 1.5.9 sends, recorded through a proxy on
@@ -255,15 +255,24 @@ narrower. `ComposedHandler` step 2b, right after the identity scrub.
   and `read_file` as strings; the CLI sends `write_file` and `read_file`. Until 14.25.1 the table
   had `write_to_file` and left `Read` alone, both read from the binary.
 
-**Argument names, on four tools.** `run_command`, `read_file`, `write_file` and `edit_file` also
-carry the argument names `agy` 1.5.9 declares (recorded 2026-11-17: `CommandLine`, `toolSummary`,
-`IsDaemon`, `Path`, `Content`, `Target`, `Replacement`, and a read's range as `StartLine` and
-`EndLine` in place of `offset` and `limit`), in the schema and in the history's `tool_use`
-inputs. `restoreArguments` undoes it on a returned call, through the Gemini parser's
-`mapToolArguments`; a call that reached Claude Code with `CommandLine` would fail `Bash`'s schema.
-An argument with no equivalent keeps Claude Code's name (`timeout`, `replace_all`, `pages`), and
-every other tool keeps its whole schema. Descriptions stay Claude Code's, so a description can
-name an argument by its old name. Tests: `tool-name-alias.test.ts` (round trip, `tool_choice`, a
+**Arguments and description, on seven tools.** `run_command`, `read_file`, `write_file`,
+`edit_file`, `search_web`, `ask_question` and `send_message` are the renamed tools whose
+arguments translate both ways. They carry the argument names `agy` 1.5.9 declares (recorded
+2026-11-17: `CommandLine`, `toolSummary`, `IsDaemon`, `Path`, `Content`, `Target`, `Replacement`,
+`Recipient`, `Message`, a read's range as `StartLine` and `EndLine` in place of `offset` and
+`limit`, a question's options as strings) in the schema and in the history's `tool_use` inputs.
+`restoreArguments` undoes it on a returned call, through the Gemini parser's `mapToolArguments`;
+a call that reached Claude Code with `CommandLine` would fail `Bash`'s schema. It also drops what
+Claude Code's tool does not take (`WaitMsBeforeAsync`, `ByteOffset`, `Overwrite`,
+`ArtifactMetadata`, `domain`), adds `replace_all: true` to an `edit_file` call, and leaves a
+`write_file` call with `Append: true` untranslated so that `Write` refuses it.
+
+The seven also get `agy`'s description. That description is the mark the envelope builder reads:
+a declaration under an `agy` name that carries it is Claude Code's own tool, and is replaced by
+`agy`'s whole declaration (`providers/antigravity.md` § "The system prompt and the tool
+declarations"). `Agent` and `Workflow` are not renamed: `invoke_subagent` and `run_workflow` take
+arguments those tools cannot be given, and `agy`'s declarations of them are sent with nothing
+behind them. Every other tool keeps its schema and its description. Tests: `tool-name-alias.test.ts` (round trip, `tool_choice`, a
 request that already declares a native name, the call and result names through the Gemini
 adapter, stage B through `forward`), `gemini-sse-tool-alias.test.ts` (inbound restore and the
 wire name in the history store), `composed-handler-tool-alias.test.ts` (outbound end to end,
