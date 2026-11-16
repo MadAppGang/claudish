@@ -14,6 +14,7 @@
  */
 
 import { log } from "../../logger.js";
+import { isOptInWireId } from "../../providers/content-use.js";
 import { fetchOllamaModels, ollamaBaseUrl } from "../../providers/ollama-discovery.js";
 import type { HooksConfig } from "../config.js";
 import type { ObserverDigest } from "./digest.js";
@@ -65,7 +66,11 @@ async function resolveObserverModel(config: ObserverConfig): Promise<string | nu
 
   try {
     const models = await fetchOllamaModels({ enrichCapabilities: false });
-    const usable = models.filter((m) => !m.isEmbeddingModel && isGenuinelyLocal(m));
+    // A configured model is taken as given above; a discovered one is never a
+    // content-use opt-in id.
+    const usable = models.filter(
+      (m) => !m.isEmbeddingModel && isGenuinelyLocal(m) && !isOptInWireId(m.name)
+    );
     if (usable.length === 0) {
       log("[hooks:observer] No local Ollama models found — observer disabled for this run");
       cachedModel = null;
