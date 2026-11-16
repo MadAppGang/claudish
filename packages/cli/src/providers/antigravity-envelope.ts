@@ -20,6 +20,7 @@
  */
 
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { agyContents, agyLocalTime, agyWordedTools } from "./antigravity-content.js";
 
 /** What the backend reports about the model a request is sent to. */
 export interface AntigravityEnvelopeModelMeta {
@@ -29,6 +30,8 @@ export interface AntigravityEnvelopeModelMeta {
   modelEnum?: string;
   /** `thinkingLevel` from `fetchAvailableModels`: the number behind the level sent beside an effort id. */
   thinkingLevel?: number;
+  /** `displayName` from `fetchAvailableModels` (`Gemini 4 Argon (Medium)`); named in the first message. */
+  displayName?: string;
 }
 
 /** The ids one conversation keeps across its requests. */
@@ -37,6 +40,17 @@ export interface AntigravityConversation {
   trajectoryId: string;
   /** Requests already sent in this conversation; the next request's ordinal. */
   requestCount: number;
+  /**
+   * The local time each user message and tool result was first sent, by the
+   * entry's key. A request repeats the whole history, and a repeated entry
+   * must carry the time it carried the first time.
+   */
+  times?: Map<string, string>;
+  /**
+   * The model name the first message was first sent with. A retry on another
+   * effort variant repeats that message and must not rename the model in it.
+   */
+  firstModelDisplayName?: string;
 }
 
 /**
@@ -49,6 +63,8 @@ export interface AntigravityConversation {
  */
 export class AntigravityConversations {
   private readonly byFirstMessage = new Map<string, AntigravityConversation>();
+  /** Trajectories created and not yet handed out by `takeNewTrajectories`. */
+  private readonly newTrajectories = new Set<string>();
   /** One id for the process, as `agy` keeps one across the requests of a run. */
   readonly sessionId: string;
 
@@ -72,11 +88,35 @@ export class AntigravityConversations {
     }
     const created = { cascadeId: this.newId(), trajectoryId: this.newId(), requestCount: 0 };
     this.byFirstMessage.set(key, created);
+    this.newTrajectories.add(created.trajectoryId);
     if (this.byFirstMessage.size > this.limit) {
       const oldest = this.byFirstMessage.keys().next().value;
-      if (oldest !== undefined) this.byFirstMessage.delete(oldest);
+      if (oldest !== undefined) {
+        const dropped = this.byFirstMessage.get(oldest);
+        if (dropped) this.newTrajectories.delete(dropped.trajectoryId);
+        this.byFirstMessage.delete(oldest);
+      }
     }
     return created;
+  }
+
+  /**
+   * The new trajectory a request body names, handed out once; null when the
+   * body's trajectory is not new. Another conversation's stays for its own
+   * request.
+   */
+  takeNewTrajectoryIn(body: string): string | null {
+    for (const id of this.newTrajectories) {
+      if (!body.includes(id)) continue;
+      this.newTrajectories.delete(id);
+      return id;
+    }
+    return null;
+  }
+
+  /** Forgets every trajectory not yet handed out. */
+  clearNewTrajectories(): void {
+    this.newTrajectories.clear();
   }
 }
 
@@ -214,7 +254,21 @@ export function buildAntigravityEnvelope(input: AntigravityEnvelopeInput): Recor
   } = inner;
 
   const stepIndex = lastStepIndex(contents);
-  const request: Record<string, unknown> = { contents: toolResultsAsModelEntries(contents) };
+  const now = agyLocalTime(new Date(input.now ?? Date.now()));
+  conversation.times ??= new Map();
+  const times = conversation.times;
+  conversation.firstModelDisplayName ??= meta?.displayName;
+  const worded = agyContents(contents, {
+    timeOf: (key) => {
+      const known = times.get(key);
+      if (known !== undefined) return known;
+      times.set(key, now);
+      return now;
+    },
+    modelDisplayName: conversation.firstModelDisplayName,
+    wordedTools: agyWordedTools(tools),
+  });
+  const request: Record<string, unknown> = { contents: toolResultsAsModelEntries(worded) };
   if (systemInstruction && typeof systemInstruction === "object") {
     const { role: _role, ...instruction } = systemInstruction as Record<string, unknown>;
     request.systemInstruction = { role: "user", ...instruction };

@@ -3,7 +3,8 @@ import {
   _resetAntigravityServedModelsCache,
   buildAntigravityUserAgent,
   getServedAntigravityModels,
-  retrieveUserQuota,
+  retrieveModelQuota,
+  retrieveUserQuotaSummary,
 } from "./antigravity-user.js";
 
 const realFetch = globalThis.fetch;
@@ -17,24 +18,78 @@ afterEach(() => {
   globalThis.fetch = realFetch;
 });
 
-describe("retrieveUserQuota", () => {
-  test("sends the Antigravity request identity", async () => {
+describe("retrieveUserQuotaSummary", () => {
+  test("posts the project with the Antigravity request identity and returns the groups", async () => {
+    const groups = [
+      {
+        displayName: "Gemini Models",
+        buckets: [{ bucketId: "gemini-weekly", window: "weekly", remainingFraction: 0.5 }],
+      },
+    ];
     const fetchMock = mock(async (_input: RequestInfo | URL, _init?: RequestInit) =>
-      Response.json({ buckets: [] })
+      Response.json({ groups })
     );
     globalThis.fetch = fetchMock as unknown as typeof fetch;
 
-    await expect(retrieveUserQuota("access-token", "project-id")).resolves.toEqual({
-      buckets: [],
+    await expect(retrieveUserQuotaSummary("access-token", "project-id")).resolves.toEqual({
+      groups,
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    const [, init] = fetchMock.mock.calls[0];
+    const [input, init] = fetchMock.mock.calls[0];
+    expect(String(input).endsWith("/v1internal:retrieveUserQuotaSummary")).toBe(true);
+    expect(init?.body).toBe('{"project":"project-id"}');
     const userAgent = new Headers(init?.headers).get("User-Agent");
-
-    // The UA selects the backend tier: Code Assist silently restores the retired free-tier list.
     expect(userAgent).toBe(buildAntigravityUserAgent());
     expect(userAgent).not.toContain("gemini-code-assist");
+  });
+
+  test("a refused call and an unreachable host both answer null", async () => {
+    globalThis.fetch = (async () => new Response("no", { status: 403 })) as unknown as typeof fetch;
+    await expect(retrieveUserQuotaSummary("access-token", "project-id")).resolves.toBeNull();
+    globalThis.fetch = (async () => {
+      throw new Error("socket closed");
+    }) as unknown as typeof fetch;
+    await expect(retrieveUserQuotaSummary("access-token", "project-id")).resolves.toBeNull();
+  });
+});
+
+describe("retrieveModelQuota", () => {
+  test("reads each model's quota from its record in the model list", async () => {
+    const fetchMock = mock(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      Response.json({
+        models: {
+          "gemini-4-argon-medium": {
+            quotaInfo: { remainingFraction: 0.25, resetTime: "2026-11-22T10:30:08Z" },
+          },
+          "claude-opus-5-5-high": { quotaInfo: { remainingFraction: 1 } },
+          "gemini-3.1-flash-image": { displayName: "no quota record" },
+        },
+      })
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    await expect(retrieveModelQuota("access-token", "project-id")).resolves.toEqual({
+      buckets: [
+        {
+          modelId: "gemini-4-argon-medium",
+          remainingFraction: 0.25,
+          resetTime: "2026-11-22T10:30:08Z",
+        },
+        { modelId: "claude-opus-5-5-high", remainingFraction: 1 },
+      ],
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0][0]).endsWith("/v1internal:fetchAvailableModels")).toBe(
+      true
+    );
+  });
+
+  test("a model list that cannot be read answers null", async () => {
+    globalThis.fetch = (async () => new Response("no", { status: 500 })) as unknown as typeof fetch;
+    await expect(retrieveModelQuota("access-token", "project-id")).resolves.toBeNull();
+    globalThis.fetch = (async () => new Response("not json")) as unknown as typeof fetch;
+    await expect(retrieveModelQuota("access-token", "project-id")).resolves.toBeNull();
   });
 });
 

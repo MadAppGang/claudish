@@ -30,6 +30,10 @@
 
 import { type EffortLevel, isEffortLevel } from "../../adapters/base-api-format.js";
 import {
+  antigravityTrajectoryAclCall,
+  sendAntigravitySideCall,
+} from "../../auth/antigravity-side-calls.js";
+import {
   forceRefreshAntigravityToken,
   getValidAntigravityAccessToken,
 } from "../../auth/antigravity-token.js";
@@ -39,7 +43,7 @@ import {
   getAntigravityTierDisplayName,
   getServedAntigravityModels,
   resetAntigravityUserCache,
-  retrieveUserQuota,
+  retrieveModelQuota,
   setupAntigravityUser,
 } from "../../auth/antigravity-user.js";
 import { credentials } from "../../auth/credentials/authority.js";
@@ -99,7 +103,7 @@ const DEFAULT_RATE_LIMIT_DELAY_MS = 10_000;
 const UNATTRIBUTED_RETRY_DELAY_MS = 1_000;
 /**
  * Budget for the quota reading that fact-checks an "out of quota" verdict.
- * `retrieveUserQuota` carries no timeout of its own, and this call sits on a
+ * `retrieveModelQuota` carries no timeout of its own, and this call sits on a
  * path that is ALREADY failing — a hung connection must not hold the user's
  * error response open. Timing out degrades to the honest "couldn't confirm"
  * wording, never to a wrong claim.
@@ -259,6 +263,9 @@ interface AntigravityRequestState {
   activeModelName?: string;
 }
 
+/** How long the access write of a new conversation may hold its first request. */
+const TRAJECTORY_ACL_TIMEOUT_MS = 3_000;
+
 export class AntigravityProviderTransport implements ProviderTransport {
   readonly name = "antigravity";
   private _displayName = "Antigravity";
@@ -268,8 +275,36 @@ export class AntigravityProviderTransport implements ProviderTransport {
   readonly streamFormat: StreamFormat = "gemini-sse";
 
   /** Requests go out with the Antigravity CLI's request head, which `fetch` cannot write. */
-  fetch(url: string, init: RequestInit): Promise<Response> {
+  async fetch(url: string, init: RequestInit): Promise<Response> {
+    await this.writeNewTrajectoryAcls(url, init);
     return antigravityFetch(url, init);
+  }
+
+  /**
+   * Before a conversation's first generation request the Antigravity CLI
+   * writes its trajectory's access record. Sent with the request's own
+   * bearer; a failure is logged and the generation request goes out anyway.
+   */
+  private async writeNewTrajectoryAcls(url: string, init: RequestInit): Promise<void> {
+    if (!url.includes("GenerateContent")) return;
+    if (typeof init.body !== "string") return;
+    const trajectoryId = antigravityConversations.takeNewTrajectoryIn(init.body);
+    if (trajectoryId === null) return;
+    const headers = new Headers(init.headers as ConstructorParameters<typeof Headers>[0]);
+    const bearer = headers.get("authorization")?.replace(/^Bearer\s+/i, "");
+    if (!bearer) return;
+    const account = {
+      apiBase: `${antigravityHost()}/v1internal`,
+      userAgent: buildAntigravityUserAgent(),
+    };
+    await sendAntigravitySideCall(
+      antigravityTrajectoryAclCall(account, trajectoryId),
+      bearer,
+      TRAJECTORY_ACL_TIMEOUT_MS,
+      init.signal ?? undefined
+    );
+    // A request cancelled during the write is not sent.
+    init.signal?.throwIfAborted();
   }
 
   /** The user-supplied model id (for messages + the credential ctx). */
@@ -874,7 +909,7 @@ export class AntigravityProviderTransport implements ProviderTransport {
     if (!this.accessToken || !this.projectId) return undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const data = await Promise.race([
-      retrieveUserQuota(this.accessToken, this.projectId).catch(() => null),
+      retrieveModelQuota(this.accessToken, this.projectId).catch(() => null),
       new Promise<null>((resolve) => {
         timer = setTimeout(() => resolve(null), QUOTA_CHECK_TIMEOUT_MS);
       }),
@@ -900,8 +935,8 @@ export class AntigravityProviderTransport implements ProviderTransport {
    * for a model their subscription already covers. The reported case was exactly
    * this — a plan with allowance left, restored by re-running `agy`.
    *
-   * `retrieveUserQuota` is the same per-model bucket endpoint the status line
-   * reads, so the claim can be tested against the account itself. Three
+   * `retrieveModelQuota` is the same per-model reading the status line
+   * shows, so the claim can be tested against the account itself. Three
    * outcomes, and the middle one is why this exists at all:
    *   - allowance remains  → the 429 is not what it says; name the stale session.
    *   - reading failed     → say we could not confirm, rather than asserting.
@@ -972,7 +1007,7 @@ export class AntigravityProviderTransport implements ProviderTransport {
   private async logQuotaInfo(sentId: string): Promise<void> {
     if (!this.accessToken || !this.projectId) return;
     try {
-      const data = await retrieveUserQuota(this.accessToken, this.projectId);
+      const data = await retrieveModelQuota(this.accessToken, this.projectId);
       if (!data?.buckets?.length) return;
 
       const lines: string[] = [];
@@ -1023,7 +1058,7 @@ export class AntigravityProviderTransport implements ProviderTransport {
   async getQuotaRemaining(modelName: string): Promise<number | undefined> {
     if (!this.accessToken || !this.projectId) return undefined;
     try {
-      const data = await retrieveUserQuota(this.accessToken, this.projectId);
+      const data = await retrieveModelQuota(this.accessToken, this.projectId);
       if (!data?.buckets?.length) return undefined;
       const bucket = data.buckets.find((b: any) => b.modelId === modelName);
       return typeof bucket?.remainingFraction === "number" ? bucket.remainingFraction : undefined;

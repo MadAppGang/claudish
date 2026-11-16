@@ -4045,7 +4045,8 @@ export class ComposedHandler implements ModelHandler {
           };
           ledger.finalInput = u.finalInput;
         },
-        toolAlias.restore
+        toolAlias.restore,
+        toolAlias.restoreArguments
       ),
       () => {
         clientCancelled = true;
@@ -4370,7 +4371,9 @@ export class ComposedHandler implements ModelHandler {
      */
     onBilled?: (u: TurnBilledUsage) => void,
     /** Undoes this request's tool-name alias on a tool call the provider returns. */
-    restoreToolName?: (name: string) => string
+    restoreToolName?: (name: string) => string,
+    /** Undoes this request's tool-argument alias on the same call. */
+    restoreToolArguments?: (wireName: string, args: unknown) => unknown
   ): Response {
     // Local mutable copy so we can null it out after firing (prevents double-firing)
     // without reassigning the function parameter.
@@ -4538,6 +4541,7 @@ export class ComposedHandler implements ModelHandler {
           unwrapResponse: this.options.unwrapGeminiResponse,
           priorInputTokens,
           mapToolName: restoreToolName,
+          mapToolArguments: restoreToolArguments,
         });
       }
 

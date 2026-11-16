@@ -9,6 +9,7 @@ test("two sessions that open with the same words are two conversations", () => {
   expect(conversations.of(inner, "session-b")).not.toBe(first);
   expect(conversations.of(inner, "session-b").cascadeId).not.toBe(first.cascadeId);
 });
+import { agyLocalTime, agyUserRequest } from "./antigravity-content.js";
 import {
   AntigravityConversations,
   buildAntigravityEnvelope,
@@ -67,7 +68,11 @@ function conversation() {
   return { cascadeId: CASCADE, trajectoryId: TRAJECTORY, requestCount: 0 };
 }
 
-const META = { maxOutputTokens: 65536, modelEnum: "MODEL_PLACEHOLDER_M418" };
+const META = {
+  maxOutputTokens: 65536,
+  modelEnum: "MODEL_PLACEHOLDER_M418",
+  displayName: "Gemini 4 Argon (Medium)",
+};
 
 describe("the Antigravity envelope has the shape the Antigravity CLI sends", () => {
   test("the first request of a conversation, key for key and in the recorded order", () => {
@@ -86,7 +91,20 @@ describe("the Antigravity envelope has the shape the Antigravity CLI sends", () 
         project: "aicode-consumers",
         requestId: `agent/${CASCADE}/1794739596876/${TRAJECTORY}/1`,
         request: {
-          contents: [{ role: "user", parts: [{ text: "list the files" }] }],
+          contents: [
+            {
+              role: "user",
+              parts: [
+                {
+                  text: agyUserRequest(
+                    "list the files",
+                    agyLocalTime(new Date(1794739596876)),
+                    "Gemini 4 Argon (Medium)"
+                  ),
+                },
+              ],
+            },
+          ],
           systemInstruction: { role: "user", parts: [{ text: "system text" }] },
           tools: [
             { functionDeclarations: [{ name: "read_file", description: "r", parameters: {} }] },
