@@ -24,3 +24,12 @@ variants:
     params:
       binary: ../bin/claudish-compaction
       tool: claudish-compaction
+  # The baseline for a foreign model (case b): as cases-baseline, but the run's
+  # ~/.claudish/config.json is the file --param claudish_config names, which
+  # holds the route's credential and nothing else (no compaction block, no
+  # Anthropic key). Pair it with a cases-compaction config that adds the same
+  # credential.
+  - name: cases-baseline-route
+    params:
+      binary: ../bin/claudish-build-plain
+      tool: cases-baseline-route
