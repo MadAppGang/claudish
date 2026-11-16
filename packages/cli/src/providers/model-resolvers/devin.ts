@@ -53,6 +53,7 @@ import {
   findModelIdEffortConnection,
   listModelIdEffortConnections,
 } from "../../adapters/model-catalog.js";
+import { isOptInWireId } from "../content-use.js";
 import type { DevinModelConfig } from "../devin/devin-models.js";
 import {
   type ConnectionMapDecision,
@@ -351,6 +352,12 @@ export class DevinModelResolver implements ProviderModelResolver {
     const requested = selection.trim();
     const lower = requested.toLowerCase();
     const exact = modelsCatalog.find((entry) => entry.wireId.toLowerCase() === lower);
+
+    // A content-use opt-in uid requested exactly is sent as listed, at any
+    // effort: no effort map, sibling or tier rule replaces it.
+    if (exact && isOptInWireId(exact.wireId)) {
+      return { id: exact.wireId, effort, source: "exact id" };
+    }
 
     // 0. The connection's effort map, when the catalog publishes one for this
     //    exact base on Devin's route. A listed base with no effort is sent as
