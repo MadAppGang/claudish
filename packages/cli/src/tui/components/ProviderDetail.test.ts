@@ -33,6 +33,22 @@ describe("resolveProviderDetailKeyDisplay", () => {
       })
     ).toBe("env-mask");
   });
+
+  // REGRESSION: the Key row showed the old shell key's mask after a replacement key was saved
+  test("shows the replacement key's mask ahead of the environment key", () => {
+    expect(
+      resolveProviderDetailKeyDisplay({
+        isLocal: false,
+        isReady: true,
+        authSource: "env",
+        hasEnvKey: true,
+        hasCfgKey: false,
+        envKeyMask: "old",
+        cfgKeyMask: "",
+        replacementKeyMask: "new",
+      })
+    ).toBe("new");
+  });
 });
 
 // REGRESSION: Login-authenticated providers reported an API key after a successful Test — /dev:fix session dev-fix-20261020-235500-vtx01

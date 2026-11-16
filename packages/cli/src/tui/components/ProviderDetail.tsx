@@ -78,6 +78,11 @@ interface ProviderDetailProps {
   /** The masked value of that key, once the authority has resolved it. Never the key. */
   vaultKeyMask?: string;
   /**
+   * The masked value of a key the user saved in this tab, which the provider
+   * signs with ahead of every other store (`credentials.replaceKey`). Never the key.
+   */
+  replacementKeyMask?: string;
+  /**
    * Where a key typed here will be written. Named in the input box title so the
    * store is never a surprise — this used to be plaintext config.json
    * unconditionally, and a silent change of destination for secrets is exactly
@@ -108,9 +113,12 @@ export function resolveProviderDetailKeyDisplay(input: {
   cfgKeyMask: string;
   vaultKeySource?: "macOS Keychain" | "1Password";
   vaultKeyMask?: string;
+  replacementKeyMask?: string;
 }): string {
   if (input.isLocal) return input.isReady ? "enabled" : "disabled";
   if (input.authSource === "oauth") return "oauth";
+  // A saved replacement signs ahead of the environment, so it is the key in use.
+  if (input.replacementKeyMask) return input.replacementKeyMask;
   if (input.hasEnvKey) return input.envKeyMask;
   if (input.hasCfgKey) return input.cfgKeyMask;
   if (input.vaultKeySource) return input.vaultKeyMask ?? vaultLabel(input.vaultKeySource);
@@ -144,6 +152,7 @@ export function ProviderDetail({
   hasKcKey,
   vaultKeySource,
   vaultKeyMask,
+  replacementKeyMask,
   keySaveTarget,
   credentialNote,
   cfgKeyMask,
@@ -165,6 +174,7 @@ export function ProviderDetail({
     cfgKeyMask,
     ...(vaultKeySource ? { vaultKeySource } : {}),
     ...(vaultKeyMask ? { vaultKeyMask } : {}),
+    ...(replacementKeyMask ? { replacementKeyMask } : {}),
   });
 
   if (isInputMode) {

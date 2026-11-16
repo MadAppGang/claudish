@@ -652,6 +652,10 @@ export function App({ requestLogin }: AppProps = {}) {
   const vaultKeyMask = vaultKeySource
     ? credentials.describeOrigin(selectedProvider.catalogName)?.masked
     : undefined;
+  // A key saved in this tab signs ahead of every other store until the next
+  // invalidation, so the Key row shows its mask rather than the shell's key.
+  const selectedOrigin = credentials.describeOrigin(selectedProvider.catalogName);
+  const replacementKeyMask = selectedOrigin?.replaced ? selectedOrigin.masked : undefined;
   const cfgKeyMask = maskKey(config.apiKeys?.[selectedProvider.apiKeyEnvVar]);
   const envKeyMask = maskKey(process.env[selectedProvider.apiKeyEnvVar]);
   const activeEndpointEnvVar = selectedProvider.endpointEnvVar;
@@ -2893,6 +2897,7 @@ export function App({ requestLogin }: AppProps = {}) {
             hasKcKey={hasKcKey}
             {...(vaultKeySource ? { vaultKeySource } : {})}
             {...(vaultKeyMask ? { vaultKeyMask } : {})}
+            {...(replacementKeyMask ? { replacementKeyMask } : {})}
             keySaveTarget={keychainSupported ? "macOS Keychain" : "config.json"}
             credentialNote={providerCredentialNote(selectedProvider)}
             cfgKeyMask={cfgKeyMask}
