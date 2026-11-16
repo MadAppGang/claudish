@@ -286,8 +286,9 @@ export class AntigravityProviderTransport implements ProviderTransport {
    */
   private async writeNewTrajectoryAcls(url: string, init: RequestInit): Promise<void> {
     if (!url.includes("GenerateContent")) return;
-    const trajectories = antigravityConversations.takeNewTrajectories();
-    if (trajectories.length === 0) return;
+    if (typeof init.body !== "string") return;
+    const trajectoryId = antigravityConversations.takeNewTrajectoryIn(init.body);
+    if (trajectoryId === null) return;
     const headers = new Headers(init.headers as ConstructorParameters<typeof Headers>[0]);
     const bearer = headers.get("authorization")?.replace(/^Bearer\s+/i, "");
     if (!bearer) return;
@@ -295,13 +296,14 @@ export class AntigravityProviderTransport implements ProviderTransport {
       apiBase: `${antigravityHost()}/v1internal`,
       userAgent: buildAntigravityUserAgent(),
     };
-    for (const trajectoryId of trajectories) {
-      await sendAntigravitySideCall(
-        antigravityTrajectoryAclCall(account, trajectoryId),
-        bearer,
-        TRAJECTORY_ACL_TIMEOUT_MS
-      );
-    }
+    await sendAntigravitySideCall(
+      antigravityTrajectoryAclCall(account, trajectoryId),
+      bearer,
+      TRAJECTORY_ACL_TIMEOUT_MS,
+      init.signal ?? undefined
+    );
+    // A request cancelled during the write is not sent.
+    init.signal?.throwIfAborted();
   }
 
   /** The user-supplied model id (for messages + the credential ctx). */

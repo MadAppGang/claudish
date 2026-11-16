@@ -86,16 +86,32 @@ export class AntigravityConversations {
     this.newTrajectories.add(created.trajectoryId);
     if (this.byFirstMessage.size > this.limit) {
       const oldest = this.byFirstMessage.keys().next().value;
-      if (oldest !== undefined) this.byFirstMessage.delete(oldest);
+      if (oldest !== undefined) {
+        const dropped = this.byFirstMessage.get(oldest);
+        if (dropped) this.newTrajectories.delete(dropped.trajectoryId);
+        this.byFirstMessage.delete(oldest);
+      }
     }
     return created;
   }
 
-  /** The trajectories created since the last call, each handed out once. */
-  takeNewTrajectories(): string[] {
-    const ids = [...this.newTrajectories];
+  /**
+   * The new trajectory a request body names, handed out once; null when the
+   * body's trajectory is not new. Another conversation's stays for its own
+   * request.
+   */
+  takeNewTrajectoryIn(body: string): string | null {
+    for (const id of this.newTrajectories) {
+      if (!body.includes(id)) continue;
+      this.newTrajectories.delete(id);
+      return id;
+    }
+    return null;
+  }
+
+  /** Forgets every trajectory not yet handed out. */
+  clearNewTrajectories(): void {
     this.newTrajectories.clear();
-    return ids;
   }
 }
 

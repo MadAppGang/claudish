@@ -82,11 +82,15 @@ export function antigravityTrajectoryAclCall(
   };
 }
 
-/** Sends one call and drops its answer. Never throws. */
+/**
+ * Sends one call and drops its answer. Never throws. `abort` ends the call
+ * with the request it is sent for.
+ */
 export async function sendAntigravitySideCall(
   call: AntigravitySideCall,
   accessToken: string,
-  timeoutMs: number = ANTIGRAVITY_SIDE_CALL_TIMEOUT_MS
+  timeoutMs: number = ANTIGRAVITY_SIDE_CALL_TIMEOUT_MS,
+  abort?: AbortSignal
 ): Promise<void> {
   const headers: Record<string, string> = {
     Authorization: `Bearer ${accessToken}`,
@@ -98,7 +102,9 @@ export async function sendAntigravitySideCall(
       method: call.body === undefined ? "GET" : "POST",
       headers,
       ...(call.body === undefined ? {} : { body: call.body }),
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: abort
+        ? AbortSignal.any([abort, AbortSignal.timeout(timeoutMs)])
+        : AbortSignal.timeout(timeoutMs),
     });
     await res.arrayBuffer();
     if (!res.ok) log(`[Antigravity] ${call.name} answered ${res.status}`);

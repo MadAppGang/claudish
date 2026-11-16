@@ -214,7 +214,7 @@ describe("a new Antigravity conversation writes its access record first", () => 
     const { transport } = await setupTransport();
     const endpoint = transport.getEndpoint();
     const headers = await transport.getHeaders();
-    antigravityConversations.takeNewTrajectories();
+    antigravityConversations.clearNewTrajectories();
     const seen: Array<{ url: string; body: string }> = [];
     globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
       const url = String(input);
@@ -224,7 +224,7 @@ describe("a new Antigravity conversation writes its access record first", () => 
     }) as typeof fetch;
     const sendVia = (envelope: Envelope) =>
       transport.fetch(endpoint, { method: "POST", headers, body: JSON.stringify(envelope) });
-    return { transport, endpoint, seen, sendVia };
+    return { transport, endpoint, headers, seen, sendVia };
   }
 
   test("once, with the conversation's trajectory id, before its first generation request", async () => {
@@ -248,6 +248,49 @@ describe("a new Antigravity conversation writes its access record first", () => 
     expect(response.status).toBe(200);
     expect(seen.map((entry) => entry.url).at(-1)).toBe(endpoint);
     expect(seen).toHaveLength(2);
+  });
+
+  test("a request writes its own conversation's record and leaves another's for that one's request", async () => {
+    const { transport, seen, sendVia } = await record();
+    const mine = transformIn(transport, "acl-session-3", "acl-mine");
+    const other = transformIn(transport, "acl-session-3", "acl-other");
+    await sendVia(mine);
+    const aclBodies = () =>
+      seen
+        .filter((entry) => entry.url.endsWith(":writeTrajectoryAcls"))
+        .map((e) => JSON.parse(e.body));
+    expect(aclBodies()).toEqual([{ trajectoryId: labelsOf(mine).trajectory_id }]);
+
+    await sendVia(other);
+    expect(aclBodies()).toEqual([
+      { trajectoryId: labelsOf(mine).trajectory_id },
+      { trajectoryId: labelsOf(other).trajectory_id },
+    ]);
+  });
+
+  test("a request cancelled during the write ends the write and is not sent", async () => {
+    const { transport, endpoint, headers } = await record();
+    const seen: string[] = [];
+    const cancel = new AbortController();
+    globalThis.fetch = ((input: unknown, init?: RequestInit) => {
+      seen.push(String(input));
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+        queueMicrotask(() => cancel.abort());
+      });
+    }) as typeof fetch;
+    const envelope = transformIn(transport, "acl-session-4", "acl-cancelled");
+
+    await expect(
+      transport.fetch(endpoint, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(envelope),
+        signal: cancel.signal,
+      })
+    ).rejects.toBeDefined();
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toEndWith(":writeTrajectoryAcls");
   });
 });
 
