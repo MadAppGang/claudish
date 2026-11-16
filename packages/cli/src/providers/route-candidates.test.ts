@@ -654,6 +654,18 @@ describe("account-listed route candidates", () => {
   }
   afterEach(_resetCatalogClient);
 
+  test("excludes an exact opt-in id matched by listedRow", () => {
+    const requested = "gemini-4-carbon-contributor";
+    seed([]);
+    const gathered = gatherWithLists(
+      requested,
+      path,
+      snapshot("antigravity", [{ id: requested, reported: "chat" }])
+    );
+
+    expect(gathered.candidates.some(({ wireId }) => wireId === requested)).toBe(false);
+  });
+
   test("adds Devin for a catalog-absent name in the account's own spelling", () => {
     seed([]);
     const gathered = gatherWithLists("swe-1.7", path, snapshot("devin", [swe]));

@@ -33,6 +33,7 @@ import type {
   RouteRegistry,
 } from "./connection-wire.js";
 import { parseModelSpec } from "./model-parser.js";
+import { buildRoutingChain } from "./routing-rules.js";
 import { catalogEntry, connection, effortMap } from "./test-helpers/model-id-effort.js";
 
 // the reader of the previous release, kept verbatim as an oracle.
@@ -703,6 +704,115 @@ describe("exact effort-map wire ids", () => {
       stderrSpy.mockRestore();
       logSpy.mockRestore();
     }
+  });
+});
+
+describe("content-use opt-in wire id resolution", () => {
+  const base = "example-model";
+  const optIn = `${base}-contributor`;
+
+  function writeEntries(entries: SlimModelEntry[]): string {
+    const path = tempCachePath();
+    writeAllModelsCache(
+      {
+        catalogGenerationId: "content-use-resolution-test-data",
+        version: 3,
+        lastUpdated: new Date().toISOString(),
+        entries,
+        models: [],
+        plans: [],
+      },
+      path
+    );
+    return path;
+  }
+
+  test("keeps an explicit opt-in id listed by another provider's effort map", () => {
+    _setCatalogEntriesForTest([
+      catalogEntry(base, [
+        connection("devin", base, effortMap({ low: optIn })),
+        connection("antigravity", base),
+      ]),
+    ]);
+
+    expect(resolveExternalId(optIn, "antigravity")).toBe(optIn);
+  });
+
+  test("keeps an explicit opt-in id published by another provider's connection", () => {
+    _setCatalogEntriesForTest([
+      catalogEntry(base, [connection("devin", optIn), connection("antigravity", base)]),
+    ]);
+
+    expect(resolveExternalId(optIn, "antigravity")).toBe(optIn);
+  });
+
+  test("resolves a non-opt-in id published only by another provider to the base", () => {
+    const otherProviderId = `${base}-other-provider`;
+    _setCatalogEntriesForTest([
+      catalogEntry(base, [connection("devin", otherProviderId), connection("antigravity", base)]),
+    ]);
+
+    expect(resolveExternalId(otherProviderId, "antigravity")).toBe(base);
+  });
+
+  test("implicit resolution reads the requested provider's effort map in either entry order", () => {
+    const shared = "shared-contributor";
+    const modelA = catalogEntry("model-a", [
+      connection("devin", "devin-a", effortMap({ low: shared })),
+      connection("antigravity", "ag-a"),
+    ]);
+    const modelB = catalogEntry("model-b", [
+      connection("antigravity", "ag-b", effortMap({ low: shared })),
+    ]);
+
+    for (const entries of [
+      [modelA, modelB],
+      [modelB, modelA],
+    ]) {
+      const path = writeEntries(entries);
+      expect(resolveImplicitExternalId(shared, "antigravity", path)).toBe("ag-b");
+    }
+  });
+
+  test("implicit resolution refuses an ambiguous opt-in id in either entry order", () => {
+    const shared = "shared-contributor";
+    const modelA = catalogEntry("model-a", [
+      connection("antigravity", "ag-a", effortMap({ low: shared })),
+    ]);
+    const modelB = catalogEntry("model-b", [
+      connection("antigravity", "ag-b", effortMap({ low: shared })),
+    ]);
+
+    for (const entries of [
+      [modelA, modelB],
+      [modelB, modelA],
+    ]) {
+      const path = writeEntries(entries);
+      expect(resolveImplicitExternalId(shared, "antigravity", path)).toBeNull();
+      expect(buildRoutingChain(["antigravity"], shared, path)).toEqual([]);
+    }
+  });
+
+  test("implicit resolution finds the effort-map owner before a variant entry", () => {
+    const family = "gemini-4-argon";
+    const variant = `${family}-contributor`;
+    const path = writeEntries([
+      catalogEntry(family, [connection("antigravity", family, effortMap({ low: variant }))]),
+      catalogEntry(variant, []),
+    ]);
+
+    expect(resolveImplicitExternalId(variant, "antigravity", path)).toBe(family);
+  });
+
+  test("a provider-only rule excludes an opt-in id listed only by another provider", () => {
+    const path = writeEntries([
+      catalogEntry(base, [
+        connection("devin", base, effortMap({ low: optIn })),
+        connection("antigravity", base),
+      ]),
+    ]);
+
+    expect(buildRoutingChain(["antigravity"], optIn, path)).toEqual([]);
   });
 });
 
