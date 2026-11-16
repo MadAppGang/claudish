@@ -6,8 +6,9 @@
  *   model's catalog context window and the `CLAUDE_CODE_AUTO_COMPACT_WINDOW`
  *   this launch gave Claude Code. With no catalog window the request is left
  *   alone.
- * - **Measure.** A request is measured with the proxy's local token count
- *   (`localTokenEstimate`), the number `count_tokens` answers with.
+ * - **Measure.** A request is measured with the real count (`RealTokenCount`):
+ *   the upstream usage of the thread's previous request plus an estimate of
+ *   what was appended since, calibrated by that same measurement.
  * - **Prepare** (at `precomputeAt`, never awaited by the request). The boundary
  *   `b` is the start of the last human turn. Messages `[0, b)` are rendered as
  *   plain text (tool_results in the form this request sends, truncated; no
@@ -36,12 +37,13 @@ import { createHash } from "node:crypto";
 import { lookupModel, lookupModelForProvider } from "../adapters/model-catalog.js";
 import { withoutCacheMarkers } from "../code-mode/hashes.js";
 import { claudeApiContextWindow } from "../handlers/claude-api-meter.js";
+import type { AnthropicUsage } from "../handlers/shared/claude-api-usage.js";
 import { log } from "../logger.js";
 import { ONE_MILLION_CONTEXT_SUFFIX } from "../providers/claude-code-aliases.js";
 import { parseModelSpec } from "../providers/model-parser.js";
-import { localTokenEstimate } from "../token-estimate.js";
 import type { HistorySettings } from "./config.js";
 import type { CompactionCallResult, CompactionClient } from "./haiku-client.js";
+import { RealTokenCount, type RequestCount, type UsageMark, charsOf } from "./real-count.js";
 import {
   type CompactionRecord,
   type CompactionStore,
@@ -412,8 +414,12 @@ export interface HistoryPassSummary {
   precomputeStarted: boolean;
   /** The effective limit, when known. */
   limit?: number;
-  /** The outgoing request's local token count, when a limit is known. */
+  /** The outgoing request's token count (see `RealTokenCount`), when a limit is known. */
   estimate?: number;
+  /** Where `estimate` came from. */
+  countSource?: RequestCount["source"];
+  /** What this request sends, for `recordUsage` once its response ends. */
+  mark?: UsageMark;
 }
 
 export interface HistoryCompactorDeps {
@@ -426,6 +432,8 @@ export interface HistoryCompactorDeps {
   autoCompactWindow?: () => number | undefined;
   /** The timeout of one summary call. Defaults to `HISTORY_SUMMARY_TIMEOUT_MS`. */
   summaryTimeoutMs?: number;
+  /** The request counter. Defaults to a new `RealTokenCount`. */
+  counter?: RealTokenCount;
 }
 
 /** Memoised prefix and range hashes of one request's messages. */
@@ -449,8 +457,11 @@ class MessageHashes {
 export class HistoryCompactor {
   /** Background summaries in flight, by session and thread. */
   private readonly inFlight = new Map<string, Promise<void>>();
+  private readonly counter: RealTokenCount;
 
-  constructor(private readonly deps: HistoryCompactorDeps) {}
+  constructor(private readonly deps: HistoryCompactorDeps) {
+    this.counter = deps.counter ?? new RealTokenCount();
+  }
 
   /**
    * Replay a recorded swap, record a new one when the request qualifies, and
@@ -468,15 +479,7 @@ export class HistoryCompactor {
     const hashes = new MessageHashes(original);
     const thread = threadOf(original);
 
-    const active = this.matchSwap(sessionId, thread, original, hashes);
-    if (active) {
-      if (hashes.range(active.boundary, active.end) !== active.tailHash) {
-        logTailChange(sessionId, active, original);
-      }
-      body.messages = applySwap(original, active);
-      result.applied = "replayed";
-      result.boundary = active.boundary;
-    }
+    const active = this.replayActive(body, sessionId, thread, original, hashes, result);
 
     const limit = effectiveHistoryLimit(
       (this.deps.contextWindowOf ?? catalogContextWindow)(routedModel ?? body.model),
@@ -484,30 +487,60 @@ export class HistoryCompactor {
     );
     if (limit === undefined) return result;
     result.limit = limit;
-    let estimate = localTokenEstimate(payload);
-    result.estimate = estimate;
+    const counter = this.counter;
+    let chars = charsOf(payload);
+    let count = counter.count(sessionId, thread, payload, chars);
     const { precomputeAt, applyAt } = this.deps.settings;
+    if (count.tokens >= precomputeAt * limit) logCount(sessionId, count, limit);
 
-    const last = original.length - 1;
-    if (estimate >= applyAt * limit && last > 0 && isHumanTurnStart(original[last])) {
+    if (count.tokens >= applyAt * limit && isHumanSwapPoint(original)) {
       const swap = this.recordSwap(sessionId, thread, original, hashes, active?.boundary ?? 0);
       if (swap) {
         body.messages = applySwap(original, swap);
         result.applied = "swapped";
         result.boundary = swap.boundary;
-        estimate = localTokenEstimate(payload);
-        result.estimate = estimate;
-        log(
-          `[compaction] history swap in session ${sessionId}: messages 0..${swap.boundary} replaced by a summary of ${swap.summary.length} characters`
-        );
+        chars = charsOf(payload);
+        count = counter.count(sessionId, thread, payload, chars);
+        logSwap(sessionId, swap);
       }
     }
+    result.estimate = count.tokens;
+    result.countSource = count.source;
 
-    if (estimate >= precomputeAt * limit) {
+    if (count.tokens >= precomputeAt * limit) {
       const current = result.boundary ?? 0;
       result.precomputeStarted = this.maybePrecompute(sessionId, thread, original, hashes, current);
     }
+    result.mark = counter.mark(sessionId, thread, payload, chars);
     return result;
+  }
+
+  /** Apply the recorded swap that matches `original`, if any, and return it. */
+  private replayActive(
+    body: Block,
+    sessionId: string,
+    thread: string,
+    original: readonly unknown[],
+    hashes: MessageHashes,
+    result: HistoryPassSummary
+  ): HistorySwapRecord | undefined {
+    const active = this.matchSwap(sessionId, thread, original, hashes);
+    if (!active) return undefined;
+    if (hashes.range(active.boundary, active.end) !== active.tailHash) {
+      logTailChange(sessionId, active, original);
+    }
+    body.messages = applySwap(original, active);
+    result.applied = "replayed";
+    result.boundary = active.boundary;
+    return active;
+  }
+
+  /**
+   * Record the usage the upstream reported for the request `mark` describes.
+   * The next request of the same thread is counted from it.
+   */
+  recordUsage(mark: UsageMark, usage: AnthropicUsage | undefined): void {
+    this.counter.record(mark, usage);
   }
 
   /**
@@ -740,6 +773,26 @@ export class HistoryCompactor {
   }
 }
 
+/** Log a new swap. */
+function logSwap(sessionId: string, swap: HistorySwapRecord): void {
+  log(
+    `[compaction] history swap in session ${sessionId}: messages 0..${swap.boundary} replaced by a summary of ${swap.summary.length} characters`
+  );
+}
+
+/** Log the count a request was measured with and where it came from. */
+function logCount(sessionId: string, count: RequestCount, limit: number): void {
+  const from =
+    count.source === "usage"
+      ? `usage ${count.measured} + ~${count.added} appended since`
+      : count.source === "calibrated"
+        ? "calibrated from the session's measured characters per token"
+        : "estimated at 4 characters per token, no usage yet";
+  log(
+    `[compaction] session ${sessionId}: history count ${count.tokens} of ${limit} tokens (${from})`
+  );
+}
+
 /**
  * Log which messages of a replayed swap's `[b, end)` differ from the recorded
  * ones, by the first 12 hex of each message's hash. No message content.
@@ -760,6 +813,11 @@ function logTailChange(
   log(
     `[compaction] session ${sessionId}: history replayed at ${swap.boundary}, tail changed: recorded [${recorded}] current [${current}]`
   );
+}
+
+function isHumanSwapPoint(messages: readonly unknown[]): boolean {
+  const last = messages.length - 1;
+  return last > 0 && isHumanTurnStart(messages[last]);
 }
 
 function messagesOf(payload: unknown): unknown[] | undefined {

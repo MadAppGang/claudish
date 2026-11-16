@@ -16,9 +16,11 @@
 
 import type { Context } from "hono";
 import { getAdvisorCall, rewriteAdvisorToolResults } from "../handlers/native-handler-advisor.js";
+import { type AnthropicUsage, mergeSseUsage } from "../handlers/shared/claude-api-usage.js";
 import type { ModelHandler } from "../handlers/types.js";
 import { extractSessionId } from "../hooks/harness.js";
 import { log } from "../logger.js";
+import type { UsageMark } from "./real-count.js";
 import type { CompactionRuntime } from "./runtime.js";
 import { isSafeSessionId } from "./store.js";
 
@@ -55,8 +57,11 @@ export class CompactionHandler implements ModelHandler {
   async handle(c: Context, payload: unknown): Promise<Response> {
     if (c.get("compactionHandled") === true) return this.inner.handle(c, payload);
     c.set("compactionHandled", true);
-    await compactRequest(this.runtime, payload, this.routedModel);
-    return this.inner.handle(c, payload);
+    const mark = await compactRequest(this.runtime, payload, this.routedModel);
+    const response = await this.inner.handle(c, payload);
+    if (!mark) return response;
+    const history = this.runtime.history;
+    return tapUsage(response, (usage) => history.recordUsage(mark, usage));
   }
 
   async shutdown(): Promise<void> {
@@ -84,9 +89,10 @@ export async function compactRequest(
   runtime: CompactionRuntime,
   payload: unknown,
   routedModel?: string
-): Promise<void> {
+): Promise<UsageMark | undefined> {
   const sessionId = compactionSessionOf(payload);
-  if (!sessionId) return;
+  if (!sessionId) return undefined;
+  let mark: UsageMark | undefined;
   if (runtime.settings.toolOutputs.enabled) {
     try {
       const summary = await runtime.toolOutputs.compact(payload, sessionId);
@@ -102,15 +108,84 @@ export async function compactRequest(
   if (runtime.settings.history.enabled) {
     try {
       const pass = runtime.history.compact(payload, sessionId, routedModel);
+      mark = pass.mark;
       if (pass.applied !== "none" || pass.precomputeStarted) {
         log(
-          `[compaction] session ${sessionId}: history ${pass.applied}${pass.boundary !== undefined ? ` at ${pass.boundary}` : ""}, ~${pass.estimate ?? "?"} of ${pass.limit ?? "?"} tokens${pass.precomputeStarted ? ", summary started" : ""}`
+          `[compaction] session ${sessionId}: history ${pass.applied}${pass.boundary !== undefined ? ` at ${pass.boundary}` : ""}, ${pass.estimate ?? "?"} of ${pass.limit ?? "?"} tokens (${pass.countSource ?? "?"})${pass.precomputeStarted ? ", summary started" : ""}`
         );
       }
     } catch (err) {
       log(`[compaction] history skipped: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
+  return mark;
+}
+
+/**
+ * `response` with its body passed through unchanged, and `onUsage` called
+ * once with the usage it reported when the body ends: an SSE stream's
+ * `message_start` and `message_delta` usage, or a JSON body's `usage`. A
+ * response that is not a 2xx, has no body, or ends early reports nothing.
+ * `onUsage` never affects the response: a throw from it is logged.
+ */
+export function tapUsage(response: Response, onUsage: (usage: AnthropicUsage) => void): Response {
+  if (!response.ok || !response.body) return response;
+  const report = (usage: AnthropicUsage) => {
+    try {
+      onUsage(usage);
+    } catch (err) {
+      log(`[compaction] usage not recorded: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+  const type = response.headers.get("content-type") ?? "";
+  if (type.includes("application/json")) {
+    response
+      .clone()
+      .json()
+      .then((b: { usage?: AnthropicUsage } | null) => {
+        if (b?.usage && typeof b.usage === "object") report(b.usage);
+      })
+      .catch(() => {});
+    return response;
+  }
+  if (!type.includes("text/event-stream")) return response;
+  return new Response(response.body.pipeThrough(sseUsageTap(report)), {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
+}
+
+/**
+ * A pass-through stream that reads the usage of the Anthropic SSE lines going
+ * through it and hands it to `onEnd` when the stream ends.
+ */
+function sseUsageTap(
+  onEnd: (usage: AnthropicUsage) => void
+): TransformStream<Uint8Array, Uint8Array> {
+  const decoder = new TextDecoder();
+  const usage: AnthropicUsage = {};
+  let pending = "";
+  const scan = (text: string) => {
+    pending += text;
+    let nl = pending.indexOf("\n");
+    while (nl !== -1) {
+      const line = pending.slice(0, nl).trimEnd();
+      pending = pending.slice(nl + 1);
+      if (line.includes('"usage"')) mergeSseUsage(line, usage);
+      nl = pending.indexOf("\n");
+    }
+  };
+  return new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      controller.enqueue(chunk);
+      scan(decoder.decode(chunk, { stream: true }));
+    },
+    flush() {
+      scan(`${decoder.decode()}\n`);
+      onEnd(usage);
+    },
+  });
 }
 
 /**
