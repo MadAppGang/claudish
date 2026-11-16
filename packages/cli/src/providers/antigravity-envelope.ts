@@ -24,6 +24,7 @@ import {
   type AgyEnvironment,
   agyEnvironment,
   declaresTools,
+  withAgySystem,
   withAgyTools,
 } from "./antigravity-agy-request.js";
 import { agyContents, agyLocalTime, agyWordedTools } from "./antigravity-content.js";
@@ -240,7 +241,7 @@ export interface AntigravityEnvelopeInput {
   sessionId: string;
   /** Epoch milliseconds; a parameter so a test fixes it. */
   now?: number;
-  /** What `agy`'s declarations say about this machine; a parameter so a test fixes it. */
+  /** What `agy`'s prompt says about this machine; a parameter so a test fixes it. */
   environment?: AgyEnvironment;
 }
 
@@ -278,11 +279,14 @@ export function buildAntigravityEnvelope(input: AntigravityEnvelopeInput): Recor
   });
   const request: Record<string, unknown> = { contents: toolResultsAsModelEntries(worded) };
   // A request that declares tools is an agent request, and carries `agy`'s
-  // declarations ahead of the harness's own.
+  // prompt and declarations ahead of the harness's own.
   const agent = declaresTools(tools);
   const environment = agent ? (input.environment ?? agyEnvironment()) : undefined;
-  if (systemInstruction && typeof systemInstruction === "object") {
-    const { role: _role, ...instruction } = systemInstruction as Record<string, unknown>;
+  const system = environment
+    ? withAgySystem(systemInstruction, environment, conversation.cascadeId)
+    : systemInstruction;
+  if (system && typeof system === "object") {
+    const { role: _role, ...instruction } = system as Record<string, unknown>;
     request.systemInstruction = { role: "user", ...instruction };
   }
   if (tools !== undefined) {

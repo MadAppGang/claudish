@@ -9,7 +9,7 @@ test("two sessions that open with the same words are two conversations", () => {
   expect(conversations.of(inner, "session-b")).not.toBe(first);
   expect(conversations.of(inner, "session-b").cascadeId).not.toBe(first.cascadeId);
 });
-import { agyDeclarationTemplate } from "./antigravity-agy-request.js";
+import { agyDeclarationTemplate, agySystemText } from "./antigravity-agy-request.js";
 import { agyLocalTime, agyUserRequest } from "./antigravity-content.js";
 import {
   AntigravityConversations,
@@ -128,7 +128,10 @@ describe("the Antigravity envelope has the shape the Antigravity CLI sends", () 
               ],
             },
           ],
-          systemInstruction: { role: "user", parts: [{ text: "system text" }] },
+          systemInstruction: {
+            role: "user",
+            parts: [{ text: `${agySystemText(ENVIRONMENT, CASCADE)}\nsystem text` }],
+          },
           // The request's own `read_file` and `run_command` do not carry agy's
           // descriptions, so they are kept and agy's two are not sent.
           tools: [
