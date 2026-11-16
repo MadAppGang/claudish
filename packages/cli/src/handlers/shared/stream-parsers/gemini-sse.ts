@@ -26,7 +26,13 @@ export interface GeminiSseOptions {
   raw?: RawStreamTap | null;
   onTokenUpdate?: (input: number, output: number) => void;
   /** Store tool call info (id, name, thoughtSignature) for future request context */
-  onToolCall?: (toolId: string, name: string, thoughtSignature?: string) => void;
+  onToolCall?: (
+    toolId: string,
+    name: string,
+    thoughtSignature?: string,
+    /** The id the provider gave the call (`functionCall.id`), when it gave one. */
+    callId?: string
+  ) => void;
   /**
    * Called once per `tool_use` block, for the token tracker's tool count.
    * Tool-argument interception is not this parser's job: it happens at the hook
@@ -358,7 +364,12 @@ export function createGeminiSseStream(
 
                     // Store tool call info + thoughtSignature for future requests
                     if (opts.onToolCall) {
-                      opts.onToolCall(toolId, part.functionCall.name, part.thoughtSignature);
+                      opts.onToolCall(
+                        toolId,
+                        part.functionCall.name,
+                        part.thoughtSignature,
+                        typeof part.functionCall.id === "string" ? part.functionCall.id : undefined
+                      );
                     }
 
                     send("content_block_start", {

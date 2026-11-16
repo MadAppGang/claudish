@@ -4515,9 +4515,14 @@ export class ComposedHandler implements ModelHandler {
 
       case "gemini-sse": {
         // Build onToolCall callback to register tool calls + thoughtSignatures on the adapter
-        const onToolCall = (toolId: string, name: string, thoughtSignature?: string) => {
+        const onToolCall = (
+          toolId: string,
+          name: string,
+          thoughtSignature?: string,
+          callId?: string
+        ) => {
           if (typeof (adapter as any).registerToolCall === "function") {
-            (adapter as any).registerToolCall(toolId, name, thoughtSignature);
+            (adapter as any).registerToolCall(toolId, name, thoughtSignature, callId);
           }
         };
         return createGeminiSseStream(c, response, {
