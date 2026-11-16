@@ -8,15 +8,14 @@
  * Reports go out only when what they say changed. `seq` is the clock in microseconds, kept strictly
  * rising, so it also rises across restarts as herdr requires.
  *
- * Selecting this pane in herdr is a user act: a `pane_focused` event for `$HERDR_PANE_ID` takes the
- * view, unless `CLAUDISH_VIEW_FOCUS_CLAIM=0`.
+ * The reporter subscribes to no herdr event: selecting this pane changes nothing about the session,
+ * whose view only Claude Code holds.
  *
- * At the end the agent is released, and a pane the placer created is closed by its own viewer, so
- * a SIGKILLed MCP server leaves no pane behind. A pane the user started is never closed.
+ * At the end the agent is released. The pane belongs to the user and is never closed.
  */
 
 import type { ViewItem } from "../pane/view-contract.js";
-import type { FrontEnd, FrontEndHooks } from "../view/viewer.js";
+import type { FrontEnd } from "../view/viewer.js";
 import type { HerdrApi } from "./herdr-socket.js";
 import { herdrAgentState, herdrMetadata } from "./state-map.js";
 
@@ -29,11 +28,7 @@ export interface HerdrReporterOptions {
   herdr: HerdrApi;
   /** `$HERDR_PANE_ID` */
   paneId: string;
-  /** this pane was created by a placer: close it on exit */
-  placed: boolean;
   titleMode?: "summary" | "model";
-  /** claim the view when the user selects this pane (default true) */
-  focusClaim?: boolean;
   now?: () => number;
 }
 
@@ -42,7 +37,6 @@ export class HerdrReporter implements FrontEnd {
   private lastSeq = 0;
   private lastState: string | null = null;
   private lastMeta: string | null = null;
-  private stopFocus: (() => void) | null = null;
   private closing: Promise<void> | null = null;
   private readonly now: () => number;
 
@@ -50,18 +44,7 @@ export class HerdrReporter implements FrontEnd {
     this.now = o.now ?? Date.now;
   }
 
-  attach(hooks: FrontEndHooks): void {
-    if (this.o.focusClaim === false || this.stopFocus) return;
-    this.stopFocus = this.o.herdr.subscribe(
-      ["pane.focused"],
-      (e) => {
-        if (e.event === "pane_focused" && e.data.pane_id === this.o.paneId) hooks.take();
-      },
-      () => {}
-    );
-  }
-
-  report(state: { item: ViewItem | null; holding: boolean; ended: boolean }): void {
+  report(state: { item: ViewItem | null; ended: boolean }): void {
     const item = state.item;
     if (!item || this.closing) return;
     const agentState = herdrAgentState(item);
@@ -89,29 +72,24 @@ export class HerdrReporter implements FrontEnd {
     }
   }
 
-  /** Release the agent; close the pane if it was placed. Idempotent, bounded. */
+  /** Release the agent. Idempotent, bounded. */
   close(): Promise<void> {
     if (!this.closing) this.closing = this.shutdown();
     return this.closing;
   }
 
   private async shutdown(): Promise<void> {
-    this.stopFocus?.();
-    this.stopFocus = null;
-    const work = (async () => {
-      if (this.lastState !== null)
-        await this.o.herdr
-          .request("pane.release_agent", {
-            pane_id: this.o.paneId,
-            source: AGENT_SOURCE,
-            agent: AGENT_NAME,
-            seq: this.seq(),
-          })
-          .catch(() => {});
-      if (this.o.placed)
-        await this.o.herdr.request("pane.close", { pane_id: this.o.paneId }).catch(() => {});
-    })();
-    await Promise.race([work, Bun.sleep(CLOSE_BOUND_MS)]);
+    if (this.lastState !== null) {
+      const work = this.o.herdr
+        .request("pane.release_agent", {
+          pane_id: this.o.paneId,
+          source: AGENT_SOURCE,
+          agent: AGENT_NAME,
+          seq: this.seq(),
+        })
+        .catch(() => {});
+      await Promise.race([work, Bun.sleep(CLOSE_BOUND_MS)]);
+    }
     this.o.herdr.close();
   }
 

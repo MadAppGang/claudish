@@ -25,11 +25,9 @@ import {
 } from "./auth/accounts/allowance-report-schema.js";
 import { prehydrateCredentialsForSpawn } from "./auth/credentials/prehydrate.js";
 import { setCredentialPromptRole } from "./auth/credentials/prompt-role.js";
+import { realValueFor } from "./env-placeholder.js";
 import { writeFileAtomic } from "./fs-atomic.js";
 import { detectFrontEnd } from "./herdr/front-end.js";
-import { startMcpHerdrPlacer } from "./herdr/mcp-herdr.js";
-import { PlacementGrants, ServerPlacementGrants } from "./herdr/placement-grants.js";
-import type { HerdrPlacer } from "./herdr/placer.js";
 import { loadHooksOnce } from "./hooks/index.js";
 import { type ProtocolStdout, isolateProtocolStdout } from "./hooks/output-capture.js";
 import { initLogger, log } from "./logger.js";
@@ -100,7 +98,12 @@ import { ensureEndpointsRegistered } from "./providers/endpoint-registration.js"
 import { OPENROUTER_MODELS_URL, fetchGatewayModels } from "./providers/gateway-models-list.js";
 import { compareByReleaseDateDesc } from "./providers/model-ordering.js";
 import { isLocalProviderName, parseModelChain, parseModelSpec } from "./providers/model-parser.js";
-import { nativeRouteFor } from "./providers/native-route.js";
+import {
+  claudeSubscriptionInner,
+  claudeSubscriptionSpecRefusal,
+  isClaudeSubscriptionSpec,
+  nativeRouteFor,
+} from "./providers/native-route.js";
 import { renderOpFailureBlock } from "./providers/onepassword.js";
 import {
   type PreflightModelResult,
@@ -117,6 +120,7 @@ import {
   loadRoutingRules,
   matchRoutingRuleKey,
 } from "./providers/routing-rules.js";
+import { shadowedEndpointRefusal } from "./providers/shadowed-endpoint.js";
 import { createProxyServer } from "./proxy-server.js";
 import { renderEffortTableMarkdown, renderRecommendedMarkdown } from "./recommended-listing.js";
 import { sanitizeForReport } from "./redact.js";
@@ -151,7 +155,6 @@ import {
 } from "./team-orchestrator.js";
 import type { ProxyServer } from "./types.js";
 import { VERSION } from "./version.js";
-import { endpointPathOf } from "./view/endpoints.js";
 import { ViewClaims } from "./view/view-claims.js";
 import { ViewDirectory } from "./view/view-directory.js";
 import { ViewFeed } from "./view/view-feed.js";
@@ -335,7 +338,7 @@ async function getProxy(): Promise<ProxyServer> {
       process.env.OPENROUTER_API_KEY,
       undefined, // no default model — each call specifies its own
       false, // not monitor mode
-      process.env.ANTHROPIC_API_KEY,
+      realValueFor("ANTHROPIC_API_KEY", process.env.ANTHROPIC_API_KEY),
       undefined, // no model map
       { quiet: true, hostMode: "mcp" }
     );
@@ -360,7 +363,7 @@ function getProbeProxy(): Promise<ProxyServer> {
       process.env.OPENROUTER_API_KEY,
       undefined,
       false,
-      process.env.ANTHROPIC_API_KEY,
+      realValueFor("ANTHROPIC_API_KEY", process.env.ANTHROPIC_API_KEY),
       undefined,
       { quiet: true, hooks: false, hostMode: "mcp", probeProxy: true }
     );
@@ -465,13 +468,18 @@ export async function runPromptViaProxy(
 }
 
 /**
- * One `run_prompt` request, on the path its model needs. `nativeRouteFor` FIRST, as
- * the proxy does (CLAUDE.md invariant): a bare Claude name (`claude-*`, `opus`,
- * `sonnet`, `haiku`, `internal`, ...) runs as one Claude Code print-mode call on the
- * user's own Claude Code login, because the proxy's native route forwards the
- * caller's credential and an MCP call has none. Every other model, including the
- * explicit `anthropic@claude-*` (metered), goes through the in-process proxy. The
- * ORIGINAL model string is passed on; claudish's CLI owns alias normalisation.
+ * One `run_prompt` request, on the path its model needs. A `claude@` spec is
+ * checked FIRST, on the string as given (`claudeSubscriptionSpecRefusal`): a
+ * marker, a `:N` suffix, a chain or an inner name Claude Code does not own is
+ * refused before any child starts, never reduced to its inner name. Then
+ * `nativeRouteFor`, as the proxy does (CLAUDE.md invariant): a bare Claude name
+ * (`claude-*`, `opus`, `sonnet`, `haiku`, `internal`, ...) or `claude@` before one
+ * runs as one Claude Code print-mode call on the user's own Claude Code login,
+ * because the proxy's native route forwards the caller's credential and an MCP call
+ * has none. The print child gets the bare name (`claude@` removed) and, for a
+ * `claude@` spec, `--claude-subscription-pin`, so it signs login-only whatever
+ * API-billing opt-in it inherits; claudish's CLI owns alias normalisation. Every
+ * other model goes through the in-process proxy.
  *
  * `effort` reaches only the proxy path: on the print path Claude Code sets the
  * effort of its own Claude model.
@@ -483,8 +491,15 @@ export async function runPrompt(
   signal?: AbortSignal,
   effort?: EffortLevel
 ): Promise<RunPromptResult> {
+  const refusal = claudeSubscriptionSpecRefusal(model);
+  if (refusal) throw new Error(refusal);
   if (nativeRouteFor(model) !== null) {
-    return runPromptViaClaudeCode(model, prompt, systemPrompt, { signal });
+    return runPromptViaClaudeCode(claudeSubscriptionInner(model), prompt, systemPrompt, {
+      signal,
+      // The child sees the bare name; the pin keeps the caller's explicit
+      // choice of the Claude subscription across the boundary.
+      subscriptionPin: isClaudeSubscriptionSpec(model),
+    });
   }
   return runPromptViaProxy(model, prompt, systemPrompt, effort);
 }
@@ -673,6 +688,21 @@ export function effortClarification(
 }
 
 /**
+ * The caller's strings, as given, whose spec after the provider strip is not a
+ * native Claude name: `given[i]` is kept when `stripped[i]` is not native. The
+ * strip can turn an unrequested `anthropic@claude-haiku-5-5` into the bare native
+ * name, which runs on Claude Code's own login and ignores the effort, so asking
+ * for one would stop the call for nothing. Keys stay the caller's own strings,
+ * as `efforts` keys must read.
+ */
+export function givenWhereNotNative(
+  given: readonly string[],
+  stripped: readonly string[]
+): string[] {
+  return given.filter((_, i) => nativeRouteFor(stripped[i] ?? given[i]) === null);
+}
+
+/**
  * The answer that stops a call made with no effort: the caller knows its task,
  * so it picks the column and calls again. Starts nothing.
  */
@@ -749,9 +779,17 @@ export function stripUnrequestedProvider(
   if (required || parseModelChain(spec).length !== 1) return spec;
   const parsed = parseModelSpec(spec);
   if (!parsed.isExplicitProvider || parsed.isLegacySyntax) return spec;
+  if (parsed.provider === "native-anthropic") {
+    // claude@ is the Claude subscription, and it is never removed: a bare Claude
+    // name follows the user's API-billing opt-in, while claude@ signs the login
+    // only. The pane child reads the claude@ itself (`decideClaudeLaunch`), and a
+    // spec it cannot serve is refused there, never routed.
+    return spec;
+  }
   // Only a built-in claudish provider: a user's custom endpoint (`corp-proxy@gpt-4o`)
-  // or an explicit metered `anthropic@claude-*` names a vendor and a bill the
-  // bare name would not reach.
+  // names a vendor and a bill the bare name would not reach. An unrequested
+  // `anthropic@claude-*` (the metered Claude API) is a builtin and strips to the
+  // bare name, which runs on the Claude subscription.
   const builtin = BUILTIN_PROVIDERS.find((p) => p.name === parsed.provider);
   if (!builtin || builtin.isLocal || isLocalProviderName(parsed.provider)) return spec;
   if (!isCatalogModel(parsed.model)) return spec;
@@ -781,6 +819,31 @@ export function userRequiredProvidersArg(
     }
   }
   return new Set(value as string[]);
+}
+
+/**
+ * The tool error for the first caller-given spec `claude@` cannot serve, or that
+ * names a custom endpoint a Claude builtin took over (`shadowedEndpointRefusal`),
+ * checked on the strings exactly as given, before any provider strip, model-choice stop or
+ * effort question, so nothing is started for it. Undefined when every spec passes.
+ */
+export function claudeSpecRefusalResult(
+  given: readonly string[]
+): { content: Array<{ type: "text"; text: string }>; isError: true } | undefined {
+  const shadowed = shadowedEndpointRefusal(given);
+  if (shadowed) {
+    return { content: [{ type: "text" as const, text: `Error: ${shadowed}` }], isError: true };
+  }
+  for (const spec of given) {
+    const refusal = claudeSubscriptionSpecRefusal(spec);
+    if (refusal) {
+      return {
+        content: [{ type: "text" as const, text: `Error: ${spec} refused: ${refusal}` }],
+        isError: true,
+      };
+    }
+  }
+  return undefined;
 }
 
 /** One `{from, to}` per spec whose provider was removed, for the tool's answer and the log. */
@@ -1729,6 +1792,8 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
     heartbeat: true,
     handler: async (args, ctx) => {
       try {
+        const claudeRefusal = claudeSpecRefusalResult([args.model as string]);
+        if (claudeRefusal) return claudeRefusal;
         await settleCatalogVerdictWithNoFile();
         const { specs, stripped } = strippedProviders(
           [args.model as string],
@@ -1740,9 +1805,12 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
           "with user_required_model: true"
         );
         if (choice) return choice;
-        // Keyed as the caller wrote the model, like team's 'efforts' keys.
+        // Keyed as the caller wrote the model, like team's 'efforts' keys, and
+        // asked only when the spec that will run is not native.
         const recommended =
-          args.effort === undefined ? effortClarification([args.model as string]) : undefined;
+          args.effort === undefined
+            ? effortClarification(givenWhereNotNative([args.model as string], specs))
+            : undefined;
         if (recommended) {
           return needsEffortResult(
             recommended,
@@ -2006,6 +2074,8 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
       const modelIds = args.models as string[];
       const prompt = args.prompt as string;
       const systemPrompt = args.system_prompt as string | undefined;
+      const claudeRefusal = claudeSpecRefusalResult(modelIds);
+      if (claudeRefusal) return claudeRefusal;
 
       // Ordering: ARGUMENT order, deliberately. The caller chose this sequence
       // and reads the comparison against it, so the repo-wide newest-first
@@ -2443,6 +2513,11 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
         await settleCatalogVerdictWithNoFile();
         const givenModels = args.models as string[] | undefined;
         const givenJudges = args.judges as string[] | undefined;
+        const claudeRefusal = claudeSpecRefusalResult([
+          ...(givenModels ?? []),
+          ...(givenJudges ?? []),
+        ]);
+        if (claudeRefusal) return claudeRefusal;
         const requiredProviders = userRequiredProvidersArg(args.user_required_provider, [
           ...(givenModels ?? []),
           ...(givenJudges ?? []),
@@ -2546,7 +2621,9 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
 
         if (runsModels && givenModels && args.efforts === undefined) {
           // Keyed as the caller wrote the models: that is how 'efforts' keys must read.
-          const recommended = effortClarification(givenModels);
+          const recommended = effortClarification(
+            givenWhereNotNative(givenModels, models ?? givenModels)
+          );
           if (recommended) {
             return needsEffortResult(
               recommended,
@@ -3008,6 +3085,8 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
     group: "session",
     handler: async (args) => {
       try {
+        const claudeRefusal = claudeSpecRefusalResult([args.model as string]);
+        if (claudeRefusal) return claudeRefusal;
         const taskType = taskTypeArg(args.task_type) ?? undefined;
         const claudishFlags = buildChildClaudeFlags(args.agent, args.claude_flags) ?? [];
         const effort = effortArg(args.effort);
@@ -3050,7 +3129,9 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
         );
         if (choice) return choice;
         const recommended =
-          args.effort === undefined ? effortClarification([args.model as string]) : undefined;
+          args.effort === undefined
+            ? effortClarification(givenWhereNotNative([args.model as string], [requestedModel]))
+            : undefined;
         if (recommended) {
           return needsEffortResult(
             recommended,
@@ -3694,12 +3775,8 @@ async function main() {
   // their records on disk; nothing is pushed to the host.
   const viewFeed = new ViewFeed();
   const viewClaims = new ViewClaims({ notify: (target) => viewFeed.changed(target, true) });
-  const placementGrants = new PlacementGrants({
-    notify: (target) => viewFeed.changed(target, true),
-  });
-  const placerGrants = new ServerPlacementGrants(placementGrants);
   const sessionManager = new SessionManager({ feed: viewFeed, claims: viewClaims });
-  replays.setViewServices({ feed: viewFeed, claims: viewClaims, grants: placementGrants });
+  replays.setViewServices({ feed: viewFeed, claims: viewClaims });
   setViewServices({ feed: viewFeed, claims: viewClaims });
 
   // Keepalive cadence for `heartbeat: true` tools. Resolved ONCE per server rather
@@ -3792,7 +3869,7 @@ async function main() {
   // stdout's private descriptor when isolation is active).
   const transport = new StdioServerTransport(process.stdin, iso.protocolOut);
   await server.connect(transport);
-  const viewTransport: ViewTransport = { server: null, placer: null };
+  const viewTransport: ViewTransport = { server: null };
   installMcpShutdown(sessionManager, viewTransport);
   // The startup sweep: panes whose owner died (and whose watcher died too) are reaped
   // after an identity check. Asynchronous, and once per root per process — the first
@@ -3822,7 +3899,6 @@ async function main() {
       },
       replays,
       claims: viewClaims,
-      herdrWorkspaces: (target) => placementGrants.workspaces(target),
     });
     viewFeed.setBuilder((target) => directory.item(target));
     replays.setEndpoint(() => viewTransport.server?.endpointName || null);
@@ -3833,8 +3909,6 @@ async function main() {
       feed: viewFeed,
       version: VERSION,
       frontEnd: detectFrontEnd(process.env),
-      workspaceId: () => viewTransport.placer?.workspace,
-      herdrViewers: placementGrants,
       replays,
       resolveReplayTarget: (of) =>
         "session_id" in of
@@ -3851,59 +3925,13 @@ async function main() {
       })
       .catch((err: unknown) =>
         log(`[view] transport off: ${err instanceof Error ? err.message : String(err)}`)
-      )
-      // the placer starts once the endpoint exists: a placed viewer dials it. Outside a herdr
-      // pane it is never built, and nothing here dials herdr.
-      .then(() =>
-        startMcpHerdrPlacer({
-          env: process.env,
-          root: sockRootFor(),
-          feed: viewFeed,
-          // a joined replay is never listed here, so the placer reads it from the replays
-          item: (target) => {
-            const joined = directory.item(target) ? null : replays.remoteItem(target);
-            return joined ? { ...joined, view: null } : directory.item(target);
-          },
-          grants: placerGrants,
-          endpoint: () =>
-            viewTransport.server
-              ? { name: viewTransport.server.endpointName, path: viewTransport.server.endpointPath }
-              : null,
-          endpointFor: (target) => {
-            const owner = replays.ownerEndpointOf(target);
-            return owner ? endpointPathOf(sockRootFor(), owner) : null;
-          },
-          cwd: process.cwd(),
-          log,
-        })
-      )
-      .then((placer) => {
-        if (!placer) return;
-        if (viewTransport.closing) {
-          void placer.shutdown();
-          return;
-        }
-        viewTransport.placer = placer;
-        replays.setPlacer({
-          workspaceKey: () => placer.key || null,
-          owned: (target) => placer.replayOpened(target),
-          remote: (target, txn) => {
-            placerGrants.addRemote(txn, () => replays.givePlacementBack(target));
-            placer.placeGranted(target, txn);
-          },
-          ended: (target) => placer.ended(target),
-        });
-      })
-      .catch((err: unknown) =>
-        log(`[herdr] placer off: ${err instanceof Error ? err.message : String(err)}`)
       );
   }
 }
 
-/** The local view transport and the herdr placer, both started after the MCP transport. */
+/** The local view transport, started after the MCP transport. */
 interface ViewTransport {
   server: ViewServer | null;
-  placer: HerdrPlacer | null;
   closing?: boolean;
 }
 
@@ -3920,8 +3948,6 @@ function installMcpShutdown(sessionManager: SessionManager, viewTransport: ViewT
     // A replay already registered is reaped with every other pane; this stops one that is not yet.
     replays.beginShutdown();
     viewTransport.closing = true;
-    // the placed viewer panes go first (bounded): their sessions are about to end
-    await viewTransport.placer?.shutdown();
     viewTransport.server?.announceClosing();
     // `run_prompt`'s Claude Code print children are plain processes, not panes: stop
     // their process groups here, or they outlive the server.

@@ -14,8 +14,10 @@
  */
 
 import { mapToolChoiceToGemini } from "../handlers/shared/format/openai-tools.js";
-import { convertToolsToGemini } from "../handlers/shared/gemini-schema.js";
-import { filterIdentity } from "../handlers/shared/openai-compat.js";
+import {
+  convertToolsToGemini,
+  sanitizeToolNameForGemini,
+} from "../handlers/shared/gemini-schema.js";
 import { log } from "../logger.js";
 import type { StreamFormat } from "../providers/transport/types.js";
 import {
@@ -25,7 +27,23 @@ import {
   matchesModelFamily,
 } from "./base-api-format.js";
 
+export interface GeminiAPIFormatOptions {
+  /**
+   * Choose thinkingLevel or thinkingBudget from the model name. Only the
+   * Antigravity transport sets it; every other handler leaves the reasoning
+   * field to the connection's catalog wire.
+   */
+  thinkingFromModelName?: boolean;
+}
+
 export class GeminiAPIFormat extends BaseAPIFormat {
+  private readonly thinkingFromModelName: boolean;
+
+  constructor(modelId: string, wireFormat?: StreamFormat, options: GeminiAPIFormatOptions = {}) {
+    super(modelId, wireFormat);
+    this.thinkingFromModelName = options.thinkingFromModelName === true;
+  }
+
   /**
    * Map of tool_use_id → { name, thoughtSignature }.
    * Persists across requests (NOT cleared in reset) because Gemini requires
@@ -33,16 +51,32 @@ export class GeminiAPIFormat extends BaseAPIFormat {
    */
   private toolCallMap = new Map<string, { name: string; thoughtSignature?: string }>();
 
+  /**
+   * The Claude call id behind a functionCall part, a functionResponse part, and
+   * the image parts a tool result carried after its response. Gemini's parts
+   * carry no id, so this is the only place the pairing is still known. Rebuilt
+   * on every convertMessages call.
+   */
+  private callIdOf = new WeakMap<object, string>();
+
   // ─── Message Conversion (Claude → Gemini parts) ─────────────────
 
   override convertMessages(claudeRequest: any, _filterIdentityFn?: (s: string) => string): any[] {
     const messages: any[] = [];
+    this.callIdOf = new WeakMap();
 
     if (claudeRequest.messages) {
       for (const msg of claudeRequest.messages) {
         if (msg.role === "user") {
           const parts = this.convertUserParts(msg);
-          if (parts.length > 0) messages.push({ role: "user", parts });
+          if (parts.length === 0) continue;
+          // Claude Code can split one tool round's results across two user
+          // messages (a notification arrived between them). Gemini pairs a
+          // model turn's function calls with the function responses of the ONE
+          // turn after it, so adjacent user messages become one content.
+          const prev = messages[messages.length - 1];
+          if (prev?.role === "user") prev.parts.push(...parts);
+          else messages.push({ role: "user", parts });
         } else if (msg.role === "assistant") {
           const parts = this.convertAssistantParts(msg);
           if (parts.length > 0) messages.push({ role: "model", parts });
@@ -50,7 +84,48 @@ export class GeminiAPIFormat extends BaseAPIFormat {
       }
     }
 
+    messages.forEach((content, i) => {
+      const next = messages[i + 1];
+      if (content.role === "model" && next?.role === "user") {
+        next.parts = this.alignResponsesToCalls(content.parts, next.parts);
+      }
+    });
     return messages;
+  }
+
+  /**
+   * Put a user turn's function responses in the order of the calls in the
+   * model turn before it. Gemini pairs a response with the call at the same
+   * position (a response names only the function), so two `Read` calls whose
+   * results arrived B first would each get the other's output. Each response
+   * keeps the image parts its tool result carried; the turn's other parts
+   * (text, user images) follow the responses in their own order.
+   */
+  private alignResponsesToCalls(callParts: any[], parts: any[]): any[] {
+    const callOrder = callParts
+      .filter((p) => p.functionCall)
+      .map((p) => this.callIdOf.get(p))
+      .filter((id): id is string => id !== undefined);
+    const groups: { id: string; parts: any[] }[] = [];
+    const others: any[] = [];
+    for (const part of parts) {
+      const id = this.callIdOf.get(part);
+      if (part.functionResponse && id !== undefined) groups.push({ id, parts: [part] });
+      else if (id !== undefined && groups.at(-1)?.id === id) groups.at(-1)?.parts.push(part);
+      else others.push(part);
+    }
+    if (groups.length === 0) return parts;
+    const rank = (id: string) => {
+      const at = callOrder.indexOf(id);
+      return at === -1 ? callOrder.length : at;
+    };
+    const sorted = [...groups].sort((a, b) => rank(a.id) - rank(b.id));
+    if (sorted.some((g, i) => g !== groups[i])) {
+      log(
+        `[GeminiAPIFormat] Reordered ${groups.length} function responses to their function calls' order`
+      );
+    }
+    return [...sorted.flatMap((g) => g.parts), ...others];
   }
 
   private convertUserParts(msg: any): any[] {
@@ -76,6 +151,7 @@ export class GeminiAPIFormat extends BaseAPIFormat {
             continue;
           }
 
+          const firstResultPart = parts.length;
           // Extract images from array content and send as separate inlineData parts.
           // Claude sends tool_results like browser_screenshot as [{type:"text",...},{type:"image",...}].
           // Gemini can't interpret images embedded in a JSON string — they need inlineData parts.
@@ -120,6 +196,9 @@ export class GeminiAPIFormat extends BaseAPIFormat {
               },
             });
           }
+          for (const part of parts.slice(firstResultPart)) {
+            this.callIdOf.set(part, block.tool_use_id);
+          }
         }
       }
     } else if (typeof msg.content === "string") {
@@ -162,11 +241,18 @@ export class GeminiAPIFormat extends BaseAPIFormat {
             functionCallPart.thoughtSignature = thoughtSignature;
           }
 
-          // Ensure tool is tracked in our map (for tool_result lookups)
-          if (!this.toolCallMap.has(block.id)) {
+          // Track the call for its tool_result, under the name it carries on
+          // THIS request. A route that renames tools can send one call under a
+          // different name on a later request (the set of renamed tools follows
+          // the tools declared), and the functionResponse must repeat the name
+          // of the functionCall beside it. The stored signature is kept.
+          if (!toolInfo) {
             this.toolCallMap.set(block.id, { name: block.name, thoughtSignature });
+          } else if (toolInfo.name !== block.name) {
+            this.toolCallMap.set(block.id, { ...toolInfo, name: block.name });
           }
 
+          this.callIdOf.set(functionCallPart, block.id);
           parts.push(functionCallPart);
         }
       }
@@ -178,6 +264,11 @@ export class GeminiAPIFormat extends BaseAPIFormat {
   }
 
   // ─── Tool Conversion ──────────────────────────────────────────────
+
+  /** `convertToolsToGemini` declares each tool under its sanitized name, and drops one that has none. */
+  override declaredToolNames(names: string[]): Map<string, string | null> {
+    return new Map(names.map((name) => [name, sanitizeToolNameForGemini(name)]));
+  }
 
   override convertTools(claudeRequest: any, _summarize = false): any[] {
     const result = convertToolsToGemini(claudeRequest.tools);
@@ -200,7 +291,6 @@ export class GeminiAPIFormat extends BaseAPIFormat {
       let systemContent = Array.isArray(claudeRequest.system)
         ? claudeRequest.system.map((i: any) => i.text || i).join("\n\n")
         : claudeRequest.system;
-      systemContent = filterIdentity(systemContent);
 
       // Gemini-specific reasoning suppression
       systemContent += `\n\nCRITICAL INSTRUCTION FOR OUTPUT FORMAT:
@@ -228,48 +318,53 @@ export class GeminiAPIFormat extends BaseAPIFormat {
       }
     }
 
-    // Thinking/reasoning configuration.
-    // output_config.effort (modern Claude Code) takes priority; the legacy
-    // thinking.budget_tokens path is the fallback. Gemini 3 and Gemini 2.5 use
-    // DIFFERENT controls — and Gemini 3 400s if both thinkingLevel and
-    // thinkingBudget are sent, so we only ever emit one.
-    const effort = this.resolveEffortLevel(claudeRequest);
-    if (effort) {
-      if (matchesModelFamily(this.modelId, "gemini-3")) {
-        payload.generationConfig.thinkingConfig = {
-          thinkingLevel: this.effortToThinkingLevel(effort),
-        };
-        log(
-          `[GeminiAPIFormat] thinkingLevel -> ${payload.generationConfig.thinkingConfig.thinkingLevel} (from ${effort}) for ${this.modelId}`
-        );
+    // Reasoning configuration. By default this dialect writes no thinkingConfig:
+    // the connection's catalog wire writes the reasoning field (step 5w), and a
+    // wire with no published effort path sends none. The model-name rule below
+    // serves the Antigravity transport only. There, an --effort pin outranks
+    // thinking.type "disabled", and a request with reasoning off sends no
+    // level and no budget: Antigravity answers 400 INVALID_ARGUMENT to
+    // thinkingBudget 0 on Gemini 2.5 Flash models, and Gemini 2.5 Pro cannot
+    // turn thinking off. gemini-3 names get thinkingLevel and every other name
+    // thinkingBudget, never both, because Gemini 3 answers 400 when both are sent.
+    //
+    // Every Antigravity body carries includeThoughts, with or without a level or
+    // budget. Without it the server sends no byte while the model thinks, and a
+    // think longer than the request deadline (measured: gemini-4-carbon silent
+    // for 270 s on an 86k-token review) is answered as an unreachable host. With
+    // it the thought summaries stream as `thought` parts. The flag cannot follow
+    // the effort resolved here: the transport chooses the model id that is sent,
+    // and that id can carry an effort this request never named.
+    if (this.thinkingFromModelName) {
+      payload.generationConfig.thinkingConfig = { includeThoughts: true };
+      if (!this.pinnedEffort && claudeRequest?.thinking?.type === "disabled") {
+        log(`[GeminiAPIFormat] thinking omitted (disabled) for ${this.modelId}`);
       } else {
-        const budget = this.budgetWithinOutputCap(
-          this.effortToThinkingBudget(effort),
-          claudeRequest.max_tokens
-        );
-        if (budget === undefined) {
+        const effort = this.resolveEffortLevel(claudeRequest);
+        if (effort && matchesModelFamily(this.modelId, "gemini-3")) {
+          payload.generationConfig.thinkingConfig.thinkingLevel =
+            this.effortToThinkingLevel(effort);
           log(
-            `[GeminiAPIFormat] thinking omitted (from ${effort}): max_tokens ${claudeRequest.max_tokens} leaves no valid budget for ${this.modelId}`
+            `[GeminiAPIFormat] thinkingLevel -> ${payload.generationConfig.thinkingConfig.thinkingLevel} (from ${effort}) for ${this.modelId}`
           );
-        } else {
-          payload.generationConfig.thinkingConfig = { thinkingBudget: budget };
-          log(`[GeminiAPIFormat] thinkingBudget -> ${budget} (from ${effort}) for ${this.modelId}`);
+        } else if (effort) {
+          const tier = this.effortToThinkingBudget(effort);
+          if (tier === undefined) {
+            log(`[GeminiAPIFormat] thinking omitted (from ${effort}) for ${this.modelId}`);
+          } else {
+            const budget = this.budgetWithinOutputCap(tier, claudeRequest.max_tokens);
+            if (budget === undefined) {
+              log(
+                `[GeminiAPIFormat] thinking omitted (from ${effort}): max_tokens ${claudeRequest.max_tokens} leaves no valid budget for ${this.modelId}`
+              );
+            } else {
+              payload.generationConfig.thinkingConfig.thinkingBudget = budget;
+              log(
+                `[GeminiAPIFormat] thinkingBudget -> ${budget} (from ${effort}) for ${this.modelId}`
+              );
+            }
+          }
         }
-      }
-    } else if (claudeRequest.thinking) {
-      // Legacy fallback: raw thinking.budget_tokens.
-      const { budget_tokens } = claudeRequest.thinking;
-
-      if (matchesModelFamily(this.modelId, "gemini-3")) {
-        // Gemini 3 uses thinking_level
-        payload.generationConfig.thinkingConfig = {
-          thinkingLevel: budget_tokens >= 16000 ? "high" : "low",
-        };
-      } else {
-        // Gemini 2.5 uses thinking_budget
-        payload.generationConfig.thinkingConfig = {
-          thinkingBudget: Math.min(budget_tokens, GeminiAPIFormat.MAX_GEMINI_BUDGET),
-        };
       }
     }
 
@@ -296,7 +391,7 @@ export class GeminiAPIFormat extends BaseAPIFormat {
    * An over-cap budget becomes half of max_tokens, not max_tokens - 1: the budget
    * shares the cap with the visible answer, and a budget one token under the cap
    * is valid but can leave the answer nothing. Returns undefined when half the
-   * cap is under Anthropic's minimum, and the caller then sends no thinking config.
+   * cap is under Anthropic's minimum, and the caller then sends no thinking budget.
    *
    * Gemini models are returned unchanged: none was measured to enforce this.
    */
@@ -331,14 +426,17 @@ export class GeminiAPIFormat extends BaseAPIFormat {
   }
 
   /**
-   * Gemini 2.5 `thinkingBudget` (int). 0 = off (Flash/Lite only; Pro min 128,
-   * can't disable). Token tiers per the research §4.3, capped at MAX_GEMINI_BUDGET.
+   * Gemini 2.5 `thinkingBudget` (int), capped at MAX_GEMINI_BUDGET. Returns
+   * undefined for the off efforts (none, minimal): the caller then sends no
+   * thinking budget, because Antigravity answers 400 INVALID_ARGUMENT to
+   * thinkingBudget 0 on Gemini 2.5 Flash models and Pro cannot disable thinking
+   * (minimum 128).
    */
-  private effortToThinkingBudget(effort: EffortLevel): number {
+  private effortToThinkingBudget(effort: EffortLevel): number | undefined {
     switch (effort) {
       case "none":
       case "minimal":
-        return 0;
+        return undefined;
       case "low":
         return 1024;
       case "medium":
@@ -378,19 +476,20 @@ export class GeminiAPIFormat extends BaseAPIFormat {
    * in the only channel it had — the answer.
    *
    * Both conditions are gone:
-   *  1. `thinkingConfig` (buildPayload below, added 9 days later in 2b0064d)
-   *     gives the model a real place to think, which is what actually stops
-   *     the leak. Prevention, not post-hoc deletion. NOTE this applies to the
-   *     direct `g@`/`ag@` paths only — `or@gemini-*` builds its payload in
-   *     OpenRouterAPIFormat and never reaches this buildPayload, so there the
-   *     protection is OpenRouter's own reasoning handling, not this.
+   *  1. Gemini 2.5 and later think in a channel of their own, which is what
+   *     actually stops the leak. Prevention, not post-hoc deletion. The
+   *     `thinkingConfig` that tunes it comes from the connection's catalog
+   *     wire (step 5w), or, on `ag@` only, from the model-name rule in
+   *     buildPayload below. `or@gemini-*` builds its payload in
+   *     OpenRouterAPIFormat and never reaches this buildPayload.
    *  2. Reasoning no longer arrives as visible text. Gemini 3.x returns it as
    *     an opaque `thoughtSignature` on a part whose `text` is "" — measured
    *     on a real capture: `thoughtsTokenCount: 57` with zero reasoning text
    *     on the wire. gemini-sse.ts consumes that signature only to echo it
    *     back on tool calls; there is no reasoning text to strip. (A
-   *     `thought: true` flag would carry text, but only if `includeThoughts`
-   *     were requested, and claudish never sets it.)
+   *     `thought: true` part carries text only where `includeThoughts` was
+   *     requested, which is `ag@` alone; gemini-sse.ts routes such a part to
+   *     thinking output, never to the answer text.)
    *
    * And the filter could not be made correct: it asked "is this string
    * reasoning or an answer?", but for a reply like "OK" that bit does not

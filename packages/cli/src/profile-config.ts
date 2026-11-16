@@ -340,6 +340,16 @@ export interface ClaudishProfileConfig {
    * `readRecoveryUi()`, NOT this allowlist — see its doc comment.
    */
   recoveryUi?: { enabled?: boolean };
+
+  /**
+   * A local HTTP gateway placed between Claude Code and claudish's proxy:
+   * `{ url }`, loopback only. When set, the child's `ANTHROPIC_BASE_URL` is the
+   * gateway URL and `ANTHROPIC_CUSTOM_HEADERS` carries `X-Target-URL: <proxy URL>`.
+   * claudish neither starts nor stops the gateway. Read from the global config
+   * (or the `--config` file) only, and validated at the consumption site
+   * (`harness-gateway.ts`); `loadConfig` stays Zod-free.
+   */
+  harnessGateway?: Record<string, unknown>;
 }
 
 /**
@@ -484,6 +494,11 @@ export function loadConfig(): ClaudishProfileConfig {
     }
     if (config.recoveryUi !== undefined) {
       merged.recoveryUi = config.recoveryUi;
+    }
+    // Same trap: omitted here, the gateway block is dropped at the first global
+    // save, and sessions silently stop going through the gateway.
+    if (config.harnessGateway !== undefined) {
+      merged.harnessGateway = config.harnessGateway;
     }
     return merged;
   } catch (error) {
@@ -963,6 +978,8 @@ export interface RunModelMapping {
    * profile's tiers before a run uses them.
    */
   projectProfile: string | null;
+  /** The name of the profile the tiers came from, for messages; absent when unknown. */
+  profileName?: string;
 }
 
 /**
@@ -975,12 +992,15 @@ export function getRunModelMapping(profileName?: string): RunModelMapping {
   const name = profileName || local?.defaultProfile || undefined;
   if (name !== undefined) {
     const fromLocal = local?.profiles[name];
-    if (fromLocal) return { models: fromLocal.models ?? {}, projectProfile: name };
+    if (fromLocal) {
+      return { models: fromLocal.models ?? {}, projectProfile: name, profileName: name };
+    }
     const fromGlobal = loadConfig().profiles[name];
-    if (fromGlobal) return { models: fromGlobal.models, projectProfile: null };
+    if (fromGlobal) return { models: fromGlobal.models, projectProfile: null, profileName: name };
     if (profileName) return { models: {}, projectProfile: null };
   }
-  return { models: getDefaultProfile("global").models, projectProfile: null };
+  const fallback = getDefaultProfile("global");
+  return { models: fallback.models, projectProfile: null, profileName: fallback.name };
 }
 
 /**

@@ -41,7 +41,6 @@ import {
   footerLine,
   recordCard,
   runTabs,
-  sessionTabs,
 } from "./runs.js";
 
 const host: ModHost = {
@@ -70,6 +69,9 @@ function roleOf(): Role {
 
 type Theme = Record<string, string>;
 type El = NativeElement;
+
+/** model lines shown at their own height; more than this scroll inside 240 px */
+const ROWS_BEFORE_SCROLL = 6;
 type Colour = `#${string}`;
 
 /** A theme colour by name, as a `#rrggbb` the toolkit accepts; the fallback when it is missing. */
@@ -208,9 +210,8 @@ export default class ClaudishPanel extends View {
           .child(ctl.message)
       );
     if (current) {
-      panel.child(this.runHeader(current, t, p));
+      panel.child(this.runHeader(ctl, current, t, p));
       panel.child(this.rowList(cx, current, row, t, p));
-      panel.child(this.sessionStrip(cx, ctl, current, row, t, p));
     }
     panel.child(this.screenArea(cx, ctl, row, t));
     if (row)
@@ -332,9 +333,10 @@ export default class ClaudishPanel extends View {
       );
   }
 
-  private runHeader(current: PanelRun, t: Theme, p: Palette): El {
+  private runHeader(ctl: PanelController, current: PanelRun, t: Theme, p: Palette): El {
     const muted = colour(t, "dim", "#7D8390");
     return h_flex()
+      .flex_none()
       .px(14)
       .pt(10)
       .pb(4)
@@ -350,7 +352,32 @@ export default class ClaudishPanel extends View {
             .text_color(muted)
             .child(current.meta ?? "")
         )
+      )
+      .child(div().flex_1())
+      .child(this.modeToggle(ctl, t));
+  }
+
+  /** Screen | Text for the selected model line. */
+  private modeToggle(ctl: PanelController, t: Theme): El {
+    const toggle = h_flex()
+      .flex_none()
+      .rounded(6)
+      .overflow_hidden()
+      .border_1()
+      .border_color(colour(t, "border", "#343842"));
+    for (const mode of ["screen", "text"] as const)
+      toggle.child(
+        div()
+          .id(`mode-${mode}`)
+          .px(12)
+          .py(4)
+          .cursor_pointer()
+          .when(ctl.mode === mode, (el: El) => el.bg(colour(t, "selected", "#262A33")).font_bold())
+          .hover((s: El) => s.bg(colour(t, "hover", "#23262D")))
+          .on_click((_e: unknown, cx: AsyncContext) => this.act(cx, (c) => c.setMode(mode)))
+          .child(mode === "screen" ? "Screen" : "Text")
       );
+    return toggle;
   }
 
   private rowList(
@@ -361,15 +388,20 @@ export default class ClaudishPanel extends View {
     p: Palette
   ): El {
     void cx;
-    return v_flex()
-      .id("claudish-rows")
-      .px(14)
-      .pt(4)
-      .pb(10)
-      .gap(4)
-      .max_h(240)
-      .overflow_y_scrollbar()
-      .children(current.rows.map((r) => this.bandRow(r, r.target === selected?.target, t, p)));
+    return (
+      v_flex()
+        .id("claudish-rows")
+        .flex_none()
+        .px(14)
+        .pt(4)
+        .pb(10)
+        .gap(4)
+        // a scroll box takes its whole max height, so only a long run gets one
+        .when(current.rows.length > ROWS_BEFORE_SCROLL, (el: El) =>
+          el.max_h(240).overflow_y_scrollbar()
+        )
+        .children(current.rows.map((r) => this.bandRow(r, r.target === selected?.target, t, p)))
+    );
   }
 
   private bandRow(r: PanelRow, selected: boolean, t: Theme, p: Palette): El {
@@ -436,57 +468,6 @@ export default class ClaudishPanel extends View {
           .text_color(r.error ? p.text.fail : colour(t, "muted", "#9AA0AB"))
           .child(r.note)
       );
-  }
-
-  private sessionStrip(
-    cx: AsyncContext,
-    ctl: PanelController,
-    current: PanelRun,
-    row: PanelRow | null,
-    t: Theme,
-    p: Palette
-  ): El {
-    void cx;
-    const strip = h_flex()
-      .id("claudish-sessions")
-      .w_full()
-      .items_center()
-      .overflow_hidden()
-      .border_t(1)
-      .border_b(1)
-      .border_color(colour(t, "border", "#2C2F37"))
-      .bg(colour(t, "surface", "#17191D"));
-    for (const s of sessionTabs(current, row?.target ?? null))
-      strip.child(
-        this.tab(
-          `session-${s.target}`,
-          s.selected,
-          t,
-          (cx) => this.act(cx, (c) => c.selectSlot(s.target)),
-          [this.dot(s.tone, p), div().whitespace_nowrap().child(s.label)]
-        )
-      );
-    strip.child(div().flex_1());
-    const toggle = h_flex()
-      .mx(10)
-      .flex_none()
-      .rounded(6)
-      .overflow_hidden()
-      .border_1()
-      .border_color(colour(t, "border", "#343842"));
-    for (const mode of ["screen", "text"] as const)
-      toggle.child(
-        div()
-          .id(`mode-${mode}`)
-          .px(12)
-          .py(4)
-          .cursor_pointer()
-          .when(ctl.mode === mode, (el: El) => el.bg(colour(t, "selected", "#262A33")).font_bold())
-          .hover((s: El) => s.bg(colour(t, "hover", "#23262D")))
-          .on_click((_e: unknown, cx: AsyncContext) => this.act(cx, (c) => c.setMode(mode)))
-          .child(mode === "screen" ? "Screen" : "Text")
-      );
-    return strip.child(toggle);
   }
 
   /** The screen area: the transcript, the failure card, or where the screen is shown. */
@@ -573,7 +554,7 @@ export default class ClaudishPanel extends View {
           .text_color(t.foreground)
           .child(`claudish · ${String(p.title ?? "")}`)
       )
-      .child(div().text_color(t.dim).child("read only · Enter takes the view"))
+      .child(div().text_color(t.dim).child("read only"))
       .child(
         div()
           .id("claudish-close")
@@ -584,7 +565,7 @@ export default class ClaudishPanel extends View {
             s.text_color(t.foreground)
           )
           .on_click(() => {
-            // the window closes itself when its terminal ends; the viewer releases its claim
+            // the window closes itself when its terminal ends
             if (terminal) run("terminal.kill", { terminal });
             else if (overlay) closeOverlay(overlay);
           })

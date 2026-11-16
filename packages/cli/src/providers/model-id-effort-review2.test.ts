@@ -83,7 +83,7 @@ function dialectPayload(model: string, effort: EffortLevel) {
     max_tokens: 32_768,
     output_config: { effort },
   };
-  const dialect = new GeminiAPIFormat(model);
+  const dialect = new GeminiAPIFormat(model, undefined, { thinkingFromModelName: true });
   const payload = dialect.buildPayload(request, dialect.convertMessages(request), []);
   return { payload, request };
 }
@@ -202,12 +202,18 @@ describe("R1: effort controls follow the id sent on each attempt", () => {
       ]);
       served = { servedIds: [PLAIN], defaultId: PLAIN, meta: {} };
       const { payload, request } = dialectPayload(base, "low");
-      expect(payload.generationConfig.thinkingConfig).toEqual({ thinkingLevel: "low" });
+      expect(payload.generationConfig.thinkingConfig).toEqual({
+        thinkingLevel: "low",
+        includeThoughts: true,
+      });
       const before = structuredClone(payload);
       const ag = await transport(builder, base);
       const envelope = ag.transformPayload(payload, request);
       expect(envelope.model).toBe(PLAIN);
-      expect(envelope.request.generationConfig.thinkingConfig).toEqual({ thinkingLevel: "low" });
+      expect(envelope.request.generationConfig.thinkingConfig).toEqual({
+        thinkingLevel: "low",
+        includeThoughts: true,
+      });
       expect(payload).toEqual(before);
     });
 
@@ -215,11 +221,11 @@ describe("R1: effort controls follow the id sent on each attempt", () => {
       served = { servedIds: [LOW, PLAIN], defaultId: LOW, meta: {} };
       const { payload, request } = dialectPayload(BASE, "low");
       const original = structuredClone(payload.generationConfig.thinkingConfig);
-      expect(original).toEqual({ thinkingBudget: 1024 });
+      expect(original).toEqual({ thinkingBudget: 1024, includeThoughts: true });
       const ag = await transport(builder);
       const envelope = ag.transformPayload(payload, request);
       expect(envelope.model).toBe(LOW);
-      expect(envelope.request.generationConfig.thinkingConfig ?? {}).toEqual({});
+      expect(envelope.request.generationConfig.thinkingConfig).toEqual({ includeThoughts: true });
       const { sent, response, fetchMock } = await exhaustPrimary(ag, envelope);
       expect(response.status).toBe(200);
       expect(sent.map((body) => body.model)).toEqual([LOW, PLAIN]);
@@ -231,7 +237,7 @@ describe("R1: effort controls follow the id sent on each attempt", () => {
       served = { servedIds: [PLAIN, LOW], defaultId: PLAIN, meta: {} };
       const { payload, request } = dialectPayload(PLAIN, "high");
       const original = structuredClone(payload.generationConfig.thinkingConfig);
-      expect(original).toEqual({ thinkingLevel: "high" });
+      expect(original).toEqual({ thinkingLevel: "high", includeThoughts: true });
       const ag = await transport(builder, PLAIN);
       const envelope = ag.transformPayload(payload, request);
       expect(envelope.model).toBe(PLAIN);
@@ -240,7 +246,7 @@ describe("R1: effort controls follow the id sent on each attempt", () => {
       expect(response.status).toBe(200);
       expect(sent.map((body) => body.model)).toEqual([PLAIN, LOW]);
       expect(fetchMock).toHaveBeenCalledTimes(2);
-      expect(sent[1]!.request.generationConfig?.thinkingConfig ?? {}).toEqual({});
+      expect(sent[1]!.request.generationConfig?.thinkingConfig).toEqual({ includeThoughts: true });
     });
 
     test(`${builder}: R1d a later primary success clears the previous active retry id`, async () => {

@@ -481,8 +481,9 @@ does not require it. So the decision is made at launch by `childAuthControl(conf
 (`claude-runner.ts:390`): controlled only when the launch is native-auth (no foreign `--model`
 handing the child claudish's placeholder), no user `ANTHROPIC_AUTH_TOKEN` and no real
 `ANTHROPIC_API_KEY` reaches the child, `ANTHROPIC_CUSTOM_HEADERS` carries no auth header, and no
-settings layer claudish can read (managed settings, `~/.claude/settings.json`,
-`$CLAUDE_CONFIG_DIR/settings.json`, the project and project-local files, `--settings`) names an
+settings layer claudish can read (managed settings, the user file —
+`$CLAUDE_CONFIG_DIR/settings.json` when set, else `~/.claude/settings.json` — the project file,
+the project-local files at the main checkout and the working directory, `--settings`) names an
 `apiKeyHelper` or sets an Anthropic credential in its `env`. It cannot see settings delivered by a
 mechanism it does not read (an MDM profile). The decision travels in `AdvisorRuntime.childAuth`
 to the decorator (`proxy-server.ts:326`); a decorator given none treats the launch as not
@@ -500,10 +501,37 @@ The credential for one advisor call is chosen by presence and provenance, never 
 member runs (a routed-only panel never resolves an Anthropic key):
 
 1. the login, when every check passed — `arm: oauth`, `billing: subscription`;
-2. else the inbound `x-api-key` when it is real — metered;
+2. else what the key arm allows (below); on `"lookup"`, the inbound `x-api-key` when it is
+   real — metered;
 3. else `ANTHROPIC_API_KEY` through `resolveAdvisorCredential` (env, config, Keychain,
    1Password; never `ANTHROPIC_AUTH_TOKEN`, never a placeholder) — metered;
 4. else S7/S9 "no Claude credential".
+
+**The key arm follows the native signing** ([adapters.md](adapters.md), `NativeSigning`). One
+mapping, `advisorKeyArmFor` (`handlers/advisor-decorator.ts`), turns a signing into a key arm, and
+both startup planning and the proxy call it, so the plan and the call agree:
+
+| Signing | Key arm | A Claude member with no login |
+|---|---|---|
+| `inbound` | `"lookup"` | steps 2-4 above, as before |
+| `inbound` on a launch with no main model (plain `--monitor`, `--advisor` alone) and no API-billing opt-in (`advisorKeyLookupAllowed`, `launcher/claude-launch.ts`) | `"request-key"` | step 2 only: claudish never looks up `ANTHROPIC_API_KEY`; only the credential Claude Code itself sent (its `x-api-key`, which a settings layer may have given it) can sign; startup refuses a member that would need the key (`claude-no-credential`) |
+| `login-only` (the Claude subscription: a Claude main model or tier without the opt-in, a `claude@` tier, a pinned pane child; `launchSigningFor`) | `"off"` | no key is read: `{arm: null}`, "Claude subscription session: the advisor signs only with Claude Code's login, never an API key"; startup refuses such a member with cause `claude-no-credential` |
+| `launch-key` (the Claude API launch) | `{launchKey}` | the launch's own key, never an inbound one and never a second lookup; planned as `claude-native` with `apiKeySource: "claude-api-launch-key"`, and the notice names "the Claude API launch's key" |
+
+The `claude-native` plan carries the arm as a label (`keyFallback`: `none`, `request-key`,
+`lookup`, `launch-key`), and the startup notice names what signs a request with no login from it:
+nothing for `"off"`, the request's `x-api-key` and never `ANTHROPIC_API_KEY` for `"request-key"`.
+
+Startup reads the LAUNCH's signing (`evaluateAdvisorStartup(…, {launchSigning})`, from
+`prepareClaudeLaunch`, which `index.ts` runs before the advisor check). Without it a Claude API
+launch whose key is only in the Keychain would plan through `native-anthropic`'s lookup, which has
+no Keychain step, and refuse a member the runtime could serve. The proxy reads each REQUEST's
+signing, so a `claude@<id>` request is `"off"` on any launch. A member whose own spec is
+`claude@…` is `"off"` too, at planning and at runtime, whatever the launch signs with: an explicit
+subscription spec is never consent to its metered sibling, so with no login it is refused at
+startup (`claude-no-credential`). On the Claude API launch
+`childAuthControl` answers `proxy-auth` (the bearer Claude Code sends is claudish's placeholder),
+so the login arm never runs there.
 
 A real bearer that failed a check, or a request with no bearer, is never moved to a metered key
 silently: the call writes an `[advisor]` warning naming the reason. claudish's own placeholder (a

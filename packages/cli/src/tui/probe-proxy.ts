@@ -19,6 +19,8 @@
  * `shutdownProbeProxy()` directly.
  */
 
+import { realValueFor } from "../env-placeholder.js";
+
 interface LiveProxy {
   url: string;
   shutdown: () => Promise<void>;
@@ -48,7 +50,7 @@ export async function ensureProbeProxy(): Promise<string> {
       process.env.OPENROUTER_API_KEY,
       undefined,
       false,
-      process.env.ANTHROPIC_API_KEY,
+      realValueFor("ANTHROPIC_API_KEY", process.env.ANTHROPIC_API_KEY),
       undefined,
       // Hooks never see --probe traffic. A probe proxy builds a hop marked as
       // routed the way real traffic builds a routing chain's hop.

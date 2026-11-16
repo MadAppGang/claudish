@@ -71,15 +71,17 @@
 
 import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { keySourcesSearched } from "../auth/credentials/key-sources.js";
 import type { ModelInfo, PickerDiscoveryOutcome } from "../model-selector.js";
 import { readDiskCatalog } from "../providers/all-models-cache.js";
 import { bundledListEnabled, catalogReachability } from "../providers/catalog-reachability.js";
 import { DEFAULT_LOCAL_CONTEXT_WINDOW } from "../providers/context-window-limit.js";
 import { LIVE_MS } from "../providers/dynamic-models-catalog-store.js";
 import { sweepAccountModelsLists } from "../providers/dynamic-models-catalog.js";
+import { getProviderByName } from "../providers/provider-definitions.js";
 import { EmptyState } from "../tui/components/EmptyState.js";
 import { useAnimationFrame } from "../tui/hooks/useAnimationFrame.js";
-import { truncate } from "../tui/viz/text.js";
+import { displayWidth, truncate } from "../tui/viz/text.js";
 import { tokens } from "../tui/viz/tokens.js";
 import { DiscoveryNotice, discoveryNoticeContent, noticeRows } from "./DiscoveryNotice.js";
 import {
@@ -188,6 +190,20 @@ export interface ModelPickerProps {
  * from either comes back here, and `esc` HERE is what cancels the picker.
  */
 type View = "models" | "providers" | "custom" | "context";
+
+/**
+ * Where the key of an unready, focused provider was looked for, on the row the
+ * credential sweep leaves blank once it settles. Only for a provider whose key
+ * claudish reads from a vault when the request signs (`vaultKeyReadAtUse`, the
+ * Claude API): its readiness is a key's presence in those stores, so naming
+ * them is the whole answer. A login-backed provider's missing state is not
+ * about any of these stores, so it gets no line.
+ */
+function lookedInHint(here: ProviderState | null): string {
+  if (here === null || here.readiness !== "missing") return "";
+  if (getProviderByName(here.value)?.vaultKeyReadAtUse !== true) return "";
+  return `looked in: ${keySourcesSearched({ compact: true }).join(", ")}`;
+}
 
 export function ModelPicker({
   source,
@@ -348,6 +364,11 @@ export function ModelPicker({
    * provider with a `k` somewhere in its slug.
    */
   const providerRows: ProviderState[] = matchProviders(providerPool, filter);
+  /**
+   * The shortcut column's width: the widest shortcut of the list the filter reads
+   * from, not of the filtered rows, so the column does not move while the user types.
+   */
+  const widestShortcut = Math.max(0, ...providerPool.map((r) => displayWidth(r.shortcut)));
 
   /**
    * A MODEL COUNT ONLY WHERE ONE IS ACTUALLY KNOWN — the owner's rule: *"we could
@@ -933,6 +954,7 @@ export function ModelPicker({
                   note={unavailableNote(r, notEnabledLocal)}
                   cursor={r.value === here?.value}
                   inner={layout.inner}
+                  widestShortcut={widestShortcut}
                 />
               ))
             )}
@@ -965,7 +987,7 @@ export function ModelPicker({
               over countable work — and it disappears, leaving its row, when the last
               probe settles. */}
           {settled ? (
-            <HintRow text="" width={layout.inner} />
+            <HintRow text={lookedInHint(here)} width={layout.inner} />
           ) : (
             <LoadTasks
               tasks={tasks}

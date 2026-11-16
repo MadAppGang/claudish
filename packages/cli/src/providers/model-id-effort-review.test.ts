@@ -535,14 +535,20 @@ describe("G: model-id effort connections do not send body effort controls", () =
           max_tokens: 32_768,
           output_config: { effort: "low" },
         };
-        const dialect = new GeminiAPIFormat(base);
+        const dialect = new GeminiAPIFormat(base, undefined, { thinkingFromModelName: true });
         const payload = dialect.buildPayload(request, dialect.convertMessages(request), []);
         const before = payload.generationConfig.thinkingConfig;
-        expect(before).toEqual(base === BASE ? { thinkingBudget: 1024 } : { thinkingLevel: "low" });
+        expect(before).toEqual(
+          base === BASE
+            ? { thinkingBudget: 1024, includeThoughts: true }
+            : { thinkingLevel: "low", includeThoughts: true }
+        );
         const ag = await transport(builder, undefined, base);
         const envelope = ag.transformPayload(payload, request);
         expect(envelope.model).toBe(low);
-        expect(envelope.request.generationConfig.thinkingConfig ?? {}).toEqual({});
+        expect(envelope.request.generationConfig.thinkingConfig).toEqual({
+          includeThoughts: true,
+        });
       });
     }
 
@@ -552,7 +558,7 @@ describe("G: model-id effort connections do not send body effort controls", () =
         max_tokens: 32_768,
         output_config: { effort: "high" },
       };
-      const dialect = new GeminiAPIFormat(LOW);
+      const dialect = new GeminiAPIFormat(LOW, undefined, { thinkingFromModelName: true });
       const payload = dialect.buildPayload(request, dialect.convertMessages(request), []);
       // Exercise a dialect's optional thought visibility independently of effort.
       payload.generationConfig.thinkingConfig.includeThoughts = true;
@@ -572,7 +578,7 @@ describe("G: model-id effort connections do not send body effort controls", () =
         max_tokens: 32_768,
         output_config: { effort: "low" },
       };
-      const dialect = new GeminiAPIFormat(plain);
+      const dialect = new GeminiAPIFormat(plain, undefined, { thinkingFromModelName: true });
       const payload = dialect.buildPayload(request, dialect.convertMessages(request), []);
       payload.generationConfig.thinkingConfig.includeThoughts = true;
       const before = structuredClone(payload.generationConfig.thinkingConfig);

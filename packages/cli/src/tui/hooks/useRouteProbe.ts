@@ -1,4 +1,5 @@
 import { useCallback, useState } from "react";
+import { keySourcesSearched } from "../../auth/credentials/key-sources.js";
 import { bundledListLabel } from "../../providers/bundled-list-data.js";
 import { explainRouteSettled } from "../../providers/explain-route-settled.js";
 import { prepareMuseLoginForTuiAction } from "../../providers/meta-muse/muse-credentials.js";
@@ -8,8 +9,11 @@ import {
   INTERACTIVE_PROBE_TIMEOUT_MS,
   probeHopOriginFor,
   probeProviderRoute,
+  probeSendRefusal,
 } from "../../providers/probe-runner.js";
+import { getProviderByName } from "../../providers/provider-definitions.js";
 import {
+  type ExplainedCandidate,
   type FallbackWithheld,
   type RouteExplanation,
   describeRouteExplanation,
@@ -46,8 +50,11 @@ export interface ProbeView {
  * - One row per candidate, in chain order. A kept candidate is `pending`: the
  *   probe tests it. A dropped one is `dropped`, carrying the outcome that removed
  *   it, and is never tested.
- * - A native target has no candidates; its one row is the native passthrough,
- *   `unverified`, because this process cannot supply the auth it forwards.
+ * - A native target has no candidates; its first row is the Claude
+ *   subscription, `unverified`, because this process cannot supply the login it
+ *   forwards. A bare Claude name's other catalog routes follow it, marked
+ *   `comparison`: kept ones are tested, dropped ones carry their outcome, and
+ *   none of them is the route a launch of the name takes.
  */
 export function probeRowsFrom(explanation: RouteExplanation): ProbeView {
   const summary: ProbeSummary = {
@@ -69,6 +76,9 @@ export function probeRowsFrom(explanation: RouteExplanation): ProbeView {
             modelSpec: native.modelSpec,
             status: "unverified",
           },
+          ...(explanation.comparisonCandidates ?? []).map(
+            (candidate): ProbeEntry => ({ ...rowOf(candidate, "routed"), comparison: true })
+          ),
         ]
       : [];
     return { summary, rows };
@@ -88,23 +98,39 @@ export function probeRowsFrom(explanation: RouteExplanation): ProbeView {
   }
 
   const hopOrigin = probeHopOriginFor(explanation);
-  const rows = explanation.candidates.map((candidate): ProbeEntry => {
-    const row: ProbeEntry = {
-      provider: candidate.provider,
-      displayName: candidate.displayName,
-      modelSpec: candidate.modelSpec,
-      position: candidate.position,
-      ...(candidate.tier !== undefined ? { tier: candidate.tier } : {}),
-      ...(hopOrigin ? { hopOrigin } : {}),
-      status: "pending",
-    };
-    if (candidate.outcome !== "kept") {
-      row.status = "dropped";
-      row.outcome = candidate.outcome;
-    }
-    return row;
-  });
+  const rows = explanation.candidates.map((candidate) => rowOf(candidate, hopOrigin));
   return { summary, rows };
+}
+
+/** One candidate's row: `pending` when kept (the probe tests it), else `dropped`. */
+function rowOf(candidate: ExplainedCandidate, hopOrigin: "routed" | undefined): ProbeEntry {
+  const row: ProbeEntry = {
+    provider: candidate.provider,
+    displayName: candidate.displayName,
+    modelSpec: candidate.modelSpec,
+    position: candidate.position,
+    ...(candidate.tier !== undefined ? { tier: candidate.tier } : {}),
+    ...(hopOrigin ? { hopOrigin } : {}),
+    status: "pending",
+  };
+  if (candidate.outcome !== "kept") {
+    row.status = "dropped";
+    row.outcome = candidate.outcome;
+    // A read-at-use key (the Claude API's) is looked for at send time, so a row
+    // with none says where claudish looked, as `--probe` does.
+    if (
+      candidate.outcome === "no-credential" &&
+      getProviderByName(candidate.provider)?.vaultKeyReadAtUse === true
+    ) {
+      row.error = lookedIn(keySourcesSearched().join(", "));
+    }
+  }
+  return row;
+}
+
+/** The "where claudish looked" detail of a row with no key. */
+function lookedIn(searched: string): string {
+  return `looked in ${searched}`;
 }
 
 /** One hop the probe tests: its row, and the spec a request would send. */
@@ -112,6 +138,8 @@ export interface ProbeQueueItem {
   index: number;
   provider: string;
   modelSpec: string;
+  /** A comparison row: its result never ends the walk down the chain. */
+  comparison?: true;
 }
 
 /**
@@ -121,7 +149,14 @@ export interface ProbeQueueItem {
 export function probeQueue(rows: ProbeEntry[]): ProbeQueueItem[] {
   return rows.flatMap((row, index) =>
     row.status === "pending" && row.modelSpec !== undefined
-      ? [{ index, provider: row.provider, modelSpec: row.modelSpec }]
+      ? [
+          {
+            index,
+            provider: row.provider,
+            modelSpec: row.modelSpec,
+            ...(row.comparison ? { comparison: row.comparison } : {}),
+          },
+        ]
       : []
   );
 }
@@ -140,7 +175,7 @@ export function probeQueue(rows: ProbeEntry[]): ProbeQueueItem[] {
  */
 async function probeViewFor(model: string): Promise<ProbeView> {
   try {
-    return probeRowsFrom(await explainRouteSettled(model));
+    return probeRowsFrom(await explainRouteSettled(model, { comparison: true }));
   } catch (err) {
     return {
       summary: {
@@ -302,6 +337,32 @@ export function useRouteProbe(): UseRouteProbeReturn {
         for (const link of queue) {
           const i = link.index;
           const hopOrigin = rows[i]?.hopOrigin;
+          // A read-at-use key (the Claude API's) is read now; one that cannot be
+          // read, or is not there, makes the row dropped instead of a request
+          // sent with no key.
+          const { credentials } = await import("../../auth/credentials/authority.js");
+          const refusal = await probeSendRefusal(link.provider, (name) =>
+            credentials.resolveForUse(name)
+          );
+          if (refusal) {
+            setProbeResults((prev) =>
+              prev.map((e, idx) =>
+                idx === i
+                  ? {
+                      ...e,
+                      status: "dropped" as const,
+                      outcome: refusal.outcome,
+                      ...(refusal.detail
+                        ? { error: refusal.detail }
+                        : refusal.searched
+                          ? { error: lookedIn(refusal.searched) }
+                          : {}),
+                    }
+                  : e
+              )
+            );
+            continue;
+          }
           // Mark current as testing
           setProbeResults((prev) =>
             prev.map((e, idx) => (idx === i ? { ...e, status: "testing" } : e))
@@ -335,13 +396,15 @@ export function useRouteProbe(): UseRouteProbeReturn {
                   ms,
                 };
               // After a success, every later kept hop is "not reached". Dropped
-              // rows keep their outcome.
-              if (idx > i && ok && e.status === "pending")
+              // rows keep their outcome. A comparison row is tested whatever
+              // came before it, and its success reaches no other row: it is
+              // not a hop of the name's route.
+              if (idx > i && ok && !link.comparison && !e.comparison && e.status === "pending")
                 return { ...e, status: "skipped" as const };
               return e;
             })
           );
-          if (ok) break;
+          if (ok && !link.comparison) break;
         }
         setProbeMode("done");
       })();

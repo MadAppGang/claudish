@@ -130,8 +130,9 @@ describe("resolveEffortLevel (shared)", () => {
 
 // ─── Part 2C: Gemini ──────────────────────────────────────────────────────
 
+// The model-name rule, which only the Antigravity profile turns on.
 function geminiThinkingConfig(modelId: string, req: any): any {
-  const fmt = new GeminiAPIFormat(modelId);
+  const fmt = new GeminiAPIFormat(modelId, undefined, { thinkingFromModelName: true });
   return (fmt as any).buildPayload(req, [], []).generationConfig.thinkingConfig;
 }
 
@@ -165,9 +166,13 @@ describe("Gemini thinking config", () => {
 
   test("gemini-2.5 budget tiers (capped at 24576)", () => {
     const b = (effort: string) =>
-      geminiThinkingConfig("gemini-2.5-flash", { output_config: { effort } }).thinkingBudget;
-    expect(b("none")).toBe(0);
-    expect(b("minimal")).toBe(0);
+      geminiThinkingConfig("gemini-2.5-flash", { output_config: { effort } })?.thinkingBudget;
+    expect(geminiThinkingConfig("gemini-2.5-flash", { output_config: { effort: "none" } })).toEqual(
+      { includeThoughts: true }
+    );
+    expect(
+      geminiThinkingConfig("gemini-2.5-flash", { output_config: { effort: "minimal" } })
+    ).toEqual({ includeThoughts: true });
     expect(b("low")).toBe(1024);
     expect(b("medium")).toBe(8192);
     expect(b("high")).toBe(16384);
@@ -178,6 +183,145 @@ describe("Gemini thinking config", () => {
   test("legacy thinking.budget_tokens still works (no output_config)", () => {
     const cfg = geminiThinkingConfig("gemini-2.5-pro", { thinking: { budget_tokens: 99999 } });
     expect(cfg.thinkingBudget).toBe(24576); // capped
+  });
+
+  // REGRESSION: reasoning-off requests on the Antigravity name rule sent thinkingBudget NaN/0 or thinkingLevel "low".
+  describe("reasoning off", () => {
+    function geminiGenerationConfig(modelId: string, req: any, pin?: EffortLevel): any {
+      const fmt = new GeminiAPIFormat(modelId, undefined, { thinkingFromModelName: true });
+      if (pin) fmt.setEffortOverride(pin);
+      return (fmt as any).buildPayload(req, [], []).generationConfig;
+    }
+
+    test.each(["gemini-2.5-pro", "gemini-3-pro-preview", "claude-sonnet-4-6"])(
+      "thinking disabled sends no level or budget on %s",
+      (modelId) => {
+        const gen = geminiGenerationConfig(modelId, { thinking: { type: "disabled" } });
+        expect(gen.thinkingConfig).toEqual({ includeThoughts: true });
+        expect(JSON.stringify(gen)).not.toContain("null");
+      }
+    );
+
+    test("an effort pin outranks thinking disabled", () => {
+      const gen = geminiGenerationConfig(
+        "gemini-2.5-pro",
+        { thinking: { type: "disabled" } },
+        "high"
+      );
+      expect(gen.thinkingConfig).toEqual({ thinkingBudget: 16384, includeThoughts: true });
+    });
+
+    test("an effort pin outranks thinking disabled on gemini-3", () => {
+      const gen = geminiGenerationConfig(
+        "gemini-3-pro-preview",
+        { thinking: { type: "disabled" } },
+        "high"
+      );
+      expect(gen.thinkingConfig).toEqual({ thinkingLevel: "high", includeThoughts: true });
+    });
+
+    test("a none pin with thinking disabled keeps thinkingLevel minimal on gemini-3", () => {
+      const gen = geminiGenerationConfig(
+        "gemini-3-pro-preview",
+        { thinking: { type: "disabled" } },
+        "none"
+      );
+      expect(gen.thinkingConfig).toEqual({ thinkingLevel: "minimal", includeThoughts: true });
+    });
+
+    test("a none pin with thinking disabled sends no level or budget on gemini-2.5-pro", () => {
+      const gen = geminiGenerationConfig(
+        "gemini-2.5-pro",
+        { thinking: { type: "disabled" } },
+        "none"
+      );
+      expect(gen.thinkingConfig).toEqual({ includeThoughts: true });
+    });
+
+    test("output_config.effort none sends no level or budget on claude-sonnet-4-6", () => {
+      const gen = geminiGenerationConfig("claude-sonnet-4-6", {
+        output_config: { effort: "none" },
+      });
+      expect(gen.thinkingConfig).toEqual({ includeThoughts: true });
+    });
+
+    test.each(["none", "minimal"])(
+      "output_config.effort %s sends no level or budget on gemini-2.5-flash",
+      (effort) => {
+        const gen = geminiGenerationConfig("gemini-2.5-flash", { output_config: { effort } });
+        expect(gen.thinkingConfig).toEqual({ includeThoughts: true });
+      }
+    );
+
+    test("thinking budget_tokens 0 sends no level or budget on gemini-2.5-flash", () => {
+      const gen = geminiGenerationConfig("gemini-2.5-flash", {
+        thinking: { type: "enabled", budget_tokens: 0 },
+      });
+      expect(gen.thinkingConfig).toEqual({ includeThoughts: true });
+    });
+
+    test("thinking budget_tokens 0 keeps thinkingLevel minimal on gemini-3", () => {
+      const gen = geminiGenerationConfig("gemini-3-pro-preview", {
+        thinking: { type: "enabled", budget_tokens: 0 },
+      });
+      expect(gen.thinkingConfig).toEqual({ thinkingLevel: "minimal", includeThoughts: true });
+    });
+
+    test.each(["gemini-2.5-pro", "gemini-3-pro-preview"])(
+      "thinking enabled with no budget_tokens sends no level or budget on %s",
+      (modelId) => {
+        const gen = geminiGenerationConfig(modelId, { thinking: { type: "enabled" } });
+        expect(gen.thinkingConfig).toEqual({ includeThoughts: true });
+        expect(JSON.stringify(gen)).not.toContain("null");
+      }
+    );
+  });
+});
+
+// REGRESSION: the Gemini dialect chose thinkingLevel or thinkingBudget from the model name.
+describe("Gemini dialect sends no thinking config of its own", () => {
+  function defaultThinkingConfig(modelId: string, req: any): any {
+    const fmt = new GeminiAPIFormat(modelId);
+    return (fmt as any).buildPayload({ max_tokens: 32000, messages: [], ...req }, [], [])
+      .generationConfig.thinkingConfig;
+  }
+
+  test("gemini-4-carbon, output_config.effort high", () => {
+    expect(
+      defaultThinkingConfig("gemini-4-carbon", { output_config: { effort: "high" } })
+    ).toBeUndefined();
+  });
+
+  test("gemini-4-carbon, output_config.effort minimal", () => {
+    expect(
+      defaultThinkingConfig("gemini-4-carbon", { output_config: { effort: "minimal" } })
+    ).toBeUndefined();
+  });
+
+  test("gemini-3-pro, output_config.effort high", () => {
+    expect(
+      defaultThinkingConfig("gemini-3-pro", { output_config: { effort: "high" } })
+    ).toBeUndefined();
+  });
+
+  test("gemini-2.5-pro, output_config.effort high", () => {
+    expect(
+      defaultThinkingConfig("gemini-2.5-pro", { output_config: { effort: "high" } })
+    ).toBeUndefined();
+  });
+
+  test("gemini-4-carbon, thinking enabled with budget_tokens 20000", () => {
+    expect(
+      defaultThinkingConfig("gemini-4-carbon", {
+        thinking: { type: "enabled", budget_tokens: 20000 },
+      })
+    ).toBeUndefined();
+  });
+
+  test("gemini-4-carbon, thinking disabled", () => {
+    expect(
+      defaultThinkingConfig("gemini-4-carbon", { thinking: { type: "disabled" } })
+    ).toBeUndefined();
   });
 });
 

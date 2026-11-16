@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { ViewItem } from "../pane/view-contract.js";
 import { clipText, herdrAgentState, herdrMetadata, shortModel } from "./state-map.js";
-import { replayItem, sessionItem } from "./test-helpers/placer-harness.js";
+import { replayItem, sessionItem } from "./test-helpers/view-items.js";
 
 function withFields(item: ViewItem, fields: Record<string, unknown>): ViewItem {
   return { ...item, ...fields } as ViewItem;

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { HISTORY_LIMIT, readHistory } from "./history.js";
+import { HISTORY_LIMIT, findRecordedItem, readHistory } from "./history.js";
 
 let root: string;
 let sessionsDir: string;
@@ -163,6 +163,25 @@ describe("readHistory: finished runs from their records, with no server", () => 
       "t:t-mwcx0002-a1b2c3/02",
       "s:c0000000",
     ]);
+  });
+
+  test("findRecordedItem finds a target's run however many newer runs there are", () => {
+    teamRun("team-0000aaaa", 99_999, join(root, "work", "old"), {
+      runId: "old-mwcx0001-a1b2c3",
+      kind: "run",
+      startedAt: "2026-11-10T11:30:00Z",
+      models: { "02": { model: "grok-4.7", state: "COMPLETED" } },
+    });
+    for (let i = 0; i < HISTORY_LIMIT + 5; i++)
+      session(`n${String(i).padStart(7, "0")}`, 10 + i, FAILED_META);
+    expect(readHistory({ sessionsDir }).some((i) => i.target === "t:old-mwcx0001-a1b2c3/02")).toBe(
+      false
+    );
+    const found = findRecordedItem("t:old-mwcx0001-a1b2c3/02", { sessionsDir });
+    expect(found?.kind).toBe("team_slot");
+    expect(found && "run_path" in found ? found.run_path : null).toBe(join(root, "work", "old"));
+    expect(findRecordedItem("s:n0000003", { sessionsDir })?.target).toBe("s:n0000003");
+    expect(findRecordedItem("t:none-mwcx0001-a1b2c3/01", { sessionsDir })).toBeNull();
   });
 
   test("no sessions directory, unreadable records and stray files read as nothing", () => {

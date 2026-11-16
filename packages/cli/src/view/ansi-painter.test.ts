@@ -95,9 +95,8 @@ describe("control code points in cell and status text", () => {
     expect(text.trimEnd()).toBe(" 31mX Y ]52;c;Zm9v");
   });
 
-  test("band and status text are written with no control code point", () => {
+  test("status text is written with no control code point", () => {
     const { painter, out } = painterOn({ cols: 60, rows: 25 });
-    painter.band(hostile);
     painter.status(hostile, "live");
     // the painter's own sequences start with ESC; nothing else may
     const esc = String.fromCharCode(0x1b);
@@ -183,15 +182,6 @@ describe("AnsiPainter", () => {
     process.env.NO_COLOR = "1";
     painter.status("x", "live");
     expect(out()).toBe(`${E}5;1H${E}0m${E}7m ●${E}0m${E}7m x${" ".repeat(16)}${E}0m${E}?25l`);
-  });
-
-  test("the band replaces the picture with one line", () => {
-    const { painter, out } = painterOn({ cols: 30, rows: 5 });
-    painter.band("viewing in herdr — Enter to view here");
-    const s = out();
-    expect(s.startsWith(`${ALT_ON}${E}?25l${E}2J${E}2J${E}1;1H`)).toBe(true);
-    expect(s).toContain(" viewing in herdr — Enter to v");
-    expect(s).not.toContain("Enter to view here");
   });
 
   test("end leaves the alternate screen and shows the cursor", () => {

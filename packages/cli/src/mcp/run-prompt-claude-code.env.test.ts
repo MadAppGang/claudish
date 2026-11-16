@@ -136,4 +136,25 @@ describe("claudeCodePrintEnv", () => {
     });
     expect(claudeCodePrintEnv(parent)).toEqual(parent);
   });
+
+  test("removes the X-Target-URL line and record a gateway session set", () => {
+    const parent = Object.freeze({
+      ANTHROPIC_CUSTOM_HEADERS: "X-Team: blue\nX-Target-URL: http://127.0.0.1:54321",
+      CLAUDISH_SET_HARNESS_GATEWAY_TARGET: "http://127.0.0.1:54321",
+      FOO: "bar",
+    });
+    expect(claudeCodePrintEnv(parent)).toEqual({
+      ANTHROPIC_CUSTOM_HEADERS: "X-Team: blue",
+      FOO: "bar",
+    });
+  });
+
+  test("drops ANTHROPIC_CUSTOM_HEADERS when the gateway line was its only line", () => {
+    const parent = Object.freeze({
+      ANTHROPIC_CUSTOM_HEADERS: "X-Target-URL: http://127.0.0.1:54321",
+      CLAUDISH_SET_HARNESS_GATEWAY_TARGET: "http://127.0.0.1:54321",
+      FOO: "bar",
+    });
+    expect(claudeCodePrintEnv(parent)).toEqual({ FOO: "bar" });
+  });
 });

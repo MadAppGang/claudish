@@ -122,6 +122,9 @@ describe("deriveRowLayout", () => {
 });
 
 describe("deriveProviderRowLayout", () => {
+  /** `anthropic@`, the widest shortcut in the provider list. */
+  const SHORTCUT = "anthropic@".length;
+
   test("cells sum EXACTLY to the row width at every width in [40, 200]", () => {
     // THE DEFECT THIS WOULD HAVE CAUGHT IS THE ONE THAT WAS THERE. The provider
     // row's four widths used to be `const`s inside the component with an
@@ -129,14 +132,14 @@ describe("deriveProviderRowLayout", () => {
     // every provider row painted a two-cell dead tail and nothing said so.
     const wrong = WIDTHS.map((w) => ({
       w,
-      sum: providerRowTotal(deriveProviderRowLayout(w)),
+      sum: providerRowTotal(deriveProviderRowLayout(w, SHORTCUT)),
     })).filter(({ w, sum }) => sum !== w);
     expect(wrong).toEqual([]);
   });
 
   test("no cell is ever negative, at any width including absurd ones", () => {
     for (const w of [...WIDTHS, 0, 1, 8, 20, -5, Number.NaN, Number.POSITIVE_INFINITY]) {
-      const l = deriveProviderRowLayout(w);
+      const l = deriveProviderRowLayout(w, SHORTCUT);
       for (const [cell, n] of Object.entries(l)) {
         expect({ w, cell, ok: Number.isFinite(n) && n >= 0 }).toEqual({ w, cell, ok: true });
       }
@@ -148,13 +151,27 @@ describe("deriveProviderRowLayout", () => {
     // column wider than 26 is dead air between a provider and the shortcut that
     // qualifies it. Past the cap the extra columns go to the right-aligned tail,
     // which is where a count belongs.
-    const narrow = deriveProviderRowLayout(72);
-    const wide = deriveProviderRowLayout(140);
+    const narrow = deriveProviderRowLayout(72, SHORTCUT);
+    const wide = deriveProviderRowLayout(140, SHORTCUT);
     expect(narrow.name).toBe(26);
     expect(wide.name).toBe(26);
     expect(wide.tail - narrow.tail).toBe(140 - 72);
     expect(wide.shortcut).toBe(narrow.shortcut);
     expect(wide.billing).toBe(narrow.billing);
+  });
+
+  test("the shortcut column is the widest shortcut shown plus its separator", () => {
+    expect(deriveProviderRowLayout(72, SHORTCUT).shortcut).toBe(SHORTCUT + 1);
+    expect(deriveProviderRowLayout(72, "or@".length).shortcut).toBe("or@".length + 1);
+  });
+
+  test("a wider shortcut column takes its cells from the tail, never below the named case", () => {
+    // 72 is the dialog's inner width at 80 columns, where the name sits on its cap.
+    const short = deriveProviderRowLayout(72, "mistral@".length);
+    const wide = deriveProviderRowLayout(72, SHORTCUT);
+    expect(wide.name).toBe(short.name);
+    expect(wide.tail).toBe(short.tail - (SHORTCUT - "mistral@".length));
+    expect(wide.tail).toBeGreaterThanOrEqual("needs MOONSHOT_API_KEY".length);
   });
 });
 

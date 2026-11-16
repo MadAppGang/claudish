@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createHash } from "node:crypto";
-import { detectFrontEnd, herdrPaneEnv, workspaceKeyOf, workspaceLockName } from "./front-end.js";
+import { detectFrontEnd, herdrPaneEnv } from "./front-end.js";
 
 const full = {
   TERM_PROGRAM: "herdr",
@@ -25,22 +24,7 @@ describe("front-end environment contract", () => {
   ] as const)("TEST-1 REQ-14 REQ-19 %j selects %s", (env, expected) => {
     expect(detectFrontEnd(env)).toBe(expected);
     expect(herdrPaneEnv(env)).toEqual(
-      expected === "herdr"
-        ? { socketPath: full.HERDR_SOCKET_PATH, paneId: "p1", workspaceId: "w1" }
-        : null
+      expected === "herdr" ? { socketPath: full.HERDR_SOCKET_PATH, paneId: "p1" } : null
     );
-  });
-
-  test("TEST-2 REQ-15 workspace identity includes herdr socket hash and safe lock spelling", () => {
-    const a = "/test-only/herdr-a.sock";
-    const b = "/test-only/herdr-b.sock";
-    const hash = createHash("sha256").update(a).digest("hex").slice(0, 8);
-
-    const key = workspaceKeyOf(a, "w1");
-
-    expect(key).toBe(`${hash}/w1`);
-    expect(workspaceKeyOf(b, "w1")).not.toBe(key);
-    expect(workspaceKeyOf(a, "w2")).not.toBe(key);
-    expect(workspaceLockName(key)).toBe(`${hash}-w1.lock`);
   });
 });

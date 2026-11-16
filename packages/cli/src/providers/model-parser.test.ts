@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { parseModelChain, parseModelSpec } from "./model-parser.js";
+import { parseModelChain, parseModelFlags, parseModelSpec } from "./model-parser.js";
 
 test.each([
   ["cx@gpt-6-sol+pro", ["cx@gpt-6-sol+pro"]],
@@ -25,4 +25,31 @@ test("invalid marker remains part of the model", () => {
   expect(parsed.model).toBe("gpt-6-sol+typo");
   expect(parsed.mode).toBeUndefined();
   expect(parsed.speed).toBeUndefined();
+});
+
+test.each([
+  [
+    "a pinned raw URL",
+    ["https://user:USERINFO-SECRET@gw.example/PATH-SECRET/m?key=QUERY-SECRET", "or@x", "or@"],
+  ],
+  [
+    "a custom-url@ pinned URL",
+    [
+      "custom-url@https://user:USERINFO-SECRET@gw.example/PATH-SECRET/m?key=QUERY-SECRET",
+      "or@x",
+      "or@",
+    ],
+  ],
+  [
+    "a routing chain holding a URL",
+    ["https://user:USERINFO-SECRET@gw.example/PATH-SECRET/m?key=QUERY-SECRET+or@x", "or@"],
+  ],
+] as const)("a refused --model keeps %s out of the message", (_label, values) => {
+  const result = parseModelFlags([...values]);
+  expect(result.ok).toBe(false);
+  const message = result.ok ? "" : result.message;
+  expect(message).toContain("raw URL");
+  for (const secret of ["USERINFO-SECRET", "PATH-SECRET", "QUERY-SECRET", "user:"]) {
+    expect(message).not.toContain(secret);
+  }
 });

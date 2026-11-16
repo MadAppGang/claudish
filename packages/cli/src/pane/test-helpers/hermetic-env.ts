@@ -35,7 +35,6 @@ import {
   readProcessTable,
   setPsSpawnForTest,
 } from "../process-identity.js";
-import { FakeHerdr } from "./fake-herdr.js";
 
 export const FAKE_CHILD = join(import.meta.dir, "fake-interactive-child.ts");
 export const MAGMUX = findMagmuxBinaryOrNull();
@@ -107,8 +106,8 @@ const MULTIPLEXER_SOCKET_VARS = ["HERDR_SOCKET_PATH", "HC_TERMINAL_SOCKET", "HC_
  * Fail when HOME, CLAUDE_CONFIG_DIR or ZDOTDIR resolve under the real home, and when a herdr or
  * herdr-core socket variable names a socket under the real home (`~/.config/herdr/herdr.sock`, a
  * named session's `~/.config/herdr/sessions/<name>/herdr.sock`, `~/.local/state/herdr-core/...`).
- * A test run from inside herdr inherits `HERDR_SOCKET_PATH`; without this check a placer under test
- * would lay out panes in the user's own session.
+ * A test run from inside herdr inherits `HERDR_SOCKET_PATH`; without this check code under test
+ * that dials herdr would act on the user's own session.
  */
 export function assertHermetic(env: Record<string, string>): void {
   const realHome = homedir();
@@ -123,28 +122,6 @@ export function assertHermetic(env: Record<string, string>): void {
     if (v && (v.startsWith(`${realHome}/`) || v.startsWith("~")))
       throw new Error(`hermetic env ${k}=${v} is a real multiplexer socket under ${realHome}`);
   }
-}
-
-/**
- * The variables a process sees inside a herdr pane, pointing at a fake herdr server started in
- * `tmp`. Merge `env` into a hermetic env; stop `fake` in the test's cleanup.
- */
-export async function makeFakeHerdrEnv(
-  tmp: string,
-  workspaceId = "w1"
-): Promise<{ fake: FakeHerdr; env: Record<string, string>; paneId: string }> {
-  const fake = await FakeHerdr.start(tmp);
-  const { paneId, tabId } = fake.addWorkspace(workspaceId);
-  const env: Record<string, string> = {
-    TERM_PROGRAM: "herdr",
-    HERDR_ENV: "1",
-    HERDR_SOCKET_PATH: fake.path,
-    HERDR_PANE_ID: paneId,
-    HERDR_TAB_ID: tabId,
-    HERDR_WORKSPACE_ID: workspaceId,
-  };
-  assertHermetic({ HOME: tmp, CLAUDE_CONFIG_DIR: tmp, ZDOTDIR: tmp, ...env });
-  return { fake, env, paneId };
 }
 
 export function newSessionUuid(): string {

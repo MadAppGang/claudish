@@ -2,11 +2,39 @@
 
 import type { CodeModeSetting } from "./code-mode/policy.js";
 import type { AdvisorPanelGateway } from "./handlers/advisor-route-plan.js";
+import type { ParsedModelFlags } from "./providers/model-parser.js";
 
 // Model ID type - any valid OpenRouter model string
 export type OpenRouterModel = string;
 
 // CLI Configuration
+/**
+ * A top-level launch whose main model names a Claude route explicitly:
+ * `"subscription"` is `claude@<id>`, a monitor session on Claude Code's own
+ * login; `"api"` is `anthropic@<id>`, a monitor session on the metered Claude
+ * API, every request signed by claudish's proxy with the user's key.
+ */
+export type ClaudeLaunch = "subscription" | "api";
+
+/** A Claude Code role a tier flag, variable or profile maps to a model. */
+export type ModelTier = "opus" | "sonnet" | "haiku" | "subagent";
+
+/**
+ * One claudish provider whose models a launch lists in Claude Code's `/model`:
+ * a listing entry (`--model devin@`, `--model 'or@*'`), or the provider of a
+ * full spec on a launch that has one.
+ */
+export interface ProviderListing {
+  /** claudish provider name, resolved from the shortcut after endpoint registration. */
+  provider: string;
+  /** The value as typed (`or@*`), or the full spec that named this provider. */
+  typed: string;
+  /** `all` for `x@*`: every chat model; `recommended` for `x@` (a gateway lists only recommended ones). `*` wins when both were given. */
+  scope: "recommended" | "all";
+  /** Pinned full specs naming this provider, argv order; each is a row when the provider is ready. */
+  pinnedSpecs: string[];
+}
+
 export interface ClaudishConfig {
   model?: OpenRouterModel | string; // Optional - will prompt if not provided
   /**
@@ -24,6 +52,49 @@ export interface ClaudishConfig {
    */
   modelChain?: string[];
   /**
+   * Every `--model` value of a launch with a listing entry (`--model devin@`,
+   * `--model 'or@*'`), split and classified by `parseArgs`. Absent on every
+   * other launch. Read once, by `decideModelListings`, which resolves the
+   * shortcuts after endpoint registration and sets `modelListings`.
+   */
+  _modelFlags?: ParsedModelFlags;
+  /**
+   * The claudish providers whose models this launch lists in Claude Code's
+   * `/model`, one entry per provider, set by `decideModelListings`. Present
+   * only on a launch with a listing entry; never a `ClaudishProfileConfig`
+   * field.
+   */
+  modelListings?: ProviderListing[];
+  /**
+   * The /model lineup of an interactive launch with listing entries, built
+   * before the proxy starts: the rows (each `model` a full claudish model spec)
+   * and the ONE `modelPicker` value both writers of the `--settings` temp file
+   * carry. Absent on every other launch, and in print mode.
+   */
+  modelLineup?: {
+    rows: ReadonlyArray<{ model: string; label: string; description: string; provider: string }>;
+    /** claudish's rows carry `model`, `label`, `description`; a user's row keeps every field. */
+    picker: {
+      options: Array<{
+        model: string;
+        label: string;
+        description?: string;
+        [field: string]: unknown;
+      }>;
+    };
+    /**
+     * The user's own `modelPicker` rows that are explicit claudish model specs
+     * and not lineup rows: the proxy routes a pick of one as sent, like a row.
+     */
+    userRows?: ReadonlyArray<{ model: string; label: string }>;
+  };
+  /**
+   * The main thread's context window, computed once before the launch report
+   * (`computeMainThreadContextWindow`) and reused by the runner. Set only on a
+   * launch that builds a /model lineup.
+   */
+  mainThreadWindow?: number;
+  /**
    * `--model-pinned`: `--model` is a parent's pin (one spec or a chain), routed for
    * a bare name in the parent. Only the proxy reads it, to treat each element as a
    * routed hop. Cleared at startup outside a pane child (`modelPinnedHonoured`).
@@ -38,6 +109,33 @@ export interface ClaudishConfig {
   quiet: boolean; // Suppress [claudish] log messages (default true in single-shot mode)
   jsonOutput: boolean; // Output in JSON format for tool integration
   monitor: boolean; // Monitor mode - proxy to real Anthropic API and log everything
+  /**
+   * Set only by `decideClaudeLaunch`: at top level `claude@<id>` is
+   * `"subscription"` and `anthropic@<id>` (`a@`, `api@`) is `"api"`. Absent on
+   * every other launch. Implies `monitor`.
+   */
+  claudeLaunch?: ClaudeLaunch;
+  /**
+   * Set only by `prepareClaudeLaunch`: the id Claude Code receives as
+   * `ANTHROPIC_MODEL`. `model` keeps the user's route-carrying spec.
+   */
+  claudeLaunchModel?: string;
+  /**
+   * Set only by `prepareClaudeLaunch` on a Claude API launch: where the key the
+   * proxy signs with was found (`macOS Keychain`, `1Password`, …). A label,
+   * never the key.
+   */
+  claudeLaunchKeySource?: string;
+  /**
+   * Set by `decideClaudeLaunch`: in a pane child given `claude@<id>` (the
+   * model became the bare `<id>`), and on any launch whose tier
+   * (`modelOpus`, `modelSonnet`, `modelHaiku`, `modelSubagent`) is
+   * `claude@<id>`. Also set by `--claude-subscription-pin`, which `run_prompt`
+   * passes its print child for a `claude@<id>` spec. It keeps the user's explicit choice of the Claude
+   * subscription: the launch then signs `login-only` and hides a real
+   * ANTHROPIC_API_KEY whatever the API-billing opt-in says.
+   */
+  claudeSubscriptionPin?: boolean;
   stdin: boolean; // Read prompt from stdin instead of args
   openrouterApiKey?: string; // Optional in monitor mode
   anthropicApiKey?: string; // Required in monitor mode
@@ -80,6 +178,12 @@ export interface ClaudishConfig {
   modelSonnet?: string;
   modelHaiku?: string;
   modelSubagent?: string;
+  /**
+   * Where each tier above came from, set by `parseArgs`: a flag (`--model-haiku`),
+   * an environment variable (`CLAUDISH_MODEL_HAIKU`), or a profile
+   * (`profile "work"`). A label for messages, never a model spec.
+   */
+  modelTierSources?: Partial<Record<ModelTier, string>>;
 
   // Classifier passthrough (auto-mode permission check → native Claude).
   // Opt-in: reroutes Claude Code's auto-mode permission classifier request to

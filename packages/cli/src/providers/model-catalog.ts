@@ -117,10 +117,9 @@ export interface CatalogClient {
  * full ModelDoc shape.
  *
  * Note: a slug can be BOTH an owner and a name bound to a route. "anthropic"
- * owns Claude models AND names Anthropic's native API route
- * (`anthropic/direct-api`, a lookup-only binding in `catalog-route-bindings.ts`:
- * no claudish provider calls it). The owner path wins because it returns more
- * complete data.
+ * owns Claude models AND is the claudish provider of Anthropic's native API route
+ * (`anthropic/direct-api`, the Claude API). The owner path wins because it returns
+ * more complete data.
  */
 const OWNER_PROVIDER_SLUGS = new Set<string>([
   "anthropic",
@@ -251,7 +250,11 @@ function filterToServedByProvider(
   const kept: CatalogModel[] = [];
   for (const model of models) {
     const slim = byId.get(model.modelId.toLowerCase());
-    const served = slim?.aggregators?.some((agg) => catalogRouteMatchesProvider(agg.route, slug));
+    // A connection is a MAPPED aggregator entry; a route on any other status is
+    // not a way to call the model.
+    const served = slim?.aggregators?.some(
+      (agg) => agg.routeStatus === "mapped" && catalogRouteMatchesProvider(agg.route, slug)
+    );
     if (served) {
       kept.push({ ...model, aggregators: slim?.aggregators ?? model.aggregators });
     }
@@ -429,8 +432,13 @@ export function createCatalogClient(deps: CatalogClientDeps = {}): CatalogClient
       const out: CatalogModel[] = [];
       for (const entry of entries) {
         // The same rule `filterToServedByProvider` applies, so the two answers
-        // cannot drift: a v3 row names who serves it by its route binding.
-        if (entry.aggregators?.some((agg) => catalogRouteMatchesProvider(agg.route, slug))) {
+        // cannot drift: a v3 row names who serves it by a mapped connection's
+        // route binding.
+        if (
+          entry.aggregators?.some(
+            (agg) => agg.routeStatus === "mapped" && catalogRouteMatchesProvider(agg.route, slug)
+          )
+        ) {
           out.push(slimEntryToCatalogModel(entry));
         }
       }

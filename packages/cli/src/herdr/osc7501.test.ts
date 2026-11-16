@@ -5,15 +5,13 @@ import { PLAIN_TERMINAL } from "../view/viewer.js";
 import { HcStatusReporter } from "./hc-reporter.js";
 import { clearOsc7501, decodeOsc7501, encodeOsc7501 } from "./osc7501.js";
 import { hcStatus } from "./state-map.js";
-import { replayItem, sessionItem } from "./test-helpers/placer-harness.js";
+import { replayItem, sessionItem } from "./test-helpers/view-items.js";
 
 const ESC = "\x1b";
 
 function withFields(item: ViewItem, fields: Record<string, unknown>): ViewItem {
   return { ...item, ...fields } as ViewItem;
 }
-
-const notPlaced = { placed: false, endpoint: undefined, placement: undefined };
 
 describe("encodeOsc7501", () => {
   test("is byte for byte the line hc 0.1.19 parsed into status {state, app, title, msg}", () => {
@@ -104,11 +102,11 @@ describe("HcStatusReporter", () => {
   test("writes one line per change of what it says, and clears it at the end", () => {
     const out: string[] = [];
     const r = new HcStatusReporter({ write: (s) => out.push(s) });
-    r.report({ item: null, holding: false, ended: false });
+    r.report({ item: null, ended: false });
     expect(out).toEqual([]);
     const running = withFields(sessionItem("a"), { activity: "Bash" });
-    r.report({ item: running, holding: false, ended: false });
-    r.report({ item: { ...running, tokens_in: 5 } as ViewItem, holding: true, ended: false });
+    r.report({ item: running, ended: false });
+    r.report({ item: { ...running, tokens_in: 5 } as ViewItem, ended: false });
     expect(out).toHaveLength(1);
     expect(decodeOsc7501(out[0] as string)).toEqual({
       state: "working",
@@ -118,14 +116,13 @@ describe("HcStatusReporter", () => {
     });
     r.report({
       item: withFields(running, { state: "AWAITING_PERMISSION" }),
-      holding: true,
       ended: false,
     });
     expect(decodeOsc7501(out[1] as string)).toMatchObject({ state: "blocked", kind: "permission" });
     r.close();
     r.close();
     expect(out.slice(2)).toEqual([clearOsc7501()]);
-    r.report({ item: running, holding: false, ended: true });
+    r.report({ item: running, ended: true });
     expect(out).toHaveLength(3);
   });
 
@@ -144,34 +141,29 @@ describe("the viewer's front end choice", () => {
     });
   });
 
-  test("in an hc terminal, auto and herdr-core report by OSC 7501 to the viewer's own output", async () => {
+  test("in an hc terminal, auto and herdr-core report by OSC 7501 to the viewer's own output", () => {
     const hcEnv = { HC_TERMINAL_ID: "t7", TERM_PROGRAM: "ghostty" };
     for (const wanted of ["auto", "herdr-core"] as const) {
       const out: string[] = [];
-      const choice = await chooseFrontEnd(wanted, hcEnv, notPlaced, (s) => out.push(s));
+      const choice = chooseFrontEnd(wanted, hcEnv, (s) => out.push(s));
       if ("error" in choice) throw new Error(choice.error);
       expect(choice.frontEnd).toBeInstanceOf(HcStatusReporter);
       expect(choice.frontEnd.name).toBe("herdr-core");
-      choice.frontEnd.report({ item: sessionItem("a"), holding: true, ended: false });
+      choice.frontEnd.report({ item: sessionItem("a"), ended: false });
       expect(out).toHaveLength(1);
       expect(out[0]?.startsWith(`${ESC}]7501;state=working:app=claudish`)).toBe(true);
     }
   });
 
-  test("outside an hc terminal no OSC 7501 line is ever written", async () => {
+  test("outside an hc terminal no OSC 7501 line is ever written", () => {
     const out: string[] = [];
-    const auto = await chooseFrontEnd("auto", { TERM_PROGRAM: "iTerm.app" }, notPlaced, (s) =>
-      out.push(s)
-    );
+    const auto = chooseFrontEnd("auto", { TERM_PROGRAM: "iTerm.app" }, (s) => out.push(s));
     expect(auto).toEqual({ frontEnd: PLAIN_TERMINAL });
-    expect(await chooseFrontEnd("herdr-core", {}, notPlaced, (s) => out.push(s))).toEqual({
+    expect(chooseFrontEnd("herdr-core", {}, (s) => out.push(s))).toEqual({
       error: "--front-end herdr-core needs an hc terminal (HC_TERMINAL_ID)",
     });
-    const off = await chooseFrontEnd(
-      "auto",
-      { HC_TERMINAL_ID: "t7", CLAUDISH_HERDR: "0" },
-      notPlaced,
-      (s) => out.push(s)
+    const off = chooseFrontEnd("auto", { HC_TERMINAL_ID: "t7", CLAUDISH_HERDR: "0" }, (s) =>
+      out.push(s)
     );
     expect(off).toEqual({ frontEnd: PLAIN_TERMINAL });
     expect(out).toEqual([]);

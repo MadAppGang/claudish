@@ -11,8 +11,12 @@
  * The contract the renderers rely on:
  *   - `chain` holds the KEPT candidates in `route()`'s order, and `[]` still means
  *     no route. An explicit target is a one-item chain.
- *   - A native target (no candidates: Claude Code's own auth serves it) is ONE
- *     link that carries `notProbed: "native-auth"`. It is never probed.
+ *   - A native target (no candidates: Claude Code's own login serves it) leads
+ *     with ONE link that carries `notProbed: "native-auth"`, the Claude
+ *     subscription. It is never probed. When the explanation lists the model's
+ *     other catalog routes (`comparisonCandidates`), the kept ones follow it as
+ *     links marked `comparison: true`: probed, and never a hop a launch of the
+ *     name uses. `chain[0]` stays the route a launch takes.
  *   - `dropped` holds every other candidate, in chain order, with its outcome.
  *     Dropped candidates are listed, never probed (see `probeTargets`).
  *   - The parser's provider (`nativeProvider`) is not here: it is not a routing
@@ -50,8 +54,10 @@ export interface ProbeChainLink {
   hasCredentials: boolean;
   credentialHint?: string;
   provenance?: KeyProvenance;
-  /** A native link: served on Claude Code's own auth, which this process cannot forward. */
+  /** A native link: served on Claude Code's own login, which this process cannot forward. */
   notProbed?: "native-auth";
+  /** A route of a bare Claude name listed for comparison; not used by a launch of the name. */
+  comparison?: true;
   probe?: ProbeResult;
 }
 
@@ -70,6 +76,10 @@ export interface ProbeDroppedLink {
   detail?: string;
   /** A no-credential candidate whose credential is not an env var (`effectiveLabel`). */
   provenance?: KeyProvenance;
+  /** A route of a bare Claude name listed for comparison; not used by a launch of the name. */
+  comparison?: true;
+  /** A no-credential candidate: where claudish looked for its key, comma-separated. */
+  searched?: string;
 }
 
 /** Where `--probe` reads a provider's credential remedy and key provenance from. */
@@ -78,10 +88,12 @@ export interface CredentialLookup {
   hintFor(provider: string): string | undefined;
   /** Where the provider's key comes from, when it is read from an env var. */
   provenanceFor(provider: string): KeyProvenance | undefined;
+  /** Where claudish looked for a provider's key, for a row that says none was found. */
+  searchedFor?(provider: string): string | undefined;
 }
 
 /** The label a native link shows in place of a tier. */
-export const NATIVE_LINK_LABEL = "Claude Code's own auth";
+export const NATIVE_LINK_LABEL = "Claude Code's own login";
 
 /** The kept chain and the dropped candidates of one explanation. */
 export function probeChainFrom(
@@ -89,7 +101,19 @@ export function probeChainFrom(
   credentials: CredentialLookup
 ): { chain: ProbeChainLink[]; dropped: ProbeDroppedLink[] } {
   if (explanation.source === "native" && explanation.native) {
-    return { chain: [nativeLinkOf(explanation.native)], dropped: [] };
+    const chain = [nativeLinkOf(explanation.native)];
+    const dropped: ProbeDroppedLink[] = [];
+    for (const candidate of explanation.comparisonCandidates ?? []) {
+      if (candidate.outcome === "kept") {
+        chain.push({ ...keptLinkOf(candidate, credentials), comparison: true });
+      } else {
+        dropped.push({
+          ...droppedLinkOf(candidate, candidate.outcome, credentials),
+          comparison: true,
+        });
+      }
+    }
+    return { chain, dropped };
   }
   const chain: ProbeChainLink[] = [];
   const dropped: ProbeDroppedLink[] = [];
@@ -151,6 +175,8 @@ function droppedLinkOf(
   // that provenance rides on a dropped row, for the Key line when nothing was kept.
   const provenance =
     outcome === "no-credential" ? credentials.provenanceFor(candidate.provider) : undefined;
+  const searched =
+    outcome === "no-credential" ? credentials.searchedFor?.(candidate.provider) : undefined;
   return {
     provider: candidate.provider,
     displayName: candidate.displayName,
@@ -162,6 +188,34 @@ function droppedLinkOf(
     ...(hint ? { credentialHint: hint } : {}),
     ...(outcome === "gateway-id-unknown" ? { detail: gatewayWithheldNote(candidate) } : {}),
     ...(provenance?.effectiveLabel ? { provenance } : {}),
+    ...(searched ? { searched } : {}),
+  };
+}
+
+/**
+ * A kept link a probe did not send down after all: its read-at-use key could
+ * not be read, or was not there (`probeSendRefusal`). It is dropped with that
+ * outcome, like a candidate the credential filter removed.
+ */
+export function refusedLinkOf(
+  link: ProbeChainLink,
+  refusal: {
+    outcome: "no-credential" | "credential-unreadable";
+    detail?: string;
+    searched?: string;
+  }
+): ProbeDroppedLink {
+  return {
+    provider: link.provider,
+    displayName: link.displayName,
+    wireId: link.wireId,
+    position: link.position,
+    ...(link.tier !== undefined ? { tier: link.tier } : {}),
+    label: link.label,
+    outcome: refusal.outcome,
+    ...(refusal.detail ? { detail: refusal.detail } : {}),
+    ...(refusal.searched ? { searched: refusal.searched } : {}),
+    ...(link.comparison ? { comparison: true as const } : {}),
   };
 }
 
@@ -230,6 +284,7 @@ export function resultLinksFrom(
         hasCredentials: link.hasCredentials,
         ...(link.credentialHint ? { credentialHint: link.credentialHint } : {}),
         ...(link.notProbed ? { notProbed: link.notProbed } : {}),
+        ...(link.comparison ? { comparison: link.comparison } : {}),
         ...(link.probe ? { probe: link.probe } : {}),
         ...withKeyLine(link.provenance),
       })
@@ -245,6 +300,8 @@ export function resultLinksFrom(
         hasCredentials: entry.outcome === "not-served",
         ...(entry.credentialHint ? { credentialHint: entry.credentialHint } : {}),
         ...(entry.detail ? { droppedDetail: entry.detail } : {}),
+        ...(entry.searched ? { searched: entry.searched } : {}),
+        ...(entry.comparison ? { comparison: entry.comparison } : {}),
         dropped: entry.outcome,
         ...withKeyLine(entry.provenance),
       })

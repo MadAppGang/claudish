@@ -67,16 +67,12 @@ describe("v3 route bindings", () => {
       ...PREDEFINED_ENDPOINTS.map((endpoint) => endpoint.name),
     ]);
 
-    expect(lookupNames).toEqual(["anthropic", "moonshotai", "zen"]);
+    expect(lookupNames).toEqual(["moonshotai", "zen"]);
     expect(lookupNames.filter((name) => providerNames.has(name))).toEqual([]);
     expect(lookupNames.filter((name) => name in CATALOG_ROUTE_BINDINGS)).toEqual([]);
   });
 
   test("catalog reads retain literal lookup routes without creating route candidates", () => {
-    expect(catalogRouteForProvider("anthropic")).toEqual({
-      routeId: "anthropic",
-      routeProfileId: "direct-api",
-    });
     expect(catalogRouteForProvider("moonshotai")).toEqual({
       routeId: "moonshotai",
       routeProfileId: "direct-api",
@@ -87,11 +83,22 @@ describe("v3 route bindings", () => {
     });
 
     expect(
-      catalogRouteMatchesProvider(
-        { routeId: "anthropic", routeProfileId: "direct-api" },
-        "anthropic"
-      )
-    ).toBe(true);
+      routingProvidersForRoute({ routeId: "moonshotai", routeProfileId: "direct-api" })
+    ).toEqual(["kimi"]);
+    expect(routingProvidersForRoute({ routeId: "opencode", routeProfileId: "zen" })).toEqual([
+      "opencode-zen",
+    ]);
+  });
+
+  test("the Claude API is the builtin claudish provider bound to anthropic/direct-api", () => {
+    const route = { routeId: "anthropic", routeProfileId: "direct-api" };
+    expect(BUILTIN_PROVIDERS.some((provider) => provider.name === "anthropic")).toBe(true);
+    expect(CATALOG_ROUTE_BINDINGS.anthropic).toEqual(route);
+    expect("anthropic" in LOOKUP_ONLY_ROUTE_BINDINGS).toBe(false);
+    expect(catalogRouteForProvider("anthropic")).toEqual(route);
+    expect(providerForCatalogRoute(route)).toBe("anthropic");
+
+    expect(catalogRouteMatchesProvider(route, "anthropic")).toBe(true);
     expect(
       catalogRouteMatchesProvider(
         { routeId: "anthropic", routeProfileId: "claude-code-subscription" },
@@ -99,15 +106,12 @@ describe("v3 route bindings", () => {
       )
     ).toBe(false);
 
+    // Each Claude route has exactly one route candidate: the Claude API on
+    // direct-api, the Claude subscription on claude-code-subscription.
+    expect(routingProvidersForRoute(route)).toEqual(["anthropic"]);
     expect(
-      routingProvidersForRoute({ routeId: "anthropic", routeProfileId: "direct-api" })
-    ).toEqual([]);
-    expect(
-      routingProvidersForRoute({ routeId: "moonshotai", routeProfileId: "direct-api" })
-    ).toEqual(["kimi"]);
-    expect(routingProvidersForRoute({ routeId: "opencode", routeProfileId: "zen" })).toEqual([
-      "opencode-zen",
-    ]);
+      routingProvidersForRoute({ routeId: "anthropic", routeProfileId: "claude-code-subscription" })
+    ).toEqual(["native-anthropic"]);
   });
 });
 

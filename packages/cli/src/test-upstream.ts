@@ -111,8 +111,10 @@ let warnedFor: string | undefined;
  *
  * `0.0.0.0` is deliberately NOT loopback: it is a wildcard bind address, and a
  * connection to it leaves the machine's routing table's hands.
+ *
+ * Also the rule for `harnessGateway.url` (`harness-gateway.ts`).
  */
-function isLoopbackTarget(origin: string): boolean {
+export function isLoopbackTarget(origin: string): boolean {
   let url: URL;
   try {
     url = new URL(origin);

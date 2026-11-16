@@ -124,14 +124,8 @@ describe.skipIf(!MAGMUX_AVAILABLE)(
           expect(shown).toContain(`s:${id}`);
           expect(shown).toContain("AWAITING_INPUT");
 
-          const held = await waitFor(
-            async () => {
-              const view = (await sessionRow(id))?.view as Json | null | undefined;
-              return view?.holder === "terminal" ? view : undefined;
-            },
-            { what: "the terminal to hold the view", timeoutMs: 10_000, intervalMs: 200 }
-          );
-          expect(held.label).toBe("E2ETerm");
+          // the viewer only watches: the session's view is still nobody's
+          expect((await sessionRow(id))?.view ?? null).toBeNull();
 
           // typed into the viewer: none of it may reach the session
           const typed = await control.request({ type: "send", pane: 0, text: "zzkeyprobe\r" });
@@ -145,13 +139,8 @@ describe.skipIf(!MAGMUX_AVAILABLE)(
           // `send` presses Enter after the text; the viewer has already exited on the q by then
           const quit = await control.request({ type: "send", pane: 0, text: "q" });
           expect(quit.ok || quit.code === "pane_dead").toBe(true);
-          await waitFor(
-            async () => {
-              const view = (await sessionRow(id))?.view;
-              return view === null ? true : undefined;
-            },
-            { what: "the view released on q", timeoutMs: 10_000, intervalMs: 200 }
-          );
+          await Bun.sleep(500);
+          expect((await sessionRow(id))?.view ?? null).toBeNull();
         } finally {
           control.close();
         }

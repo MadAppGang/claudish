@@ -34,6 +34,23 @@ Pick a number, hit Enter. You're in.
 
 ---
 
+## Claude in the Selector
+
+The provider list starts with two Claude rows:
+
+- **Claude subscription**: Claude models on your own Claude Code login. Listed when Claude Code
+  is signed in; an Anthropic API key does not count. Prices show `SUB`.
+- **Claude API**: Claude models on Anthropic's API, billed per token to your `ANTHROPIC_API_KEY`.
+  Listed when a key is in your environment, `~/.claudish/config.json`, the macOS Keychain or
+  1Password. Without one the row is hidden; `k` shows it as `needs ANTHROPIC_API_KEY`, and with
+  the cursor on it the hint line names where claudish looked: `looked in: env, config, Keychain,
+  1Password`.
+
+Picking a model under either row starts a [monitor-mode](monitor-mode.md#claude-subscription-or-claude-api)
+session, the same as `--model claude@<id>` or `--model anthropic@<id>`.
+
+---
+
 ## Skip the Selector
 
 Already know which model you want? Skip straight to it:
@@ -43,6 +60,27 @@ claudish --model x-ai/grok-code-fast-1
 ```
 
 This starts an interactive session with Grok immediately.
+
+---
+
+## Switch Models Inside the Session
+
+Give `--model` a provider shortcut with no model, and that provider's models appear in Claude
+Code's own `/model` list, after Claude's rows:
+
+```bash
+claudish --model devin@ --model ag@            # list Devin and Antigravity; start on Claude's default model
+claudish --model devin@swe-1.7 --model 'or@*'  # start on devin@swe-1.7; list Devin and every OpenRouter model
+```
+
+Pick a row in `/model` and the next request goes to that model, with no restart. `s` picks for
+this session only; Enter also saves the pick as Claude Code's default, and claudish puts your
+previous default back when the session exits. A gateway's `x@` lists its recommended models,
+`'x@*'` every chat model it serves (quote the `*`). A local server is listed only when
+`localProviders` enables it. Before Claude Code starts, claudish prints what it listed and why
+any provider is missing.
+
+Rules, refusals and limits: [Listing providers' models in `/model`](../settings-reference.md#522-listing-providers-models-in-claude-codes-model).
 
 ---
 
@@ -114,7 +152,7 @@ claudish --model mistralai/mistral-large-2411
 
 ## Session Tips
 
-**Switching models mid-session?** You can't. Exit and restart with a different model.
+**Switching models mid-session?** Launch with listing entries (`--model devin@`, see above) and pick in `/model`. Without them, exit and restart with a different model.
 
 **Context window exhausted?** Start fresh. Or switch to a model with larger context (Gemini 3 Pro has 1M tokens).
 

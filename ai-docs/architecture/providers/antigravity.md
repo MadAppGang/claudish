@@ -315,6 +315,13 @@ That rule now governs only the fallback list. When the backend sends
 
 **Model ids — LIVE discovery, no hardcoded map**: the Antigravity backend requires a reasoning-tier suffix (bare `gemini-3.6-flash` → 404), but which variants a subscription serves is **per-account and drifts**, so claudish never hardcodes a model list. `getServedAntigravityModels()` fetches the live set from the backend's own `v1internal:fetchAvailableModels` (body `{project}`) — the served ids are the response `models` keys, plus a backend `defaultAgentModelId` — cached with a TTL. `resolveAntigravityModelId(requested, servedIds, defaultId)` then resolves against that LIVE set: exact match passes through; a bare family (e.g. `gemini-3.6-flash`) resolves to the backend's `defaultAgentModelId` when it's a variant of that family, else to the strongest reasoning tier by a *rank rule* (`high>medium>low>extra-low>tiered` — a rule, like `rankCodeAssistModel`, not pinned ids); anything else passes through to the F1–F7 404 rewrite. The only literals are the tier-rank ordering and endpoint strings — no concrete model ids in source.
 
+**Identity in the request body**: besides the transport identity below, two body-level scrubs run
+for `ag@` in `ComposedHandler` (both in `handlers/shared/format/`, both detailed in `adapters.md`):
+the system prompt and injected text lose Claude Code's identity and open with Antigravity's own
+header (`identity-filter.ts`), and the tools with a true agy equivalent are renamed to agy's names
+and restored on the response (`tool-name-alias.ts`). The tool rename is names only, not argument
+schemas — see the honest limit in `adapters.md`.
+
 **Identity strings**: `User-Agent: antigravity/cli/<ver> (aidev_client; os_type=<platform>; arch=<arch>; auth_method=consumer)` + `metadata: { ideType: "ANTIGRAVITY" }`. The transport keeps all the F1–F7 improvements from the old codeassist path (terminal-error → 400 surfaced inline, the 404 rewrite that checks the dynamic models catalog, `rankCodeAssistModel`). Full reverse-engineering write-up: `ai-docs/sessions/antigravity-refactor-20260803-125333-d0791562/architecture.md` (write-up lost — predates the ai-docs tracking fix).
 
 ## Raw model list for models-index (`claudish subscription models antigravity --raw --json`)
@@ -589,3 +596,104 @@ break one line on every exit.
 `secret_guard` line would then carry it too; instead of printing nothing, that line drops every
 fact except `schema`, `claudishVersion`, `tokenRefreshed` and `failure`. One line on every exit
 holds.
+
+## What the `agy` CLI 1.5.9 puts on the wire (recorded 2026-11-15)
+
+Recorded through mitmproxy from `agy -p` on an Antigravity Pro account, one turn with two tool
+calls. Host `daily-cloudcode-pa.googleapis.com`, `POST /v1internal:streamGenerateContent?alt=sse`,
+about 53 KB per request.
+
+| Part | `agy` 1.5.9 | claudish 14.25.1 |
+|---|---|---|
+| Envelope keys | `model`, `project`, `request`, `requestId`, `requestType: "agent"`, `userAgent: "antigravity"` | `model`, `project`, `request`, `user_prompt_id`, `enabled_credit_types` on a paid tier |
+| `request` keys | `contents`, `generationConfig`, `labels`, `sessionId`, `systemInstruction`, `tools` | `contents`, `generationConfig`, `systemInstruction`, `tools` |
+| `requestId` | `agent/<cascade uuid>/<epoch ms>/<trajectory uuid>/<n>` | none |
+| `labels` | `cascade_id`, `root_cascade_id`, `trajectory_id`, `request_id`, `last_step_index`, `model_enum`, `used_claude`, `used_claude_conservative`, `used_non_gemini_model` | none |
+| `User-Agent` | `antigravity/cli/1.5.9 (aidev_client; os_type=darwin; arch=arm64; cl=1021519450; auth_method=consumer)` | the same without `cl=…`; also sends `x-activity-request-id` |
+| `systemInstruction` | `role: "user"`, one part, about 30 KB, opens with an `<identity>` block | no `role`, Claude Code's scrubbed prompt under the identity header |
+| `generationConfig` | `maxOutputTokens: 65536`, `thinkingConfig: {includeThoughts: true, thinkingLevel: "MEDIUM"}` | `temperature: 1`, `maxOutputTokens: 32000` |
+| `tools` | 17 entries, one `functionDeclarations` each | one entry holding every declaration |
+
+The identity block `agy` sends:
+
+```
+<identity>
+You are Antigravity, a powerful agentic AI assistant designed by the Google Deepmind team.
+You are working with a USER to solve their task.
+The USER will send you requests, which you must always prioritize addressing. User requests are enclosed within <USER_REQUEST> tags.
+</identity>
+```
+
+Its 17 tools: `read_file`, `run_command`, `manage_task`, `send_message`, `schedule`,
+`invoke_subagent`, `define_subagent`, `manage_subagents`, `write_file`, `edit_file`, `search_web`,
+`run_workflow`, `swarm`, `ask_question`, `call_mcp_tool`, `list_resources`, `read_resource`.
+Argument names are capitalised (`Path`, `CommandLine`, `Content`), unlike Claude Code's.
+
+**None of the differences in the table is what the server refused.** Each was put into a failing
+claudish request by replay and the answer stayed 429; `agy`'s whole body under claudish's own
+token and headers answered 200. The one thing the server refused was a paragraph of the system
+text: see `adapters.md` § "Antigravity refuses one paragraph of Claude Code's system prompt".
+So the envelope and the `User-Agent` are recorded here as known differences, not as defects.
+
+The generation settings are different: one of them was a defect that no 429 replay could show.
+See the next section.
+
+## `includeThoughts`: without it the server is silent while the model thinks (measured 2026-11-15)
+
+Claudish 14.26.0 wrote no `includeThoughts`. The server then sends no byte until the think ends.
+A think longer than the request's first-byte deadline (270 s at the default settings,
+`network-recovery.md`) is aborted and answered as an unreachable host, and Claude Code retries the
+same request.
+
+| Run | Build | Request sent | First answer | Result |
+|---|---|---|---|---|
+| A | 14.26.0, no flag | 23:08:12.874Z | none in 269.98 s | `TimeoutError: request deadline`, `[Recovery] skipped (no-budget) … site=fetch`, `Cannot reach Antigravity Ultra` |
+| B | with `includeThoughts: true` | 23:20:11.217Z | `Response status: 200` at 23:20:17.373Z (6.2 s) | thought parts stream; the answer (18,079 characters) was complete at 23:25:31Z |
+
+Both runs: `ag@gemini-4-carbon` sent as `gemini-4-carbon-medium`, the same session context (five
+files read, about 86k input tokens) and the same prompt, a review that needs a long think. Run B
+thought for more than four minutes, as run A did. The only difference is that the stream carried
+bytes.
+
+Ruled out by a control on 14.26.0 before the change: four parallel tool calls with the placeholder
+thought signature on calls 2 to 4, and the 86k-token body, answer 200 in 10 s when the task needs
+no long think.
+
+What the code does (`GeminiAPIFormat.buildPayload`, the `thinkingFromModelName` branch, which only
+Antigravity uses): **every** body carries `thinkingConfig.includeThoughts: true`. A resolved effort
+adds the `thinkingLevel` or the `thinkingBudget` beside it. A request with no effort, with thinking
+disabled (and no effort pin), or with an effort that has no budget carries the flag alone. When the
+sent model id carries the effort, `antigravityBodyForModelId` removes the level or budget and keeps
+the flag. The stream parser already turns a `thought: true` part into thinking output
+(`gemini-sse.ts`), and the converter does not send thinking blocks back on later requests.
+
+**The flag must not follow the effort this request resolved.** The transport chooses the model id
+that is sent, and that id can turn thinking on when the body names none: a request with no effort
+is sent as the connection's default level, and a level the effort map cannot serve falls to
+another. Measured: effort `none` on `ag@gemini-4-carbon` logged `sending model
+gemini-4-carbon-medium for gemini-4-carbon (effort none, from map id not usable)`. A first version
+of this repair wrote the flag only beside a level or budget, and such a request kept the silent
+think.
+
+Bodies measured with the flag, each from a one-line prompt:
+
+| Model spec | Effort | Sent id | `thinkingConfig` in the body | Answer |
+|---|---|---|---|---|
+| `ag@gemini-4-carbon` | medium | `gemini-4-carbon-medium` | flag alone | 200 |
+| `ag@gemini-4-carbon` | none | `gemini-4-carbon-medium` | flag alone | 200 |
+| `ag@gemini-3-flash` | medium | `gemini-3-flash` | `thinkingLevel` and flag | 200, three requests |
+| `ag@gemini-2.5-flash-lite` | none | `gemini-2.5-flash-lite` | flag alone | 200 |
+| `ag@gpt-oss-120b` | none | `gpt-oss-120b-medium` | flag alone | 200 |
+| `ag@gemini-2.5-pro` | none | `gemini-2.5-pro` | flag alone | 503 `No capacity available for model gemini-2.5-pro on the server` |
+| `ag@claude-sonnet-5-5` | medium | `claude-sonnet-5-5-medium` | flag alone | 429 `RESOURCE_EXHAUSTED` |
+
+The 503 is the server's capacity for that model, and no row is a 400. The Claude row is a 429 with
+the flag and, in a control on 14.26.0, without it: the flag is not the cause, and the Claude case
+stays unmeasured.
+
+Not measured: the other Gemini routes (`g@`, Vertex), which do not use this branch and can have
+the same silent think.
+
+One difference in the table is still open: `maxOutputTokens`. Thinking tokens count against it. Run
+B ended its first answer with `finishReason=MAX_TOKENS` at 32000 and Claude Code continued by
+itself. `agy` sends 65536.

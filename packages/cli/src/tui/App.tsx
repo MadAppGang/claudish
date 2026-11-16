@@ -7,7 +7,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 // mutation made from this tab must drop that memo — otherwise a key the user
 // just deleted keeps being served for the rest of the session, and a key they
 // just set is not seen until relaunch.
-import { credentials } from "../auth/credentials/authority.js";
+import { type KeySource, credentials } from "../auth/credentials/authority.js";
 // macOS Keychain — the default store for keys typed into this tab on macOS.
 // `hydrateKeychainIntoEnv` is what makes a keychain-only key visible to the SYNC
 // readiness classifier: it write-throughs into process.env exactly as the
@@ -19,6 +19,7 @@ import {
   recordKeychainHydratedVar,
 } from "../auth/credentials/keychain-source.js";
 import { invalidateOpResolutionCache } from "../auth/credentials/op-source.js";
+import { realValueFor } from "../env-placeholder.js";
 import { log } from "../logger.js";
 import {
   disableLocalProvider,
@@ -100,7 +101,7 @@ import {
 } from "../providers/probe-catalog.js";
 import { describeProbeState } from "../providers/probe-live.js";
 import { INTERACTIVE_PROBE_TIMEOUT_MS, probeProviderRoute } from "../providers/probe-runner.js";
-import { getProviderByName } from "../providers/provider-definitions.js";
+import { getProviderByName, readAtUseKeyEnvVars } from "../providers/provider-definitions.js";
 import { invalidateProbeDiscovery } from "../providers/transport/probe-discovery.js";
 import { clearBuffer, getBufferStats } from "../stats-buffer.js";
 // Real package version (auto-generated at build), not the stale hardcoded
@@ -119,7 +120,7 @@ import { ProvidersContent } from "./components/ProvidersContent.js";
 import { RoutingContent } from "./components/RoutingContent.js";
 import { RoutingDetail } from "./components/RoutingDetail.js";
 import { TabBar } from "./components/TabBar.js";
-import { configSaveFailure } from "./config-save.js";
+import { configKeySavedStatus, configSaveFailure, outrankedKeyNote } from "./config-save.js";
 import { DETAIL_H, FOOTER_H, HEADER_H, TABS_H, getChainProviders } from "./constants.js";
 import { useProfileWizard } from "./hooks/useProfileWizard.js";
 import { useRouteProbe } from "./hooks/useRouteProbe.js";
@@ -147,6 +148,7 @@ import {
   providerIsReadyForDisplay,
   providerLoginAction,
   providerSetLabel,
+  readAtUseVaultSource,
 } from "./providers.js";
 import { A, C } from "./theme.js";
 import type {
@@ -590,8 +592,15 @@ export function App({ requestLogin }: AppProps = {}) {
   const { editProfileValue, profileScope, suggestions, suggestionIndex, providerPickerIndex } =
     wizard;
 
-  const hasCfgKey = !!config.apiKeys?.[selectedProvider.apiKeyEnvVar];
-  const hasEnvKey = !!process.env[selectedProvider.apiKeyEnvVar];
+  // A placeholder (claudish's own, an unexpanded `${VAR}`) is not a key.
+  const hasCfgKey = !!realValueFor(
+    selectedProvider.apiKeyEnvVar,
+    config.apiKeys?.[selectedProvider.apiKeyEnvVar]
+  );
+  const hasEnvKey = !!realValueFor(
+    selectedProvider.apiKeyEnvVar,
+    process.env[selectedProvider.apiKeyEnvVar]
+  );
   /**
    * Does the SELECTED provider have a credential of any kind?
    *
@@ -635,6 +644,14 @@ export function App({ requestLogin }: AppProps = {}) {
   // 1Password tag) because the keychain is resolved FIRST, so when both stores
   // could supply a variable, the keychain is the one that did.
   const isKcKey = hasEnvKey && isKeychainHydratedVar(selectedProvider.apiKeyEnvVar);
+  // A read-at-use key in no environment variable and no config.json entry is
+  // read from a vault when a request signs: name that vault, and the masked
+  // value once the authority has resolved it. Presence only, never the key.
+  const vaultKeySource =
+    hasKey && !hasEnvKey && !hasCfgKey ? readAtUseVaultSource(selectedProvider) : undefined;
+  const vaultKeyMask = vaultKeySource
+    ? credentials.describeOrigin(selectedProvider.catalogName)?.masked
+    : undefined;
   const cfgKeyMask = maskKey(config.apiKeys?.[selectedProvider.apiKeyEnvVar]);
   const envKeyMask = maskKey(process.env[selectedProvider.apiKeyEnvVar]);
   const activeEndpointEnvVar = selectedProvider.endpointEnvVar;
@@ -1081,8 +1098,13 @@ export function App({ requestLogin }: AppProps = {}) {
         try {
           const auth = await acquireOpAuth();
           let hydrated = 0;
+          // A read-at-use key (ANTHROPIC_API_KEY) is left out: the credential
+          // authority reads it from 1Password when a request signs, and in
+          // process.env it would reach every child Claude Code.
+          const readAtUse = readAtUseKeyEnvVars();
           const apply = (vars: Record<string, string>): void => {
             for (const [name, val] of Object.entries(vars)) {
+              if (readAtUse.has(name)) continue;
               if (!process.env[name]) {
                 process.env[name] = val;
                 hydrated++;
@@ -1557,35 +1579,53 @@ export function App({ requestLogin }: AppProps = {}) {
             // and it is the store this tab now advertises. config.json stays the
             // fallback everywhere the keychain does not exist.
             let saved = false;
+            // The store that took the key, for the authority's replacement.
+            let savedTo: KeySource = "config";
+            // Why the Keychain write failed, when the key falls back to config.json.
+            let keychainFailure: string | undefined;
             if (keychainSupported) {
               try {
                 writeKeychainSecret(envVar, val);
+                savedTo = "macOS Keychain";
+                // Asked before the write-through below changes process.env.
+                const note = outrankedKeyNote(
+                  envVar,
+                  credentials.sourcesOutranking(target.catalogName, val, savedTo)
+                );
                 // A successful write is the only thing that turns the backend
                 // on — enabling first would leave it on after a failed write,
                 // pointing at a store with nothing in it.
                 setKeychainEnabled(true);
-                // Make it active for the rest of this session. Overwriting a
-                // shell-exported value here is intended: the user just typed a
-                // replacement, and this only affects THIS process — their shell
-                // is untouched.
-                process.env[envVar] = val;
-                // Record the ORIGIN, or `x` will not know this env value came
-                // from the keychain and will leave the deleted secret live in
-                // process.env — still inherited by children, still
-                // authenticating — until the process exits.
-                recordKeychainHydratedVar(envVar);
+                // A read-at-use key stays in the Keychain: the authority reads
+                // it when a request signs, and readiness sees it by presence.
+                if (!target.vaultKeyReadAtUse) {
+                  // Make it active for the rest of this session. Overwriting a
+                  // shell-exported value here is intended: the user just typed a
+                  // replacement, and this only affects THIS process — their shell
+                  // is untouched.
+                  process.env[envVar] = val;
+                  // Record the ORIGIN, or `x` will not know this env value came
+                  // from the keychain and will leave the deleted secret live in
+                  // process.env — still inherited by children, still
+                  // authenticating — until the process exits.
+                  recordKeychainHydratedVar(envVar);
+                }
                 refreshKeychainVars();
-                setStatusMsg(`Key saved to macOS Keychain for ${target.displayName} (${envVar}).`);
+                setStatusMsg(
+                  `Key saved to macOS Keychain for ${target.displayName} (${envVar}).${note}`
+                );
                 saved = true;
               } catch (err) {
                 // Fall through to config.json rather than losing the key the
                 // user just typed. The reason is surfaced, not swallowed.
-                setStatusMsg(
-                  `Keychain write failed (${err instanceof Error ? err.message : String(err)}) — saved to config.json instead.`
-                );
+                keychainFailure = err instanceof Error ? err.message : String(err);
               }
             }
             if (!saved) {
+              const note = outrankedKeyNote(
+                envVar,
+                credentials.sourcesOutranking(target.catalogName, val, "config")
+              );
               try {
                 setApiKey(envVar, val);
               } catch (err) {
@@ -1593,16 +1633,16 @@ export function App({ requestLogin }: AppProps = {}) {
                 setStatusMsg(configSaveFailure(err));
                 return;
               }
-              process.env[envVar] = val;
-              // When the keychain write failed, the status line already explains
-              // the fallback and must not be clobbered.
-              if (!keychainSupported) {
-                setStatusMsg(`Key saved for ${target.displayName} (${envVar}).`);
-              }
+              // config.json is read by the authority itself; a read-at-use key
+              // is not copied into process.env.
+              if (!target.vaultKeyReadAtUse) process.env[envVar] = val;
+              setStatusMsg(configKeySavedStatus(target.displayName, envVar, note, keychainFailure));
             }
             // Whichever store took it, the authority's memo for this provider is
-            // now stale — drop it so the new key is used without a relaunch.
-            credentials.invalidate(target.catalogName);
+            // now stale. The replacement drops it and makes the saved key sign
+            // in this process at once, ahead of an older shell export or
+            // config.json entry, without writing it into process.env.
+            credentials.replaceKey(target.catalogName, val, savedTo);
             invalidateProbeProxyHandlers(target.catalogName);
             clearTestResult(target.name);
           }
@@ -2317,7 +2357,8 @@ export function App({ requestLogin }: AppProps = {}) {
         // — reporting a denied ACL as "there was nothing there", while the item
         // and its live credential both remained.
         let failureMsg: string | null = null;
-        if (hasCfgKey) {
+        // Any stored entry, a placeholder included: `x` clears what is there.
+        if (config.apiKeys?.[selectedProvider.apiKeyEnvVar]) {
           try {
             removeApiKey(selectedProvider.apiKeyEnvVar);
             removedFrom.push("config.json");
@@ -2850,6 +2891,8 @@ export function App({ requestLogin }: AppProps = {}) {
             isOpKey={isOpKey}
             isKcKey={isKcKey}
             hasKcKey={hasKcKey}
+            {...(vaultKeySource ? { vaultKeySource } : {})}
+            {...(vaultKeyMask ? { vaultKeyMask } : {})}
             keySaveTarget={keychainSupported ? "macOS Keychain" : "config.json"}
             credentialNote={providerCredentialNote(selectedProvider)}
             cfgKeyMask={cfgKeyMask}

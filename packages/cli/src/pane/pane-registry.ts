@@ -32,7 +32,6 @@ import { dirname, join } from "node:path";
 import { claimSignalExit } from "../signal-owner.js";
 import { listEndpoints, sweepEndpoints } from "../view/endpoints.js";
 import { defaultFeedPath, readFeedStamp, stampAlive } from "../view/feed-relay.js";
-import { removeIfFree } from "../view/kernel-lock.js";
 import { MagmuxClient } from "./magmux-client.js";
 import { ensureSockRoot, sockRootFor } from "./pane-launch.js";
 import {
@@ -772,21 +771,6 @@ function sweepRecordlessViewSockets(root: string, out: SweepResult): void {
 }
 
 /**
- * The herdr workspace locks nobody holds. A lock never reads the process table: free means no
- * placement is running, and `removeIfFree` unlinks it while holding it, so a waiter re-opens.
- */
-function sweepFreeHerdrLocks(root: string, out: SweepResult): void {
-  const dir = join(root, "herdr");
-  let names: string[] = [];
-  try {
-    names = readdirSync(dir).filter((n) => n.endsWith(".lock"));
-  } catch {
-    return;
-  }
-  for (const n of names) if (removeIfFree(join(dir, n))) out.cleaned.push(`herdr/${n}`);
-}
-
-/**
  * The feed file of a relay the table proves gone; a file with no readable stamp is not ours. The
  * stamp is read before the table is taken, so a relay that started before the read is in the
  * table; and read again before the unlink, so a file another relay wrote meanwhile stays.
@@ -838,7 +822,6 @@ export async function sweepOrphanPanes(root: string = sockRootFor()): Promise<Sw
     if (!known.has(id) && !live.has(id)) await sweepRecordlessSocket(root, n, out);
   }
   sweepRecordlessViewSockets(root, out);
-  sweepFreeHerdrLocks(root, out);
   // read only when there is an endpoint to judge, and without blocking: a synchronous `ps` here
   // stalls the loop while other startup work (the magmux probe's timer) waits on it.
   // No trusted table: nothing can be judged dead, so every endpoint stays

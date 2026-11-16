@@ -93,7 +93,7 @@ describe("mergeAccounting", () => {
       tokensOut: 44,
       costUsd: null,
       toolCalls: 2,
-      provider: "Anthropic (Native)",
+      provider: "Claude subscription",
     });
   });
 });
@@ -113,7 +113,7 @@ describe("resolveProvider (M11)", () => {
     for (const m of ["haiku", "claude-opus-5", "opus"]) {
       expect(nativeRouteFor(m)).not.toBeNull();
       expect(resolveProvider({ model: m, spawnModel: null, tokenFile: null })).toBe(
-        "Anthropic (Native)"
+        "Claude subscription"
       );
     }
   });
@@ -121,7 +121,7 @@ describe("resolveProvider (M11)", () => {
   test("a native model never yields a token file with a different provider", () => {
     expect(
       resolveProvider({ model: "haiku", spawnModel: null, tokenFile: readTokenStatsAt(ZEROS) })
-    ).toBe("Anthropic (Native)");
+    ).toBe("Claude subscription");
   });
 
   test("a pinned single-hop spec names its provider; a chain or a bare name is not known yet", () => {
@@ -210,7 +210,7 @@ describe("toSlotRow (§8 B)", () => {
     expect(row).toEqual({
       slot: "01",
       model: "haiku",
-      provider: "Anthropic (Native)",
+      provider: "Claude subscription",
       state: "RUNNING",
       reason: null,
       reason_detail: null,

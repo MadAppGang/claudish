@@ -174,8 +174,16 @@ import {
   classifyConnectionError,
 } from "./shared/connection-error.js";
 import { sniffDevinStreamHead } from "./shared/devin-stream-head-sniffer.js";
+import {
+  identityHeadFor,
+  keepsClaudeIdentity,
+  scrubHarnessIdentity,
+} from "./shared/format/identity-filter.js";
+import { inlineSystemAsUserText } from "./shared/format/inline-system.js";
+import { removeProviderRefusedText } from "./shared/format/provider-refused-text.js";
+import { aliasToolsForProvider } from "./shared/format/tool-name-alias.js";
+import { toolReferencesAsText } from "./shared/format/tool-reference-text.js";
 import { hasActionableLink, hasModelUnsupportedWording } from "./shared/model-unsupported.js";
-import { filterIdentity } from "./shared/openai-compat.js";
 import { hasPlanLimitWording, isQuotaExhaustionError } from "./shared/quota-exhaustion.js";
 import { connectionFaultHeaders, recoveryHoldHeaders } from "./shared/recovery-marker.js";
 import {
@@ -1578,8 +1586,77 @@ export class ComposedHandler implements ModelHandler {
     const adapter = this.getAdapter();
     if (typeof adapter.reset === "function") adapter.reset();
 
-    // 3. Convert messages and tools
-    let messages = adapter.convertMessages(claudeRequest, filterIdentity);
+    // 2a. Remove Claude Code's identity from the text it injects (system
+    // prompt, reminders, tool descriptions) unless the upstream model really
+    // is Claude. After hook stage A, which reads the original system text.
+    const keepIdentity = keepsClaudeIdentity({
+      native: this.routeInfo().native,
+      vendor: this.upstreamFacts()?.vendor ?? null,
+      model: this.bareModelName,
+    });
+    if (!keepIdentity) {
+      claudeRequest = scrubHarnessIdentity(claudeRequest, identityHeadFor(this.provider.name));
+    }
+
+    // 2a'. Remove the system-prompt paragraphs this provider's server refuses
+    // (antigravity only). Outside the `keepIdentity` test on purpose: the
+    // server's filter is in front of every model it serves, Claude included.
+    claudeRequest = removeProviderRefusedText(claudeRequest, this.provider.name);
+
+    // 2b. Rename tools to the provider's own names (antigravity only): in the
+    // definitions, in `tool_choice` and in assistant-history tool_use blocks.
+    // The alias is this request's own: stage B looks a hook's tool up through
+    // `forward`, and the gemini-sse case undoes the rename on the response with
+    // `restore`. A name sent out must come back, or Claude Code gets a tool_use
+    // it never declared.
+    const toolAlias = aliasToolsForProvider(claudeRequest, this.provider.name);
+    claudeRequest = toolAlias.request;
+
+    // 2c. Give inline `role: "system"` messages to the model. Claude Code
+    // sends the skill list, MCP server instructions and background-task
+    // notifications that way, and the Gemini, Chat Completions and Responses
+    // converters convert only `user` and `assistant` messages: without this the
+    // text never reaches the model. Each one becomes a text block in the user
+    // message beside it, at its own position (see `inline-system.ts` for why
+    // not the system prompt). After 2a, so the text is already scrubbed.
+    const withInlineSystem = inlineSystemAsUserText(claudeRequest.messages);
+    if (withInlineSystem !== claudeRequest.messages) {
+      claudeRequest = { ...claudeRequest, messages: withInlineSystem };
+    }
+
+    // 2d. Say in text what a `tool_reference` item of a tool result means.
+    // Claude Code answers `ToolSearch` with that pointer and no text, and no
+    // converter carries it: the Anthropic-shaped one removes it for every
+    // host, the others never read it. So the model read an empty result.
+    // Outside the `keepIdentity` test: a Claude model behind a gateway or
+    // `antigravity` is on the same wires. The sentence names the tool as the
+    // body will declare it: after the 2b alias, under the name the converter
+    // answers for it (`declaredToolNames`). A tool the request does not
+    // declare, one the converter declares under no name, or one past its
+    // tool-count cap is not declared, and the sentence says so. The names are
+    // asked for once, and only when a result holds a reference.
+    let declaredNames: Map<string, string | null> | undefined;
+    const sentName = (name: string): string | null => {
+      declaredNames ??= adapter.declaredToolNames(
+        (claudeRequest.tools ?? [])
+          .slice(0, adapter.getMaxToolCount() ?? undefined)
+          .map((tool: any) => tool?.name)
+          .filter((toolName: unknown): toolName is string => typeof toolName === "string")
+      );
+      return declaredNames.get(toolAlias.forward(name)) ?? null;
+    };
+    const withToolReferences = toolReferencesAsText(claudeRequest.messages, {
+      nameOf: (name) => sentName(name) ?? toolAlias.forward(name),
+      isDeclared: (name) => sentName(name) !== null,
+    });
+    if (withToolReferences !== claudeRequest.messages) {
+      claudeRequest = { ...claudeRequest, messages: withToolReferences };
+    }
+
+    // 3. Convert messages and tools. No identity filter here: step 2a already
+    // scrubbed `claudeRequest` (or `keepIdentity` left it alone), so a second
+    // pass would only risk re-adding a header to the cleaned prompt.
+    let messages = adapter.convertMessages(claudeRequest, undefined);
     let tools = adapter.convertTools(claudeRequest, this.options.summarizeTools);
 
     // Per-API tool-count cap (e.g. OpenAI Chat Completions hard-caps `tools` at
@@ -1692,7 +1769,7 @@ export class ComposedHandler implements ModelHandler {
     // changes the Claude-format copy only, journaled `capped`). It runs before
     // the raw tier on purpose: a raw `providerRequest` hook sees the request the
     // closed actions produced.
-    hookScope?.applyToolDescriptions(claudeRequest.tools ?? [], tools);
+    hookScope?.applyToolDescriptions(claudeRequest.tools ?? [], tools, toolAlias.forward);
 
     // 3b. Raw `providerRequest` hooks (the unsafe tier; the Gemini
     // thought-signature built-in lives here), after stage B so they see the
@@ -3961,7 +4038,8 @@ export class ComposedHandler implements ModelHandler {
             output: u.output,
           };
           ledger.finalInput = u.finalInput;
-        }
+        },
+        toolAlias.restore
       ),
       () => {
         clientCancelled = true;
@@ -4284,7 +4362,9 @@ export class ComposedHandler implements ModelHandler {
      * reports it once over every leg (`onTurnBilled`); every other format
      * reports it from `onTokenUpdate`.
      */
-    onBilled?: (u: TurnBilledUsage) => void
+    onBilled?: (u: TurnBilledUsage) => void,
+    /** Undoes this request's tool-name alias on a tool call the provider returns. */
+    restoreToolName?: (name: string) => string
   ): Response {
     // Local mutable copy so we can null it out after firing (prevents double-firing)
     // without reassigning the function parameter.
@@ -4446,6 +4526,7 @@ export class ComposedHandler implements ModelHandler {
           onToolCallObserved: observeToolCall,
           unwrapResponse: this.options.unwrapGeminiResponse,
           priorInputTokens,
+          mapToolName: restoreToolName,
         });
       }
 

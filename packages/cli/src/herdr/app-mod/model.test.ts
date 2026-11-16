@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import type { ViewItem } from "../../pane/view-contract.js";
-import { replayItem, sessionItem } from "../test-helpers/placer-harness.js";
+import { replayItem, sessionItem } from "../test-helpers/view-items.js";
 import {
   type ClaudishInstall,
   FEED_TERMINAL,
@@ -110,7 +110,7 @@ describe("hc terminals the mod starts", () => {
     expect(() => viewTerminalName("s:a", () => "NOT-HEX")).toThrow();
   });
 
-  test("selection starts a hidden, self-removing viewer that takes the view, with PATH and root given", () => {
+  test("selection starts a hidden, self-removing read-only viewer, with PATH and root given", () => {
     expect(viewRunArgs(INSTALL, "s:abc", "claudish-view-0123456789ab", "/Users/u")).toEqual([
       "run",
       "--bg",
@@ -148,7 +148,6 @@ describe("hc terminals the mod starts", () => {
     ]);
     expect(args.slice(-3)).toEqual(["/Users/u/.bun/bin/claudish", "view", "--feed"]);
     expect(args).not.toContain("--label");
-    expect(args).not.toContain("--passive");
   });
 
   test("hc's answers: started, the name taken (hc 0.1.19's own reply), and a failure", () => {

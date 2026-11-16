@@ -137,3 +137,53 @@ describe("claudish herdr install-app-mod", () => {
     expect(findBuiltAppMod(join(pkg, "src", "herdr"))).toBeNull();
   });
 });
+
+describe("claudish herdr show-panel", () => {
+  function rig(answer: { code: number | null; stdout?: string; stderr?: string } | null) {
+    const calls: string[][] = [];
+    const out: string[] = [];
+    const err: string[] = [];
+    const code = herdrCommand(["show-panel"], (s) => out.push(s), {
+      err: (s) => err.push(s),
+      runApp: (args) => {
+        calls.push(args);
+        return answer;
+      },
+    });
+    return { code, calls, out: out.join(""), err: err.join("") };
+  }
+
+  test("splits the focused Herdr.app pane right with the claudish mod and names the pane", () => {
+    const r = rig({ code: 0, stdout: '{\n  "pane": "p12"\n}\n' });
+    expect(r.calls).toEqual([["do", "pane.split", '{"direction":"right","mod":"claudish"}']]);
+    expect(r.code).toBe(0);
+    expect(r.out).toBe("opened the claudish panel in Herdr.app pane p12\n");
+  });
+
+  test("reports Herdr.app's error and exits 1", () => {
+    const r = rig({ code: 1, stdout: '{ "error": "no window is open" }' });
+    expect(r.code).toBe(1);
+    expect(r.err).toBe("claudish herdr show-panel: no window is open\n");
+  });
+
+  test("says Herdr.app is missing when herdr-app does not run", () => {
+    const r = rig(null);
+    expect(r.code).toBe(1);
+    expect(r.err).toBe(
+      "claudish herdr show-panel: herdr-app is not installed or did not run; open Herdr.app first\n"
+    );
+  });
+
+  test("takes no arguments", () => {
+    const calls: string[][] = [];
+    const code = herdrCommand(["show-panel", "x"], () => {}, {
+      err: () => {},
+      runApp: (a) => {
+        calls.push(a);
+        return { code: 0 };
+      },
+    });
+    expect(code).toBe(2);
+    expect(calls).toEqual([]);
+  });
+});

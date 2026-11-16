@@ -149,3 +149,76 @@ test("the Wire line renders the catalog wire summary", () => {
   });
   expect(output).toContain(wireSummary);
 });
+
+describe("printProbeResults Leaderboard PROVIDER column", () => {
+  const timing = { ttfbMs: 800, ttftMs: 1100, totalMs: 1400, tokens: 90, tokensPerSec: 300 };
+
+  /** A live probe at a fixed terminal width, so the column math does not read the runner's TTY. */
+  function renderLive(subscriptionName: string, columns: number): string {
+    const descriptor = Object.getOwnPropertyDescriptor(process.stderr, "columns");
+    Object.defineProperty(process.stderr, "columns", { value: columns, configurable: true });
+    let output = "";
+    const originalWrite = process.stderr.write;
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      output += typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      printProbeResults(
+        [
+          {
+            model: "claude-haiku-5-5",
+            routingSource: "native",
+            routingExplanation: "native · Claude Code's own auth · not probed",
+            chain: [
+              {
+                provider: "native-anthropic",
+                displayName: subscriptionName,
+                modelSpec: "claude-haiku-5-5",
+                hasCredentials: true,
+                notProbed: "native-auth",
+              },
+              {
+                provider: "anthropic",
+                displayName: "Claude API",
+                modelSpec: "anthropic@claude-haiku-5-5",
+                hasCredentials: true,
+                comparison: true,
+                probe: { state: "live", latencyMs: timing.totalMs, timing },
+              },
+            ],
+            dropped: [],
+          },
+        ],
+        true
+      );
+    } finally {
+      process.stderr.write = originalWrite;
+      if (descriptor) Object.defineProperty(process.stderr, "columns", descriptor);
+      else delete (process.stderr as { columns?: number }).columns;
+    }
+    const row = output
+      .replace(ANSI_RE, "")
+      .split("\n")
+      .find((line) => line.includes("— not probed"));
+    expect(row).toBeDefined();
+    return row ?? "";
+  }
+
+  test("shows the full name 'Claude subscription'", () => {
+    expect(renderLive("Claude subscription", 120)).toContain(
+      "Claude subscription — not probed (Claude subscription)"
+    );
+  });
+
+  test("widens to the longest route name the rows show", () => {
+    const longName = "Claude subscription on a very long route name";
+    expect(renderLive(longName, 160)).toContain(`${longName} — not probed`);
+  });
+
+  test("ends a name wider than the terminal leaves room for in an ellipsis", () => {
+    expect(renderLive(`Claude subscription ${"x".repeat(80)}`, 100)).toMatch(
+      /Claude subscription x+… — not probed/
+    );
+  });
+});

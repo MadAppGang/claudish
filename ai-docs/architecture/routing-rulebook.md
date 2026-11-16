@@ -22,15 +22,25 @@ hooks system.
 
 Only a `proxyRouteDecision` → `bare` target reaches `route()`. `nativeRouteFor()` answers native
 Claude names first in the proxy, `--probe`, the TUI probe, MCP `preflight` and `planAdvisorModel`.
+`claude@<id>` is the native decision of `<id>` and never reaches `route()`; the MCP strip never
+removes `claude@` (a bare name follows the API-billing opt-in, `claude@` never does), and the pane
+child that receives it keeps the choice as `claudeSubscriptionPin`. A `claude@` spec
+`claudeSubscriptionSpecRefusal` refuses (a marker, `:N`, a chain hop, a name Claude Code does not
+own) is refused on the spec as given BEFORE native recognition, in `explainRoute` (no-route
+`explicit-refused`) and in `preflightModel` as in every launch. `--probe` and the config TUI may also list a
+BARE native name's catalog routes (`comparisonCandidates`: no user rule, no fallback hop, the native
+provider excluded before the credential filter, plus one off-catalog `anthropic` candidate when the
+catalog has no entry); that list is never a `RoutePlan` and no request is routed from it.
 
-- **Scope:** `providers/native-route.ts`, `proxy-server.ts`, `cli.ts`, `tui/hooks/useRouteProbe.ts`, `providers/preflight-chain.ts`, `handlers/advisor-route-plan.ts`.
-- **Check:** `providers/native-route.test.ts`, `providers/preflight-chain.test.ts`.
+- **Scope:** `providers/native-route.ts`, `proxy-server.ts`, `cli.ts`, `tui/hooks/useRouteProbe.ts`, `providers/preflight-chain.ts`, `handlers/advisor-route-plan.ts`, `mcp-server.ts` (`stripUnrequestedProvider`), `providers/routing-rules.ts` (`explainRoute`'s comparison), `providers/explain-route-settled.ts`, `providers/probe-runner.ts`, `launcher/claude-launch.ts`.
+- **Check:** `providers/native-route.test.ts`, `providers/preflight-chain.test.ts`, `providers/native-route.claude-prefix.test.ts`, `mcp-provider-strip.test.ts` (the `claude@` cases), `providers/routing-rules.comparison.test.ts`.
 
 ### RB-2
 
 An explicit `provider@model` is a one-hop chain to that provider: no gathering, rules or fallback.
-Its outcomes are `explicit-unknown-shortcut`, `explicit-no-credential`, `explicit-unbuildable` and
-`explicit-not-served` only. Offline, a model outside the bundled recommended list, or a bundled
+Its outcomes are `explicit-unknown-shortcut`, `explicit-no-credential`, `explicit-unbuildable`,
+`explicit-not-served` and `explicit-refused`, for a refused `claude@` spec (RB-1) or a spec on a
+custom endpoint name a Claude builtin took over (`shadowedEndpointRefusal`). Offline, a model outside the bundled recommended list, or a bundled
 model with no bundled connection for that provider, is refused as with no catalog. A probe sends
 each hop of a bare name's routing chain as a spec marked `x-claudish-hop-origin: routed`; only a
 proxy started for probing (`probeProxy`) honours the mark and builds that hop as a routed hop, so a
@@ -42,7 +52,11 @@ spec the user typed stays explicit, and a proxy serving Claude Code ignores the 
 ### RB-3
 
 A matching user rule (project over global) is used verbatim, never merged or given a fallback. A
-matched `[]` is no-route `rule-empty`.
+matched `[]` is no-route `rule-empty`. A matched rule with an entry on a custom endpoint name a
+Claude builtin took over, or an entry naming the Claude subscription (`claude`, `claude@<id>`,
+which Claude Code serves on its own login and is never a routed hop), is refused whole: no-route
+`explicit-refused`, decided before any candidate is gathered and never replaced by `rule-empty`
+or `catalog-unreadable` (`userRuleRefusal`).
 
 - **Scope:** `providers/routing-rules.ts`.
 - **Check:** `providers/routing-rules.test.ts`, S3.

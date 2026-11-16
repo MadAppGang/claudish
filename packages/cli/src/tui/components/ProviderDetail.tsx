@@ -71,6 +71,13 @@ interface ProviderDetailProps {
   /** True when a keychain item exists for this variable, whether or not it is the value in use. */
   hasKcKey: boolean;
   /**
+   * A read-at-use key in no environment variable and no config.json entry: the
+   * vault it is read from when a request signs (`readAtUseVaultSource`).
+   */
+  vaultKeySource?: "macOS Keychain" | "1Password";
+  /** The masked value of that key, once the authority has resolved it. Never the key. */
+  vaultKeyMask?: string;
+  /**
    * Where a key typed here will be written. Named in the input box title so the
    * store is never a surprise — this used to be plaintext config.json
    * unconditionally, and a silent change of destination for secrets is exactly
@@ -99,12 +106,20 @@ export function resolveProviderDetailKeyDisplay(input: {
   hasCfgKey: boolean;
   envKeyMask: string;
   cfgKeyMask: string;
+  vaultKeySource?: "macOS Keychain" | "1Password";
+  vaultKeyMask?: string;
 }): string {
   if (input.isLocal) return input.isReady ? "enabled" : "disabled";
   if (input.authSource === "oauth") return "oauth";
   if (input.hasEnvKey) return input.envKeyMask;
   if (input.hasCfgKey) return input.cfgKeyMask;
+  if (input.vaultKeySource) return input.vaultKeyMask ?? vaultLabel(input.vaultKeySource);
   return "────────";
+}
+
+/** The `From:` word for a vault. */
+function vaultLabel(source: "macOS Keychain" | "1Password"): string {
+  return source === "macOS Keychain" ? "keychain" : "1Password";
 }
 
 export function validTestNote(input: { isLocal: boolean; credential: "key" | "login" }): string {
@@ -127,6 +142,8 @@ export function ProviderDetail({
   isOpKey,
   isKcKey,
   hasKcKey,
+  vaultKeySource,
+  vaultKeyMask,
   keySaveTarget,
   credentialNote,
   cfgKeyMask,
@@ -146,6 +163,8 @@ export function ProviderDetail({
     hasCfgKey,
     envKeyMask,
     cfgKeyMask,
+    ...(vaultKeySource ? { vaultKeySource } : {}),
+    ...(vaultKeyMask ? { vaultKeyMask } : {}),
   });
 
   if (isInputMode) {
@@ -339,12 +358,22 @@ export function ProviderDetail({
               </span>
             )}
             {hasCfgKey && <span fg={C.fgMuted}>{hasEnvKey ? " (shadowed)" : " (used)"}</span>}
+            {/* A read-at-use key stays in its vault and is read when a request
+                signs, so no environment or config value names it. */}
+            {vaultKeySource && (
+              <>
+                <span fg={C.green} attributes={A.bold}>
+                  {vaultLabel(vaultKeySource)}
+                </span>
+                <span fg={C.fgMuted}>{" (used)"}</span>
+              </>
+            )}
             {/* A keychain item that exists but is NOT the runtime value — the
                 backend is off, or a higher-priority source shadows it. Worth
                 naming explicitly: otherwise `x` reporting "removed from macOS
                 Keychain" would come as a surprise on a row that never mentioned
                 one. */}
-            {hasKcKey && !isKcKey && (
+            {hasKcKey && !isKcKey && vaultKeySource !== "macOS Keychain" && (
               <>
                 <span fg={C.fgMuted}>{" + "}</span>
                 <span fg={C.fgMuted}>{"keychain (shadowed)"}</span>

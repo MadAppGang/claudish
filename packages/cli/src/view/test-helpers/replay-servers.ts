@@ -1,6 +1,6 @@
 /**
  * Several claudish "servers" in one test process, sharing one socket root: each is a
- * `ReplayManager` with its own `ViewServer` endpoint, claims, feed and grants. Their replay panes
+ * `ReplayManager` with its own `ViewServer` endpoint, claims and feed. Their replay panes
  * are fakes whose "magmux" is a real child process (`/bin/sleep`) handed the replay lock as fd 3,
  * so the kernel lock is the real one: it is held exactly while that child lives.
  */
@@ -10,7 +10,6 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import type { Socket } from "node:net";
 import { join } from "node:path";
-import { PlacementGrants } from "../../herdr/placement-grants.js";
 import { ReplayManager, type ReplayPaneLike } from "../../mcp-session/replay-manager.js";
 import type {
   CaptureResult,
@@ -166,7 +165,6 @@ export interface TestServer {
   view: ViewServer;
   claims: ViewClaims;
   feed: ViewFeed;
-  grants: PlacementGrants;
   /** the server dies: its sockets drop, nothing of it is reaped */
   kill(): void;
 }
@@ -256,7 +254,6 @@ export function makeReplayWorld(): ReplayWorld {
     names.add(name);
     const feed = new ViewFeed();
     const claims = new ViewClaims({ notify: (t) => feed.changed(t, true) });
-    const grants = new PlacementGrants({ notify: (t) => feed.changed(t, true) });
     let endpointName: string | null = null;
     const replays = new ReplayManager({
       sockRoot: root,
@@ -283,22 +280,13 @@ export function makeReplayWorld(): ReplayWorld {
         return pane;
       },
     });
-    replays.setViewServices({
-      feed,
-      claims,
-      grants: {
-        grant: (t, k, owner, txn) => grants.grant(t, k, owner, txn),
-        doneFor: (t, k, owner) => grants.doneFor(t, k, owner),
-        workspaces: (t) => grants.workspaces(t),
-      },
-    });
+    replays.setViewServices({ feed, claims });
     replays.setEndpoint(() => endpointName);
     const directory = new ViewDirectory({
       sessions: stubSessions,
       team: stubTeam,
       replays,
       claims,
-      herdrWorkspaces: (t) => grants.workspaces(t),
     });
     feed.setBuilder((t) => directory.item(t));
     const view = await ViewServer.start({
@@ -309,7 +297,6 @@ export function makeReplayWorld(): ReplayWorld {
       version: "test",
       endpointName: name,
       peerAlive: (e) => names.has(e),
-      herdrViewers: grants,
       replays,
       resolveReplayTarget: () => target,
     });
@@ -321,7 +308,6 @@ export function makeReplayWorld(): ReplayWorld {
       view,
       claims,
       feed,
-      grants,
       kill: () => {
         names.delete(name);
         replays.closePeerLinks();

@@ -98,8 +98,6 @@ export interface ViewDirectoryOptions {
   team: ViewTeamSource;
   replays: ViewReplaySource;
   claims: ViewClaims;
-  /** workspace keys with a herdr viewer of a replay, or a placement reserved for one */
-  herdrWorkspaces?: (target: string) => string[];
 }
 
 function badTarget(target: string): ViewError {
@@ -218,7 +216,6 @@ export class ViewDirectory {
     return {
       ...r,
       view: this.o.claims.holder(r.target),
-      herdr_workspaces: this.o.herdrWorkspaces?.(r.target) ?? r.herdr_workspaces,
     };
   }
 }

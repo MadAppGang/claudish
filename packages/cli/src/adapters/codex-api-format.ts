@@ -12,7 +12,6 @@
  */
 
 import { mapToolChoiceToResponsesAPI } from "../handlers/shared/format/openai-tools.js";
-import { filterIdentity } from "../handlers/shared/openai-compat.js";
 import { log } from "../logger.js";
 import type { StreamFormat } from "../providers/transport/types.js";
 import { type AdapterResult, BaseAPIFormat } from "./base-api-format.js";
@@ -118,7 +117,10 @@ export class CodexAPIFormat extends BaseAPIFormat {
             )
             .join("\n\n")
         : claudeRequest.system;
-      payload.instructions = filterIdentity(system);
+      // No identity filter here: `ComposedHandler` step 2a owns that decision.
+      // A filter in this adapter cannot know the route, and scrubbed a real
+      // Claude model that step 2a had decided to keep.
+      payload.instructions = system;
     }
 
     if (tools.length > 0) {

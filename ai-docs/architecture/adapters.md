@@ -84,9 +84,412 @@ ComposedHandler = FormatConverter (explicit adapter) + ModelTranslator (auto-sel
 transport.overrideStreamFormat() ?? modelAdapter.getStreamFormat() ?? providerAdapter.getStreamFormat()
 ```
 
-**Adding a new provider**: Add one entry to `PROVIDER_PROFILES` table in `providers/provider-profiles.ts`.
+**Adding a new provider**: Add one entry to `BUILTIN_PROVIDERS` in `providers/provider-definitions.ts`. Its required `createHandler` field names the builder in `providers/provider-profiles.ts` (`lazyHandler(…)`) or says why none is built (`noHandler(reason, note)`); there is no second table to keep in step.
 **Adding a new model**: Create a ModelTranslator adapter, register in `adapters/adapter-manager.ts`.
 **Verifying wiring**: `claudish --probe <model>` shows the full adapter composition.
+
+## Claude Code's identity never reaches a foreign model (`format/identity-filter.ts`)
+
+Claude Code opens its system prompt with "You are Claude Code, Anthropic's official CLI for
+Claude.", lists the Claude model family, names its own model and knowledge cutoff, and calls
+itself "Claude Code" in reminders and tool descriptions. A foreign model reads all of it as a
+statement about itself.
+
+**Measured (2026-11-14).** A 15-hour `gemini-4-carbon` session over `ag@` sent that opening
+line on every request. The old filter ran only in the Gemini, Codex and OpenAI-shaped
+adapters, only on the system prompt, and missed the model-family and `/fast` lines. The
+Anthropic-shaped adapters (Kimi, MiniMax, GLM, Z.AI, vertex-anthropic) ignore their filter
+argument, so they sent the line unchanged. The filter also prepended "You are NOT Claude",
+which itself puts Claude into the context. The Antigravity account behind that session was
+disabled with `403 TOS_VIOLATION` partway through it. No log proves the identity text caused it.
+
+**What runs now.** `ComposedHandler` step 2a, once per attempt, after hook stage A (the hooks
+parse the ORIGINAL system text: plan path, skill list) and before `convertMessages`:
+
+- `keepsClaudeIdentity` decides. A catalog vendor decides first: `anthropic` keeps the
+  identity, any other vendor is scrubbed. With no catalog vendor, a native route or a Claude
+  model id keeps it (`claude-*`, also the dotted cloud spellings `anthropic.claude-…` and
+  `us.anthropic.claude-…`). The vendor outranks `native` because the handler's `native` flag
+  is a NAME rule: a foreign model that only carries a `claude-…` name passes it.
+- `scrubHarnessIdentity` rewrites ONLY text Claude Code injects: the system prompt; inline
+  `role: "system"` messages (the skill list, agent list and MCP instructions, plus the tool
+  definitions their `tool_addition` blocks carry); `<system-reminder>` and
+  `<local-command-caveat>` spans in user messages; Claude Code's fixed wrapper sentences ("This
+  is how Claude Code surfaces…", "Another Claude session sent a message:", "This came from
+  another Claude session…"); tool descriptions and the `description` strings inside input
+  schemas. Never user-typed text, assistant turns, tool results, tool names, schema keys or
+  `enum` / `const` / `default` / `examples` values. A tool result can be file contents; a
+  renamed one makes the next `Edit` quote text the file lacks.
+- A wrapper sentence counts only as a WHOLE LINE in Claude Code's own wording, outside a fenced
+  block. The same words inside a line the user typed ('replace the literal "Another Claude
+  session sent a message:"'), or inside source the user pasted in a fence, are the user's text.
+  The first cut matched them anywhere and rewrote the user's replacement target.
+- An identity sentence ends at a full stop followed by whitespace, the end of the text, or a
+  tag. Without the tag case, a sentence directly before `</system-reminder>` survived.
+- Inside a schema, the value of `properties`, `patternProperties`, `$defs` and `definitions`
+  maps a NAME to a schema. A parameter named `default` or `enum` is a name there, so its
+  schema is scrubbed; only the keyword `default` / `enum` is data.
+- Three kinds of text are told apart. A statement of who the reader is (identity sentences,
+  three environment lines, `<claude_background_info>`) is REMOVED. Text that addresses the
+  reader as "Claude" ("Claude uses it when…") becomes "the assistant", and the harness name
+  "Claude Code" becomes "Agent CLI". A NAME of a real product, model, tool or file stays
+  ("Claude Docs", "Claude API", "Anthropic SDK", `mcp__Claude_Browser__*`, `claude-opus-5-5`,
+  `CLAUDE.md`, the `Claude-Session:` commit trailer): the model must still be able to use it.
+- NO NAME IS RENAMED INSIDE CODE OR A LITERAL: a fenced block, an inline code span, or a
+  double-quoted string on one line, read with its escapes (`literalRanges`). A fence is a real
+  Markdown fence (`FENCE`): an opening LINE of three or more backticks or tildes, also inside a
+  list item or a blockquote, closed by a line of at least as many of the SAME character, or
+  open to the end of the text when no such line follows. The length match lets a
+  four-backtick block hold a three-backtick example; the line start keeps `~~~` in a prose
+  line from opening a block. A `<system-reminder>` tag or a wrapper line inside a fence or an
+  inline code span of a user message is pasted source, not an injected span, and is not
+  scrubbed at all (`codeRanges`).
+- An injected span runs from an opening tag to the first closing tag that is OUTSIDE code
+  (`scrubTagged`). A real reminder can carry a `CLAUDE.md` with a fenced example of a
+  reminder; a matcher that stopped at the example's closing tag scrubbed half of the real
+  reminder and renamed the example.
+- Where an injected span ENDS is decided by counting tags (`closingTagAt`), not by fences.
+  Opening and closing tags inside the span are paired, so a reminder nested in a reminder, or
+  a fenced example of one, does not end the outer span early. Only inline code is skipped (a
+  line that mentions one tag has no partner). Fences are not consulted for the end: a fence
+  that opens inside a reminder and never closes (a memory file cut off in the middle of a
+  block) would hide the real closing tag and the whole reminder would go out unscrubbed. An
+  OPENING tag, in contrast, counts as pasted source inside any code, also after a fence that
+  never closes. Limit: a fenced example that holds an opening tag and no closing tag (or the
+  reverse) is not balanced, and the span then ends at the wrong tag.
+- Inline code is a run of backticks closed by a run of the same length ON ONE LINE. Markdown
+  lets inline code cross a line break; this does not, by decision: a stray backtick in prose
+  would pair with one lines later and a real reminder between them would escape the scrub. A
+  name inside inline code that spans lines is therefore renamed. Known limit.
+- Cost, measured on synthetic 2 MB requests: 14 to 33 ms, also for one single 2 MB block
+  holding 1500 reminders. A text with no "Claude" and no tag is skipped.
+- EVERY PATTERN MUST BE LINEAR ON HOSTILE INPUT. Six patterns were not, and no review found
+  one until a round asked for slow input; the last four came out of one audit that fed each
+  pattern its own prefix, repeated, with nothing that lets the match finish. All six were the
+  same mistake: after a prefix matches, the pattern scans to the end of the line or the text
+  for something that never comes, and does so again for every prefix.
+
+  | Pattern | Hostile input, under 200 KB | Before | Now |
+  |---|---|---|---|
+  | `[ \t]*\(claude…` | 100,000 spaces | 2 s | one optional space |
+  | inline code as a regex | 25,000 backticks, no closing run | 2 to 3 s | `inlineCodeRanges`, a scanner |
+  | closed-fence pattern | 30,000 fences that never close | 490 ms | removed; tags are counted |
+  | double-quoted string as a regex | 60,000 `\"`, no closing quote | 1.1 s | `stringRanges`, a scanner |
+  | `<claude_background_info>[\s\S]*?` | 8,000 opening tags, no close | 500 ms | `removeBackgroundInfo`, a plain search |
+  | sentence scan `[^\n]*?\.` | "Assistant knowledge cutoff is" x 7,000, no full stop | 440 ms | bounded, `{0,300}` |
+
+  After the audit, 26 hostile shapes under 200 KB take 0.3 to 69 ms, and the slowest (a line
+  of `> ` markers) grows in a straight line with size. Rules for the next edit: no pattern
+  starts with an unbounded run; a lazy scan after a literal prefix carries a length bound; a
+  paired delimiter is found by a scanner or a plain search, never by a regex with a
+  backreference. `identity-filter.test.ts` holds time bounds on these inputs.
+- Measured on the captured request (3.4 MB, 24 tools): mentions of Claude, Anthropic or a Claude
+  model name went from 15 to 0 in the system prompt, 150 to 19 in tool descriptions, 52 to 9 in
+  input schemas, 87 to 48 in inline system messages. Every survivor is a product, tool name or
+  URL. The scrub took 10.5 ms.
+- The system prompt opens with a header from `identityHeadFor` (`antigravity` gets the identity
+  block Google's own client sends, below; every other provider a neutral line) — but ONLY when an
+  identity opener was actually there to replace. A hook that set a short system note, or an empty
+  prompt, gets no synthesized header: there is no "you are Claude" to counter. `IDENTITY_OPENER`
+  is the anchor. This matters because the raw `providerRequest` hook snapshots `claudeRequest`
+  after step 2a, so a header added from nothing would surface in every hook that reads `system`.
+- `scrubHarnessIdentity` keeps the SHAPE of `system` (an array stays an array, with its
+  `cache_control` blocks; a block scrubbed to empty is dropped; the header is its own block).
+  In `ComposedHandler` that is not reachable today: `transformOpenAIToClaude` (step 1) already
+  joins a `system` array into one string, so `cache_control` breakpoints on the system prompt
+  are gone before step 2a on every route. That flattening is older than the scrub and is a
+  separate question; the scrub must not be the second place that loses them.
+- ONE OWNER. Step 2a decides, and no adapter filters identity. `convertMessages` is called with
+  no filter, and `GeminiAPIFormat` and `CodexAPIFormat` no longer call `filterIdentity` in
+  `buildPayload`. An adapter cannot know the route: both ran unconditionally, so a real Claude
+  model on `ag@` (Antigravity serves them) or on a Responses endpoint lost its identity after
+  step 2a had decided to keep it. Do not put a filter back into an adapter. `filterIdentity`
+  stays for `subscription-devin-probe.ts`; it adds a header only when the text holds an
+  identity opener.
+
+**Antigravity's own header.** Copied from the `agy` 1.5.9 binary, the default non-autonomous
+branch of its `antigravity_identity` template. Google links that template with
+`LINT.IfChange(antigravity_identity)` … `LINT.ThenChange(…/prediction_service/config/abuse.pi:antigravity_identity)`,
+so its abuse configuration is maintained together with this exact text. The template's third
+line ("User requests are enclosed within <USER_REQUEST> tags") is not sent, because claudish
+does not wrap user turns in those tags.
+
+## Tool names are renamed to the provider's own on `antigravity` (`format/tool-name-alias.ts`)
+
+A sibling of the identity scrub, same goal of not looking foreign, but reversible and much
+narrower. `ComposedHandler` step 2b, right after the identity scrub.
+
+- `aliasToolsForProvider(req, provider)` renames the Claude Code built-ins that have a true agy
+  equivalent — `Bash`→`run_command`, `Read`→`read_file`, `Write`→`write_file`,
+  `Edit`→`edit_file`, `Agent`→`invoke_subagent`, `AskUserQuestion`→`ask_question`,
+  `WebSearch`→`search_web`, `SendMessage`→`send_message`, `Workflow`→`run_workflow` — in the
+  tool definitions, in a forced `tool_choice`, and in assistant-history `tool_use` blocks. The
+  table is `antigravity`-only; every other provider gets the request back unchanged. The names
+  are the `functionDeclarations` the `agy` CLI 1.5.9 sends, recorded through a proxy on
+  2026-11-15 (17 tools; the list is in `providers/antigravity.md`). `Grep`→`grep_search`,
+  `Glob`→`find_by_name` and `LS`→`list_dir` stay for a Claude Code that declares those tools:
+  the names are in the binary but not in the CLI's recorded tool set.
+- The alias is built PER REQUEST and returns `forward` and `restore` for the pairs that request
+  applied. A pair is skipped when the request already declares a tool under the native name (a
+  custom or MCP `run_command`): the rename would declare one name twice, and a table-wide
+  restore would turn that tool's calls into `Bash` calls. Never restore from the whole table.
+- The inbound half is mandatory: a name sent out must come back, or Claude Code gets a
+  `tool_use` for a tool it never declared and the turn dies. The handler passes this request's
+  `restore` to the `gemini-sse` parser as `mapToolName`. The parser gives the restored name to
+  the streamed block and the tool-count observer, and the WIRE name to `onToolCall`:
+  `GeminiAPIFormat.toolCallMap` names the next request's `functionResponse` from that store,
+  and the next request's `functionCall` is renamed to the wire name again on the way out. A
+  restored name in the store made the call and its result disagree (`run_command` / `Bash`).
+- The pairs a request applies follow the tools it declares, so ONE call can carry a different
+  name on a later request (a custom `run_command` appears: `Bash` is no longer renamed).
+  `GeminiAPIFormat.convertAssistantParts` therefore refreshes a stored name to the name the
+  `tool_use` block carries on the current request, and keeps the stored thought signature. A
+  store that only adds, and never refreshes, sends `functionCall: Bash` beside
+  `functionResponse: run_command`.
+- Hook stage B runs after the rename, and a hook names a tool as it saw it in stage A (`Bash`).
+  `applyToolDescriptions` therefore takes the request's `forward` and looks the tool up under
+  its wire name; the journal still records the name the hook asked for. Without it every
+  description action on a renamed tool ended `invalid: unknown_tool`. A raw `providerRequest`
+  hook sees the wire names.
+- The binary is not the reference, the wire is. The binary carries `write_to_file`, `view_file`
+  and `read_file` as strings; the CLI sends `write_file` and `read_file`. Until 14.25.1 the table
+  had `write_to_file` and left `Read` alone, both read from the binary.
+
+**The honest limit — names only, not shapes.** The argument SCHEMAS stay Claude Code's. agy's
+`edit_file` takes an `Instruction` plus a `CodeEdit` with `{{...}}` elision that a separate
+apply-model reconciles; Claude Code's `Edit` takes exact `old_string`/`new_string`. So a renamed
+tool carries Claude Code's arguments under agy's name. This matches the backend's tool VOCABULARY,
+not its request SHAPE, and an `edit_file` bearing `old_string`/`new_string` may read as MORE
+anomalous, not less. Whether the rename helps is unproven; it is cheap and reversible, which is the
+only reason it is defensible. Tests: `tool-name-alias.test.ts` (round trip, `tool_choice`, a
+request that already declares a native name, the call and result names through the Gemini
+adapter, stage B through `forward`), `gemini-sse-tool-alias.test.ts` (inbound restore and the
+wire name in the history store), `composed-handler-tool-alias.test.ts` (outbound end to end,
+and a tool call through the handler: it fails when the handler does not pass `restore`).
+
+**Not covered.** `subscription-devin-probe.ts` replays a captured request through
+`filterIdentity` only, so its tool descriptions and reminders are not scrubbed. An inline system message's
+`tool_addition` blocks (tool definitions added mid-session) carry no text, so step 2c below
+does not move them, and it removes the message that carried them, so a raw `providerRequest`
+hook no longer sees them (hook stage A still does).
+
+**Inline system messages (step 2c, `format/inline-system.ts`).** Claude Code sends
+`role: "system"` messages INSIDE `messages`: the skill list, the agent list and MCP server
+instructions near the start, and a background-task notification wherever the task ended. A
+captured request (2026-11-14) has one directly after a `tool_result`. The Gemini, Chat
+Completions and Responses converters convert only `user` and `assistant` messages. Measured
+on all three: neither inline text reached the wire body. On the 15-hour `gemini-4-carbon`
+session the model never saw a background-task notification (3 of 3), and the scrub of inline
+system messages had no effect on those routes.
+
+`ComposedHandler` step 2c gives each one to the model as a TEXT BLOCK IN A USER MESSAGE. Where
+it goes depends ONLY on the messages before it:
+
+- while a TOOL ROUND IS OPEN (an assistant message called tools and not every call has its
+  `tool_result` yet), the text waits and is appended to the user message that carries the
+  round's last result;
+- otherwise, after a user message, it is appended to that message;
+- otherwise it becomes a user message of its own, which the user's next turn then joins (some
+  wire formats require user and assistant turns to alternate).
+
+Text Claude Code did not wrap gets `<system-reminder>` tags. Step 2c runs after step 2a, so the
+text is already scrubbed. Two rules here were each learned from a review round, and both must
+hold:
+
+- NEVER INSIDE AN OPEN TOOL ROUND. With parallel tool calls Claude Code can send
+  `tool_result a`, a notification, `tool_result b`, or a notification before the first result.
+  Text there ends the tool round on the wire: `convertMessagesToOpenAI` then reports the
+  remaining calls as "No tool result was provided" and demotes the real results to user text
+  (measured on Chat Completions, Responses, Devin, LiteLLM, OpenRouter and the local adapter).
+- NEVER BY LOOKING AHEAD. A notification is often the last message of one request and has a
+  user message after it on the next. A rule that reads the following message moves the text
+  between those two requests, so the wire form of an already-sent message changes.
+
+Known limits of the placement, each seen only in hand-written input, not in a request
+Claude Code sends: a request that ENDS while tool calls have no result yet gets the held text
+at its end, inside the open round (Claude Code calls the model after the tools finish); a
+`tool_result` that answers no call, directly after a created user message, is put before the
+notice by the OpenAI converter; and a user message whose content is a string becomes a block
+array when a notice joins it, with the same text.
+
+Do NOT move this text into the system prompt, which the first cut did. A notification says
+something happened now; in the system prompt it loses its position. And the system prompt is
+the first part of every request, so each notification would change the text in front of the
+whole conversation and the provider's prefix cache would miss on every one. A block at the
+notification's own position changes only the tail. `AnthropicAPIFormat.buildPayload` still
+hoists into `system` for a caller without the handler; through the handler nothing is left
+for it to hoist.
+
+Tests: `inline-system.test.ts` (each placement, the unchanged prefix) and
+`composed-handler-inline-system.test.ts` (the wire body on Chat Completions, Gemini, Responses
+and an Anthropic-shaped route; the first three fail without step 2c).
+
+**Tool references (step 2d, `format/tool-reference-text.ts`).** Claude Code loads a deferred
+tool through `ToolSearch`. The tool result holds a pointer and no text:
+`[{"type":"tool_reference","tool_name":"WebFetch"}]`. The Anthropic API replaces the pointer
+with the tool's definition; no converter here carried it. The Gemini converter sent the string
+`"OK"`, the Anthropic-shaped one an empty text (it removes the item for every host), Chat
+Completions and Ollama Cloud the item's JSON. The model could not tell a loaded tool from an
+empty search.
+
+Step 2d replaces each pointer with one text item: `Loaded: <name>. It is in your tool list
+now.` The definition needs no place in the result, because Claude Code declares the tool in
+`tools` on the next request. It runs for every request, the `keepsClaudeIdentity` ones
+included: a Claude model behind a gateway or `antigravity` is on the same converters. A pointer
+with no name is removed. The step reads user messages only and returns the same array when
+nothing changes.
+
+The sentence must name the tool as the body declares it, or the model calls a name the
+provider never got. The step does not guess that name. It asks the converter:
+`declaredToolNames(names)` on `BaseAPIFormat` takes the request's tools in declaration order
+and answers, for each, the name it is declared under, or null when the converter declares none.
+
+- The step runs after step 2b and gives the converter the aliased names (`read_file` on
+  `antigravity`).
+- The default answer repeats what `encodeToolNames` does on the built payload (64 characters
+  on the OpenAI-shaped wires): the tools claim their encoded names in declaration order, in
+  one binding. `mcp__plugin_browser-use_browser-use__retry_with_browser_use_agent` becomes the
+  hashed form in the sentence too, and when an earlier tool already has that form, the same
+  salted form the payload gets.
+- `GeminiAPIFormat` answers `sanitizeToolNameForGemini`, the rule `convertToolsToGemini`
+  declares by: it cuts the same name at 64 characters and drops a tool with no usable name.
+- `OllamaAPIFormat` answers null: Ollama Cloud sends no tool definitions.
+- A converter with a tool-count cap (`getMaxToolCount`, 128 on OpenAI Chat Completions) sends
+  only the first tools; the step asks for those only.
+
+For a tool with no declared name, one past the cap, or one the request does not declare at
+all, the sentence is `Not loaded: <name>. It is not in your tool list.` A new converter with
+its own name rules must override `declaredToolNames`, or the sentence names the default form.
+
+Not handled on the Claude API (`anthropic`) and Vertex Claude routes: Anthropic's own server
+expands a `tool_reference`, so the right request keeps the pointer. `AnthropicAPIFormat`
+removed it for every host before this step existed, and the tool stayed `defer_loading`; the
+model now reads the sentence where it read an empty text, and the definition still does not
+reach it. The Claude subscription is not affected (the native handler forwards the request).
+
+Tests: `tool-reference-text.test.ts` (the rules) and `composed-handler-tool-reference.test.ts`
+(the body sent through `GeminiAPIFormat` and through the Chat Completions converter, the alias
+name, a long name on the OpenAI and the Gemini converter, a name collision, a tool past the cap,
+Ollama Cloud). Without step 2d its Gemini cases read `"OK"` and its Chat Completions case the item's
+JSON, and the Gemini and Anthropic-shaped rows of the wire-fidelity test fail.
+
+**One test over every wire format (`composed-handler-wire-fidelity.test.ts`).** One request with
+every piece Claude Code sends, each with its own marker, goes through the handler once per
+format the code builds (Chat Completions through `DefaultAPIFormat`, `OpenAIAPIFormat`,
+`OpenRouterAPIFormat`, `LiteLLMAPIFormat` and `LocalModelAdapter`; the local adapter's `mlx`
+simple mode; Gemini; Responses; Anthropic-shaped; Devin; Ollama Cloud). Each format's row lists
+the pieces it cannot carry, with the reason; a marker missing without a reason fails, and so does
+a listed limit that stops being true, so a converter change that starts carrying a piece updates
+the row on purpose. The rows also pin, per format, what an unknown role (`developer`) and an
+unknown block type do: on the Anthropic-shaped wire they pass through (the provider answers);
+every other converter skips them with no log line. That is recorded, not decided.
+
+Gemini pairs a model turn's function calls with the function responses of the ONE user turn
+after it. Claude Code splits a parallel round's results across two user messages when a
+notification arrives between them, so `GeminiAPIFormat.convertMessages` merges a user content
+into a directly preceding user content (`gemini-api-format-tool-round.test.ts`). Gemini's
+published error for the split form is "the number of function response parts is equal to the
+number of function call parts of the function call turn"; it was not measured live.
+
+A `functionResponse` names only the function, so the n-th response belongs to the n-th call.
+Two `Read` calls whose results arrive B first would each get the other's file. The converter
+therefore remembers the Claude call id behind each part (`callIdOf`, a `WeakMap`, because the
+parts themselves carry no id) and puts a user turn's responses in the order of the calls before
+it; each response keeps the image parts its tool result carried, and the turn's other parts
+follow. The text-only wires (Ollama Cloud, the local adapter's `mlx` mode) write
+`[Tool Result]: …` with no id or name and still pair by arrival order: a stated limit in the
+test, not fixed.
+
+Pinned as limits in the test, not decided here: `cache_control` on the system prompt is gone
+on every wire (step 1, above); a `tool_addition` block reaches no wire (step 2c moves only text);
+Gemini drops a tool result's `document` items with no log; Ollama Cloud skips a top-level
+image with no note and sends no tool definitions; the error flag of an `is_error` result exists
+only on the Anthropic-shaped wire.
+
+Tests: `identity-filter.test.ts` (the rules on a captured prompt, the reader rename and the names
+it keeps, idempotency, what is never touched, the inputs of both review rounds) and
+`composed-handler-identity.test.ts` (the wire body for a gateway and for `antigravity`, which
+fail without step 2a; a real Claude model, a control that must stay unchanged; both outcomes on
+the real Gemini and Responses adapters).
+
+## Antigravity refuses two passages of Claude Code's system prompt (`format/provider-refused-text.ts`)
+
+`ComposedHandler` step 2a', between the identity scrub and the tool-name alias.
+
+**Measured 2026-11-15**, claudish 14.24.0 and `agy` 1.5.9 on one Antigravity Pro account, model
+`gemini-4-argon-medium`, through a recording proxy. Every main request from claudish answered
+`429 RESOURCE_EXHAUSTED` ("Resource has been exhausted (e.g. check quota).") with no reason and
+no retry delay, while the account's quota report said 99.5% remaining and `agy` answered 200 in
+the same minutes. One recorded claudish request was then replayed 24 times with one change each:
+
+| Change to the claudish request | Status |
+|---|---|
+| none | 429 |
+| `enabled_credit_types` removed | 429 |
+| agy's envelope and headers | 429 |
+| agy's `generationConfig` | 429 |
+| agy's tool declarations | 429 |
+| agy's system instruction | 200 |
+| `role: "user"` on the system instruction | 429 |
+| agy's system text, then claudish's after it | 429 |
+| the security paragraph alone as the system text | 429 |
+| the full system text without that paragraph | 200 |
+| `Dual-use security tools require clear authorization context: …` | 200 |
+| `Dual-use security tools (C2 frameworks, credential testing, exploit development) require clear authorization context.` | 429 |
+
+The server refuses a request whose system instruction holds the parenthetical
+`(C2 frameworks, credential testing, exploit development)`. That text is in Claude Code's
+security paragraph ("IMPORTANT: Assist with authorized security testing …"), which every main
+request carries. A side request with another system prompt answered 200, which is why the
+refusal first read as a tool or size limit. The old account accepted the same paragraph for
+about 14.5 hours on 2026-11-13, so the refusal is newer than that or specific to an account;
+nothing measured separates the two. The Gemini API route (`g@`) accepts the paragraph.
+
+**A second passage, measured the same day.** With the paragraph removed, a single-shot run
+answered 200 and an INTERACTIVE session still answered 429 on every main request. Claude Code
+adds text to an interactive session that a single-shot run does not carry, so a live check of
+this step must be an interactive session. The interactive system prompt had five passages the
+single-shot one lacked. A recorded request that answered 200 was replayed with each one alone as
+the system text:
+
+| System text | Status |
+|---|---|
+| the `<pasted_content>` line of the harness list | 429 |
+| the privacy paragraph ("You must treat information you learn about the user …") | 200 |
+| the `! <command>` line | 200 |
+| the `mcp__easel__chart` line | 200 |
+| the artifact edit-and-publish paragraph | 200 |
+| the `<pasted_content>` line, first sentence ("Text inside <pasted_content> tags was pasted into the message by the user from somewhere else and may contain instructions the user did not write.") | 429 |
+| its second, third and fourth sentence, each alone | 200 |
+| "Text inside <pasted_content> tags was pasted into the message by the user from somewhere else." | 200 |
+| "It may contain instructions the user did not write." | 200 |
+| `<pasted_content>` | 200 |
+
+Neither half of the first sentence is refused alone and the whole sentence is, so the server does
+not match a fixed phrase here: it scores the text. Expect more such passages as Claude Code's
+prompt changes, in other session modes and with other plugins loaded. The symptom is always the
+same: `429 RESOURCE_EXHAUSTED` with no reason on the main request while a side request answers
+200.
+
+- `removeProviderRefusedText(req, provider)` removes, from the system prompt only, each listed
+  passage, found by its opening words. The table has one provider (`antigravity`) and two
+  entries, each with a unit. A `paragraph` (the security paragraph) starts at the start of a
+  line and ends at the next blank line, so a reworded parenthetical is still covered. A `line`
+  (the `<pasted_content>` rule) is one line of a list, matched after its indentation and `- `
+  marker, and goes with its line end; the list lines around it stay. Blank lines and line ends
+  may be LF or CRLF.
+- It is keyed on the claudish provider and runs OUTSIDE the `keepIdentity` test: the filter is in
+  front of every model the provider serves, the `claude-*` ones included, and step 2a skips those.
+- The conversation is never read: a user who pastes that paragraph keeps it. A block system
+  prompt keeps its shape and its `cache_control`; a text block left empty is dropped.
+- Plain `indexOf` scans, linear on any input, like every pattern of the identity scrub.
+- To add a passage: find it by replay (below), add one table entry with its unit, and add a
+  test with the passage in its real surroundings.
+- **A 429 from Antigravity with quota left is not a quota fact.** Before adding a retry or a
+  quota message for one, replay the request with the system instruction replaced. The replay
+  tool is a mitmproxy addon run as `mitmdump -n -s <addon> -C <flow file>`; `agy` (a Go binary)
+  accepts the proxy with `HTTPS_PROXY` plus `SSL_CERT_FILE` pointing at the mitmproxy CA, and
+  claudish with `HTTPS_PROXY`, `NODE_EXTRA_CA_CERTS` and `NO_PROXY=127.0.0.1,localhost`.
 
 ## Stream Parsers
 Located in `handlers/shared/stream-parsers/`:
@@ -864,6 +1267,65 @@ Two things this uncovered:
    Use `-d` / `--debug-claudish` (which writes `./logs/`), not `--debug` — the
    latter is passed through to Claude Code and tells you nothing about the proxy.
 
+## Who signs a native request: `NativeSigning` (`handlers/shared/anthropic-forward.ts`)
+
+The native passthrough (`NativeHandler`, `count_tokens`, the classifier passthrough) forwards
+Claude Code's own request to Anthropic. Which credential goes out is one rule, `NativeSigning`,
+applied in `buildForwardRequest`:
+
+| Kind | Used for | What is sent |
+|---|---|---|
+| `inbound` | every launch that is not a Claude launch and maps no Claude model: plain `--monitor`, `--anthropic-api-billing` (unpinned), a foreign main model with no Claude tier, `serve` under the API-billing opt-in, the probe proxy | the credential pair as it arrived; a Claude login bearer drops an `x-api-key` beside it; a request with neither header gets the fallback key (this process's key, else `ANTHROPIC_API_KEY` through the credential authority's `native-anthropic`) |
+| `login-only` | the Claude subscription: a top-level `claude@` launch; a launch whose main model or any tier is a bare Claude name, without `--anthropic-api-billing`, a foreign main model included; a launch pinned by `claudeSubscriptionPin` whatever the opt-in says (a `claude@` tier, a pane child given `claude@`, `run_prompt`'s print child for `claude@`, which gets `--claude-subscription-pin`); `serve` without the API-billing opt-in (`serveProxyOptions`), so a request naming a bare Claude model no slot maps is never signed with the key; and any request whose decision is `claude@<id>` | `authorization` only when it matches `CLAUDE_LOGIN_BEARER` (`sk-ant-oat<n>-`); an inbound `x-api-key` and any other bearer are dropped; no fallback is ever called |
+| `launch-key` | the Claude API launch (`anthropic@<id>` at top level) | every inbound credential dropped; `x-api-key` set to the key the launch resolved |
+
+**The 401.** A `login-only` request with no Claude login gets claudish's own answer, HTTP 401
+`authentication_error`, through `redactForClient`, and no upstream call: "Claude subscription
+session: this request carries no Claude Code login, and claudish never signs a Claude subscription
+request with an API key. Sign in with /login, or use anthropic@<id> for the Claude API." A request
+that carries `x-api-key` and no login bearer (Claude Code's own credential is a key: a stored
+Console `primaryApiKey`, or an approved `ANTHROPIC_API_KEY`, both sent as `x-api-key` with no
+`authorization`, measured on Claude Code 2.1.325) gets its own text instead
+(`CLAUDE_SUBSCRIPTION_API_KEY_REQUEST`): it carries an API key, not a Claude login, and the fixes are
+`anthropic@<id>` or, for a bare Claude name, `--anthropic-api-billing`. A `login-only` launch is
+refused once at startup before either can happen (`prepareClaudeLaunch`, `claudeLoginRefusal`):
+`claudeCodeStartupCredential` asks, by presence only, whether Claude Code holds a claude.ai login,
+only a stored Console key, or nothing, and a store that does not answer is not refused. Before
+this rule, a bare Claude name launched with no Claude Code login and an `ANTHROPIC_API_KEY` in the
+shell ran, billed to that key through the `inbound` fallback; it now gets the 401.
+`--anthropic-api-billing` and `anthropic@<id>` are the two ways to bill the key.
+
+**Who decides.** The launch computes its signing in `prepareClaudeLaunch`
+(`launcher/claude-launch.ts`) and passes it as `ProxyServerOptions.nativeSigning`; absent means
+`inbound`. On a `launch-key` or `login-only` launch `index.ts` passes the proxy no
+`anthropicApiKey`, so no fallback key exists to reach. Per request (`resolveHandlerForRequest`,
+`proxy-server.ts`):
+
+- a `claude@<id>` decision is `login-only` whatever the launch, and the request's model is
+  rewritten to the bare `<id>` before the handler or `count_tokens` forwards it;
+- a bare native name that the launch's own configuration chose (a slot, a role mapping,
+  `--model`) is
+  `login-only` on an `inbound` launch unless the launch opted into API billing
+  (`apiBillingOptIn`); a request that passes its own model through keeps the launch's signing;
+- every other request, and every classifier-passthrough request, takes the launch's signing.
+
+**Settings cannot move the signer.** On the Claude API launch whatever Claude Code sends (the
+placeholder token, a settings `ANTHROPIC_API_KEY`, an `apiKeyHelper`'s output, an
+`ANTHROPIC_CUSTOM_HEADERS` auth header) is dropped, so every request that reaches the proxy is
+billed to the key the user chose. On the Claude subscription a key-signed request is refused.
+
+**Metering follows the signer.** `NativeHandler` records a turn on the Claude API meter
+(`handlers/claude-api-meter.ts`) when, and only when, the request was signed `launch-key`: every
+forwarded request of that launch, a no-auth one included, and nothing on any other launch. Each
+turn is priced by its own model (subagent and background turns run on other models through the
+same handler), and only a turn on the session's main model moves the status line's context
+occupancy. Stats record `provider_name: "anthropic"`, `adapter_name: "native-passthrough"`; a
+non-2xx turn records `success: false` and changes no counter. `count_tokens` is not metered:
+Anthropic does not bill it.
+
+**The advisor follows the same signing** (`advisorKeyArmFor`, `handlers/advisor-decorator.ts`):
+see [advisor.md](advisor.md).
+
 ## A credential a request signed with is redacted by value in every sink (`redact.ts`)
 
 A provider can echo the key it received: in a 401 body, in an error frame of a 200 stream, in the
@@ -896,8 +1358,11 @@ outside its headers exposes the value through `redactionSecrets?()`: Devin (the 
 body) and Antigravity (its capacity fallback sends the access token itself). The advisor adds
 Claude Code's inbound bearer and `x-api-key` to the main request's lease when it reads them
 (`claudeRequestFacts`, `handlers/native-handler-advisor.ts`). The native passthrough registers the
-exact headers it sends (the inbound bearer or key, or its fallback key) on EVERY native request,
-before its fetch (`NativeHandler.handle`), so an ordinary native turn's lease is not empty.
+exact headers it sends (the inbound bearer or key, its fallback key, or the Claude API launch's
+key) on EVERY native request, before its fetch (`buildForwardRequest`), so an ordinary native
+turn's lease is not empty. The Claude API launch also holds its key on a launch lease from the
+moment it is resolved until after the proxy shuts down and the end-of-session card is printed
+(`prepareClaudeLaunch`; `index.ts` releases it at every exit).
 
 **Who holds a lease, and when it is released.**
 

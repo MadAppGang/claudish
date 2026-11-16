@@ -62,9 +62,15 @@ describe("stripUnrequestedProvider with captured canonical model ids", () => {
       expected: `unregistered-endpoint@${model}`,
     },
     {
-      name: "anthropic vendor is not a builtin claudish provider",
+      name: "unrequested Claude API is a builtin claudish provider and strips to the bare name",
       spec: `anthropic@${nativeModel}`,
       required: false,
+      expected: nativeModel,
+    },
+    {
+      name: "required Claude API keeps its provider",
+      spec: `anthropic@${nativeModel}`,
+      required: true,
       expected: `anthropic@${nativeModel}`,
     },
     { name: "Ollama", spec: `ollama@${model}`, required: false, expected: `ollama@${model}` },
