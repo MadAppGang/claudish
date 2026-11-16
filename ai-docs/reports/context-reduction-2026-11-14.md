@@ -943,6 +943,55 @@ design. That is why cases c, d and e each had at most one compression per
 trial. A second run of case a with `bashOutputMaxChars` raised to 128000
 follows below.
 
+### Case a with Claude Code's inline limit raised from its default: compaction 29% cheaper, ranges overlap
+
+Condition: Claude Code inline limit raised from its default.
+`--param cc_settings=../config/inline-max` gives both arms
+`{"bashOutputMaxChars": 128000}`, so a Bash output up to 128,000
+characters reaches the model inline. This is not Claude Code's default
+behaviour, and the prompt still FORCES complete output. Build a6952916,
+Bench at 9aae38c4, 10-minute Bash timeout.
+
+| Arm | Trial | Grade | Duration | Cost | Hit rate | Main requests | Tool results | Cache read | Haiku in / out | 429s |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `cases-compaction` | 1 | 7/8 | 360 s | $0.3066 | 90.0% | 12 | 22 | 426,084 | 112,340 / 779 (2 calls) | 1 |
+| `cases-compaction` | 2 | 7/8 | 402 s | $0.4245 | 77.9% | 10 | 18 | 358,913 | 56,368 / 129 (1) | 1 |
+| `cases-compaction` | 3 | 7/8 | 711 s | $0.2186 | 92.0% | 14 | 17 | 535,259 | 169,454 / 573 (3) | 1 |
+| `cases-baseline` | 1 | 7/8 | 629 s | $0.2954 | 88.3% | 10 | 24 | 461,295 | | 1 |
+| `cases-baseline` | 2 | 7/8 | 623 s | $0.5423 | 91.5% | 13 | 37 | 1,128,918 | | 1 |
+| `cases-baseline` | 3 | 7/8 | 538 s | $0.4954 | 89.7% | 11 | 24 | 920,671 | | 1 |
+
+Means: compaction $0.3166, baseline $0.4444 (-28.8%). The ranges overlap
+($0.2186 to $0.4245 against $0.2954 to $0.5423). The clearest difference
+is the cache read: 358,913 to 535,259 tokens with compaction, 461,295 to
+1,128,918 without. Each later request of the baseline re-reads the
+110,000-character test output from the cache; with compaction it re-reads
+a summary of a few hundred characters (for example `110964 -> 765
+characters`).
+
+Every finished test run arrived inline (no `<persisted-output>`, no
+`Exit code 143`; largest outputs 110,964 to 112,155 characters). Baseline
+t1's first test run ended `Exit code 144` after 10,039 characters, inside
+a test that retries a dead endpoint; a later run in the same trial
+finished. Every trial got exactly one 429, within 3 seconds of its start,
+so it did not slow the work. No other madbench run was on the machine
+during these trials (the per-minute process log stayed empty). The first
+baseline t2 is not counted: madbench reported "turn 1 reached the agent as
+<pasted_content> although the bench pasted nothing in it … this run cannot
+be graded" (`case-a128-baseline-t2-pasted-error.json`), and that trial was
+rerun.
+
+The grade cannot separate the arms: every trial fails the same hidden
+test, "responses follow the order of their calls, not the order they
+arrived in", which is the defect itself. The control with 463c439e's fix
+passes it, so the check is right; no agent found the real fix in either
+arm.
+
+Verdict for case a with the raised limit: when a 110,000-character output
+does reach the model, compaction cuts what later requests re-read and the
+trial costs less on average, but with 3 trials per arm the cost ranges
+overlap and the result is not conclusive.
+
 ### Case e, research: compaction had almost nothing to compress
 
 The task: a read-only question about claudish answered with six parallel
