@@ -810,6 +810,44 @@ Read.
 Verdict for case c: compaction did not help a short refactor. Both arms
 solved it every time; the compaction arm cost more in all 3 trials.
 
+### Case c rerun on build 4e4858c3: the file-print fix removes the extra cost
+
+Build 4e4858c3 (sha256 `0dc6c377…2c82`, checked before the run and in
+every launch log) leaves a Bash output that prints a file uncompressed.
+Both arms ran on it, 3 trials each, with the Bench at d2876a13, whose
+sandbox gives Bash calls a 10-minute default timeout
+(`BASH_DEFAULT_TIMEOUT_MS=600000`; Claude Code's own default is 2
+minutes).
+
+| Arm | Trial | Grade | Duration | Cost | Hit rate | Main requests | Tool results | Haiku calls |
+|---|---|---|---|---|---|---|---|---|
+| `cases-compaction` | 1 | 5/5, 118 pass | 67 s | $0.1129 | 87.4% | 8 | 10 | 0 |
+| `cases-compaction` | 2 | 5/5, 118 pass | 66 s | $0.1880 | 89.3% | 10 | 14 | 0 |
+| `cases-compaction` | 3 | 5/5, 118 pass | 73 s | $0.1817 | 89.5% | 10 | 14 | 0 |
+| `cases-baseline` | 1 | 5/5, 118 pass | 70 s | $0.1191 | 85.7% | 7 | 12 | |
+| `cases-baseline` | 2 | 5/5, 118 pass | 68 s | $0.1795 | 85.1% | 7 | 9 | |
+| `cases-baseline` | 3 | 5/5, 118 pass | 74 s | $0.1834 | 88.3% | 9 | 13 | |
+
+Each compaction trial logged the new line for its first Bash call, the
+print of `native-route.ts` (16,107 to 17,092 characters), for example
+`[compaction] session 9739f36a-405f-4d61-a2ed-e4e51f62a984: file print
+toolu_01PVjgXtcwzbsbsiknBJUeoA not compressed`. No trial made a Haiku call.
+
+| | a6952916 | 4e4858c3 |
+|---|---|---|
+| Compaction mean cost | $0.2541 | $0.1609 |
+| Baseline mean cost | $0.1778 | $0.1607 |
+| Compaction against baseline | +42.9% | +0.1% |
+| Compaction tool results | 17 to 22 | 10 to 14 |
+| Baseline tool results | 10 | 9 to 13 |
+| Compaction main requests | 11 to 15 | 8 to 10 |
+
+The cost ranges of the two arms now overlap ($0.1129 to $0.1880 against
+$0.1191 to $0.1834). With the file print kept whole, the agent no longer
+reads the file again, and the compaction arm costs the same as the
+baseline. It also saves nothing: the file print was the only output over
+the threshold, so compaction had nothing else to act on.
+
 ### Case d, long session in a 200K window: the main realistic case (incomplete)
 
 Case d is the case that answers "does compaction help a real long session":
@@ -863,6 +901,14 @@ summary starts at 0.6 of it. claudish measures a request as
 `JSON.stringify(body).length / 4`; real text here ran about 2.4 characters
 per token, so 173,646 real tokens can stay under 120,000 estimated ones.
 The rest of case d waits for a decision on a fix.
+
+These four trials ran before the sandbox set `BASH_DEFAULT_TIMEOUT_MS`.
+Each lost one Bash call to a timeout ("Exit code 143", "Command timed out
+after 2m 0s" in three trials, "after 10m 0s" in baseline t3), always a call
+that chained the typecheck after the tests. Each trial still had one
+complete scoped test run (bun's "Ran … tests across … files" line in the
+tool result). Without the kills the window would fill slightly sooner; the
+peaks and the compaction counts above are what these trials measured.
 
 ### Case e, research: compaction had almost nothing to compress
 
