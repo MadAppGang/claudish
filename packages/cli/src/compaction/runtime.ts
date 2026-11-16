@@ -20,6 +20,7 @@ import {
   credentialPromptRole,
 } from "../auth/credentials/prompt-role.js";
 import { log, logStderr } from "../logger.js";
+import { getRegisteredProviders } from "../providers/provider-registry.js";
 import { acquireSigningLease } from "../redact.js";
 import type { StatsEvent } from "../stats-otlp.js";
 import { type CompactionSettings, resolveCompactionModel } from "./config.js";
@@ -27,6 +28,14 @@ import { CompactionClient } from "./haiku-client.js";
 import { HistoryCompactor } from "./history.js";
 import { CompactionStore, compactionRoot, purgeExpiredSessions } from "./store.js";
 import { ToolOutputCompactor } from "./tool-outputs.js";
+import { topicDeciderFor } from "./topic.js";
+
+/** The Ollama server the `embed` topic decider asks, as claudish's Ollama provider resolves it. */
+function ollamaBaseUrl(): string {
+  return (
+    getRegisteredProviders().find((p) => p.name === "ollama")?.baseUrl ?? "http://localhost:11434"
+  );
+}
 
 /**
  * How long startup waits for the cloud models catalog when a tier alias finds
@@ -186,7 +195,12 @@ export async function prepareCompaction(
     client,
     store,
     toolOutputs: new ToolOutputCompactor({ store, client, settings: settings.toolOutputs }),
-    history: new HistoryCompactor({ store, client, settings: settings.history }),
+    history: new HistoryCompactor({
+      store,
+      client,
+      settings: settings.history,
+      topicDecider: topicDeciderFor(settings.history, client, ollamaBaseUrl()),
+    }),
   };
   runtime.shutdown = async () => {
     runtime.client.close();

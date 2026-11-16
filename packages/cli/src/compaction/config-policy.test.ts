@@ -27,6 +27,31 @@ test("a threshold written in the block wins over the policy's default", () => {
   expect(settings.history).toMatchObject({ policy: "early", precomputeAt: 0.5, applyAt: 0.8 });
 });
 
+test("history.policy topic fills the topic defaults, and a written field wins", () => {
+  const { settings, warning } = readCompactionBlock({
+    history: { policy: "topic", topic: { decider: "embed", floorTokens: 50_000 } },
+  });
+  expect(warning).toBeUndefined();
+  expect(settings.history).toMatchObject({
+    policy: "topic",
+    precomputeAt: 0.6,
+    applyAt: 0.75,
+    topic: {
+      decider: "embed",
+      floorTokens: 50_000,
+      minConfidence: 0.7,
+      similarityBelow: 0.5,
+      timeoutMs: 5000,
+      embedModel: "nomic-embed-text",
+    },
+  });
+});
+
+test("an unknown topic decider is refused with a warning naming the key", () => {
+  const { warning } = readCompactionBlock({ history: { topic: { decider: "jepa" } } });
+  expect(warning).toContain("compaction.history.topic.decider");
+});
+
 test("an unknown policy is refused with a warning naming the key", () => {
   const { settings, warning } = readCompactionBlock({ history: { policy: "sometimes" } });
   expect(warning).toContain("compaction.history.policy");

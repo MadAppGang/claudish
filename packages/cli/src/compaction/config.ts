@@ -20,7 +20,7 @@
  * newest `claude-haiku-*` id the catalog lists.
  */
 
-import { CompactionConfigSchema } from "../config-schema.js";
+import { type CompactionConfig, CompactionConfigSchema } from "../config-schema.js";
 import { claudeAdvisorModelFor } from "../handlers/advisor-claude-route.js";
 import type { ClaudishProfileConfig } from "../profile-config.js";
 import type { HistoryPolicy } from "./swap-policy.js";
@@ -61,7 +61,34 @@ export interface HistorySettings {
    * its own, so a ready summary is sent before Claude Code compacts.
    */
   applyAt: number;
+  /** The `topic` policy's settings. Absent means `DEFAULT_TOPIC_SETTINGS`. */
+  topic?: TopicSettings;
 }
+
+/** How the `topic` policy decides that a new human turn changed the topic (`topic.ts`). */
+export interface TopicSettings {
+  /** `haiku`: the compaction model; `embed`: a local Ollama embedding model. */
+  decider: "haiku" | "embed";
+  /** No topic decision below this many tokens of history; summaries start here too. */
+  floorTokens: number;
+  /** A new topic below this confidence holds. */
+  minConfidence: number;
+  /** `embed`: a highest cosine similarity below this is a new topic. */
+  similarityBelow: number;
+  /** The longest a request waits for the decision; a timeout holds. */
+  timeoutMs: number;
+  /** `embed`: the Ollama model, served at `OLLAMA_BASE_URL` / `OLLAMA_HOST`. */
+  embedModel: string;
+}
+
+export const DEFAULT_TOPIC_SETTINGS: Readonly<TopicSettings> = Object.freeze({
+  decider: "haiku",
+  floorTokens: 30_000,
+  minConfidence: 0.7,
+  similarityBelow: 0.5,
+  timeoutMs: 5000,
+  embedModel: "nomic-embed-text",
+});
 
 export interface CompactionSettings {
   enabled: boolean;
@@ -99,6 +126,7 @@ export const POLICY_THRESHOLDS: Readonly<
   threshold: { precomputeAt: 0.6, applyAt: 0.75 },
   early: { precomputeAt: 0.5, applyAt: 0.7 },
   cost: { precomputeAt: 0.5, applyAt: 0.75 },
+  topic: { precomputeAt: 0.6, applyAt: 0.75 },
 });
 
 /**
@@ -147,9 +175,7 @@ export function readCompactionBlock(block: unknown): CompactionBlockReading {
     };
   }
   const data = parsed.data;
-  const written = definedOnly(data.history ?? {});
-  const policy = written.policy ?? defaults.history.policy ?? "threshold";
-  const history = { ...defaults.history, ...POLICY_THRESHOLDS[policy], ...written, policy };
+  const history = mergeHistory(defaults.history, data.history ?? {});
   // A block that names only one of the two thresholds must still leave them ordered.
   if (history.precomputeAt >= history.applyAt) {
     return {
@@ -166,6 +192,30 @@ export function readCompactionBlock(block: unknown): CompactionBlockReading {
       toolOutputs: { ...defaults.toolOutputs, ...definedOnly(data.toolOutputs ?? {}) },
       history,
     },
+  };
+}
+
+/**
+ * The history settings a block yields: the defaults, then the policy's
+ * thresholds, then what the block wrote. The topic settings are filled in
+ * under the `topic` policy or when the block writes any.
+ */
+function mergeHistory(
+  defaults: HistorySettings,
+  block: NonNullable<CompactionConfig["history"]>
+): HistorySettings {
+  const { topic: writtenTopic, ...written } = definedOnly(block);
+  const policy = written.policy ?? defaults.policy ?? "threshold";
+  const topic =
+    policy === "topic" || writtenTopic
+      ? { ...DEFAULT_TOPIC_SETTINGS, ...definedOnly(writtenTopic ?? {}) }
+      : undefined;
+  return {
+    ...defaults,
+    ...POLICY_THRESHOLDS[policy],
+    ...written,
+    policy,
+    ...(topic ? { topic } : {}),
   };
 }
 

@@ -50,7 +50,7 @@ import { log } from "../logger.js";
 import { ONE_MILLION_CONTEXT_SUFFIX } from "../providers/claude-code-aliases.js";
 import { parseModelSpec } from "../providers/model-parser.js";
 import { type CachePricing, cacheRatios, cacheTtlMs } from "./cache-prices.js";
-import type { HistorySettings } from "./config.js";
+import { DEFAULT_TOPIC_SETTINGS, type HistorySettings } from "./config.js";
 import type { CompactionCallResult, CompactionClient } from "./haiku-client.js";
 import { RealTokenCount, type RequestCount, type UsageMark, charsOf } from "./real-count.js";
 import {
@@ -61,6 +61,7 @@ import {
   historyRecordKey,
 } from "./store.js";
 import { type HistoryPolicy, type SwapDecision, decideHistorySwap } from "./swap-policy.js";
+import { type TopicDecider, type TopicResult, decideTopicAction } from "./topic.js";
 
 /** The first line of the summary message; the summary follows on the next line. */
 export const HISTORY_SUMMARY_MARKER = "[claudish: summary of the earlier conversation]";
@@ -400,6 +401,16 @@ function renderToolResultContent(content: unknown): string {
     .join("\n");
 }
 
+/** The text a person wrote or read in one message: its string content, or its text blocks joined. */
+export function messageText(message: unknown): string {
+  const content = (message as Block | undefined)?.content;
+  if (typeof content === "string") return content;
+  return blocksOf(message)
+    .filter((b) => b.type === "text" && typeof b.text === "string")
+    .map((b) => b.text as string)
+    .join("\n");
+}
+
 /** One message as plain text. Thinking is never rendered. */
 export function renderMessage(message: unknown): string {
   if (!message || typeof message !== "object") return "";
@@ -557,6 +568,8 @@ export interface HistoryCompactorDeps {
   pricesOf?: (model: unknown, inputTokens: number) => CachePricing | undefined;
   /** What the Haiku call behind a ready summary cost, in dollars. */
   haikuCostOf?: (summary: Extract<HistorySummaryRecord, { form: "ready" }>) => number;
+  /** The `topic` policy's decider. Without one, `topic` swaps only on its threshold rule. */
+  topicDecider?: TopicDecider;
 }
 
 /** The Claude API rates of a `claude-*` model; undefined for any other name. */
@@ -616,7 +629,93 @@ export class HistoryCompactor {
    * `routedModel` is the model the request is routed to; its context window
    * is the limit. Absent, the body's own `model` is used.
    */
-  compact(payload: unknown, sessionId: string, routedModel?: string): HistoryPassSummary {
+  /**
+   * `compact`, after the `topic` policy's decision for a request that starts
+   * a human turn: the one step that waits, for the decider's answer, bounded
+   * by its own timeout. Every other policy goes straight to `compact`.
+   */
+  async compactAsync(
+    payload: unknown,
+    sessionId: string,
+    routedModel?: string
+  ): Promise<HistoryPassSummary> {
+    const topicSwap =
+      this.deps.settings.policy === "topic"
+        ? await this.topicDecision(payload, sessionId)
+        : undefined;
+    return this.compact(payload, sessionId, routedModel, topicSwap);
+  }
+
+  /**
+   * The prefix hash of the ready summary to swap in for a new topic, or
+   * undefined to hold. Decided only at a human turn start with at least
+   * `floorTokens` of history and a ready summary above the active swap, so
+   * history is never dropped without a summary and the decider is never
+   * asked a question whose answer cannot act.
+   */
+  private async topicDecision(payload: unknown, sessionId: string): Promise<string | undefined> {
+    const decider = this.deps.topicDecider;
+    const settings = this.deps.settings.topic ?? DEFAULT_TOPIC_SETTINGS;
+    const original = messagesOf(payload);
+    if (!decider || !original || original.length < 2) return undefined;
+    const last = original.length - 1;
+    if (!isHumanTurnStart(original[last])) return undefined;
+    const thread = threadOf(original);
+    if (this.counter.count(sessionId, thread, payload).tokens < settings.floorTokens) {
+      return undefined;
+    }
+    const hashes = new MessageHashes(original);
+    const active = this.matchSwap(sessionId, thread, original, hashes);
+    const ready = this.bestSummary(
+      sessionId,
+      thread,
+      original,
+      hashes,
+      active?.boundary ?? 0,
+      last
+    );
+    const logDecision = (verdict: TopicResult, action: { swap: boolean; reason: string }) => {
+      const v = verdict.ok ? verdict.verdict : undefined;
+      log(
+        `[compaction] topic decision ${decider.name}: ${v?.topic ?? "unknown"}, confidence=${v?.confidence ?? "unknown"}, similarity=${v?.similarity === undefined ? "unknown" : v.similarity.toFixed(3)}, action=${action.swap ? "swap" : "hold"}, reason=${action.reason}`
+      );
+    };
+    if (!ready) {
+      const none: TopicResult = { ok: false, reason: "no ready summary to swap in" };
+      logDecision(none, { swap: false, reason: none.reason });
+      return undefined;
+    }
+    const recent = original
+      .slice(ready.boundary, last)
+      .map(messageText)
+      .filter((t) => t.length > 0);
+    let result: TopicResult;
+    try {
+      result = await decider.decide({
+        prompt: messageText(original[last]),
+        summary: ready.summary,
+        recent,
+      });
+    } catch (err) {
+      result = { ok: false, reason: err instanceof Error ? err.message : String(err) };
+    }
+    const observed = this.counter.observe(sessionId, thread);
+    const action = decideTopicAction({
+      result,
+      minConfidence: settings.minConfidence,
+      summaryReady: true,
+      coldCache: observed.gapMs !== undefined && observed.gapMs > cacheTtlMs(observed.writeSplit),
+    });
+    logDecision(result, action);
+    return action.swap ? ready.prefixHash : undefined;
+  }
+
+  compact(
+    payload: unknown,
+    sessionId: string,
+    routedModel?: string,
+    topicSwap?: string
+  ): HistoryPassSummary {
     const result: HistoryPassSummary = { applied: "none", precomputeStarted: false };
     const original = messagesOf(payload);
     if (!original) return result;
@@ -635,10 +734,14 @@ export class HistoryCompactor {
     const counter = this.counter;
     let chars = charsOf(payload);
     let count = counter.count(sessionId, thread, payload, chars);
-    const { precomputeAt } = this.deps.settings;
-    if (count.tokens >= precomputeAt * limit) logCount(sessionId, count, limit);
+    const prepareAt = this.prepareAt(limit);
+    if (count.tokens >= prepareAt) logCount(sessionId, count, limit);
 
-    const swap = this.decidedSwap(sessionId, thread, body, original, hashes, active, count, limit);
+    const swap =
+      (topicSwap !== undefined
+        ? this.topicSwap(sessionId, thread, original, hashes, active, topicSwap)
+        : undefined) ??
+      this.decidedSwap(sessionId, thread, body, original, hashes, active, count, limit);
     if (swap) {
       body.messages = applySwap(original, swap);
       result.applied = "swapped";
@@ -650,12 +753,45 @@ export class HistoryCompactor {
     result.estimate = count.tokens;
     result.countSource = count.source;
 
-    if (count.tokens >= precomputeAt * limit) {
+    if (count.tokens >= prepareAt) {
       const current = result.boundary ?? 0;
       result.precomputeStarted = this.maybePrecompute(sessionId, thread, original, hashes, current);
     }
     result.mark = counter.mark(sessionId, thread, payload, chars);
     return result;
+  }
+
+  /**
+   * The count at which summaries are prepared: `precomputeAt` of the limit,
+   * or for `topic` the topic floor when that is lower, so a summary is ready
+   * when a topic changes.
+   */
+  private prepareAt(limit: number): number {
+    const at = this.deps.settings.precomputeAt * limit;
+    if (this.deps.settings.policy !== "topic") return at;
+    return Math.min(at, (this.deps.settings.topic ?? DEFAULT_TOPIC_SETTINGS).floorTokens);
+  }
+
+  /** Record the swap a topic decision chose: the ready summary with prefix hash `prefixHash`. */
+  private topicSwap(
+    sessionId: string,
+    thread: string,
+    original: readonly unknown[],
+    hashes: MessageHashes,
+    active: HistorySwapRecord | undefined,
+    prefixHash: string
+  ): HistorySwapRecord | undefined {
+    const last = original.length - 1;
+    const ready = this.bestSummary(
+      sessionId,
+      thread,
+      original,
+      hashes,
+      active?.boundary ?? 0,
+      last
+    );
+    if (!ready || ready.prefixHash !== prefixHash) return undefined;
+    return this.recordSwap(sessionId, thread, original, hashes, ready);
   }
 
   /** Apply the recorded swap that matches `original`, if any, and return it. */

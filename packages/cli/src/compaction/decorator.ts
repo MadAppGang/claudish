@@ -107,7 +107,7 @@ export async function compactRequest(
   }
   if (runtime.settings.history.enabled) {
     try {
-      const pass = runtime.history.compact(payload, sessionId, routedModel);
+      const pass = await runtime.history.compactAsync(payload, sessionId, routedModel);
       mark = pass.mark;
       if (pass.applied !== "none" || pass.precomputeStarted) {
         log(

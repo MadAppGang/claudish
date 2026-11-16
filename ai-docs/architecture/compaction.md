@@ -248,6 +248,34 @@ Sonnet 5.5, about 40 on Fable 5.2 (cache read 0.025× input). Six requests were 
   as specified.
 - `CLAUDE_CODE_COMPACT_AT` = 0.83 of the effective limit, from the 159K–170K of 200K measured.
 
+### The topic policy (`compaction/topic.ts`, `history.policy: "topic"`)
+
+A swap at a topic change drops history the next task does not need, when it is cheapest: a human
+turn start is a swap point, and after a gap longer than the cache TTL the cache is cold anyway.
+
+- **Not a hook.** A `request` hook has a 5 s budget for its whole chain and returns closed actions,
+  none of which replaces history (see "Why a request decorator"). The decision runs in the history
+  module's request path: `compactAsync` awaits the decider, then runs the synchronous `compact`
+  with the chosen summary. Every other policy goes straight to `compact`; its tests are unchanged.
+- **When it asks.** Only at a human turn start, with at least `floorTokens` (default 30K) counted,
+  and with a ready summary above the active swap. Without a summary the line is logged as a hold
+  and no decider is called: "never drop history without a summary" makes every answer a hold, so
+  a call would buy nothing. The first request above the floor of a session always logs that hold.
+- **Summaries.** Under `topic`, summaries start at `min(precomputeAt·limit, floorTokens)`, so one
+  starts at every human turn start above the floor (one Haiku call each, rolling forward).
+- **`haiku`**: claudish's own system prompt; the summary and the recent turns (8,000 characters)
+  as a first user block with a cache marker, then the new message; `output_config.format`
+  `json_schema` `{topic: same|related|new, confidence, reason}`; `max_tokens` 256. Haiku 5.5 caches
+  a prefix only from 512 tokens (claude-api skill, prompt-caching table), so the marker is placed
+  after the summary, not on the short system prompt.
+- **`embed`**: Ollama `/api/embed` at the Ollama provider's base URL. The highest cosine similarity
+  of the message to the summary and to each recent turn; below `similarityBelow` is `new`.
+  `confidence` is reported as 1. The default 0.5 is not measured on real sessions.
+- **Failures hold.** A timeout, Ollama unreachable, or an answer off the schema is no verdict:
+  `topic decision <decider>: unknown, …, action=hold, reason=no verdict: <cause>`.
+- **Cost line.** The swap reason says `cold cache` when the gap since the thread's previous request
+  exceeds the TTL from `cacheTtlMs` (the same rule as the `cost` policy), else `warm cache`.
+
 **Who owns compaction.** With a summary applied, Claude Code's view of the input (from the
 response `usage`) drops below its auto-compact threshold, so it does not compact. Its auto-compact
 stays on as the safety net when no summary is ready. No Claude Code setting is changed. On a

@@ -28,9 +28,13 @@
  * anyway and the swap's write costs nothing extra.
  */
 
-export type HistoryPolicy = "threshold" | "early" | "cost";
+/**
+ * `topic` swaps on a new topic (`topic.ts`) and otherwise follows the
+ * `threshold` rule here.
+ */
+export type HistoryPolicy = "threshold" | "early" | "cost" | "topic";
 
-export const HISTORY_POLICIES: readonly HistoryPolicy[] = ["threshold", "early", "cost"];
+export const HISTORY_POLICIES: readonly HistoryPolicy[] = ["threshold", "early", "cost", "topic"];
 
 /** The main model's cache prices, as multiples of its input price. */
 export interface CacheRatios {

@@ -53,7 +53,7 @@ defaults:
   },
   "history": {
     "enabled": true,
-    "policy": "threshold",  // when a ready summary is sent: threshold, early or cost
+    "policy": "threshold",  // when a ready summary is sent: threshold, early, cost or topic
     "precomputeAt": 0.6,    // start a summary at 60% of the limit
     "applyAt": 0.75         // send it at 75%, at the next user turn or complete tool round
   }
@@ -228,6 +228,7 @@ Code may then compact before claudish's thresholds are reached.
 | `threshold` (default) | 0.6 / 0.75 | once the count reaches `applyAt` |
 | `early` | 0.5 / 0.7 | once the count reaches `applyAt` |
 | `cost` | 0.5 / (unused) | only when the swap pays for itself, see below |
+| `topic` | 0.6 / 0.75 | on a new topic at a new user message, else at `applyAt`, see below |
 
 The policy sets the default thresholds. A threshold written in the block wins.
 
@@ -252,6 +253,42 @@ logged:
 ```
 
 `L` is the kept tail, `S` the summary and `R` the tokens removed.
+
+### Swapping on a new topic: `history.policy: "topic"`
+
+With `topic`, every new user message, once the history holds at least `floorTokens`, is checked
+for a change of topic. On a confident new topic, the earlier history is replaced at once by its
+ready summary. A follow-up that refers back to earlier work ("add a test for the fix you made
+earlier") keeps the history. Near the limit, the `threshold` rule still applies.
+
+```jsonc
+"history": {
+  "policy": "topic",
+  "topic": {
+    "decider": "haiku",          // or "embed": a local Ollama embedding model, no API cost
+    "floorTokens": 30000,        // no check below this; summaries start here too
+    "minConfidence": 0.7,        // a new topic below this confidence keeps the history
+    "similarityBelow": 0.5,      // embed: a similarity below this is a new topic
+    "timeoutMs": 5000,           // the longest a request waits for the decision
+    "embedModel": "nomic-embed-text"
+  }
+}
+```
+
+- `haiku` asks the compaction model, with the summary and the recent turns, whether the message
+  is the same task, a related one or a new one.
+- `embed` compares the message with the summary and the recent turns through Ollama at
+  `OLLAMA_BASE_URL` (or `OLLAMA_HOST`, default `http://localhost:11434`). If Ollama does not answer,
+  the history is kept.
+- History is never dropped without a summary: with no summary ready, the history is kept.
+- Under `topic`, a summary is prepared at every new user message above `floorTokens`, one Haiku
+  call each.
+
+Each check is logged:
+
+```
+[compaction] topic decision haiku: new, confidence=0.92, similarity=unknown, action=swap, reason=new topic: baking, not the parser; cold cache: the swap's write costs nothing extra
+```
 
 ## Cost
 

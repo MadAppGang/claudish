@@ -255,7 +255,17 @@ export const CompactionConfigSchema = z
     history: z
       .object({
         enabled: z.boolean().optional(),
-        policy: z.enum(["threshold", "early", "cost"]).optional(),
+        policy: z.enum(["threshold", "early", "cost", "topic"]).optional(),
+        topic: z
+          .object({
+            decider: z.enum(["haiku", "embed"]).optional(),
+            floorTokens: z.number().int().nonnegative().optional(),
+            minConfidence: z.number().gte(0).lte(1).optional(),
+            similarityBelow: z.number().gt(-1).lt(1).optional(),
+            timeoutMs: z.number().int().positive().optional(),
+            embedModel: z.string().trim().min(1).optional(),
+          })
+          .optional(),
         precomputeAt: z.number().gt(0).lt(1).optional(),
         applyAt: z.number().gt(0).lte(1).optional(),
       })
