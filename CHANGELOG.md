@@ -2,6 +2,26 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.27.1] - 2026-11-16
+
+### Bug Fixes
+
+- end an ag@ request with no response head in 5 minutes *(antigravity)* ([`feeb73c`](https://github.com/MadAppGang/claudish/commit/feeb73c00d4953178dc935869028b4eaedcd91cf))
+- send ag@ requests with fetch on Bun older than 1.4.0 *(antigravity)* ([`3e42213`](https://github.com/MadAppGang/claudish/commit/3e42213575a121d07db2d6f66925aba02f70fd25))
+- keep ag@ conversation ids apart per Claude Code session *(antigravity)* ([`8f48e9c`](https://github.com/MadAppGang/claudish/commit/8f48e9c1dda6e952ea0d3019d249dc4fdcb1db7c))
+- time out idle ag@ requests and follow 307 redirects *(antigravity)* ([`f04f500`](https://github.com/MadAppGang/claudish/commit/f04f50048984f813466e4a60988d19c8d7be1a0b))
+- send thinkingLevel beside an ag@ Gemini effort id *(antigravity)* ([`fa80a1d`](https://github.com/MadAppGang/claudish/commit/fa80a1d636d1bc7306c1bfa57a709f132c361351))
+- send tool calls and results with the server's call id *(antigravity)* ([`6b9c1aa`](https://github.com/MadAppGang/claudish/commit/6b9c1aa1ad9a2be4c0e0a66a4611050cd417cf4d))
+- send ag@ requests with the agy CLI's header order *(antigravity)* ([`2799886`](https://github.com/MadAppGang/claudish/commit/27998862f981086de30d9f3971fd1f8bbb437e4c))
+- add the agy build number to the ag@ User-Agent *(antigravity)* ([`c7ba5ea`](https://github.com/MadAppGang/claudish/commit/c7ba5ea2be2e897dbc6fe76dda140eb70c8594ff))
+- send the agy CLI's request envelope on ag@ *(antigravity)* ([`fc3d118`](https://github.com/MadAppGang/claudish/commit/fc3d1184ee56ff0bc1d2fc5e1ae7d1882173cde9))
+
+### Documentation
+
+- record the ag@ client's timeout, redirects and scope *(antigravity)* ([`ce033b3`](https://github.com/MadAppGang/claudish/commit/ce033b3f38481091bf74f00247355bcdead05a47))
+- record the aligned ag@ request and its owners *(antigravity)* ([`9fecb04`](https://github.com/MadAppGang/claudish/commit/9fecb04f283ac8e60b16b8794e0da3cb63881a42))
+- update CHANGELOG.md for v14.27.0([`d6820d8`](https://github.com/MadAppGang/claudish/commit/d6820d8051bad9d086a102f8af53684e182116e8))
+
 ## [14.27.0] - 2026-11-16
 
 ### ⚠ BREAKING CHANGES
