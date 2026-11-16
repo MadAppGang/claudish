@@ -267,7 +267,8 @@ describe("routing after a subscription credential rejection", () => {
     expect(result.calls).toEqual([1, 0, 0]);
   });
 
-  test("rule 5: a terminal metered verdict returns without advancing", async () => {
+  // 2026-11-12: a metered hop's rejected key advances too, like a subscription's.
+  test("rule 5: a terminal metered verdict advances to the next hop", async () => {
     const body = JSON.stringify({
       error: { message: "Metered login failed", upstream_status: 401 },
     });
@@ -279,10 +280,9 @@ describe("routing after a subscription credential rejection", () => {
       { provider: "qwen-token-plan", response: new Response("subscription success") },
       { provider: "openrouter", response: new Response("metered success") },
     ]);
-    expect(result.status).toBe(400);
-    expect(result.verdict).toBe("terminal");
-    expect(result.body).toBe(body);
-    expect(result.calls).toEqual([1, 0, 0]);
+    expect(result.status).toBe(200);
+    expect(result.body).toBe("subscription success");
+    expect(result.calls).toEqual([1, 1, 0]);
   });
 
   test("rule 5: a usage limit before any login failure can advance to metered", async () => {

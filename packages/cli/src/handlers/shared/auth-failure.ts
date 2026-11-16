@@ -2,13 +2,14 @@
  * One classifier for every failure that reaches a credential site, and one way
  * to answer it.
  *
- * ## The rule (project owner, 2026-10-16, amended 2026-10-21)
+ * ## The rule (project owner, 2026-10-16, amended 2026-10-21 and 2026-11-12)
  *
- * - A TERMINAL credential failure of a SUBSCRIPTION provider answers 400 with
- *   its message and the terminal verdict. An explicit spec stops there and the
- *   user is told to log in. In a routing chain, `FallbackHandler.handle` moves
- *   on to the next hop, metered included, and says so on stderr with the next
- *   hop's billing (2026-10-21: an expired key must not block the chain; a
+ * - A TERMINAL credential failure answers 400 with its message and the
+ *   terminal verdict. An explicit spec stops there and the user is told to log
+ *   in or fix the key. In a routing chain, `FallbackHandler.handle` moves on to
+ *   the next hop, on every tier, and says so on stderr with the next hop's
+ *   billing (2026-10-21 for subscriptions: an expired key must not block the
+ *   chain; 2026-11-12 the same for a metered native API or gateway key; a
  *   metered key the user configured is consent to be billed by it).
  * - A TRANSIENT failure (network fault, 5xx, 429) never becomes a 401. A 401 is
  *   the one status `FallbackHandler.isRetryableError` reads as "try another
@@ -51,8 +52,8 @@ import { isQuotaExhaustionError } from "./quota-exhaustion.js";
 export const AUTH_VERDICT_HEADER = "x-claudish-auth-verdict";
 
 /**
- * - `terminal`: the credential cannot succeed on retry. A metered hop stops the chain
- *   here; a subscription hop is moved past, with a notice (`FallbackHandler`).
+ * - `terminal`: the credential cannot succeed on retry. The chain moves past the hop,
+ *   on every tier, with a notice (`FallbackHandler`).
  * - `transient`: retrying the SAME hop is the remedy; the chain must not walk.
  */
 export type AuthVerdict = "terminal" | "transient";

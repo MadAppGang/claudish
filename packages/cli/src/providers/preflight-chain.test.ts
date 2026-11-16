@@ -89,7 +89,7 @@ if (process.env.CLAUDISH_W2_TEST_CHILD !== import.meta.path) {
     httpStatus: 400,
     errorMessage: "W2 rejected hop",
     chainAction: "advance",
-    chainReason: "subscription-credential-rejected",
+    chainReason: "credential-rejected",
   });
   const live = (): import("./probe-live.js").ProbeResult => ({ state: "live", latencyMs: 1 });
 
@@ -120,7 +120,7 @@ if (process.env.CLAUDISH_W2_TEST_CHILD !== import.meta.path) {
         provider: "kimi-coding",
         billing: "subscription",
         action: "advance",
-        reason: "subscription-credential-rejected",
+        reason: "credential-rejected",
       });
       expect(result.untried).toBe(1);
       expect(result.total).toBe(3);
