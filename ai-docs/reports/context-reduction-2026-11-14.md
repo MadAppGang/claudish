@@ -810,6 +810,88 @@ Read.
 Verdict for case c: compaction did not help a short refactor. Both arms
 solved it every time; the compaction arm cost more in all 3 trials.
 
+### Case d, long session in a 200K window: the main realistic case (incomplete)
+
+Case d is the case that answers "does compaction help a real long session":
+the `--context-window` task of `../madbench.yaml` word for word (graded by
+its 114 hidden tests), then three follow-ups, with
+`CLAUDE_CODE_AUTO_COMPACT_WINDOW=200000` in both arms. Cases c and e, and
+the 16,000-character tool-output threshold they test, are secondary.
+
+Condition: the follow-ups FORCE long outputs. They tell the agent to read
+the complete output of `bun test src/adapters src/handlers` (about 103,500
+characters, 95 s) and of typecheck and build, "do not pipe it through tail,
+head or grep", and to read `cli.ts` and `claude-runner.ts` in full (268,290
+characters). On the natural task the agent trims its own output
+(`bun test 2>&1 | tail -40`); that is one reason compaction fired only 2 or
+3 times per trial in the full Bench. Do not read case d as a typical
+session. The follow-ups first ran the whole suite; it takes 2,658 s, longer
+than Claude Code's 10-minute Bash limit, so the agent backgrounded it and
+polled it with `sleep 295`, and that run was stopped (reports
+`case-d-stopped-compaction-t{1,2}.json`, no metrics). Claude Code passes
+30,000 characters of a Bash output inline and saves the rest to a file.
+
+| Arm | Trial | Grade | Duration | Cost | Hit rate | Main requests | Breaks | Peak context | Claude Code compactions |
+|---|---|---|---|---|---|---|---|---|---|
+| `cases-baseline` | 1 | 114 pass | 2610 s | $3.3695 | 97.1% | 82 | 11 | 162,813 | 2 |
+| `cases-baseline` | 2 | 113 pass, 1 fail | 1104 s | $3.3415 | 97.2% | 82 | 12 | 169,760 | 2 |
+| `cases-baseline` | 3 | 114 pass | 3521 s | $3.5231 | 98.3% | 97 | 14 | 159,144 | 2 |
+| `cases-compaction` | 1 | 114 pass | 2635 s | $3.0743 | 98.5% | 77 | 12 | 173,646 | 2 |
+
+Peak context is the largest main-thread input + cache read + cache
+creation of one request, from the report's `llm_call` events. Baseline mean
+$3.4114. The baseline t2 failure is the agent's code: `(fail)
+computeMainThreadContextWindow on lmstudio > the limit caps another local
+provider`.
+
+The sessions fill the window: Claude Code compacted twice in every trial,
+right after requests of 159K to 170K tokens. In the compaction trial,
+claudish's history summary never started (`history_started=0`, no log line
+with "history"), so Claude Code compacted first and the case's stop rule
+ended the run after trial 1. Tool-output compression made 1 Haiku call
+(HTTP 200, 8,335 in / 679 out) although 19 outputs were over 16,000
+characters; 10 of them were Read results, and no Read result was
+compressed.
+
+Why the history summary did not start is inferred, not measured. A missing
+catalog window is ruled out: the history check with thresholds 0.01 and
+0.02 started and swapped on the same build. The limit is min(catalog
+window, the launch's `CLAUDE_CODE_AUTO_COMPACT_WINDOW`) = 200,000, and the
+summary starts at 0.6 of it. claudish measures a request as
+`JSON.stringify(body).length / 4`; real text here ran about 2.4 characters
+per token, so 173,646 real tokens can stay under 120,000 estimated ones.
+The rest of case d waits for a decision on a fix.
+
+### Case e, research: compaction had almost nothing to compress
+
+The task: a read-only question about claudish answered with six parallel
+`Explore` subagents. No output in the baseline reached 16,000 characters
+(largest 6,724 to 8,432), so arm A (default, `minTokens` 4,000, about
+16,000 characters) was run beside arm B (`minTokens` 2,000, about 8,000
+characters).
+
+| Arm | Trial | Grade | Duration | Cost | Hit rate | Main requests | Breaks | Haiku in / out |
+|---|---|---|---|---|---|---|---|---|
+| `cases-baseline` | 1 | 12/12 | 75 s | $0.6094 | 83.6% | 56 | 32 | |
+| `cases-baseline` | 2 | 12/12 | 55 s | $0.4730 | 83.9% | 43 | 27 | |
+| `cases-baseline` | 3 | 12/12 | 50 s | $0.4568 | 83.4% | 38 | 29 | |
+| A, default | 1 | pass | 70 s | $0.5433 | 85.4% | 48 | 27 | no call |
+| A, default | 2 | pass | 47 s | $0.4159 | 80.4% | 39 | 22 | no call |
+| A, default | 3 | pass | 52 s | $0.4681 | 81.0% | 43 | 26 | 10,582 / 578 |
+| B, min2000 | 1 | pass | 57 s | $0.4567 | 84.0% | 39 | 22 | 4,398 / 817 |
+| B, min2000 | 2 | pass | 42 s | $0.4211 | 76.5% | 36 | 26 | 7,947 / 683 |
+| B, min2000 | 3 | pass | 57 s | $0.5057 | 83.0% | 45 | 27 | no call |
+
+Means: baseline $0.5131, A $0.4758 (-7.3%), B $0.4612 (-10.1%). The three
+cost ranges overlap, every Haiku call answered HTTP 200, and no check
+failed. Each compaction trial compressed at most one output, and three of
+the six compressed none, so the cost differences come from run-to-run
+variation in the number of requests (36 to 56), not from compaction.
+
+Verdict for case e: no measurable effect at either threshold. A research
+session made of many small subagent outputs gives tool-output compression
+almost nothing to act on.
+
 ## Explanations (inference, not verified)
 
 - **Why the gateway costs more.** Shortened tool output leaves the agent
