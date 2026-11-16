@@ -28,6 +28,7 @@ import type {
   CredentialProvider,
   KeyOrigin,
   KeySource,
+  OutrankingSource,
   ReadinessResult,
   RequestAuth,
   RequestAuthContext,
@@ -46,6 +47,7 @@ export type {
   CredentialReadiness,
   KeyOrigin,
   KeySource,
+  OutrankingSource,
   ReadinessResult,
   UseResolution,
 } from "./types.js";
@@ -350,7 +352,7 @@ export class CredentialAuthority {
    * presenting the saved key as the one every launch uses. Call it BEFORE the
    * save touches `process.env` or `config.json`. Never throws.
    */
-  sourcesOutranking(name: string, key: string, savedTo: KeySource): KeySource[] {
+  sourcesOutranking(name: string, key: string, savedTo: KeySource): OutrankingSource[] {
     try {
       return this.registry.get(name)?.sourcesOutranking?.(key, savedTo) ?? [];
     } catch {

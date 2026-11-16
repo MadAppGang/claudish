@@ -1,4 +1,4 @@
-import type { KeySource } from "../auth/credentials/types.js";
+import type { KeySource, OutrankingSource } from "../auth/credentials/types.js";
 
 /**
  * The status line for a config save that was refused.
@@ -37,12 +37,20 @@ export function configKeySavedStatus(
  * outranks the saved key in a new launch (`credentials.sourcesOutranking`).
  * This process signs with the saved key either way; a new process resolves the
  * environment first, then `config.json`, then the vaults. Empty when nothing
- * outranks it.
+ * outranks it. An entry that names its variable (an exported alias) is named by
+ * that variable; a bare source is named by `envVar`.
  */
-export function outrankedKeyNote(envVar: string, outranking: readonly KeySource[]): string {
+export function outrankedKeyNote(
+  envVar: string,
+  outranking: readonly (KeySource | OutrankingSource)[]
+): string {
+  const entries = outranking.map((e) => (typeof e === "string" ? { source: e, envVar } : e));
+  const varOf = (source: KeySource) => entries.find((e) => e.source === source)?.envVar;
   const where: string[] = [];
-  if (outranking.includes("environment")) where.push(`the ${envVar} exported in your shell`);
-  if (outranking.includes("config")) where.push(`${envVar} in ~/.claudish/config.json apiKeys`);
+  const exported = varOf("environment");
+  if (exported) where.push(`the ${exported} exported in your shell`);
+  const configured = varOf("config");
+  if (configured) where.push(`${configured} in ~/.claudish/config.json apiKeys`);
   if (where.length === 0) return "";
   return ` This session signs with it, but new launches still use ${where.join(" and ")}, which outranks it: remove that to use the new key.`;
 }

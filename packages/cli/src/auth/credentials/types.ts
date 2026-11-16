@@ -202,6 +202,12 @@ export interface KeyOrigin {
   replaced?: true;
 }
 
+/** A store that still outranks a saved key in a new process, and the variable it holds it under. */
+export interface OutrankingSource {
+  source: KeySource;
+  envVar: string;
+}
+
 /** The answer to "resolve the key now, for a use that signs with it". */
 export type UseResolution =
   | { state: "present"; key: string; source: KeySource }
@@ -266,7 +272,7 @@ export interface CredentialProvider {
    * The local stores that still outrank a key saved to `savedTo` in a new
    * process (see `ApiKeyCredentialProvider.sourcesOutranking`).
    */
-  sourcesOutranking?(key: string, savedTo: KeySource): KeySource[];
+  sourcesOutranking?(key: string, savedTo: KeySource): OutrankingSource[];
   login?(): Promise<void>;
   logout?(): Promise<void>;
 }
