@@ -149,6 +149,10 @@ export interface ModelIdEffortProvider {
  *   An id the provider's `sendable` refuses is not replaced by another map id:
  *   the existing resolution answers instead.
  *
+ * - a map id that opts content in (`content-use.ts`), for a level or as `off`:
+ *   never chosen. The map decides nothing and the existing resolution answers,
+ *   so only a request that named the opt-in id itself sends it.
+ *
  * A request with no effort is given its level by the caller before it gets
  * here (`model-id-effort-choice.ts`); this function never invents one.
  */
@@ -157,7 +161,7 @@ export function chooseModelIdForEffort(
   effort: EffortLevel,
   provider: ModelIdEffortProvider
 ): string | undefined {
-  if (effort === "none") return map.off ? provider.sendable(map.off) : undefined;
-  const id = mapIdForEffort(map, effort);
-  return id ? provider.sendable(id) : undefined;
+  const id = effort === "none" ? map.off : mapIdForEffort(map, effort);
+  if (!id || isOptInWireId(id)) return undefined;
+  return provider.sendable(id);
 }

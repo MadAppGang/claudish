@@ -150,7 +150,8 @@ function noEffortLevel(found: ModelIdEffortConnection): {
 /**
  * What the effort map of `requested`'s own connection on `provider` decides at
  * `effort`: the wire id with the level it used and that level's source, or the
- * level alone when the map's id for it is not sendable. Undefined when the
+ * level alone when the map's id for it is not sendable or is a content-use
+ * opt-in id. Undefined when the
  * connection publishes no map for `requested`. In both non-chosen cases the
  * provider's existing resolution decides the id.
  */
