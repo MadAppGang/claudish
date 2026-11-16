@@ -69,6 +69,8 @@ for (const flag of [
   "CLAUDISH_DISABLE_OP",
   "CLAUDISH_DISABLE_CATALOG_WARM",
   "CLAUDISH_DISABLE_BUNDLED_LIST",
+  // Antigravity requests go through the runtime's `fetch`, which the tests replace.
+  "CLAUDISH_ANTIGRAVITY_PLAIN_FETCH",
 ]) {
   if (process.env[flag] === undefined) process.env[flag] = "1";
 }

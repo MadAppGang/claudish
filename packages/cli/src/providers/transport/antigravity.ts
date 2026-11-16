@@ -23,7 +23,7 @@
  * - Endpoint: `antigravityHost()`/v1internal:streamGenerateContent?alt=sse —
  *   Antigravity's host, NOT Code Assist's `cloudcode-pa` (see antigravity-user.ts)
  * - Wraps payload in the CodeAssist envelope the Antigravity CLI sends
- *   (antigravity-envelope.ts)
+ *   (antigravity-envelope.ts), sent by antigravity-fetch.ts
  * - GeminiRequestQueue for rate limiting
  * - gemini-sse stream format (with response wrapper)
  */
@@ -64,6 +64,7 @@ import {
 } from "../antigravity-model-id.js";
 import { type ModelIdChoice, logModelIdChoice } from "../model-id-effort-choice.js";
 import { wireChoicesFromClaudeRequest } from "../wire-request.js";
+import { antigravityFetch } from "./antigravity-fetch.js";
 import type { DiscoveryOutcome } from "./probe-discovery.js";
 import { discoverProviderProbeModel } from "./provider-model-discovery.js";
 import type { ProviderTransport, StreamFormat } from "./types.js";
@@ -261,6 +262,11 @@ export class AntigravityProviderTransport implements ProviderTransport {
     return this._displayName;
   }
   readonly streamFormat: StreamFormat = "gemini-sse";
+
+  /** Requests go out with the Antigravity CLI's request head, which `fetch` cannot write. */
+  fetch(url: string, init: RequestInit): Promise<Response> {
+    return antigravityFetch(url, init);
+  }
 
   /** The user-supplied model id (for messages + the credential ctx). */
   private modelName: string;
@@ -764,10 +770,12 @@ export class AntigravityProviderTransport implements ProviderTransport {
     signal?: AbortSignal
   ): Promise<Response> {
     const init: RequestInit = { method: "POST", headers, body: JSON.stringify(envelope) };
-    if (!signal) return queue.enqueue(() => fetch(endpoint, init));
+    if (!signal) return queue.enqueue(() => antigravityFetch(endpoint, init));
     return queue.enqueue(
       () =>
-        signal.aborted ? Promise.reject(callAbortError()) : fetch(endpoint, { ...init, signal }),
+        signal.aborted
+          ? Promise.reject(callAbortError())
+          : antigravityFetch(endpoint, { ...init, signal }),
       { signal }
     );
   }

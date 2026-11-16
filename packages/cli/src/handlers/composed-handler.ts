@@ -2568,7 +2568,10 @@ export class ComposedHandler implements ModelHandler {
       );
       const fetchCurrent = () => {
         if (callSignal?.aborted) return Promise.reject(callAbortError());
-        return fetch(
+        const send = this.provider.fetch
+          ? (url: string, init: RequestInit) => this.provider.fetch!(url, init)
+          : fetch;
+        return send(
           activeEndpoint,
           mergeSignalIntoInit(
             {

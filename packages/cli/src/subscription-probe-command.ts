@@ -41,6 +41,7 @@ import {
   antigravityUserAgentFor,
   resolveAntigravityClientVersion,
 } from "./auth/antigravity-user.js";
+import { antigravityFetch } from "./providers/transport/antigravity-fetch.js";
 import {
   type AntigravitySessionDeps,
   type FailureClass,
@@ -515,7 +516,7 @@ async function determineAntigravity(
   try {
     let res: Response;
     try {
-      res = await fetch(url, {
+      res = await antigravityFetch(url, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${session.accessToken}`,

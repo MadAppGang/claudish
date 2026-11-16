@@ -14,6 +14,7 @@
  */
 
 import { log } from "../logger.js";
+import { antigravityFetch } from "../providers/transport/antigravity-fetch.js";
 import { getAgyClientBuild, getAgyClientVersion } from "./antigravity-client-version.js";
 import {
   currentAntigravityTokenLineage,
@@ -216,7 +217,7 @@ function mayPublishFor(lineage: string | null): boolean {
 
 /** loadCodeAssist with the Antigravity identity (minimal `{ ideType }` metadata). */
 async function callLoadCodeAssistAntigravity(accessToken: string): Promise<LoadCodeAssistResponse> {
-  const res = await fetch(`${apiBase()}:loadCodeAssist`, {
+  const res = await antigravityFetch(`${apiBase()}:loadCodeAssist`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${accessToken}`,
@@ -340,7 +341,7 @@ export async function retrieveUserQuota(
   projectId: string
 ): Promise<{ buckets?: QuotaBucket[] } | null> {
   try {
-    const res = await fetch(`${apiBase()}:retrieveUserQuota`, {
+    const res = await antigravityFetch(`${apiBase()}:retrieveUserQuota`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -550,7 +551,7 @@ export async function fetchAntigravityAvailableModelsRaw(
   };
   let res: Response;
   try {
-    res = await fetch(url, {
+    res = await antigravityFetch(url, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${accessToken}`,
