@@ -1,0 +1,72 @@
+# Context Gateway configuration for the local-only variant.
+#
+# The gateway makes no model call of its own. Tool output is shortened by the
+# built-in `trimming` strategy, inside the gateway process. History
+# summarization is off, and no provider is configured, so the gateway holds no
+# credential and only forwards Claude Code's own requests to api.anthropic.com.
+# No Compresr endpoint is configured.
+#
+# Relative paths resolve against the directory start.sh starts the gateway in.
+
+metadata:
+  name: "bench-local"
+  description: "tool output trimming inside the gateway, no summarizer"
+  strategy: "trimming"
+
+server:
+  port: 18431
+  read_timeout: 30s
+  write_timeout: 1000s
+
+urls:
+  compresr: ""
+
+preemptive:
+  enabled: false
+
+pipes:
+  tool_output:
+    enabled: true
+    strategy: "trimming"
+    min_tokens: 512
+    max_tokens: 128000
+    target_compression_ratio: 0.5
+    enable_expand_context: true
+
+  # The gateway forces every pipe on, so "off" is the passthrough strategy.
+  tool_discovery:
+    enabled: true
+    strategy: "passthrough"
+
+  task_output:
+    enabled: true
+    strategy: "passthrough"
+
+cost_control:
+  enabled: false
+  session_cap: 0
+  global_cap: 0
+
+notifications:
+  slack:
+    enabled: false
+
+post_session:
+  enabled: false
+
+store:
+  type: "memory"
+  ttl: 3h
+
+# Count logs only, on the run's own disk: they are the evidence that the
+# gateway handled the requests. Payloads are not logged.
+monitoring:
+  log_level: "info"
+  log_format: "console"
+  log_output: "stdout"
+  telemetry_enabled: true
+  verbose_payloads: false
+  telemetry_path: "logs/telemetry.jsonl"
+  compression_log_path: "logs/tool_output_compression.jsonl"
+  session_stats_path: "logs/session_stats.json"
+  expand_context_calls_path: "logs/expand_context_calls.jsonl"

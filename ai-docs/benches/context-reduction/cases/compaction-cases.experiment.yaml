@@ -1,0 +1,35 @@
+description: "compaction cases: the same claudish build with and without --compaction"
+bench: ./madbench.yaml
+
+# Both arms run the build named by --param claudish_build. They differ only
+# in the launcher (with or without --compaction) and the tool folder (its
+# key checks and evidence). Run one arm per madbench call; see the header of
+# ./madbench.yaml.
+guard_changes:
+  allow:
+    - harness/binary
+    - sandbox/provision/steps/1
+
+variants:
+  # The build with --debug-claudish and no --compaction. No key file.
+  - name: cases-baseline
+    params:
+      binary: ../bin/claudish-build-plain
+      tool: cases-baseline
+  # The build with --compaction --debug-claudish, the key in the run's
+  # ~/.claudish/config.json from --param claudish_config. The binary must be
+  # one self-contained file: the agent pane may run it but may not read any
+  # other host file, so a wrapper that runs a sibling script exits 126.
+  - name: cases-compaction
+    params:
+      binary: ../bin/claudish-compaction
+      tool: claudish-compaction
+  # The baseline for a foreign model (case b): as cases-baseline, but the run's
+  # ~/.claudish/config.json is the file --param claudish_config names, which
+  # holds the route's credential and nothing else (no compaction block, no
+  # Anthropic key). Pair it with a cases-compaction config that adds the same
+  # credential.
+  - name: cases-baseline-route
+    params:
+      binary: ../bin/claudish-build-plain
+      tool: cases-baseline-route

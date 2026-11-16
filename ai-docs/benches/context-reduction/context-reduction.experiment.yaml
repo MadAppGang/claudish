@@ -1,0 +1,47 @@
+description: "does a context-reduction tool cut tokens and cost on a long coding session without costing the result?"
+bench: ./madbench.yaml
+
+# The variants differ only in the files composed into the run's ~/.claude, in
+# the one staged plugin, and in which tool folder the second provision step
+# reads. Model, argv, sandbox level, prompt and Checks are equal.
+guard_changes:
+  allow:
+    - harness/config/files/**
+    - harness/config/plugins/**
+    - sandbox/provision/steps/1
+
+variants:
+  # Plain Claude Code.
+  - name: baseline
+  # rtk rewrites Bash commands through a PreToolUse hook and condenses output.
+  - name: rtk
+    params:
+      overlay: ./config/rtk
+      tool: rtk
+  # context-mode: a plugin with hooks and MCP tools that keep large output in
+  # a local store. Fetch it first with fetch-context-mode.sh.
+  - name: context-mode
+    params:
+      tool: context-mode
+      plugins: [./vendor/context-mode/plugins/claude-code]
+  # Context Gateway: a local proxy between Claude Code and the Anthropic API.
+  # It trims tool output itself and makes no model call of its own.
+  - name: context-gateway-local
+    params:
+      overlay: ./config/context-gateway
+      tool: context-gateway-local
+  # A Claude Code subagent on claude-haiku-5-5 that runs a large command or
+  # reads a large file region and returns only what the main agent needs.
+  # Claude Code makes the Haiku calls itself, on the session's subscription.
+  - name: haiku-subagent
+    params:
+      overlay: ./config/haiku-subagent
+      tool: haiku-subagent
+  # Context Gateway compressing tool output and summarizing history with its
+  # own calls to claude-haiku-5-5, signed with an Anthropic API key, while
+  # Claude Code's requests stay on the subscription. Needs
+  # --param gateway_env=<key file>; without one it refuses at provision.
+  - name: context-gateway-haiku-key
+    params:
+      overlay: ./config/context-gateway-haiku-key
+      tool: context-gateway-haiku-key

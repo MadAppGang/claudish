@@ -1,0 +1,14 @@
+#!/bin/sh
+# Starts claudish with nothing left to answer before Claude Code starts. In an
+# unattended run nothing answers a question, and madbench ends the Session
+# after a minute ("agent never started"). Two questions can appear:
+#
+#   --quiet  skips "Update now? [Y/n]", which claudish asks when a newer
+#            release exists, and claudish's own [claudish] lines on stderr.
+#            Its log file is still written.
+#   -y       skips "Enable auto-approve? [Y/n]", which claudish asks on a
+#            fresh config. Auto-approve is claudish's default, so the session
+#            is the one the question would have started.
+#
+# The claudish that runs is the first one on PATH.
+exec claudish --quiet -y "$@"

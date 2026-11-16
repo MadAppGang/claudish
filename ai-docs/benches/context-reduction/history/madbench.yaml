@@ -1,0 +1,91 @@
+description: "compaction history check: one short interactive session through claudish --compaction, four turns, the last one asks about the first"
+
+# Not a variant of the context-reduction comparison and in no mean. It shows
+# whether claudish's history summary starts, is ready and is swapped in a
+# real session, and whether the agent still answers a question about the
+# first turn after the swap. Run it with a history config whose thresholds
+# are low enough for a small session:
+#
+#   madbench ai-docs/benches/context-reduction/history/madbench.yaml \
+#     --param claudish_build=/absolute/path/to/a/compiled/claudish \
+#     --param claudish_config=/absolute/path/to/a/0600/config
+#
+# madbench types each follow-up as soon as the previous turn ends, so a
+# summary prepared after one turn can be swapped in only on the next.
+
+params:
+  model: claude-sonnet-5-5
+  tool: claudish-compaction
+  # The same parameters, defaults and launcher as the claudish-compaction
+  # variant of ../context-reduction-claudish.experiment.yaml.
+  claudish_build: ../config/no-claudish-build
+  claudish_config: ../config/no-claudish-config.json
+
+harness:
+  type: claude-code
+  binary: ../bin/claudish-compaction
+  model: "{{model}}"
+  use_subscription: required
+  config:
+    dirs: ["../config/base"]
+  args:
+    - --permission-mode
+    - bypassPermissions
+
+defaults:
+  sandbox:
+    level: home
+    share:
+      paths:
+        - { from: ~/.bun, to: ~/.bun, access: rw }
+        - { from: ~/.local/bin, to: ~/.local/bin, access: rw }
+        - { from: ~/.local/share/claude, to: ~/.local/share/claude, access: rw }
+        - { from: ../tools, to: ~/.bench-tools, access: copy }
+        - { from: ../out, to: ~/.bench-out, access: rw }
+        - { from: "{{claudish_build}}", to: ~/.bench-compaction/build, access: copy }
+        - { from: "{{claudish_config}}", to: ~/.bench-compaction/config.json, access: copy }
+    provision:
+      timeout: 2m
+      steps:
+        - sh "$HOME/.bench-tools/history-repo/stage.sh"
+        - sh "$HOME/.bench-tools/{{tool}}/start.sh"
+  interactive: true
+  timeout: 20m
+  capture: log
+
+driver:
+  answers:
+    - match: "*"
+      choose: 1
+
+metrics:
+  - { name: prompt_tokens, source: session.prompt_tokens, aggregate: mean, unit: tokens }
+  - { name: output_tokens, source: session.output_tokens, aggregate: mean, unit: tokens }
+  - { name: model_requests, source: session.model_requests, aggregate: mean }
+  - { name: duration, source: scenario.duration, aggregate: mean }
+
+scenarios:
+  - name: compaction-history
+    description: "four short turns in a small git repository; the fourth asks about the first"
+    prompt: "Read package.json and tell me the package name and its scripts."
+    follow_ups:
+      - "List the files in the top-level folder and name the three largest."
+      - "Run `git log --oneline -5` and then `git status --short`, and summarise both."
+      - "In one sentence, what did my first question ask, and what was the answer?"
+    checks:
+      # The fourth answer still names the package from the first turn.
+      - { type: icontains, metric: RecalledFirstTurn, value: tally-sheet }
+      # The key checks of the claudish-compaction variant.
+      - type: exec
+        metric: VariantCheck
+        readout: true
+        in_sandbox: true
+        cmd: sh "$HOME/.bench-tools/{{tool}}/variant-check.sh"
+        timeout: "60s"
+      # The history lines of the debug log, with every other compaction count.
+      - type: exec
+        metric: ToolEvidence
+        readout: true
+        in_sandbox: true
+        cmd: sh "$HOME/.bench-tools/{{tool}}/evidence.sh"; ls "$HOME"/.claude/projects/*/*.jsonl >/dev/null 2>&1
+        timeout: "60s"

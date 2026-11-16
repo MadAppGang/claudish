@@ -1,0 +1,104 @@
+#!/bin/sh
+# Starts the claudish build in ~/.bench-compaction/build WITHOUT compaction,
+# for the baseline arm of cases/. The arguments are those of
+# claudish-compaction minus --compaction: --quiet -y --debug-claudish. So the
+# two arms run the same build and differ only in compaction.
+#
+# The same checks as claudish-compaction, written to the same launch log:
+#   - the launcher's own environment must hold no ANTHROPIC_API_KEY;
+#   - the SHA-256 of the build goes to the launch log;
+#   - ./logs, where --debug-claudish writes, becomes a link into ~/.bench-out.
+#
+# The watcher finds Claude Code by the settings file claudish passes it,
+# ~/.claudish/settings-<claudish pid>-<time>.json. `exec` below keeps this
+# script's pid for claudish, so $$ is claudish's pid. It writes one label,
+# never a value: AGENT_ENV_KEY_UNSET, AGENT_ENV_KEY_PLACEHOLDER or
+# AGENT_ENV_KEY_SET.
+set -u
+dir="$HOME/.bench-compaction"
+mkdir -p "$dir"
+# The variables a case's preparation wrote (the long-session case: the
+# auto-compact window), the same file bin/claudish-compaction reads.
+if [ -f "$dir/launch-env" ]; then
+  set -a
+  . "$dir/launch-env"
+  set +a
+fi
+live="$HOME/.bench-out/claudish-plain-launch-$(date +%Y%m%dT%H%M%S)-$$"
+mkdir -p "$live/debug"
+echo "$live" >"$dir/launch-dir"
+note() { echo "$*" >>"$live/launch.log"; }
+
+n=$(env | grep -c '^ANTHROPIC_API_KEY=')
+note "launch: ANTHROPIC_API_KEY entries in the launcher environment: $n"
+if [ "$n" -ne 0 ]; then
+  echo "claudish-build-plain: ANTHROPIC_API_KEY is set in the launcher environment; stopping" >&2
+  exit 1
+fi
+note "launch: $# arguments, the first: ${1:-none}"
+if [ -f "$dir/build" ]; then
+  chmod +x "$dir/build"
+  build="$dir/build"
+  set -- "$build" --quiet -y --debug-claudish "$@"
+else
+  build="$dir/build/index.js"
+  set -- bun "$build" --quiet -y --debug-claudish "$@"
+fi
+note "launch: build $build sha256 $(shasum -a 256 "$build" | cut -d' ' -f1)"
+note "launch: cwd $(pwd)"
+if [ ! -e logs ]; then
+  ln -s "$live/debug" logs
+  note "launch: ./logs -> $live/debug"
+fi
+
+placeholder="sk-ant-api03-placeholder-not-used-proxy-handles-auth-with-openrouter-key-xxxxxxxxxxxxxxxxxxxxx"
+self=$$
+watch_agent_env() {
+  i=0
+  while [ "$i" -lt 600 ]; do
+    pid=$(pgrep -f -- "--settings $HOME/.claudish/settings-$self-" | head -1)
+    if [ -n "$pid" ]; then
+      # A sandbox can refuse ps ("Operation not permitted"). Then nothing was
+      # read, and the label says so instead of reading as "unset".
+      if ! envline=$(ps eww -o command= -p "$pid" 2>&1); then
+        note "agent-env: pid $pid AGENT_ENV_UNREADABLE: $(echo "$envline" | head -1 | cut -c1-120)"
+        return
+      fi
+      found=$(echo "$envline" | grep -o ' ANTHROPIC_API_KEY=[^ ]*' | head -1)
+      if [ -z "$found" ]; then
+        label=AGENT_ENV_KEY_UNSET
+      elif [ "$found" = " ANTHROPIC_API_KEY=$placeholder" ]; then
+        label=AGENT_ENV_KEY_PLACEHOLDER
+      else
+        label=AGENT_ENV_KEY_SET
+      fi
+      config=$(echo "$envline" | grep -c ' CLAUDISH_CONFIG=')
+      note "agent-env: pid $pid $label CLAUDISH_CONFIG_present=$config"
+      return
+    fi
+    i=$((i + 1))
+    sleep 1
+  done
+  note "agent-env: AGENT_ENV_UNKNOWN: no Claude Code process with claudish's settings file in 600 s"
+}
+watch_agent_env &
+
+# On a foreign model claudish gives Claude Code its placeholder as
+# ANTHROPIC_API_KEY, and Claude Code asks "Detected a custom API key ... Do you
+# want to use this API key?" before it starts; nothing in the sandbox can
+# answer, so the agent never starts. Record the answer a user gives, "Yes", the
+# way Claude Code stores it: the key's last 20 characters in
+# customApiKeyResponses.approved of ~/.claude.json. The value is claudish's
+# public placeholder, not a credential. A native Claude route sets no key and
+# never reads the entry.
+bun -e '
+const path = process.argv[1], tail = process.argv[2].slice(-20);
+let c = {};
+try { c = JSON.parse(await Bun.file(path).text()); } catch {}
+const r = (c.customApiKeyResponses ??= {});
+r.approved = [...new Set([...(r.approved ?? []), tail])];
+r.rejected = (r.rejected ?? []).filter((x) => x !== tail);
+await Bun.write(path, JSON.stringify(c, null, 2));
+' "$HOME/.claude.json" "$placeholder" && note "launch: placeholder key approved in ~/.claude.json"
+
+exec "$@"
