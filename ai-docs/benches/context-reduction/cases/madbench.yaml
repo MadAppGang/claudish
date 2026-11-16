@@ -85,7 +85,11 @@ scenarios:
   # --param case_prep=long-session, which makes both launchers export
   # CLAUDE_CODE_AUTO_COMPACT_WINDOW=200000. The first turn is the task of
   # ../madbench.yaml, word for word, graded by its 114 hidden tests; three
-  # follow-ups add long outputs and long reads to the same session.
+  # follow-ups add long outputs and long reads to the same session. The
+  # follow-ups run the adapters and handlers tests, not the whole suite: the
+  # whole suite takes 44 minutes, longer than Claude Code's 10-minute Bash
+  # limit, so the agent backgrounds it and reads only small tails of it. The
+  # scoped run takes about 95 s and prints about 100,000 characters.
   - name: long-session
     description: "the --context-window task, then three turns of full test output and long reads, in a 200K window"
     repo:
@@ -118,9 +122,9 @@ scenarios:
 
       Do not change `bun.lock` or any `package.json`. Do not add dependencies. Do not stop to ask me anything: I am away until you finish. End with the test and typecheck results and the list of files you changed.
     follow_ups:
-      - "Run `bun test` from `packages/cli` and read its complete output: do not pipe it through tail, head or grep. Then run `bun run typecheck` and `bun run build` from `packages/cli`, also with complete output. Fix anything that fails, and give me the totals."
+      - "Run `bun test src/adapters src/handlers` from `packages/cli` and read its complete output: do not pipe it through tail, head or grep. Then run `bun run typecheck` and `bun run build` from `packages/cli`, also with complete output. Fix anything that fails, and give me the totals."
       - "Read `packages/cli/src/cli.ts` and `packages/cli/src/claude-runner.ts` in full, every line, without subagents. Then write `packages/cli/CONTEXT-WINDOW.md`: how the `--context-window` value travels from the command line to an LM Studio or an Ollama request, with each function name in order and the file it is in."
-      - "In two sentences: what were the two exploration subagents in the first turn asked to map? Then run `bun test` and `bun run typecheck` from `packages/cli` one last time, with complete output, and give me the totals."
+      - "In two sentences: what were the two exploration subagents in the first turn asked to map? Then run `bun test src/adapters src/handlers` and `bun run typecheck` from `packages/cli` one last time, with complete output, and give me the totals."
     checks:
       # The grade: the 114 hidden tests of ../madbench.yaml, after the last turn.
       - type: custom:exec
