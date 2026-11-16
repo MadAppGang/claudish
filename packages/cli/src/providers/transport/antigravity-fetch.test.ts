@@ -1,4 +1,15 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  spyOn,
+  test,
+} from "bun:test";
+import { EventEmitter } from "node:events";
+import http from "node:http";
 import { gzipSync } from "node:zlib";
 import { classifyConnectionError } from "../../handlers/shared/connection-error.js";
 import {
@@ -12,6 +23,9 @@ import {
 const ownClient = describe.skipIf(!nodeHttpWritesOwnHead(process.versions.bun));
 
 type Mode = "plain" | "gzip" | "hang" | "sse" | "redirect";
+
+/** Where the "redirect" mode sends the client. */
+let redirectTo = "/moved";
 
 let received = "";
 let mode: Mode = "plain";
@@ -52,7 +66,7 @@ beforeAll(() => {
           mode = "plain";
           received += "\n--next--\n";
           socket.write(
-            "HTTP/1.1 307 Temporary Redirect\r\nLocation: /moved\r\nContent-Length: 0\r\n\r\n"
+            `HTTP/1.1 307 Temporary Redirect\r\nLocation: ${redirectTo}\r\nContent-Length: 0\r\n\r\n`
           );
           socket.end();
           return;
@@ -88,6 +102,7 @@ afterAll(() => server.stop(true));
 beforeEach(() => {
   received = "";
   mode = "plain";
+  redirectTo = "/moved";
   for (const name of ENV) {
     savedEnv[name] = process.env[name];
     delete process.env[name];
@@ -111,11 +126,33 @@ test("the node:http client is used on Node and on Bun 1.4.0 and later", () => {
   expect(nodeHttpWritesOwnHead(undefined)).toBe(true);
   expect(nodeHttpWritesOwnHead("1.4.0")).toBe(true);
   expect(nodeHttpWritesOwnHead("1.4.1-canary.3")).toBe(true);
+  expect(nodeHttpWritesOwnHead("1.4.0-canary.1")).toBe(false);
   expect(nodeHttpWritesOwnHead("2.0.0")).toBe(true);
   expect(nodeHttpWritesOwnHead("1.3.10")).toBe(false);
   expect(nodeHttpWritesOwnHead("1.10.0")).toBe(true);
   expect(nodeHttpWritesOwnHead("0.9.0")).toBe(false);
   expect(nodeHttpWritesOwnHead("garbage")).toBe(false);
+});
+
+test("on a Bun older than 1.4.0 the runtime's fetch sends the request", async () => {
+  const calls: string[] = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    calls.push(String(input));
+    return new Response("via fetch");
+  }) as typeof fetch;
+  try {
+    const res = await antigravityFetch(
+      `${base}/x`,
+      { method: "POST", headers: HEADERS, body: "{}" },
+      { idleTimeoutMs: 1000, bunVersion: "1.3.10" }
+    );
+    expect(await res.text()).toBe("via fetch");
+    expect(calls).toEqual([`${base}/x`]);
+    expect(received).toBe("");
+  } finally {
+    globalThis.fetch = original;
+  }
 });
 
 ownClient("the request head is the Antigravity CLI's", () => {
@@ -268,21 +305,95 @@ ownClient("what fetch did for its callers and node:http does not", () => {
     const failure = await antigravityFetch(
       `${base}/x`,
       { method: "POST", headers: HEADERS, body: "{}" },
-      150
+      { idleTimeoutMs: 150, bunVersion: process.versions.bun }
     ).catch((error) => error);
     expect((failure as { code?: string }).code).toBe("ETIMEDOUT");
     expect(classifyConnectionError(failure)?.kind).toBe("unreachable");
   });
 
-  test("a header value with a line break rejects and sends nothing", async () => {
-    const failure = await antigravityFetch(`${base}/x`, {
-      method: "POST",
-      headers: { ...HEADERS, Authorization: "Bearer a\r\nX-Injected: 1" },
-      body: "{}",
-    }).catch((error) => error);
-    expect(failure).toBeInstanceOf(Error);
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(received).toBe("");
+  test("a request that never gets a socket fails as a timed-out connection", async () => {
+    // A request whose socket never connects: no socket timeout can fire on it.
+    const stalled = Object.assign(new EventEmitter(), {
+      setHeader() {},
+      removeHeader() {},
+      setTimeout() {},
+      write() {},
+      end() {},
+      destroyed: false,
+      destroy(error?: Error) {
+        stalled.destroyed = true;
+        if (error) queueMicrotask(() => stalled.emit("error", error));
+      },
+    });
+    const spy = spyOn(http, "request").mockImplementation((() => stalled) as never);
+    try {
+      const failure = await antigravityFetch(
+        `${base}/x`,
+        { method: "POST", headers: HEADERS, body: "{}" },
+        { idleTimeoutMs: 100, bunVersion: process.versions.bun }
+      ).catch((error) => error);
+      expect((failure as { code?: string }).code).toBe("ETIMEDOUT");
+      expect(stalled.destroyed).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test("a header value with a line break rejects, sends nothing and destroys the request", async () => {
+    const made: http.ClientRequest[] = [];
+    const real = http.request;
+    const spy = spyOn(http, "request").mockImplementation(((...args: unknown[]) => {
+      const request = (real as (...a: unknown[]) => http.ClientRequest)(...args);
+      made.push(request);
+      return request;
+    }) as never);
+    try {
+      const failure = await antigravityFetch(`${base}/x`, {
+        method: "POST",
+        headers: { ...HEADERS, Authorization: "Bearer a\r\nX-Injected: 1" },
+        body: "{}",
+      }).catch((error) => error);
+      expect(failure).toBeInstanceOf(Error);
+      expect(made).toHaveLength(1);
+      expect(made[0].destroyed).toBe(true);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(received).toBe("");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test("a 307 to another origin keeps the body and drops Authorization", async () => {
+    let elsewhere = "";
+    const other = Bun.listen({
+      hostname: "127.0.0.1",
+      port: 0,
+      socket: {
+        data(socket, data) {
+          elsewhere += Buffer.from(data).toString("latin1");
+          if (!requestComplete(elsewhere)) return;
+          socket.write("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+          socket.end();
+        },
+      },
+    });
+    try {
+      mode = "redirect";
+      redirectTo = `http://127.0.0.1:${other.port}/elsewhere`;
+      const res = await antigravityFetch(`${base}/v1internal:loadCodeAssist`, {
+        method: "POST",
+        headers: HEADERS,
+        body: '{"a":1}',
+      });
+      expect(await res.text()).toBe("ok");
+      expect(received).toContain("Authorization: Bearer token");
+      expect(elsewhere).toContain("POST /elsewhere HTTP/1.1");
+      expect(elsewhere).toContain("User-Agent: antigravity/cli/1.5.9 (aidev_client)");
+      expect(elsewhere.toLowerCase()).not.toContain("authorization");
+      expect(elsewhere.endsWith('{"a":1}')).toBe(true);
+    } finally {
+      other.stop(true);
+    }
   });
 
   test("a 307 is followed with the same method and body", async () => {

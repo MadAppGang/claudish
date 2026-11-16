@@ -731,11 +731,13 @@ through the transport's optional `fetch` member.
   abort before the response never rejects, a socket timeout never fires, and the chunked call did
   not complete against a raw socket. There the request goes to `fetch` and the head is the
   runtime's, as it was before this client. 1.4.0 is the oldest Bun measured to work, not a known
-  boundary; versions between were not measured. The hermetic jobs skip the client's tests on
+  boundary; versions between were not measured, and a prerelease of 1.4.0 counts as older. The hermetic jobs skip the client's tests on
   1.3.10 and the Bun 1.4.0 job in `test.yml` runs them.
 - What `fetch` did for its callers and `node:http` does not, the client does itself. A connection
   silent for `ANTIGRAVITY_IDLE_TIMEOUT_MS` (five minutes, the runtime's own idle limit) fails with
-  `ETIMEDOUT`: `loadCodeAssist`, model discovery and `retrieveUserQuota` pass no signal, and without
+  `ETIMEDOUT`, and so does a request whose response head has not arrived in that time (the socket
+  timeout starts only once a socket is connected, so a stalled lookup or an unanswered connection
+  needs the second limit): `loadCodeAssist`, model discovery and `retrieveUserQuota` pass no signal, and without
   the limit a server that accepts and then says nothing held their sockets for the life of the
   process. A 307 or 308 is followed with the same method and body, at most five times, and the
   `Authorization` header is not sent to another origin; `redirect: "manual"` returns the answer as
