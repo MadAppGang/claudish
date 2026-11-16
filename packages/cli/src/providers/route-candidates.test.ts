@@ -666,6 +666,18 @@ describe("account-listed route candidates", () => {
     expect(gathered.candidates.some(({ wireId }) => wireId === requested)).toBe(false);
   });
 
+  test("excludes an opt-in route candidate inferred from a listed sibling", () => {
+    const requested = "gemini-4-carbon-contributor";
+    seed([]);
+    const gathered = gatherWithLists(
+      requested,
+      path,
+      snapshot("antigravity", [{ id: "gemini-4-carbon-contributor-high", reported: "chat" }])
+    );
+
+    expect(gathered.candidates.some(({ wireId }) => wireId === requested)).toBe(false);
+  });
+
   test("adds Devin for a catalog-absent name in the account's own spelling", () => {
     seed([]);
     const gathered = gatherWithLists("swe-1.7", path, snapshot("devin", [swe]));
