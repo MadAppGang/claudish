@@ -128,7 +128,9 @@ function parseLog(text: string) {
     // <url>", and RequestMeta is not written for every call, so the call is the
     // request. Its usage is the [SSE:openai] chunk with prompt_tokens, which
     // INCLUDES the cached tokens; no cache write is billed.
-    const call = line.match(/\] Calling API: https?:\/\/([^/\s]+)/);
+    // claudish's own Haiku calls write "[compaction] Calling API:" too; they
+    // are counted from their HTTP 200 lines below, not as requests or hops.
+    const call = line.includes("[compaction]") ? null : line.match(/\] Calling API: https?:\/\/([^/\s]+)/);
     if (call) {
       hops[call[1]] = (hops[call[1]] ?? 0) + 1;
       const prev = reqs[reqs.length - 1];
