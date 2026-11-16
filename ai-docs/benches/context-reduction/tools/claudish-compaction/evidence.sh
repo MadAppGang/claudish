@@ -34,6 +34,8 @@ if [ -n "$logs" ]; then
   cat $logs | grep -o 'sent=[a-z-]*' | sort | uniq -c
   echo "child_auth:"
   cat $logs | grep -o '\[claude-runner\] child auth: .*' | sort | uniq -c
+  echo "call_failures:"
+  cat $logs | grep '\[compaction\]' | grep -E ': (no answer within|no complete answer within|request failed:|cancelled at shutdown|HTTP [0-9]+ but the body)' | sed 's/^.*\[compaction\]/[compaction]/' | cut -c1-200 | sort | uniq -c
   echo "compaction_warnings:"
   cat $logs | grep '\[compaction\]' | grep -E 'off for|is ignored|could not|refused|warn' | cut -c1-240 | sort | uniq -c
   echo "compaction_on:"
