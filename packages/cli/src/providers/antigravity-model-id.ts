@@ -282,6 +282,9 @@ export function chooseAntigravityServedModel(
   effort?: EffortLevel
 ): ModelIdChoice {
   const req = requested.trim();
+  // A content-use opt-in id reaches here only as the user typed it, and is sent
+  // as typed: listed or not, no mapped, family or sibling step may replace it.
+  if (isOptInWireId(req)) return { id: req, effort, source: "exact id" };
   // An exact listed id that is no connection's base is a fixed model: sent as
   // itself at any effort, excluded or not, before any family rule can move it.
   const isMappedBase = findModelIdEffortConnection(req, "antigravity") !== undefined;
