@@ -2271,8 +2271,16 @@ export interface AdvisorModelArg {
  * key to a non-string or an empty string CLEARS it rather than being skipped,
  * because that is what Claude Code's own reader does:
  * `typeof e.advisorModel==="string" && e.advisorModel!=="" ? … : undefined`.
- * When two layers of that tier disagree, any value they name is returned: the
- * caller then adds no `--advisor` flag, and the child's own resolution decides.
+ *
+ * Inside the command-line tier the child applies its `--settings` values in
+ * argv order, the later one winning: claudish's own file (holding the merged
+ * first two-token value) comes first, then every forwarded value in the order
+ * given. So the value of the last of them that names the key is the one
+ * returned, and a later empty value clears an earlier model. When two layers of
+ * another tier disagree (the main checkout's and the working directory's
+ * `settings.local.json`, whose order is not measured), any value they name is
+ * returned: the caller then adds no `--advisor` flag, and the child's own
+ * resolution decides.
  *
  * Never throws: this runs on the launch path, and a malformed settings file must
  * not be able to stop a session from starting.
@@ -2287,13 +2295,32 @@ export function discoverUserAdvisorModel(
     const layers = claudeSettingsLayers(claudeArgs, env, { ...deps, cwd }).filter(
       (layer) => !layer.droppedByMerge
     );
-    const values = highestTierValues(layers, "advisorModel", SETTINGS_TIER_ORDER);
-    return values
-      ?.map((value) => (typeof value === "string" && value !== "" ? value : undefined))
-      .find((value) => value !== undefined);
+    const asModel = (value: unknown): string | undefined =>
+      typeof value === "string" && value !== "" ? value : undefined;
+    for (const tier of SETTINGS_TIER_ORDER) {
+      if (tier === "cli") {
+        const applied = highestTierValues(inChildArgvOrder(layers), "advisorModel", [tier]);
+        if (applied) return asModel(applied.at(-1));
+        continue;
+      }
+      const values = highestTierValues(layers, "advisorModel", [tier]);
+      if (values) return values.map(asModel).find((value) => value !== undefined);
+    }
+    return undefined;
   } catch {
     return undefined;
   }
+}
+
+/**
+ * `layers` with the `--settings` values in the order the child receives them:
+ * the merged value first (it travels in claudish's own file, the first
+ * `--settings` of the child's argv), then the forwarded ones as given.
+ */
+function inChildArgvOrder(layers: readonly SettingsLayer[]): SettingsLayer[] {
+  const merged = layers.filter((layer) => layer.tier === "cli" && layer.merged);
+  const rest = layers.filter((layer) => !(layer.tier === "cli" && layer.merged));
+  return [...merged, ...rest];
 }
 
 /**

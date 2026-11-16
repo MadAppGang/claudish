@@ -110,3 +110,29 @@ describe("discoverUserAdvisorModel and --setting-sources", () => {
     expect(discoverUserAdvisorModel([], cwd, env)).toBe("opus");
   });
 });
+
+describe("discoverUserAdvisorModel across several --settings", () => {
+  const settings = (value: unknown) => JSON.stringify({ advisorModel: value });
+
+  // REGRESSION: a later --settings clearing advisorModel was ignored in favour of an earlier value
+  test("a later --settings that clears advisorModel wins", () => {
+    const { cwd, env } = freshCase();
+    const args = ["--settings", settings("opus"), "--settings", settings("")];
+    expect(discoverUserAdvisorModel(args, cwd, env)).toBeUndefined();
+  });
+
+  // REGRESSION: an earlier --settings value was returned over the one Claude Code applies last
+  test("a later --settings value wins over an earlier one", () => {
+    const { cwd, env } = freshCase();
+    const args = ["--settings", settings("haiku"), "--settings", settings("opus")];
+    expect(discoverUserAdvisorModel(args, cwd, env)).toBe("opus");
+  });
+
+  // The first two-token --settings is merged into claudish's own file, which the
+  // child receives ahead of every forwarded --settings.
+  test("a forwarded --settings= value applies after the merged one", () => {
+    const { cwd, env } = freshCase();
+    const args = [`--settings=${settings("haiku")}`, "--settings", settings("opus")];
+    expect(discoverUserAdvisorModel(args, cwd, env)).toBe("haiku");
+  });
+});
