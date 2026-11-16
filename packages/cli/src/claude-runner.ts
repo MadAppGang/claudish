@@ -425,6 +425,12 @@ export interface ChildAuthControlDeps {
   pathKind?: (path: string) => "dir" | "file" | undefined;
   cwd?: string;
   home?: string;
+  /**
+   * The Claude Code login probes {@link shouldHideIncidentalAnthropicKey} uses.
+   * Their `env` defaults to the child's (with `HOME` from `home` when given) and
+   * their `cwd` to `cwd`.
+   */
+  loginDeps?: ClaudeCodeLoginDeps;
 }
 
 /**
@@ -477,7 +483,7 @@ export function childAuthControl(
     }
     if (
       isRealAnthropicEnvCredential(env, "ANTHROPIC_API_KEY") &&
-      !shouldHideIncidentalAnthropicKey(config, env, { env, cwd: deps.cwd })
+      !shouldHideIncidentalAnthropicKey(config, env, childLoginDeps(env, deps))
     ) {
       return { controlled: false, reason: "user-api-key", where: "environment" };
     }
@@ -499,6 +505,20 @@ export function childAuthControl(
     if (reason) return { controlled: false, reason, where };
   }
   return { controlled: true };
+}
+
+/**
+ * The login probes for the child: the injected ones, reading the child's
+ * environment (its `HOME` replaced by an injected home) from the launch's
+ * working directory unless they name their own.
+ */
+function childLoginDeps(env: NodeJS.ProcessEnv, deps: ChildAuthControlDeps): ClaudeCodeLoginDeps {
+  const childEnv = deps.home === undefined ? env : { ...env, HOME: deps.home };
+  return {
+    env: childEnv,
+    ...(deps.cwd === undefined ? {} : { cwd: deps.cwd }),
+    ...deps.loginDeps,
+  };
 }
 
 /**

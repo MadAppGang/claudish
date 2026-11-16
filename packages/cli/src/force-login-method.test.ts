@@ -18,6 +18,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   buildClaudishSettingsOverlay,
+  childAuthControl,
   hasResolvableAnthropicAuth,
   isProxyAuthMode,
   managedSettingsForcesClaudeAi,
@@ -457,6 +458,51 @@ describe("shouldHideIncidentalAnthropicKey", () => {
     expect(
       shouldHideIncidentalAnthropicKey(baseConfig({ model: "x-ai/grok-code-fast-1" }), apiKeyEnv)
     ).toBe(false);
+  });
+});
+
+describe("childAuthControl on a classifier-only launch", () => {
+  const home = mkdtempSync(join(tmpdir(), "claudish-auth-control-classifier-"));
+  afterAll(() => rmSync(home, { recursive: true, force: true }));
+  const config = () =>
+    baseConfig({ model: "x-ai/grok-code-fast-1", classifierProvider: "anthropic" });
+  // A real-looking key in the child's environment; HOME is a temporary directory.
+  const env = { ANTHROPIC_API_KEY: "sk-ant-api03-real-user-key", HOME: home };
+  // Every settings file reads as absent; login presence is injected, so neither
+  // the real Keychain nor ~/.claude is read.
+  const deps = (loginPresent: boolean) => ({
+    cwd: home,
+    home,
+    readFile: (): string => {
+      throw new Error("ENOENT");
+    },
+    pathKind: () => undefined,
+    loginDeps: {
+      fileExists: (path: string) => loginPresent && path.endsWith(".credentials.json"),
+      keychainProbe: () => false,
+    },
+  });
+  // isProxyAuthMode reads process.env: a resolvable key keeps the launch on native auth.
+  function withProcessKey<T>(fn: () => T): T {
+    const saved = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = env.ANTHROPIC_API_KEY;
+    try {
+      return fn();
+    } finally {
+      if (saved === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = saved;
+    }
+  }
+
+  // REGRESSION: childAuthControl ignored injected login probes, so a classifier-only launch with a login read as user-api-key
+  test("API key + Claude login present → the key is hidden, not user-api-key", () => {
+    const decision = withProcessKey(() => childAuthControl(config(), env, deps(true)));
+    expect(decision).toEqual({ controlled: true });
+  });
+
+  test("API key + no Claude login → user-api-key", () => {
+    const decision = withProcessKey(() => childAuthControl(config(), env, deps(false)));
+    expect(decision).toEqual({ controlled: false, reason: "user-api-key", where: "environment" });
   });
 });
 
