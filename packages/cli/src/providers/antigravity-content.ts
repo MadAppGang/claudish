@@ -55,8 +55,10 @@ const READ_DEFAULT_LINES = 2000;
 
 function readFileBody(text: string, args: Record<string, unknown>): string {
   const lines = text.split("\n");
-  // A file ending in a newline is shown with one more, empty, numbered line.
-  if (lines.length > 1 && /^\s*\d+\t$/.test(lines[lines.length - 1])) lines.pop();
+  const whole = args.StartLine === undefined && args.EndLine === undefined;
+  // A whole file ending in a newline is shown with one more, empty, numbered
+  // line. In a read of a range the last empty line can be a line of the file.
+  if (whole && lines.length > 1 && /^\s*\d+\t$/.test(lines[lines.length - 1])) lines.pop();
   const numbered: Array<[number, string]> = [];
   for (const line of lines) {
     const match = NUMBERED_LINE.exec(line);
@@ -67,21 +69,14 @@ function readFileBody(text: string, args: Record<string, unknown>): string {
   const body = numbered.map(([n, content]) => `${n}: ${content}`).join("\n");
   // The file's length is known only when the whole file was asked for and the
   // answer is shorter than the read limit.
-  const whole = args.StartLine === undefined && args.EndLine === undefined;
   if (!whole || numbered[0][0] !== 1 || numbered.length >= READ_DEFAULT_LINES) return body;
   const last = numbered[numbered.length - 1][0];
   return `Showing lines 1-${last} of ${last}\n${body}`;
 }
 
-function runCommandBody(text: string): string {
-  const failed = /^Exit code (\d+)\n?/.exec(text);
-  const code = failed ? failed[1] : "0";
-  const output = failed ? text.slice(failed[0].length) : text;
-  return `Command exited with code ${code}.\n\nCommand output:\n${output}`;
-}
-
 const RESULT_BODY: Record<string, (text: string, args: Record<string, unknown>) => string> = {
-  run_command: runCommandBody,
+  // The exit code is not known here: a first line `Exit code 7` can be the command's own output.
+  run_command: (text) => text,
   read_file: readFileBody,
   write_file: (text) => (text.startsWith("File created successfully at:") ? "Created file." : text),
   edit_file: (text) => text,
@@ -114,28 +109,68 @@ export interface AgyContentOptions {
   timeOf: (key: string) => string;
   /** The model's display name (`Gemini 4 Argon (Medium)`), for the first message. */
   modelDisplayName?: string;
+  /**
+   * The tools whose results are worded: the ones this request declares under
+   * `agy`'s name AND `agy`'s arguments. A tool of the user's own that happens
+   * to be called `write_file` keeps its result as it is.
+   */
+  wordedTools: ReadonlySet<string>;
+}
+
+/** The argument only the renamed form of each tool declares. */
+const AGY_ARGUMENT: Record<string, string> = {
+  run_command: "CommandLine",
+  read_file: "Path",
+  write_file: "Content",
+  edit_file: "Target",
+};
+
+/** The file and shell tools `tools` declares with `agy`'s arguments. */
+export function agyWordedTools(tools: unknown): Set<string> {
+  const found = new Set<string>();
+  if (!Array.isArray(tools)) return found;
+  for (const entry of tools) {
+    const declarations = (entry as { functionDeclarations?: unknown } | null)?.functionDeclarations;
+    if (!Array.isArray(declarations)) continue;
+    for (const declaration of declarations as Array<Record<string, unknown>>) {
+      const name = declaration?.name;
+      if (typeof name !== "string" || !(name in AGY_ARGUMENT)) continue;
+      const schema = (declaration.parameters ?? declaration.parametersJsonSchema) as
+        | { properties?: Record<string, unknown> }
+        | undefined;
+      if (schema?.properties && AGY_ARGUMENT[name] in schema.properties) found.add(name);
+    }
+  }
+  return found;
 }
 
 function shapeUserEntry(content: Content, index: number, options: AgyContentOptions): Content {
   const parts = content.parts ?? [];
   const isRequest = (part: Part) => typeof part.text === "string" && !isHarnessText(part.text);
-  const requests = parts.filter(isRequest);
-  if (requests.length === 0) return content;
-  const wrapped = agyUserRequest(
-    requests.map((part) => part.text as string).join("\n"),
-    options.timeOf(`user:${index}`),
-    index === 0 ? options.modelDisplayName : undefined
-  );
+  if (!parts.some(isRequest)) return content;
+  const time = options.timeOf(`user:${index}`);
+  // Text parts that follow one another are one request. Text on the two sides
+  // of an image or of the harness's text stays on its side, each run wrapped.
   const out: Part[] = [];
-  let placed = false;
+  let run: Part[] = [];
+  let first = true;
+  const closeRun = () => {
+    if (run.length === 0) return;
+    const text = run.map((part) => part.text as string).join("\n");
+    const model = first && index === 0 ? options.modelDisplayName : undefined;
+    out.push({ ...run[0], text: agyUserRequest(text, time, model) });
+    run = [];
+    first = false;
+  };
   for (const part of parts) {
-    if (!isRequest(part)) {
+    if (isRequest(part)) {
+      run.push(part);
+    } else {
+      closeRun();
       out.push(part);
-    } else if (!placed) {
-      out.push({ ...part, text: wrapped });
-      placed = true;
     }
   }
+  closeRun();
   return { ...content, parts: out };
 }
 
@@ -163,6 +198,7 @@ export function agyContents(contents: unknown, options: AgyContentOptions): unkn
       const result = part?.functionResponse;
       const output = result?.response?.output;
       if (!result || typeof result.name !== "string" || typeof output !== "string") return part;
+      if (!options.wordedTools.has(result.name)) return part;
       const id = typeof result.id === "string" ? result.id : `${index}:${results}`;
       results += 1;
       const text = agyToolResult(

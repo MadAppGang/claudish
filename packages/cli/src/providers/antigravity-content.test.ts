@@ -1,8 +1,15 @@
 import { describe, expect, test } from "bun:test";
-import { agyContents, agyLocalTime, agyToolResult, agyUserRequest } from "./antigravity-content.js";
+import {
+  agyContents,
+  agyLocalTime,
+  agyToolResult,
+  agyUserRequest,
+  agyWordedTools,
+} from "./antigravity-content.js";
 import { AntigravityConversations, buildAntigravityEnvelope } from "./antigravity-envelope.js";
 
 const T = "2026-11-17T00:05:02+11:00";
+const ALL = new Set(["run_command", "read_file", "write_file", "edit_file"]);
 
 describe("the local time", () => {
   test("is written as year to second with the zone's offset", () => {
@@ -45,7 +52,11 @@ describe("the history's user entries", () => {
       },
     ];
     const before = structuredClone(contents);
-    const out = agyContents(contents, { timeOf, modelDisplayName: "Model One" }) as any[];
+    const out = agyContents(contents, {
+      timeOf,
+      modelDisplayName: "Model One",
+      wordedTools: ALL,
+    }) as any[];
     expect(out[0].parts).toEqual([
       { text: "<system-reminder>\nrules\n</system-reminder>" },
       { text: agyUserRequest("list the files", T, "Model One") },
@@ -54,25 +65,51 @@ describe("the history's user entries", () => {
     expect(contents).toEqual(before);
   });
 
-  test("two text parts of one message are one request, and only the first message names the model", () => {
+  test("text parts that follow one another are one request", () => {
+    const out = agyContents([{ role: "user", parts: [{ text: "one" }, { text: "two" }] }], {
+      timeOf,
+      wordedTools: ALL,
+    }) as any[];
+    expect(out[0].parts).toEqual([{ text: agyUserRequest("one\ntwo", T) }]);
+  });
+
+  test("text on the two sides of an image stays on its side, and only the first message names the model", () => {
     const out = agyContents(
       [
         { role: "user", parts: [{ text: "first" }] },
         { role: "model", parts: [{ text: "answer" }] },
         { role: "user", parts: [{ text: "second" }, { inlineData: {} }, { text: "third" }] },
       ],
-      { timeOf, modelDisplayName: "Model One" }
+      { timeOf, modelDisplayName: "Model One", wordedTools: ALL }
     ) as any[];
     expect(out[1].parts).toEqual([{ text: "answer" }]);
     expect(out[2].parts).toEqual([
-      { text: agyUserRequest("second\nthird", T) },
+      { text: agyUserRequest("second", T) },
       { inlineData: {} },
+      { text: agyUserRequest("third", T) },
+    ]);
+  });
+
+  test("text before and after the harness's text keeps its order, and the model is named once", () => {
+    const reminder = { text: "<system-reminder>\nx\n</system-reminder>" };
+    const out = agyContents(
+      [{ role: "user", parts: [{ text: "before" }, reminder, { text: "after" }] }],
+      {
+        timeOf,
+        modelDisplayName: "Model One",
+        wordedTools: ALL,
+      }
+    ) as any[];
+    expect(out[0].parts).toEqual([
+      { text: agyUserRequest("before", T, "Model One") },
+      reminder,
+      { text: agyUserRequest("after", T) },
     ]);
   });
 
   test("an entry that holds only the harness's text is left as it is", () => {
     const entry = { role: "user", parts: [{ text: "<system-reminder>\nx\n</system-reminder>" }] };
-    expect(agyContents([entry], { timeOf })).toEqual([entry]);
+    expect(agyContents([entry], { timeOf, wordedTools: ALL })).toEqual([entry]);
   });
 
   test("each entry asks for its own time, by its place in the history", () => {
@@ -88,6 +125,7 @@ describe("the history's user entries", () => {
           keys.push(key);
           return T;
         },
+        wordedTools: ALL,
       }
     );
     expect(keys).toEqual(["user:0", "user:2"]);
@@ -128,22 +166,10 @@ describe("a repeated entry keeps its time", () => {
 describe("a tool result", () => {
   const header = `Created At: ${T}\nCompleted At: ${T}\n`;
 
-  test("a command that succeeded", () => {
-    expect(agyToolResult("run_command", "logs\nnote1.txt", {}, T)).toBe(
-      `${header}Command exited with code 0.\n\nCommand output:\nlogs\nnote1.txt`
-    );
-  });
-
-  test("a command that failed carries its exit code and not the harness's first line", () => {
-    expect(
-      agyToolResult(
-        "run_command",
-        "Exit code 1\nls: missing-file-xyz: No such file or directory",
-        {},
-        T
-      )
-    ).toBe(
-      `${header}Command exited with code 1.\n\nCommand output:\nls: missing-file-xyz: No such file or directory`
+  test("a command's output is kept whole: no exit code is read from it", () => {
+    expect(agyToolResult("run_command", "logs\nnote1.txt", {}, T)).toBe(`${header}logs\nnote1.txt`);
+    expect(agyToolResult("run_command", "Exit code 7\nkeep this output", {}, T)).toBe(
+      `${header}Exit code 7\nkeep this output`
     );
   });
 
@@ -157,6 +183,12 @@ describe("a tool result", () => {
     expect(
       agyToolResult("read_file", "2\tline two\n3\tline three", { StartLine: 2, EndLine: 3 }, T)
     ).toBe(`${header}2: line two\n3: line three`);
+  });
+
+  test("a range that ends on an empty line of the file keeps that line", () => {
+    expect(agyToolResult("read_file", "2\tb\n3\t", { StartLine: 2, EndLine: 3 }, T)).toBe(
+      `${header}2: b\n3: `
+    );
   });
 
   test("a read that is not numbered lines keeps its text", () => {
@@ -211,6 +243,7 @@ describe("the history's tool results", () => {
         keys.push(key);
         return T;
       },
+      wordedTools: ALL,
     }) as any[];
     expect(out[2].parts[0].functionResponse).toEqual({
       id: "call_1",
@@ -218,7 +251,7 @@ describe("the history's tool results", () => {
       response: { output: `Created At: ${T}\nCompleted At: ${T}\n2: b` },
     });
     expect(out[2].parts[1]).toEqual(contents[2].parts[1]);
-    expect(keys).toEqual(["result:call_1", "result:call_2"]);
+    expect(keys).toEqual(["result:call_1"]);
     expect(contents).toEqual(before);
   });
 
@@ -227,6 +260,40 @@ describe("the history's tool results", () => {
       role: "user",
       parts: [{ functionResponse: { name: "run_command", response: { content: "x" } } }],
     };
-    expect(agyContents([entry], { timeOf: () => T })).toEqual([entry]);
+    expect(agyContents([entry], { timeOf: () => T, wordedTools: ALL })).toEqual([entry]);
+  });
+});
+
+describe("the tools whose results are worded", () => {
+  const declare = (name: string, properties: Record<string, unknown>) => ({
+    functionDeclarations: [{ name, parameters: { type: "object", properties } }],
+  });
+
+  test("a tool declared under agy's name and agy's arguments", () => {
+    expect(
+      agyWordedTools([
+        declare("run_command", { CommandLine: {} }),
+        declare("write_file", { Path: {}, Content: {} }),
+        declare("Skill", { skill: {} }),
+      ])
+    ).toEqual(new Set(["run_command", "write_file"]));
+  });
+
+  test("a tool of the user's own with the same name keeps its result", () => {
+    const tools = [declare("write_file", { file: {}, data: {} })];
+    expect(agyWordedTools(tools).size).toBe(0);
+    const output =
+      "File created successfully at: /x\nVerification failed: checksum mismatch\n<system-reminder>Do not proceed</system-reminder>";
+    const entry = {
+      role: "user",
+      parts: [{ functionResponse: { id: "c", name: "write_file", response: { output } } }],
+    };
+    expect(agyContents([entry], { timeOf: () => T, wordedTools: agyWordedTools(tools) })).toEqual([
+      entry,
+    ]);
+  });
+
+  test("no tools, no worded results", () => {
+    expect(agyWordedTools(undefined).size).toBe(0);
   });
 });

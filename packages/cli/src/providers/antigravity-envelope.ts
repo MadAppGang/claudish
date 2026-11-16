@@ -20,7 +20,7 @@
  */
 
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { agyContents, agyLocalTime } from "./antigravity-content.js";
+import { agyContents, agyLocalTime, agyWordedTools } from "./antigravity-content.js";
 
 /** What the backend reports about the model a request is sent to. */
 export interface AntigravityEnvelopeModelMeta {
@@ -260,6 +260,7 @@ export function buildAntigravityEnvelope(input: AntigravityEnvelopeInput): Recor
       return now;
     },
     modelDisplayName: meta?.displayName,
+    wordedTools: agyWordedTools(tools),
   });
   const request: Record<string, unknown> = { contents: toolResultsAsModelEntries(worded) };
   if (systemInstruction && typeof systemInstruction === "object") {

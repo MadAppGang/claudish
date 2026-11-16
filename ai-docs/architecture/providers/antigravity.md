@@ -760,11 +760,11 @@ signature), `model` (results with the same ids, `output`), and was answered 200.
 
 | Part | `agy` 1.5.9 | claudish |
 |---|---|---|
-| The user's text | `<USER_REQUEST>` + `<ADDITIONAL_METADATA>` (local time, Go RFC 3339) + on the first message `<USER_SETTINGS_CHANGE>` naming the model's `displayName` | the same text (`providers/antigravity-content.ts`, applied in `buildAntigravityEnvelope`). A text part that opens with `<system-reminder>` is the harness's and is left as it is |
-| Tool result text | `Created At` / `Completed At`, then the tool's sentence | the same header for `run_command`, `read_file`, `write_file`, `edit_file`; the sentence where Claude Code's result holds what it states (below) |
+| The user's text | `<USER_REQUEST>` + `<ADDITIONAL_METADATA>` (local time, Go RFC 3339) + on the first message `<USER_SETTINGS_CHANGE>` naming the model's `displayName` | the same text (`providers/antigravity-content.ts`, applied in `buildAntigravityEnvelope`). A text part that opens with `<system-reminder>` is the harness's and is left as it is. Text parts that follow one another are one request; text on the two sides of an image or of the harness's text is wrapped on its own side, so no part changes place |
+| Tool result text | `Created At` / `Completed At`, then the tool's sentence | the same header for `run_command`, `read_file`, `write_file`, `edit_file`; the sentence where Claude Code's result holds what it states (below). Only for a tool the request declares with `agy`'s arguments (`agyWordedTools`): a tool of the user's own called `write_file` keeps its result |
 | Tool arguments | `CommandLine`, `toolSummary`, `IsDaemon`, `Path`, `Content`, `Target`, `Replacement`, `StartLine`, `EndLine` | the same names on those four tools, in the schema and in the history, restored on a returned call (`tool-name-alias.ts`, `restoreArguments`; the Gemini parser's `mapToolArguments`) |
 | Account lookups at start | `oauth2/v2/userinfo`, `fetchAdminControls`, `fetchUserInfo`, `retrieveUserQuotaSummary`, `listExperiments`, `aicode.googleapis.com/v1alpha:fetchConfig` | the same six, once per account lineage, after a `loadCodeAssist` that succeeded (`auth/antigravity-side-calls.ts`). Answers are drained and not read; a failure is logged and nothing waits on it. The two calls to other Google hosts are sent only when the backend host is the default one |
-| `writeTrajectoryAcls` | once per conversation, before its first generation request | the same (`AntigravityTransport.fetch`, 3 s limit; a failure does not stop the generation request) |
+| `writeTrajectoryAcls` | once per conversation, before its first generation request | the same (`AntigravityTransport.fetch`, 3 s limit; a failure does not stop the generation request). A request writes the record of the trajectory its own body names and no other's, and the write ends with the request's abort signal |
 | Quota | `retrieveUserQuotaSummary` (limits per group of models) and `quotaInfo` on each record of `fetchAvailableModels` | the same two (`retrieveUserQuotaSummary`, `retrieveModelQuota`). `retrieveUserQuota`, which `agy` never calls, is removed |
 
 What a tool result cannot copy, because Claude Code's result does not hold it:
@@ -776,7 +776,9 @@ What a tool result cannot copy, because Claude Code's result does not hold it:
 - `edit_file` (`Made 1 replacement in <path> starting at line 2 (+1/-1 lines).`) and an overwrite
   by `write_file` keep Claude Code's sentence under the header. `Created file.` is written for a
   new file.
-- `run_command`: the exit code is read from Claude Code's `Exit code N` first line, else 0.
+- `run_command` (`Command exited with code 1.` + `Command output:`): Claude Code's result does
+  not carry the exit code apart from the text, and a first line `Exit code 7` can be the
+  command's own output. The output is kept whole under the header.
 
 A time is kept per entry in the conversation (`AntigravityConversation.times`), because every
 request repeats the whole history and a repeated entry must carry the time it carried first. A new
