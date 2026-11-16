@@ -23,7 +23,6 @@ import type { ChildProcess } from "node:child_process";
 import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { log } from "../logger.js";
-import { claudeConfigDir } from "../mcp-session/parent-session.js";
 import { redactSecrets } from "../redact.js";
 import type { KernelLock } from "../view/kernel-lock.js";
 import { locateBox } from "./box-locate.js";
@@ -39,6 +38,7 @@ import {
   ensureSockRoot,
   mintPaneId,
   readUserStatusLine,
+  replayConfigDirOverride,
   replayLauncherScript,
   replaySettingsJson,
   sockRootFor,
@@ -838,7 +838,7 @@ export async function startReplayPane(o: ReplayPaneOptions): Promise<ReplayPane>
       ctlDir: dirs.ctlDir,
       cols: o.size.cols,
       rows: o.size.rows,
-      ...(o.configDir !== claudeConfigDir(o.parentEnv) ? { configDirOverride: o.configDir } : {}),
+      configDirOverride: replayConfigDirOverride(o.parentEnv, o.cwd, o.configDir),
     });
     writeRecord(root, {
       paneId,

@@ -286,7 +286,7 @@ export interface TeamRunOptions {
   onSettled?: (status: TeamStatus) => void;
   /**
    * The environment every pane of this run is built from (X-M9). Default
-   * `process.env`. The transcript path is derived with `projectsDir(parentEnv)`.
+   * `process.env`. The transcript path is derived with `projectsDir(parentEnv, cwd)`.
    */
   parentEnv?: Record<string, string | undefined>;
   /** "judge" for the judging/ sub-run of `judgeResponses`; default "run". */
@@ -1087,7 +1087,8 @@ function teamSlotTranscriptSource(
     // and no write to the transcript within the grace: a write means its writer still lives
     writerGone:
       terminal && age !== null && age >= graceMs && transcriptQuiet(transcriptPath, now, graceMs),
-    // the same root a live run derives at spawn (`projectsDir(parentEnv)`), as SessionManager does
+    // a live run derives `projectsDir(parentEnv, cwd)` at spawn; a status file records no cwd,
+    // so this reads the server's, which is the run's unless the caller set one
     projectsRoot: projectsDir(opts.parentEnv ?? process.env),
   };
   return { src, address: { run_id: fileRunId, path: resolved, slot }, cwd: null };
@@ -2064,7 +2065,7 @@ async function startModelsIn(
     viewServices?.feed.changed(targetOfSlot(runId, e.id), true);
   }
 
-  const projects = projectsDir(parentEnv);
+  const projects = projectsDir(parentEnv, cwd);
 
   /** The slot's hook binding: a test's, or the real one when the engine has session hooks. */
   function bindingFor(e: SlotEntry, uuid: string): SessionHookBinding | null {

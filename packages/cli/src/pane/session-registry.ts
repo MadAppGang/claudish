@@ -72,7 +72,7 @@ function pidAlive(pid: number): boolean {
 }
 
 export interface SessionRegistryOptions {
-  /** `claudeConfigDir(env)` of the child's environment */
+  /** `claudeCodeConfigDir(env, cwd)` of the child's environment and working directory */
   configDir: string;
   sessionUuid: string;
   /** @internal test seams */

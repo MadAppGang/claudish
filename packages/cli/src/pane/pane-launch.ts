@@ -32,6 +32,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
+import { claudeCodeConfigDir } from "../auth/claude-code-facts.js";
 import {
   CLAUDISH_EXITING_FLAGS,
   CLAUDISH_FLAG_ARITY,
@@ -299,6 +300,32 @@ export const REPLAY_ENV_ALLOWLIST = [
   "CLAUDE_CONFIG_DIR",
 ] as const;
 
+/** The allowlisted parent variables a replay child is handed; an empty value is dropped. */
+function inheritedReplayEnv(parentEnv: Record<string, string | undefined>): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const k of REPLAY_ENV_ALLOWLIST) {
+    const v = parentEnv[k];
+    if (v) env[k] = v;
+  }
+  return env;
+}
+
+/**
+ * The `CLAUDE_CONFIG_DIR` a replay must be handed so its child reads `configDir`, or
+ * `undefined` when the inherited value already leads there. The comparand is what the child
+ * resolves from the environment it is actually handed (an empty value is dropped, so it reads
+ * `$HOME/.claude`) against the replay's working directory, by {@link claudeCodeConfigDir}.
+ */
+export function replayConfigDirOverride(
+  parentEnv: Record<string, string | undefined>,
+  cwd: string,
+  configDir: string
+): string | undefined {
+  return configDir !== claudeCodeConfigDir(inheritedReplayEnv(parentEnv), cwd)
+    ? configDir
+    : undefined;
+}
+
 /**
  * magmux's environment for a replay: the allowlist and seven fixed keys, nothing else. No
  * snapshot and no `CLAUDISH_PANE_CWD`, which exist for a claudish child, and a replay has
@@ -317,14 +344,10 @@ export function buildReplayEnv(input: {
   ctlDir: string;
   cols: number;
   rows: number;
-  /** set only when it differs from `claudeConfigDir(parentEnv)` */
-  configDirOverride?: string;
+  /** set only when the inherited value leads elsewhere ({@link replayConfigDirOverride}) */
+  configDirOverride?: string | undefined;
 }): Record<string, string> {
-  const env: Record<string, string> = {};
-  for (const k of REPLAY_ENV_ALLOWLIST) {
-    const v = input.parentEnv[k];
-    if (v) env[k] = v;
-  }
+  const env = inheritedReplayEnv(input.parentEnv);
   if (input.configDirOverride) env.CLAUDE_CONFIG_DIR = input.configDirOverride;
   env.SHELL = join(input.ctlDir, "sh-shim");
   env[ENV.CLAUDISH_PANE_CHILD] = "1";

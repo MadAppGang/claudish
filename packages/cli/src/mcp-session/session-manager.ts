@@ -1070,7 +1070,7 @@ export class SessionManager {
         detail: null,
         pendingInputs: opts.prompt ? 1 : 0,
         claudeSessionId,
-        transcriptPath: transcriptPathFor(cwd, claudeSessionId, projectsDir(parentEnv)),
+        transcriptPath: transcriptPathFor(cwd, claudeSessionId, projectsDir(parentEnv, cwd)),
         // Present only when there is one, so `meta.json` carries the key exactly when
         // `spawn.json` does, with the same value.
         ...optionalParent(opts.parentClaudeSessionId),
@@ -1101,7 +1101,7 @@ export class SessionManager {
       anomaliesLogged: new Set(),
       requestedSize: null,
       reapVerified: false,
-      projectsRoot: projectsDir(parentEnv),
+      projectsRoot: projectsDir(parentEnv, cwd),
       promptSummary: opts.prompt ? promptSummaryOf(opts.prompt) : null,
       lastChangeKey: null,
       stopTokenWatch: null,
@@ -1779,7 +1779,6 @@ export class SessionManager {
     if (spawnRecord?.kind === "team") return null;
     const meta = readJsonObject(metaPath, META_READ_LIMIT);
     if (meta?.kind === "team") return null;
-    const projectsRoot = projectsDir(this.parentEnv);
     const uuid =
       metaString(meta?.claudeSessionId) ?? metaString(spawnRecord?.claudeSessionId) ?? null;
     const now = Date.now();
@@ -1787,6 +1786,8 @@ export class SessionManager {
     let writerGone: boolean;
     let transcriptPath: string | null = null;
     const cwd = meta !== null ? metaString(meta.cwd) : undefined;
+    // the child resolved its config dir against its own working directory
+    const projectsRoot = projectsDir(this.parentEnv, cwd ?? process.cwd());
     if (meta !== null) {
       const completedAt = metaString(meta.completedAt);
       const endedMs = completedAt ? Date.parse(completedAt) : Number.NaN;
@@ -1997,7 +1998,7 @@ export class SessionManager {
     const stored = metaString(meta?.transcriptPath) ?? "";
     const cwd = metaString(meta?.cwd);
     if (stored && existsSync(stored)) return stored;
-    if (cwd && uuid) return transcriptPathFor(cwd, uuid, projectsDir(this.parentEnv));
+    if (cwd && uuid) return transcriptPathFor(cwd, uuid, projectsDir(this.parentEnv, cwd));
     return stored;
   }
 

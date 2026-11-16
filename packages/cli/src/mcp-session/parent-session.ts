@@ -25,7 +25,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { userHomeFrom } from "./home-dir.js";
+import { claudeCodeConfigDir } from "../auth/claude-code-facts.js";
 
 /** What a Claude Code session id may look like. Also the path-safety gate. */
 export const CLAUDE_ID_RE = /^[A-Za-z0-9_-]{8,128}$/;
@@ -93,14 +93,11 @@ export function parentSessionIdFrom(env: Record<string, string | undefined>): st
 }
 
 /**
- * `CLAUDE_CONFIG_DIR`, else `<home>/.claude`, with `<home>` resolved by the
- * same `$HOME`-first rule as the sessions directory (home-dir.ts): Claude Code
- * follows `$HOME`, and Bun's `os.homedir()` does not.
+ * Claude Code's config directory: {@link claudeCodeConfigDir}, the one
+ * implementation of its `CLAUDE_CONFIG_DIR` rule, under the name this module's
+ * callers import.
  */
-export function claudeConfigDir(env: Record<string, string | undefined>): string {
-  const fromEnv = env.CLAUDE_CONFIG_DIR;
-  return fromEnv && fromEnv.length > 0 ? fromEnv : join(userHomeFrom(env), ".claude");
-}
+export { claudeCodeConfigDir as claudeConfigDir };
 
 /** The host's live session record, as far as claudish trusts it. */
 export interface HostSessionRecord {
@@ -143,7 +140,7 @@ export async function parentSessionForCall(opts: {
 }): Promise<string | undefined> {
   const env = opts.env ?? process.env;
   const record = await readHostSessionRecord({
-    configDir: claudeConfigDir(env),
+    configDir: claudeCodeConfigDir(env),
     hostPid: opts.hostPid,
   });
   return record?.sessionId ?? parentSessionIdFrom(env);

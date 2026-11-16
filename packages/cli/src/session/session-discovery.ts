@@ -22,15 +22,18 @@
 import { execFile, execFileSync } from "node:child_process";
 import { closeSync, openSync, readSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
+import { claudeCodeConfigDir } from "../auth/claude-code-facts.js";
 import { projectDirNameFor } from "../mcp-session/home-dir.js";
-import { claudeConfigDir } from "../mcp-session/parent-session.js";
 
 /** Head bytes scanned for the `entrypoint` marker. See `isAgentSession`. */
 const ENTRYPOINT_BYTES = 8192;
 
 /**
  * Where Claude Code keeps transcripts: `<config dir>/projects`, the config dir being
- * `CLAUDE_CONFIG_DIR`, else `$HOME/.claude` (`claudeConfigDir`, `mcp-session/parent-session.ts`).
+ * `CLAUDE_CONFIG_DIR`, else `$HOME/.claude`, resolved against the CHILD's working directory
+ * (`claudeCodeConfigDir`, `auth/claude-code-facts.ts`, the one implementation of that rule).
+ * Claude Code resolves an empty or relative value against its own working directory, so
+ * an owner whose child runs elsewhere passes that directory as `cwd`.
  *
  * Resolved at CALL time from the environment it is given. It used to be a module
  * constant built from `os.homedir()`, which is wrong twice: it ignored a
@@ -38,8 +41,11 @@ const ENTRYPOINT_BYTES = 8192;
  * set by a sandbox or launcher, which Claude Code follows. An owner that spawns a child
  * under a different environment passes that environment here.
  */
-export function projectsDir(env: Record<string, string | undefined> = process.env): string {
-  return join(claudeConfigDir(env), "projects");
+export function projectsDir(
+  env: Record<string, string | undefined> = process.env,
+  cwd: string = process.cwd()
+): string {
+  return join(claudeCodeConfigDir(env, cwd), "projects");
 }
 
 /**
