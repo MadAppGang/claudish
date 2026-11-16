@@ -19,6 +19,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { log } from "../../../logger.js";
+import { isOptInWireId } from "../../../providers/content-use.js";
 import { getAccountRegistry } from "../../accounts/registry.js";
 import type { QuotaAdapter, QuotaPollContext } from "../adapter.js";
 import { CODEX_WINDOW_SLOTS } from "../codex-window-slots.js";
@@ -149,7 +150,7 @@ export function scrapeCodexHeaders(headers: Headers): PlanUsage | undefined {
  * and a 400 carries NO `x-codex-*` headers at all — so a wrong id here is
  * indistinguishable from "this provider does not report quota". Discovering
  * the id rather than pinning one keeps a change in the dynamic models catalog from silently
- * presenting as a missing feature.
+ * presenting as a missing feature. A content-use opt-in slug is never taken.
  */
 function resolveProbeModel(): string | undefined {
   try {
@@ -158,7 +159,7 @@ function resolveProbeModel(): string | undefined {
     const cache = JSON.parse(readFileSync(cachePath, "utf-8"));
     for (const m of cache.models ?? []) {
       const slug = m?.slug ?? m?.id;
-      if (typeof slug === "string" && slug.length > 0) return slug;
+      if (typeof slug === "string" && slug.length > 0 && !isOptInWireId(slug)) return slug;
     }
   } catch {
     /* fall through */
