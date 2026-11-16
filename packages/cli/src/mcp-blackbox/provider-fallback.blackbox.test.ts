@@ -694,3 +694,10 @@ describe.skipIf(!MAGMUX_AVAILABLE)(
     }, 90_000);
   }
 );
+
+describe("captured pane-child argv", () => {
+  test("capturedArgv ignores an argv file that is still being written", () => {
+    writeFileSync(join(argvDir, "half-written-session.json.tmp"), '["--model", "kimi');
+    expect(capturedArgv()).toEqual([]);
+  });
+});
