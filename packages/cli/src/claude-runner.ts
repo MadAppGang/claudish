@@ -224,11 +224,15 @@ export function wantsAnthropicApiBilling(
  * secret read). A key left in the child signs more than the classifier call: the
  * vision proxy forwards the inbound `x-api-key` to Anthropic for image
  * descriptions, and a launch with role mappings and no default model passes an
- * unmapped Claude name through on the inbound credential. With a login present
- * all of that bills the subscription instead. With no login the key may be the
- * user's ONLY Anthropic credential, and hiding it would strand the classifier
- * request at the login gate `hasResolvableAnthropicAuth` exists to avoid, so it
- * stays.
+ * unmapped Claude name through on the inbound credential. With the key hidden
+ * and a login present, the classifier and a passed-through Claude name bill the
+ * subscription instead. The vision proxy does not: it reads only `x-api-key`
+ * (`extractAuthHeaders` in handlers/composed-handler.ts, services/vision-proxy.ts),
+ * never the login bearer, so it has no key and the images sent to a non-vision
+ * main model are stripped. The startup notice says so
+ * ({@link hiddenAnthropicKeyNotice}). With no login the key may be the user's
+ * ONLY Anthropic credential, and hiding it would strand the classifier request
+ * at the login gate `hasResolvableAnthropicAuth` exists to avoid, so it stays.
  *
  * `loginDeps` defaults to reading `env`, the child's environment.
  *
@@ -246,6 +250,23 @@ export function shouldHideIncidentalAnthropicKey(
   if (wantsAnthropicApiBilling(config, env)) return false;
   if (nativeMapping) return true;
   return hasClaudeCodeLogin(loginDeps);
+}
+
+/**
+ * The startup notice for a real ANTHROPIC_API_KEY hidden from the child
+ * ({@link shouldHideIncidentalAnthropicKey}). `nativeMapping` is true on a
+ * launch with a native Claude role mapping. On a classifier-only launch the
+ * notice also says image descriptions are off: the vision proxy signs only with
+ * the inbound `x-api-key`, which the child no longer sends.
+ */
+export function hiddenAnthropicKeyNotice(config: ClaudishConfig, nativeMapping: boolean): string {
+  return (
+    `[claudish]   ANTHROPIC_API_KEY found but hidden so it can't override ${nativeMapping ? "that subscription" : "your Claude Code subscription"} · ` +
+    (nativeMapping ? "" : "image descriptions for a non-vision main model are off · ") +
+    (config.claudeSubscriptionPin
+      ? "use anthropic@<id> to bill the Claude API instead"
+      : "use --anthropic-api-billing (or anthropicApiBilling: true) to bill the API instead")
+  );
 }
 
 // claudish's placeholder credentials live in a leaf module the credential layer
@@ -2854,14 +2875,7 @@ export async function runClaudeWithProxy(
   }
   // Also printed on a classifier-only passthrough launch, which hides the key
   // when Claude Code holds a login (shouldHideIncidentalAnthropicKey).
-  if (hidAnthropicApiKey) {
-    log(
-      `[claudish]   ANTHROPIC_API_KEY found but hidden so it can't override ${nativeModelNotice ? "that subscription" : "your Claude Code subscription"} · ` +
-        (config.claudeSubscriptionPin
-          ? "use anthropic@<id> to bill the Claude API instead"
-          : "use --anthropic-api-billing (or anthropicApiBilling: true) to bill the API instead")
-    );
-  }
+  if (hidAnthropicApiKey) log(hiddenAnthropicKeyNotice(config, nativeModelNotice));
   if (gatewayNotice) log(`[claudish] ${gatewayNotice}`);
 
   if (config.interactive) {

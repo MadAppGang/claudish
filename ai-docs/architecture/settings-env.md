@@ -54,7 +54,12 @@ launch (a foreign main model, no Claude role) it is hidden only when Claude Code
 (`hasClaudeCodeLogin`, presence only). Left in the child, the key signs more than the classifier
 call: the vision proxy forwards the inbound `x-api-key` for image descriptions, and on a launch
 with role mappings and no default model an unmapped Claude name passes through on the inbound
-credential. With no login the key stays, because it may be the user's only Anthropic credential.
+credential. With the key hidden, the classifier and a passed-through Claude name bill the login.
+The vision proxy does not: it reads only `x-api-key` (`extractAuthHeaders` in
+`handlers/composed-handler.ts`, `services/vision-proxy.ts`), never the login bearer, so on that
+launch it has no key and the images sent to a non-vision main model are stripped. The startup
+notice says image descriptions for a non-vision main model are off. With no login the key stays,
+because it may be the user's only Anthropic credential.
 
 Pinning such a session through claudish's `--settings` file would hold for the session itself,
 but Claude Code carries `--settings` into a session sent to the background, which would then
