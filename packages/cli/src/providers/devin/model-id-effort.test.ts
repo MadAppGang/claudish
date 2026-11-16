@@ -109,6 +109,14 @@ describe("Devin connection modelIdEffort", () => {
     });
   }
 
+  test("rule 3: a base request never chooses an opt-in effort-map uid", () => {
+    const optIn = `${BASE}-contributor`;
+    publish(effortMap({ low: optIn }));
+    const list = [...models(), devinModel(optIn, "low")];
+
+    expect(resolveDevinModelUid(BASE, "low", list)).not.toBe(optIn);
+  });
+
   test("rules 3/10: the map wins over a tempting same-effort name sibling", () => {
     const mapped = "carbon-reasoning-route";
     publish(effortMap({ high: mapped, low: LOW }));

@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import type { EffortLevel } from "../../adapters/base-api-format.js";
 import * as allModelsCache from "../all-models-cache.js";
 import type { DiskCacheV3, SlimModelEntry } from "../all-models-cache.js";
+import { chooseAntigravityServedModel } from "../antigravity-model-id.js";
 import {
   catalogEntry,
   connection,
@@ -136,6 +137,22 @@ describe("Antigravity connection modelIdEffort", () => {
       ).toBe("glm-5-2-max");
     });
   }
+
+  test("rule 3: a base request never chooses an opt-in effort-map id", () => {
+    const optIn = `${BASE}-contributor`;
+    publish(effortMap({ low: optIn }));
+    const account = served([BASE, LOW, optIn], LOW);
+
+    expect(chooseAntigravityServedModel(BASE, account, "low").id).not.toBe(optIn);
+  });
+
+  test("rule 1: an explicitly requested opt-in id stays fixed", () => {
+    const optIn = `${BASE}-contributor`;
+    publish(effortMap({ low: optIn }));
+    const account = served([optIn], optIn);
+
+    expect(chooseAntigravityServedModel(optIn, account, "low").id).toBe(optIn);
+  });
 
   test("rule 4: the next higher level wins even when a lower level is closer", () => {
     const max = `${BASE}-max`;
