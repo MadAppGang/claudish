@@ -247,7 +247,11 @@ function formatWindow(tokens: number): string {
 export class DevinModelResolver implements ProviderModelResolver {
   readonly provider = "devin";
 
-  collapse(modelsCatalog: ModelsCatalogEntry[]): ModelChoice[] {
+  collapse(listed: ModelsCatalogEntry[]): ModelChoice[] {
+    // A picker row id is chosen for the user, so a content-use opt-in uid is
+    // never one, nor a variant of one; an account listing only opt-in uids has
+    // no row to show.
+    const modelsCatalog = withoutOptIn(listed);
     const groups = new Map<string, ModelsCatalogEntry[]>();
     for (const entry of modelsCatalog) {
       const key = keyOf(entry);
@@ -346,18 +350,23 @@ export class DevinModelResolver implements ProviderModelResolver {
   /** The rules of {@link expand}, with what decided the uid. */
   private choose(
     selection: string,
-    modelsCatalog: ModelsCatalogEntry[],
+    listed: ModelsCatalogEntry[],
     effort: EffortLevel | undefined
   ): ModelIdChoice {
     const requested = selection.trim();
     const lower = requested.toLowerCase();
-    const exact = modelsCatalog.find((entry) => entry.wireId.toLowerCase() === lower);
 
-    // A content-use opt-in uid requested exactly is sent as listed, at any
-    // effort: no effort map, sibling or tier rule replaces it.
-    if (exact && isOptInWireId(exact.wireId)) {
-      return { id: exact.wireId, effort, source: "exact id" };
+    // A content-use opt-in uid is requested only by typing it, and is sent as
+    // typed (in the listed spelling when listed), at any effort and whether or
+    // not the account lists it: no effort map, sibling or tier rule replaces it.
+    if (isOptInWireId(requested)) {
+      const listedId = listed.find((entry) => entry.wireId.toLowerCase() === lower)?.wireId;
+      return { id: listedId ?? requested, effort, source: "exact id" };
     }
+
+    // Every rule below chooses for the user, so none sees an opt-in uid.
+    const modelsCatalog = withoutOptIn(listed);
+    const exact = modelsCatalog.find((entry) => entry.wireId.toLowerCase() === lower);
 
     // 0. The connection's effort map, when the catalog publishes one for this
     //    exact base on Devin's route. A listed base with no effort is sent as
@@ -420,6 +429,11 @@ export class DevinModelResolver implements ProviderModelResolver {
       pool.filter((entry) => entry.isFamilyDefault).sort(byCost)[0] ?? pool.slice().sort(byCost)[0];
     return unmapped(pickForEffort(groups.get(keyOf(chosen!))!, effort).wireId);
   }
+}
+
+/** The dynamic models catalog without its content-use opt-in uids. */
+function withoutOptIn(modelsCatalog: ModelsCatalogEntry[]): ModelsCatalogEntry[] {
+  return modelsCatalog.filter((entry) => !isOptInWireId(entry.wireId));
 }
 
 /**
