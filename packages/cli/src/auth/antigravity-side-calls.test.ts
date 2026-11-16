@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { redactSigningValues } from "../redact.js";
 import {
   antigravityAccountCalls,
   antigravityTrajectoryAclCall,
@@ -109,6 +110,19 @@ describe("sending a side call", () => {
       "User-Agent": "Go-http-client/1.1",
     });
     expect(seen[0].body).toBeUndefined();
+  });
+
+  test("the token is redacted from text for as long as the call runs, and no longer", async () => {
+    const token = "ya29.side-call-token-0123456789abcdef";
+    const quoted = `rejected Authorization: Bearer ${token}`;
+    let during = "";
+    recordFetch(() => {
+      during = redactSigningValues(quoted);
+      throw new Error(quoted);
+    });
+    await sendAntigravitySideCall(antigravityAccountCalls(ACCOUNT)[0], token);
+    expect(during).not.toContain(token);
+    expect(redactSigningValues(quoted)).toBe(quoted);
   });
 
   test("a refused call and a thrown one both resolve, and the calls after them are still sent", async () => {

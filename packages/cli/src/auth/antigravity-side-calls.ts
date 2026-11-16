@@ -10,6 +10,7 @@
 
 import { log } from "../logger.js";
 import { antigravityFetch } from "../providers/transport/antigravity-fetch.js";
+import { acquireSigningLease } from "../redact.js";
 
 /** Google's account endpoint; `agy` calls it through Go's default HTTP client. */
 const GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo";
@@ -97,6 +98,10 @@ export async function sendAntigravitySideCall(
     "User-Agent": call.userAgent,
   };
   if (call.body !== undefined) headers["Content-Type"] = "application/json";
+  // The call can run before or after the request whose lease holds this token,
+  // so it holds the token itself for as long as it can log an answer.
+  const lease = acquireSigningLease();
+  lease.add([accessToken]);
   try {
     const res = await antigravityFetch(call.url, {
       method: call.body === undefined ? "GET" : "POST",
@@ -110,6 +115,8 @@ export async function sendAntigravitySideCall(
     if (!res.ok) log(`[Antigravity] ${call.name} answered ${res.status}`);
   } catch (err) {
     log(`[Antigravity] ${call.name} error: ${err}`);
+  } finally {
+    lease.release();
   }
 }
 
