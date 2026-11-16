@@ -17,7 +17,7 @@ export interface KeychainCopyOutcome {
  * copy just wrote, and only those: a key the user saved for another provider
  * (`credentials.replaceKey`) keeps signing.
  */
-export function invalidateAfterKeychainCopy(outcome: Pick<KeychainCopyOutcome, "written">): void {
+export function invalidateAfterKeychainCopy(outcome: KeychainCopyOutcome): void {
   credentials.invalidateKeyVars(outcome.written);
 }
 
