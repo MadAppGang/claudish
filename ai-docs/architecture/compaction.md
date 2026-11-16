@@ -2,7 +2,8 @@
 
 `--compaction` (`CLAUDISH_COMPACTION=1`, `compaction.enabled`) makes a session's context smaller
 with a small Claude model on the Claude API: large tool outputs are compressed once, on first
-sighting, and the earlier conversation is replaced by a summary at a human-turn boundary. Code:
+sighting, and the earlier conversation is replaced by a summary at a human-turn start or after a
+complete tool round. Code:
 `packages/cli/src/compaction/`. User guide: `docs/advanced/compaction.md`.
 
 Read this before editing anything under `compaction/`, the decorator chain at the
@@ -76,9 +77,12 @@ Each rule has a test.
    later turn is a cache break.
 5. **Content, not formatting.** The cache matches content after JSON parsing. The native forward
    re-serialises the body (`bodyToForward`); identical content serialises identically.
-6. **History swaps** happen only when the last message starts a new human turn: a user message
-   with user text and NO `tool_result` block (Claude Code adds text blocks beside tool results, so
-   "has text" alone would swap inside a tool round). A swap strips `thinking` and
+6. **History swaps** happen only at a swap point (`isSwapPoint`): the last message starts a new
+   human turn (a user message with user text and NO `tool_result` block; Claude Code adds text
+   blocks beside tool results, so "has text" alone is not a turn start), or it is a user message
+   whose tool_results answer EVERY tool_use of the assistant message before it
+   (`isCompleteToolRound`). Never between a tool_use and its result. The boundary message never
+   holds a tool_result (`isSafeBoundary`), so every kept tool_result keeps its tool_use. A swap strips `thinking` and
    `redacted_thinking` from the turns it keeps (the safe shape for keep-tail compaction). Until the
    next swap, every later request sends the same summary bytes and the same stripped turns. Each
    swap costs one cache write.
@@ -142,15 +146,42 @@ one of them is never compressed and never recorded, so it is sent as it is on ev
   `claude-sonnet-*` to a model with a smaller window, or none. A `[1m]` suffix is removed for the
   lookup. The catalog window comes from the named provider for `provider@model`, the Claude API
   connection for `claude-*`, else the model's own.
-- **Measure** with `localTokenEstimate` (`token-estimate.ts`, JSON length / 4), the same number
-  `count_tokens` answers with locally.
-- **Prepare** at `precomputeAt`, in the background, never awaited. Boundary `b` = the start of the
-  last human turn. Messages `[0, b)` are rendered as plain text (tool_results in the form this
+- **Measure** with the real count (`compaction/real-count.ts`, `RealTokenCount`), NOT
+  `localTokenEstimate`. Measured in the context-reduction bench (case d, build `a6952916`,
+  `CLAUDE_CODE_AUTO_COMPACT_WINDOW=200000`): the main thread peaked at 173,646 real tokens while
+  JSON length / 4 read about 105K (about 2.4 characters a token), under the 120K precompute mark.
+  Claude Code compacted twice (first at real ~161K) and claudish never started a summary; baseline
+  trials compact at real 159K to 170K. Now `withCompaction` taps every 2xx response
+  (`tapUsage`: an SSE stream's `message_start`/`message_delta` usage through `mergeSseUsage`, or a
+  JSON body's `usage`) and records `input_tokens + cache_read_input_tokens +
+  cache_creation_input_tokens` against what that request sent (thread, message count, hash of the
+  last message, JSON length). The next request of the thread counts as that number + the JSON
+  characters appended since / the characters-per-token ratio of the same measurement (clamped to
+  1..8). A thread with no matching measurement uses the session's newest ratio ("calibrated"); a
+  session with none yet uses JSON length / 4. A request at or above `precomputeAt` logs
+  `[compaction] session <id>: history count <n> of <limit> tokens (<source>)`, the source naming
+  the measured usage and the appended estimate. `count_tokens` still answers with
+  `localTokenEstimate`: it is Claude Code's gauge, not this decision.
+- **Prepare** at `precomputeAt`, in the background, never awaited. Boundary `b` =
+  `summaryBoundary`: the start of the last human turn when the last message starts one; inside a
+  turn, the later of that and the assistant message that begins the second-newest complete tool
+  round (`MID_TURN_TAIL_ROUNDS` = 2), so the newest two rounds' outputs stay verbatim after a
+  swap (the file-print loss above is the cost of losing them). Inside a turn a new summary starts
+  only `MID_TURN_MIN_ADVANCE` (8) messages past the thread's newest summary, so a long turn does
+  not start one per request. Messages `[0, b)` are rendered as plain text (tool_results in the form this
   request sends, cut to 2,000 characters; no thinking; the whole input capped at 400,000
   characters by dropping the oldest messages after the first). A summary rolls forward from the
   newest ready summary below `b`. `max_tokens` 8192, claudish's own system prompt. One summary in
   flight per (session, thread); the thread is the hash of the first message.
-- **Apply** at `applyAt`, when a summary is ready and the last message starts a human turn:
+- **Apply** at `applyAt` (default 0.75), when a summary is ready and the request is at a swap
+  point (rule 6). In agent work the window fills inside one long turn, so a swap that waited for a
+  human turn start lost to Claude Code's own compaction every time. The default sits below the
+  point near 0.8 of the window where Claude Code compacts (159K to 170K of 200K measured), leaving
+  about 10K tokens, a few tool rounds, for the swap to land first. A swap inside a turn logs
+  `[compaction] history swap in session <id> mid-turn, after a complete tool round: messages 0..<b> ...`.
+  Stripping thinking inside a tool loop is a request shape the API accepts (the model continues
+  the turn without the stripped reasoning; the claude-api skill's "strip every thinking block"
+  path).
   `[user "[claudish: summary of the earlier conversation]\n<summary>"]` + messages `[b, end)`
   without thinking + messages after `end` unchanged. Recorded as a `history-swap` with
   `(prefixHash over [0,b), tailHash over [b,end), one hash per message of [b,end), b, end)`.

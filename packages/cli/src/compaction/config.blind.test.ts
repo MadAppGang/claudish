@@ -82,7 +82,7 @@ if (process.env.COMPACTION_BLIND_FILE !== import.meta.path) {
       enabled: false,
       model: "haiku",
       toolOutputs: { enabled: true, minTokens: 4000, timeoutMs: 20000, maxRatio: 0.6 },
-      history: { enabled: true, precomputeAt: 0.6, applyAt: 0.8 },
+      history: { enabled: true, precomputeAt: 0.6, applyAt: 0.75 },
     });
     expect(resolveCompactionEnabled({})).toBe(false);
   });

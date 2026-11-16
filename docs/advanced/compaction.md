@@ -9,8 +9,8 @@ Compaction is off by default. When you turn it on, claudish does two things insi
    request of the session. The full output stays on disk, and the compressed text ends with a line
    that names the file.
 2. **History.** When the conversation grows past a share of the model's context, claudish prepares
-   a summary of the earlier turns in the background. At the next new user turn, it sends the
-   summary in place of those turns.
+   a summary of the earlier turns in the background. At the next new user turn, or after the next
+   complete tool round, it sends the summary in place of those turns.
 
 Compaction runs on every route: native Claude (`claude@`, `anthropic@` and a bare Claude name) and
 foreign models alike. It needs no hook, and it works in monitor sessions, where hooks do not run.
@@ -54,7 +54,7 @@ defaults:
   "history": {
     "enabled": true,
     "precomputeAt": 0.6,    // start a summary at 60% of the limit
-    "applyAt": 0.8          // send it at 80%, at the next new user turn
+    "applyAt": 0.75         // send it at 75%, at the next user turn or complete tool round
   }
 }
 ```
@@ -180,14 +180,25 @@ The **limit** of a request is the lower of two numbers:
 - the `CLAUDE_CODE_AUTO_COMPACT_WINDOW` Claude Code was started with, when there is one.
 
 When the catalog lists no window for the model, history compaction is off for that request.
-Requests are measured with claudish's local estimate (the request's JSON length / 4), the same
-number claudish answers `count_tokens` with when it cannot ask upstream.
+
+A request is measured with the **real token count**: the input tokens the model's provider
+reported for the previous request of the same conversation (uncached, cache read and cache write
+together), plus an estimate for the messages added since. The estimate uses the characters per
+token that same report showed. Before the first report of a session, claudish uses the request's
+JSON length / 4. The debug log shows the count it used:
+
+```
+[compaction] session <id>: history count 161234 of 200000 tokens (usage 158000 + ~3234 appended since)
+```
 
 - **At `precomputeAt`** (60%), claudish starts a summary in the background. The request does not
-  wait for it. The summary covers every message before the latest new user turn. Tool outputs in it
-  are cut short, and reasoning blocks are left out. A later summary starts from the previous one.
-- **At `applyAt`** (80%), when a summary is ready and the request starts a new user turn (never in
-  the middle of a tool round), claudish sends one user message,
+  wait for it. The summary covers every message before the latest new user turn. Inside a long
+  turn of tool calls, it covers everything except the newest two tool rounds, which stay word for
+  word. Tool outputs in it are cut short, and reasoning blocks are left out. A later summary starts
+  from the previous one.
+- **At `applyAt`** (75%), when a summary is ready, claudish sends it at the next new user turn or
+  at the next request whose tool results answer every tool call before them. It never sends it
+  between a tool call and its result. claudish sends one user message,
 
   ```
   [claudish: summary of the earlier conversation]
@@ -201,8 +212,9 @@ number claudish answers `count_tokens` with when it cannot ask upstream.
 - A summary that fails is not retried for the same point. Nothing waits for it.
 
 **Claude Code's auto-compact stays on.** It is the safety net for the case where no summary is ready
-in time. Once claudish sends a summary, Claude Code sees a smaller input in its usage numbers and
-does not compact.
+in time. Claude Code compacts near 80% of its window, so `applyAt` defaults to 75%: a ready summary
+is sent first. Once claudish sends a summary, Claude Code sees a smaller input in its usage numbers
+and does not compact.
 
 On a native Claude route launched with no `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, the limit is the
 catalog's window for the model, which can be larger than the window Claude Code compacts at. Claude

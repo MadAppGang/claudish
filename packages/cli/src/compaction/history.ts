@@ -1,6 +1,7 @@
 /**
  * History compaction: a summary of the earlier conversation, prepared in the
- * background and swapped in at a human-turn boundary.
+ * background and swapped in at a human-turn start or after a complete tool
+ * round.
  *
  * - **Limit.** The effective limit of a request is the lower of the request
  *   model's catalog context window and the `CLAUDE_CODE_AUTO_COMPACT_WINDOW`
@@ -10,14 +11,21 @@
  *   the upstream usage of the thread's previous request plus an estimate of
  *   what was appended since, calibrated by that same measurement.
  * - **Prepare** (at `precomputeAt`, never awaited by the request). The boundary
- *   `b` is the start of the last human turn. Messages `[0, b)` are rendered as
+ *   `b` is chosen by `summaryBoundary`: the start of the last human turn, or,
+ *   inside a turn, the assistant message that keeps the newest
+ *   `MID_TURN_TAIL_ROUNDS` complete tool rounds out of the summary. Messages
+ *   `[0, b)` are rendered as
  *   plain text (tool_results in the form this request sends, truncated; no
  *   thinking) and summarised by the compaction model. The summary is keyed by
  *   the hash of messages `[0, b)`. A later summary rolls forward: its input is
  *   the previous summary plus the messages after that summary's boundary. One
- *   summary is in flight per conversation thread.
+ *   summary is in flight per conversation thread, and inside a turn a new one
+ *   starts only `MID_TURN_MIN_ADVANCE` messages past the newest one.
  * - **Swap** (at `applyAt`, only when a summary is ready AND the last message
- *   starts a human turn, never inside a tool round). The request becomes one
+ *   starts a human turn or answers every tool_use of the assistant message
+ *   before it; never between a tool_use and its result). Message `b` never
+ *   holds a tool_result, so every kept tool_result keeps its tool_use. The
+ *   request becomes one
  *   user message holding the summary, followed by messages `[b, end)` with
  *   `thinking` / `redacted_thinking` blocks removed, followed by any newer
  *   messages unchanged. The swap is recorded and replayed on every later
@@ -244,6 +252,87 @@ export function lastHumanTurnStart(messages: readonly unknown[]): number {
     if (isHumanTurnStart(messages[i])) return i;
   }
   return -1;
+}
+
+/**
+ * A summary made inside a turn leaves this many complete tool rounds out of
+ * it, so the model keeps its newest tool outputs verbatim after a swap.
+ */
+export const MID_TURN_TAIL_ROUNDS = 2;
+
+/**
+ * Inside a turn, a new summary starts only when its boundary is at least this
+ * many messages past the newest summary of the thread, so a long turn does not
+ * start one summary per request.
+ */
+export const MID_TURN_MIN_ADVANCE = 8;
+
+function blocksOf(message: unknown): Block[] {
+  const content = (message as Block | null)?.content;
+  return Array.isArray(content) ? (content as Block[]) : [];
+}
+
+function holdsToolResult(message: unknown): boolean {
+  return blocksOf(message).some((b) => b?.type === "tool_result");
+}
+
+/**
+ * True when message `i` is a user message of tool_results that answers every
+ * tool_use of the assistant message right before it.
+ */
+export function isCompleteToolRound(messages: readonly unknown[], i: number): boolean {
+  const results = messages[i] as Block | undefined;
+  const asking = messages[i - 1] as Block | undefined;
+  if (results?.role !== "user" || asking?.role !== "assistant") return false;
+  const answered = new Set(
+    blocksOf(results)
+      .filter((b) => b?.type === "tool_result")
+      .map((b) => b.tool_use_id)
+  );
+  if (answered.size === 0) return false;
+  const asked = blocksOf(asking).filter((b) => b?.type === "tool_use");
+  return asked.length > 0 && asked.every((b) => answered.has(b.id));
+}
+
+/**
+ * True when a swap may be sent on a request whose last message is
+ * `messages[last]`: it starts a human turn, or it answers every tool_use of
+ * the assistant message before it.
+ */
+export function isSwapPoint(messages: readonly unknown[]): boolean {
+  const last = messages.length - 1;
+  if (last < 1) return false;
+  return isHumanTurnStart(messages[last]) || isCompleteToolRound(messages, last);
+}
+
+/**
+ * True when messages `[0, b)` can be replaced by a summary: message `b` holds
+ * no tool_result, so no kept tool_result loses its tool_use.
+ */
+export function isSafeBoundary(messages: readonly unknown[], b: number): boolean {
+  return b >= 1 && b < messages.length && !holdsToolResult(messages[b]);
+}
+
+/**
+ * The boundary a new summary of `messages` covers up to.
+ *
+ * - The last message starts a human turn: the start of that turn.
+ * - Otherwise (inside a turn): the later of the last human turn start and the
+ *   assistant message that begins the `MID_TURN_TAIL_ROUNDS`-th newest
+ *   complete tool round, so those rounds stay out of the summary.
+ */
+export function summaryBoundary(messages: readonly unknown[]): number {
+  const human = lastHumanTurnStart(messages);
+  const last = messages.length - 1;
+  if (last >= 0 && isHumanTurnStart(messages[last])) return human;
+  let found = 0;
+  for (let b = last; b > human && b >= 2; b--) {
+    if ((messages[b] as Block | undefined)?.role !== "assistant") continue;
+    if (!isCompleteToolRound(messages, b - 1)) continue;
+    found += 1;
+    if (found === MID_TURN_TAIL_ROUNDS) return b;
+  }
+  return human;
 }
 
 /**
@@ -493,7 +582,7 @@ export class HistoryCompactor {
     const { precomputeAt, applyAt } = this.deps.settings;
     if (count.tokens >= precomputeAt * limit) logCount(sessionId, count, limit);
 
-    if (count.tokens >= applyAt * limit && isHumanSwapPoint(original)) {
+    if (count.tokens >= applyAt * limit && isSwapPoint(original)) {
       const swap = this.recordSwap(sessionId, thread, original, hashes, active?.boundary ?? 0);
       if (swap) {
         body.messages = applySwap(original, swap);
@@ -501,7 +590,7 @@ export class HistoryCompactor {
         result.boundary = swap.boundary;
         chars = charsOf(payload);
         count = counter.count(sessionId, thread, payload, chars);
-        logSwap(sessionId, swap);
+        logSwap(sessionId, swap, original);
       }
     }
     result.estimate = count.tokens;
@@ -655,10 +744,24 @@ export class HistoryCompactor {
       if (record.boundary <= above || record.boundary > atMost) continue;
       if (record.boundary > original.length) continue;
       if (best && record.boundary <= best.boundary) continue;
+      if (!isSafeBoundary(original, record.boundary)) continue;
       if (hashes.prefix(record.boundary) !== record.prefixHash) continue;
       best = record;
     }
     return best;
+  }
+
+  /**
+   * The largest boundary, at most `atMost`, of any summary of `thread`
+   * recorded so far, ready or failed; 0 when there is none.
+   */
+  private newestSummaryBoundary(sessionId: string, thread: string, atMost: number): number {
+    let newest = 0;
+    for (const [, record] of this.deps.store.list(sessionId)) {
+      if (record.kind !== "history-summary" || record.thread !== thread) continue;
+      if (record.boundary <= atMost && record.boundary > newest) newest = record.boundary;
+    }
+    return newest;
   }
 
   /** Start one background summary when the request has a new boundary. */
@@ -670,10 +773,14 @@ export class HistoryCompactor {
     currentBoundary: number
   ): boolean {
     if (this.deps.client.disabled || this.deps.client.closed) return false;
-    const boundary = lastHumanTurnStart(original);
+    const boundary = summaryBoundary(original);
     if (boundary < 1 || boundary <= currentBoundary) return false;
     const flightKey = `${sessionId}\n${thread}`;
     if (this.inFlight.has(flightKey)) return false;
+    if (!isHumanTurnStart(original[boundary])) {
+      const newest = this.newestSummaryBoundary(sessionId, thread, boundary);
+      if (boundary - newest < MID_TURN_MIN_ADVANCE) return false;
+    }
     const prefixHash = hashes.prefix(boundary);
     const key = historyRecordKey("history-summary", sessionId, prefixHash);
     if (this.deps.store.get(sessionId, key)) return false;
@@ -773,10 +880,11 @@ export class HistoryCompactor {
   }
 }
 
-/** Log a new swap. */
-function logSwap(sessionId: string, swap: HistorySwapRecord): void {
+/** Log a new swap, and whether it was sent inside a turn. */
+function logSwap(sessionId: string, swap: HistorySwapRecord, original: readonly unknown[]): void {
+  const midTurn = !isHumanTurnStart(original[original.length - 1]);
   log(
-    `[compaction] history swap in session ${sessionId}: messages 0..${swap.boundary} replaced by a summary of ${swap.summary.length} characters`
+    `[compaction] history swap in session ${sessionId}${midTurn ? " mid-turn, after a complete tool round" : ""}: messages 0..${swap.boundary} replaced by a summary of ${swap.summary.length} characters`
   );
 }
 
@@ -813,11 +921,6 @@ function logTailChange(
   log(
     `[compaction] session ${sessionId}: history replayed at ${swap.boundary}, tail changed: recorded [${recorded}] current [${current}]`
   );
-}
-
-function isHumanSwapPoint(messages: readonly unknown[]): boolean {
-  const last = messages.length - 1;
-  return last > 0 && isHumanTurnStart(messages[last]);
 }
 
 function messagesOf(payload: unknown): unknown[] | undefined {

@@ -7,7 +7,7 @@
  *   "model": "haiku",      // a tier alias or an exact claude-* id
  *   "toolOutputs": { "enabled": true, "minTokens": 4000, "timeoutMs": 20000, "maxRatio": 0.6,
  *                    "skipTools": ["Read"] },
- *   "history": { "enabled": true, "precomputeAt": 0.6, "applyAt": 0.8 }
+ *   "history": { "enabled": true, "precomputeAt": 0.6, "applyAt": 0.75 }
  * }
  * ```
  *
@@ -46,7 +46,11 @@ export interface HistorySettings {
   enabled: boolean;
   /** Fraction of the effective limit at which a summary is prepared. */
   precomputeAt: number;
-  /** Fraction of the effective limit at which a ready summary is applied. */
+  /**
+   * Fraction of the effective limit at which a ready summary is applied. The
+   * default, 0.75, sits below the point near 0.8 where Claude Code compacts on
+   * its own, so a ready summary is sent before Claude Code compacts.
+   */
   applyAt: number;
 }
 
@@ -74,7 +78,7 @@ export const DEFAULT_COMPACTION_SETTINGS: Readonly<CompactionSettings> = Object.
   history: Object.freeze({
     enabled: true,
     precomputeAt: 0.6,
-    applyAt: 0.8,
+    applyAt: 0.75,
   }),
 });
 
