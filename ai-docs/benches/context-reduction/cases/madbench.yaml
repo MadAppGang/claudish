@@ -42,8 +42,14 @@ harness:
 defaults:
   sandbox:
     level: home
-    # Foreground subagents, as in ../madbench.yaml.
-    env: { CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1" }
+    # Foreground subagents, as in ../madbench.yaml. Bash calls get 10 minutes
+    # by default: Claude Code's own default is 2 minutes, which kills the
+    # adapters and handlers tests (95 s on an idle host) under load, so their
+    # full output never reaches the model.
+    env:
+      CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1"
+      BASH_DEFAULT_TIMEOUT_MS: "600000"
+      BASH_MAX_TIMEOUT_MS: "600000"
     share:
       paths:
         - { from: ~/.bun, to: ~/.bun, access: rw }
