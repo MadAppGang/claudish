@@ -22,12 +22,12 @@
  * - Project ID + tier via setupAntigravityUser()
  * - Endpoint: `antigravityHost()`/v1internal:streamGenerateContent?alt=sse —
  *   Antigravity's host, NOT Code Assist's `cloudcode-pa` (see antigravity-user.ts)
- * - Wraps payload in the CodeAssist envelope: {model, project, user_prompt_id, request}
+ * - Wraps payload in the CodeAssist envelope the Antigravity CLI sends
+ *   (antigravity-envelope.ts), sent by antigravity-fetch.ts
  * - GeminiRequestQueue for rate limiting
  * - gemini-sse stream format (with response wrapper)
  */
 
-import { randomUUID } from "node:crypto";
 import { type EffortLevel, isEffortLevel } from "../../adapters/base-api-format.js";
 import {
   forceRefreshAntigravityToken,
@@ -52,6 +52,11 @@ import {
 import { GeminiRequestQueue } from "../../handlers/shared/gemini-queue.js";
 import { log, logStderr } from "../../logger.js";
 import {
+  type AntigravityEnvelopeModelMeta,
+  antigravityConversations,
+  buildAntigravityEnvelope,
+} from "../antigravity-envelope.js";
+import {
   type AntigravityServedSet,
   antigravityBodyForModelId,
   chooseAntigravityServedModel,
@@ -59,6 +64,8 @@ import {
 } from "../antigravity-model-id.js";
 import { type ModelIdChoice, logModelIdChoice } from "../model-id-effort-choice.js";
 import { wireChoicesFromClaudeRequest } from "../wire-request.js";
+import { antigravityFetch } from "./antigravity-fetch.js";
+import { conversationKey } from "./conversation-key.js";
 import type { DiscoveryOutcome } from "./probe-discovery.js";
 import { discoverProviderProbeModel } from "./provider-model-discovery.js";
 import type { ProviderTransport, StreamFormat } from "./types.js";
@@ -121,11 +128,6 @@ function effortOf(claudeRequest: unknown, pinned?: EffortLevel): EffortLevel | u
   const choices = wireChoicesFromClaudeRequest(claudeRequest);
   if (choices.reasoningOff) return "none";
   return isEffortLevel(choices.effort) ? choices.effort : undefined;
-}
-
-/** Generate a short random request ID (matches the Antigravity CLI activity logger) */
-function createActivityRequestId(): string {
-  return Math.random().toString(36).substring(7);
 }
 
 /** Classification of 429 responses from the Code Assist API */
@@ -250,6 +252,8 @@ interface AntigravityRequestState {
   sentId: string;
   /** What decided that id; names the level and source on each retry's line. */
   choice: ModelIdChoice | undefined;
+  /** The harness session the request belongs to, for the envelope's conversation ids. */
+  conversationScope: string;
   /** The capacity-retry id that served this request, when one did. */
   activeModelName?: string;
 }
@@ -262,19 +266,23 @@ export class AntigravityProviderTransport implements ProviderTransport {
   }
   readonly streamFormat: StreamFormat = "gemini-sse";
 
+  /** Requests go out with the Antigravity CLI's request head, which `fetch` cannot write. */
+  fetch(url: string, init: RequestInit): Promise<Response> {
+    return antigravityFetch(url, init);
+  }
+
   /** The user-supplied model id (for messages + the credential ctx). */
   private modelName: string;
   /** The served id actually sent to the backend (mapped from modelName). */
   private servedModelName: string;
   private accessToken: string | null = null;
   private projectId: string | null = null;
-  private tierId: string | null = null;
 
   /**
    * The delegated per-request auth artifact (headers + CodeAssist-envelope
    * transform) from the credential authority, populated by refreshAuth(). The
    * PRIMARY request's headers + envelope come from here. The local
-   * accessToken/projectId/tierId below are kept in lockstep purely for the 429
+   * accessToken/projectId below are kept in lockstep purely for the 429
    * fallback chain and quota logic (request-routing concerns, not auth).
    */
   private cachedAuth: RequestAuth | null = null;
@@ -302,6 +310,8 @@ export class AntigravityProviderTransport implements ProviderTransport {
    * chain, and the model-not-found hint.
    */
   private servedModels: string[] = [];
+  /** What the backend reports per served id; the envelope reads the output cap and the model's own name. */
+  private modelMeta: Record<string, AntigravityEnvelopeModelMeta> = {};
   /**
    * The account's dynamic models catalog with the backend default and the ids it
    * declares unselectable, for per-request resolution.
@@ -365,22 +375,20 @@ export class AntigravityProviderTransport implements ProviderTransport {
 
   /**
    * Build the Antigravity headers from local OAuth state. Used by the 429
-   * fallback chain (handleCapacityExhausted), which needs a fresh
-   * x-activity-request-id per attempt. The PRIMARY request uses the delegated
-   * artifact's headers instead (see getHeaders()).
+   * fallback chain (handleCapacityExhausted). The PRIMARY request uses the
+   * delegated artifact's headers instead (see getHeaders()).
    */
   private buildLocalHeaders(): Record<string, string> {
     return {
       Authorization: `Bearer ${this.accessToken}`,
       "User-Agent": buildAntigravityUserAgent(),
-      "x-activity-request-id": createActivityRequestId(),
     };
   }
 
   /**
    * Refresh auth before each request. The transport delegates the request
    * artifact (headers + CodeAssist envelope) to the credential authority. It
-   * still mirrors accessToken/projectId/tierId locally (cache-hit reads) so the
+   * still mirrors accessToken/projectId locally (cache-hit reads) so the
    * 429 fallback chain and quota logic keep working.
    */
   async refreshAuth(): Promise<void> {
@@ -389,15 +397,15 @@ export class AntigravityProviderTransport implements ProviderTransport {
     });
     // Mirror local state for the fallback chain + quota (cache-hit reads).
     this.accessToken = await getValidAntigravityAccessToken();
-    const { projectId, tierId } = await setupAntigravityUser(this.accessToken);
+    const { projectId } = await setupAntigravityUser(this.accessToken);
     this.projectId = projectId;
-    this.tierId = tierId;
     this._displayName = getAntigravityTierDisplayName();
     // Discover the live served-model set (cache-hit after the first request) so
     // model-id resolution + the capacity fallback + the model-not-found hint all
     // reflect what THIS subscription actually serves today.
     const served = await getServedAntigravityModels(this.accessToken, this.projectId);
     this.served = served;
+    this.modelMeta = served.meta ?? {};
     this.servedModels = served.servedIds;
     // Resolve the requested id to a served id against the live set, with the
     // function the credential provider (which builds the primary envelope) and
@@ -497,11 +505,13 @@ export class AntigravityProviderTransport implements ProviderTransport {
    */
   transformPayload(payload: any, claudeRequest?: any): any {
     let choice: ModelIdChoice | undefined;
+    const conversationScope = conversationKey(claudeRequest);
     const request = {
       effort: effortOf(claudeRequest, this.pinnedEffort),
       onModelChoice: (decided: ModelIdChoice) => {
         choice = decided;
       },
+      conversationScope,
     };
     // PRIMARY request: the CodeAssist envelope comes from the delegated auth
     // artifact (which maps the model id). Fall back to the local builder if
@@ -512,7 +522,12 @@ export class AntigravityProviderTransport implements ProviderTransport {
     if (typeof envelope?.model === "string" && envelope.model) {
       this.servedModelName = envelope.model;
     }
-    const state: AntigravityRequestState = { payload, sentId: this.servedModelName, choice };
+    const state: AntigravityRequestState = {
+      payload,
+      sentId: this.servedModelName,
+      choice,
+      conversationScope,
+    };
     if (envelope && typeof envelope === "object") this.requests.set(envelope, state);
     this.lastRequest = envelope ? state : undefined;
     if (choice) logModelIdChoice("Antigravity", this.modelName, choice);
@@ -525,28 +540,33 @@ export class AntigravityProviderTransport implements ProviderTransport {
    */
   private buildLocalEnvelope(
     payload: unknown,
-    request: { effort?: EffortLevel; onModelChoice?: (choice: ModelIdChoice) => void }
+    request: {
+      effort?: EffortLevel;
+      onModelChoice?: (choice: ModelIdChoice) => void;
+      conversationScope?: string;
+    }
   ) {
     const choice = chooseAntigravityServedModel(this.modelName, this.served, request.effort);
     request.onModelChoice?.(choice);
-    return this.buildEnvelope(antigravityBodyForModelId(payload, choice.id), choice.id);
+    return this.buildEnvelope(
+      antigravityBodyForModelId(payload, choice.id, this.modelMeta[choice.id]?.thinkingLevel),
+      choice.id,
+      request.conversationScope
+    );
   }
 
   /**
    * Build the CodeAssist envelope for a given (already-served) model name.
    */
-  private buildEnvelope(innerPayload: any, model: string): any {
-    const envelope: any = {
+  private buildEnvelope(innerPayload: any, model: string, conversationScope?: string): any {
+    return buildAntigravityEnvelope({
+      inner: innerPayload,
       model,
-      project: this.projectId,
-      user_prompt_id: randomUUID(),
-      request: innerPayload,
-    };
-    // Paid tiers: enable Google One AI credits for capacity routing.
-    if (this.tierId && this.tierId !== "free-tier") {
-      envelope.enabled_credit_types = ["GOOGLE_ONE_AI"];
-    }
-    return envelope;
+      projectId: this.projectId,
+      meta: this.modelMeta[model],
+      conversation: antigravityConversations.of(innerPayload, conversationScope),
+      sessionId: antigravityConversations.sessionId,
+    });
   }
 
   /**
@@ -704,8 +724,13 @@ export class AntigravityProviderTransport implements ProviderTransport {
       tried.push(fallbackModel);
 
       const fallbackEnvelope = this.buildEnvelope(
-        antigravityBodyForModelId(originalPayload, fallbackModel),
-        fallbackModel
+        antigravityBodyForModelId(
+          originalPayload,
+          fallbackModel,
+          this.modelMeta[fallbackModel]?.thinkingLevel
+        ),
+        fallbackModel,
+        request.conversationScope
       );
       const headers = this.buildLocalHeaders();
       headers["Content-Type"] = "application/json";
@@ -768,10 +793,12 @@ export class AntigravityProviderTransport implements ProviderTransport {
     signal?: AbortSignal
   ): Promise<Response> {
     const init: RequestInit = { method: "POST", headers, body: JSON.stringify(envelope) };
-    if (!signal) return queue.enqueue(() => fetch(endpoint, init));
+    if (!signal) return queue.enqueue(() => antigravityFetch(endpoint, init));
     return queue.enqueue(
       () =>
-        signal.aborted ? Promise.reject(callAbortError()) : fetch(endpoint, { ...init, signal }),
+        signal.aborted
+          ? Promise.reject(callAbortError())
+          : antigravityFetch(endpoint, { ...init, signal }),
       { signal }
     );
   }

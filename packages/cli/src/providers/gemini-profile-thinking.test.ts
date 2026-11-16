@@ -50,6 +50,38 @@ describe("only the Antigravity profile keeps the model-name thinking rule", () =
     expect(cfg.thinkingBudget).toBe(8000);
   });
 
+  test("only the Antigravity profile sends a tool result with the server's call id", async () => {
+    const request = {
+      messages: [
+        { role: "user", content: "go" },
+        {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "toolu_A", name: "read_file", input: {} }],
+        },
+        {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: "toolu_A", content: "RESULT" }],
+        },
+      ],
+    };
+    const resultPart = async (profile: ProviderProfile, provider: string) => {
+      const handler = await profile.createHandler(context(provider, "gemini-4-carbon"));
+      try {
+        const adapter = (handler as any).explicitAdapter as GeminiAPIFormat;
+        adapter.registerToolCall("toolu_A", "read_file", "SIGNATURE", "call_111");
+        return adapter.convertMessages(request)[2].parts[0];
+      } finally {
+        await handler?.shutdown();
+      }
+    };
+    expect(await resultPart(antigravityProfile, "antigravity")).toEqual({
+      functionResponse: { id: "call_111", name: "read_file", response: { output: "RESULT" } },
+    });
+    expect(await resultPart(geminiProfile, "google")).toEqual({
+      functionResponse: { name: "read_file", response: { content: "RESULT" } },
+    });
+  });
+
   test("google@gemini-4-carbon at effort high sends no thinkingConfig", async () => {
     const cfg = await thinkingConfigFrom(geminiProfile, "google", "gemini-4-carbon", {
       max_tokens: 32000,
