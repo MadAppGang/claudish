@@ -2,6 +2,55 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.27.2] - 2026-11-16
+
+### Bug Fixes
+
+- keep capturedArgv from reading a half-written argv file *(test)* ([`99d349e`](https://github.com/MadAppGang/claudish/commit/99d349e6b8525904170462d9bc3ae6f9d460f895))
+- mark a metered hop's 403 key rejection with the terminal verdict *(routing)* ([`bd758ba`](https://github.com/MadAppGang/claudish/commit/bd758ba2b79232e684184338b51c851e68a1943c))
+- print a repeated upstream error line once per 30 s on stderr *(errors)* ([`ab8f43a`](https://github.com/MadAppGang/claudish/commit/ab8f43a13e5472956085a07974fa1b557dec51bf))
+- name both hops' billing in the spent-allowance notice *(routing)* ([`77b4a1d`](https://github.com/MadAppGang/claudish/commit/77b4a1d287e9bc62c2dd7d67cddb2984502a4c16))
+- advance the routing chain past a rejected key on a metered hop *(routing)* ([`a85a830`](https://github.com/MadAppGang/claudish/commit/a85a830925348dd8cd60cd796d648abc9582e19d))
+- never pick an opt-in model id for the sonnet vision alias *(vision)* ([`9f33542`](https://github.com/MadAppGang/claudish/commit/9f33542f966f399d46ce7481ecd4e4c010b8549b))
+- never resolve a Claude tier alias to an opt-in model id *(advisor)* ([`ead4241`](https://github.com/MadAppGang/claudish/commit/ead42411e60787fd2fa14ce1407af9d5a7ad2c39))
+- never pick an opt-in Ollama model for the observer *(hooks)* ([`e9ff20c`](https://github.com/MadAppGang/claudish/commit/e9ff20c9d3a7fc2a874b626e40f56d3a57252a91))
+- never take an opt-in slug as the Codex probe model *(quota)* ([`7fb8fe5`](https://github.com/MadAppGang/claudish/commit/7fb8fe5ae7904dea74898a3426d106166ec5fbf1))
+- never take an opt-in id as the probe pick *(vertex)* ([`cb5d704`](https://github.com/MadAppGang/claudish/commit/cb5d7046907fbe265efa77a0f0a60497ab597c64))
+- make no account-listed candidate for an opt-in name *(routing)* ([`ebf3d44`](https://github.com/MadAppGang/claudish/commit/ebf3d441f6836e85b392401511bdf00db2d025d2))
+- never take an opt-in uid as the probe pick *(devin)* ([`c7d2afe`](https://github.com/MadAppGang/claudish/commit/c7d2afed64d95ec4307e68db2d5e87fee8f31780))
+- keep opt-in uids out of DevinModelResolver's own choices *(devin)* ([`c99a6a6`](https://github.com/MadAppGang/claudish/commit/c99a6a6256c1387c997c68ecd8d0a18e7dd89c1f))
+- send a typed opt-in id as typed when only a sibling is served *(antigravity)* ([`da7871c`](https://github.com/MadAppGang/claudish/commit/da7871c268b041e6aeec34152ebeb19788ec48c1))
+- keep an explicit opt-in uid at any requested effort *(devin)* ([`21f6ccf`](https://github.com/MadAppGang/claudish/commit/21f6ccf065e12676f3d1e1a50321f97e7e999f1e))
+- resolve an opt-in wire id only through the requested provider *(routing)* ([`a0cd8b9`](https://github.com/MadAppGang/claudish/commit/a0cd8b9d1f8e68bde2521416af16f7e3efb20f9a))
+- never choose an opt-in id as a default or capacity retry *(antigravity)* ([`4caf3d4`](https://github.com/MadAppGang/claudish/commit/4caf3d4fe709ff6cf67134341b0bbbe9b39fe79c))
+- exclude an opt-in name a provider-only rule cannot map *(routing)* ([`acf8989`](https://github.com/MadAppGang/claudish/commit/acf89899875086367bf0ca23f7dd59037d105ef8))
+- resolve an opt-in effort-map id to its connection's base id *(routing)* ([`85b25fd`](https://github.com/MadAppGang/claudish/commit/85b25fd2ca234f205315e07e0bfb4d6fd96f5e9c))
+- never choose an opt-in effort-map id for a base request *(effort)* ([`6306a59`](https://github.com/MadAppGang/claudish/commit/6306a59532c1a3c997ffba7287f7f9e638cb21d7))
+- never choose a content-use opt-in id on an implicit route *(routing)* ([`c9d6305`](https://github.com/MadAppGang/claudish/commit/c9d6305d63b05584b0ca172387e261974a845199))
+- make no vendor claim for a content-use opt-in name *(routing)* ([`a791442`](https://github.com/MadAppGang/claudish/commit/a7914425e99e8023aa75bdef3dd8d10b1c0ebb84))
+- match no effort-map id when two spellings fold equal *(effort)* ([`dbb3c1e`](https://github.com/MadAppGang/claudish/commit/dbb3c1e359e9542bd629d3dde6abe742cd71a2fd))
+- keep an exact effort-map id on a provider-only rule *(routing)* ([`d393955`](https://github.com/MadAppGang/claudish/commit/d393955869b0a8504ad2307d3e19f1dbd623a42e))
+- gather an exact effort-map id for a bare name as typed *(routing)* ([`8012692`](https://github.com/MadAppGang/claudish/commit/80126920e07795ed48e730284759ce15fc0b5a56))
+- log a quiet model resolution to the debug log *(catalog)* ([`ad39c28`](https://github.com/MadAppGang/claudish/commit/ad39c287409ad483275e297013be1438bac0b0a0))
+- write the model resolution line to the debug log *(catalog)* ([`0c47375`](https://github.com/MadAppGang/claudish/commit/0c47375c7d78495a5778d7d5476fb912069a610a))
+- send an exact effort-map wire id as typed, not its base *(catalog)* ([`e3a81da`](https://github.com/MadAppGang/claudish/commit/e3a81daf4f7b2dc6a261fdbfa215614df212fcb5))
+
+### Documentation
+
+- add rule RB-32 for rejected keys and spent allowances *(routing)* ([`bc738b7`](https://github.com/MadAppGang/claudish/commit/bc738b72cc7de3d22dadce3c5a5c5307b9e3a0c1))
+- update CHANGELOG.md for v14.27.1([`26ea215`](https://github.com/MadAppGang/claudish/commit/26ea215a9c926e90cba63a5759c387268aeebf88))
+- add exact effort-map ids and the opt-in exclusion to RB-4 and RB-5 *(routing)* ([`1af3483`](https://github.com/MadAppGang/claudish/commit/1af3483d00db30e1ca031d6d51edf3fef559d14a))
+- describe where step 2b leaves the effort-specific wire id *(proxy)* ([`3194e12`](https://github.com/MadAppGang/claudish/commit/3194e12d203c4a6eaef71b4d43942fad1afbb00c))
+- describe where the effort-specific wire id is chosen *(routing)* ([`c05470b`](https://github.com/MadAppGang/claudish/commit/c05470bae09d64fb0393777d9ae0e1fbd592ec59))
+
+### Other Changes
+
+- sort imports in composed-handler.ts and repeat-window.test.ts *(lint)* ([`59b444a`](https://github.com/MadAppGang/claudish/commit/59b444aef5c969d5dc40d3f85d818c37124cd93b))
+
+### Refactoring
+
+- remove the unused latestOpusModelId export *(catalog)* ([`fcfffc6`](https://github.com/MadAppGang/claudish/commit/fcfffc6b2ca73b134594e267d18a017ead99fe92))
+
 ## [14.27.1] - 2026-11-16
 
 ### Bug Fixes
