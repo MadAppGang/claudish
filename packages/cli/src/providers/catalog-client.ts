@@ -108,10 +108,6 @@ export function catalogOrigin(): "disk" | "bundled" | "none" {
   return getCatalogSnapshot()?.origin ?? "none";
 }
 
-export function latestOpusModelId(): string | null {
-  return latestAnthropicTierModelId("opus");
-}
-
 /** The newest `claude-<tier>-*` id whose model id `accept` takes (every id, by default). */
 export function latestAnthropicTierModelId(
   tier: "opus" | "sonnet" | "haiku",
