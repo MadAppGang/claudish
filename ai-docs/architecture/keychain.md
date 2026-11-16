@@ -83,7 +83,11 @@ through into `process.env` so spawned children inherit it, and for a key that Cl
 reads that is the bug: `ANTHROPIC_API_KEY` in `process.env` reaches every child Claude Code claudish
 starts and moves a session on the user's Claude login onto metered billing. A read-at-use
 provider's key never leaves the process. `anthropic`, the Claude API, is the provider that
-declares it.
+declares it. `native-anthropic`, the native pass-through's fallback for a request that arrives
+with no credential header, is that same provider instance registered under a second name
+(`buildDefault`, `authority.ts`), so its key is read at use as well, a replacement saved in the
+Providers tab signs it too, and `ANTHROPIC_AUTH_TOKEN`, Claude Code's login bearer, is never sent
+as `x-api-key` and never makes it ready.
 
 The resolving step is recorded as the key's origin (`describeOrigin`: the source and a masked
 value, never the key), so `--probe` provenance names `macOS Keychain` or `1Password` for a key no
@@ -94,8 +98,8 @@ Where the value is read for `anthropic`: the Claude API launch (`anthropic@<id>`
 calls `resolveForUse("anthropic", {allowOpPrompt})` once before spawn, with a 1Password prompt
 allowed only on an interactive launch, and hands the key to the proxy's signer, never to an
 environment; `--probe` reads it when it sends the Claude API row (`probeSendRefusal`, which turns
-a read that throws into a dropped row); a proxied `anthropic@` hop reads it through
-`getRequestAuth`. The picker's Claude API row, `--probe --no-probe` and MCP `preflight` read only
+a read that throws into a dropped row); a proxied `anthropic@` hop, and a native pass-through
+request with no credential header (`native-anthropic`), read it through `getRequestAuth`. The picker's Claude API row, `--probe --no-probe` and MCP `preflight` read only
 presence, and the picker's hint row names the stores searched (`looked in: env, config, Keychain,
 1Password`, `keySourcesSearched`).
 

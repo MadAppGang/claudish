@@ -24,7 +24,6 @@ import { keySourcesSearched } from "./key-sources.js";
 import { makeKimiCodingCredential, makeKimiCredential } from "./kimi-credential.js";
 import { LocalCredentialProvider } from "./local-credential.js";
 import { MuseCodeCredentialProvider } from "./muse-code-credential.js";
-import { NativeAnthropicCredentialProvider } from "./native-anthropic-credential.js";
 import type {
   CredentialProvider,
   KeyOrigin,
@@ -417,7 +416,6 @@ export class CredentialAuthority {
     for (const name of LOCAL_PROVIDER_NAMES) {
       authority.register(new LocalCredentialProvider(name), [name]);
     }
-    authority.register(new NativeAnthropicCredentialProvider(), ["native-anthropic"]);
 
     // Names already owned by the explicit registrations above — never override
     // them with a generic API-key provider.
@@ -432,7 +430,6 @@ export class CredentialAuthority {
       "kimi",
       "kimi-coding",
       "vertex",
-      "native-anthropic",
       ...LOCAL_PROVIDER_NAMES,
     ]);
 
@@ -460,6 +457,14 @@ export class CredentialAuthority {
         [def.name, ...(RUNTIME_NAME_ALIASES[def.name] ?? [])]
       );
     }
+
+    // The native pass-through's fallback credential, used when a request
+    // carries no credential of its own, is the Claude API's key: the SAME
+    // read-at-use `anthropic` provider (ANTHROPIC_API_KEY, x-api-key), so a
+    // vault key never enters `process.env`, and ANTHROPIC_AUTH_TOKEN, Claude
+    // Code's login bearer, is never sent as an API key.
+    const anthropic = authority.get("anthropic");
+    if (anthropic) authority.register(anthropic, ["native-anthropic"]);
 
     return authority;
   }
