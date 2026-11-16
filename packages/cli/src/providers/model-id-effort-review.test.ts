@@ -538,11 +538,17 @@ describe("G: model-id effort connections do not send body effort controls", () =
         const dialect = new GeminiAPIFormat(base, undefined, { thinkingFromModelName: true });
         const payload = dialect.buildPayload(request, dialect.convertMessages(request), []);
         const before = payload.generationConfig.thinkingConfig;
-        expect(before).toEqual(base === BASE ? { thinkingBudget: 1024 } : { thinkingLevel: "low" });
+        expect(before).toEqual(
+          base === BASE
+            ? { thinkingBudget: 1024, includeThoughts: true }
+            : { thinkingLevel: "low", includeThoughts: true }
+        );
         const ag = await transport(builder, undefined, base);
         const envelope = ag.transformPayload(payload, request);
         expect(envelope.model).toBe(low);
-        expect(envelope.request.generationConfig.thinkingConfig ?? {}).toEqual({});
+        expect(envelope.request.generationConfig.thinkingConfig).toEqual({
+          includeThoughts: true,
+        });
       });
     }
 

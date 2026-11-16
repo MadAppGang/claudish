@@ -167,12 +167,12 @@ describe("Gemini thinking config", () => {
   test("gemini-2.5 budget tiers (capped at 24576)", () => {
     const b = (effort: string) =>
       geminiThinkingConfig("gemini-2.5-flash", { output_config: { effort } })?.thinkingBudget;
-    expect(
-      geminiThinkingConfig("gemini-2.5-flash", { output_config: { effort: "none" } })
-    ).toBeUndefined();
+    expect(geminiThinkingConfig("gemini-2.5-flash", { output_config: { effort: "none" } })).toEqual(
+      { includeThoughts: true }
+    );
     expect(
       geminiThinkingConfig("gemini-2.5-flash", { output_config: { effort: "minimal" } })
-    ).toBeUndefined();
+    ).toEqual({ includeThoughts: true });
     expect(b("low")).toBe(1024);
     expect(b("medium")).toBe(8192);
     expect(b("high")).toBe(16384);
@@ -194,10 +194,10 @@ describe("Gemini thinking config", () => {
     }
 
     test.each(["gemini-2.5-pro", "gemini-3-pro-preview", "claude-sonnet-4-6"])(
-      "thinking disabled sends no thinkingConfig on %s",
+      "thinking disabled sends no level or budget on %s",
       (modelId) => {
         const gen = geminiGenerationConfig(modelId, { thinking: { type: "disabled" } });
-        expect(gen.thinkingConfig).toBeUndefined();
+        expect(gen.thinkingConfig).toEqual({ includeThoughts: true });
         expect(JSON.stringify(gen)).not.toContain("null");
       }
     );
@@ -208,7 +208,7 @@ describe("Gemini thinking config", () => {
         { thinking: { type: "disabled" } },
         "high"
       );
-      expect(gen.thinkingConfig).toEqual({ thinkingBudget: 16384 });
+      expect(gen.thinkingConfig).toEqual({ thinkingBudget: 16384, includeThoughts: true });
     });
 
     test("an effort pin outranks thinking disabled on gemini-3", () => {
@@ -217,7 +217,7 @@ describe("Gemini thinking config", () => {
         { thinking: { type: "disabled" } },
         "high"
       );
-      expect(gen.thinkingConfig).toEqual({ thinkingLevel: "high" });
+      expect(gen.thinkingConfig).toEqual({ thinkingLevel: "high", includeThoughts: true });
     });
 
     test("a none pin with thinking disabled keeps thinkingLevel minimal on gemini-3", () => {
@@ -226,52 +226,52 @@ describe("Gemini thinking config", () => {
         { thinking: { type: "disabled" } },
         "none"
       );
-      expect(gen.thinkingConfig).toEqual({ thinkingLevel: "minimal" });
+      expect(gen.thinkingConfig).toEqual({ thinkingLevel: "minimal", includeThoughts: true });
     });
 
-    test("a none pin with thinking disabled sends no thinkingConfig on gemini-2.5-pro", () => {
+    test("a none pin with thinking disabled sends no level or budget on gemini-2.5-pro", () => {
       const gen = geminiGenerationConfig(
         "gemini-2.5-pro",
         { thinking: { type: "disabled" } },
         "none"
       );
-      expect(gen.thinkingConfig).toBeUndefined();
+      expect(gen.thinkingConfig).toEqual({ includeThoughts: true });
     });
 
-    test("output_config.effort none sends no thinkingConfig on claude-sonnet-4-6", () => {
+    test("output_config.effort none sends no level or budget on claude-sonnet-4-6", () => {
       const gen = geminiGenerationConfig("claude-sonnet-4-6", {
         output_config: { effort: "none" },
       });
-      expect(gen.thinkingConfig).toBeUndefined();
+      expect(gen.thinkingConfig).toEqual({ includeThoughts: true });
     });
 
     test.each(["none", "minimal"])(
-      "output_config.effort %s sends no thinkingConfig on gemini-2.5-flash",
+      "output_config.effort %s sends no level or budget on gemini-2.5-flash",
       (effort) => {
         const gen = geminiGenerationConfig("gemini-2.5-flash", { output_config: { effort } });
-        expect(gen.thinkingConfig).toBeUndefined();
+        expect(gen.thinkingConfig).toEqual({ includeThoughts: true });
       }
     );
 
-    test("thinking budget_tokens 0 sends no thinkingConfig on gemini-2.5-flash", () => {
+    test("thinking budget_tokens 0 sends no level or budget on gemini-2.5-flash", () => {
       const gen = geminiGenerationConfig("gemini-2.5-flash", {
         thinking: { type: "enabled", budget_tokens: 0 },
       });
-      expect(gen.thinkingConfig).toBeUndefined();
+      expect(gen.thinkingConfig).toEqual({ includeThoughts: true });
     });
 
     test("thinking budget_tokens 0 keeps thinkingLevel minimal on gemini-3", () => {
       const gen = geminiGenerationConfig("gemini-3-pro-preview", {
         thinking: { type: "enabled", budget_tokens: 0 },
       });
-      expect(gen.thinkingConfig).toEqual({ thinkingLevel: "minimal" });
+      expect(gen.thinkingConfig).toEqual({ thinkingLevel: "minimal", includeThoughts: true });
     });
 
     test.each(["gemini-2.5-pro", "gemini-3-pro-preview"])(
-      "thinking enabled with no budget_tokens sends no thinkingConfig on %s",
+      "thinking enabled with no budget_tokens sends no level or budget on %s",
       (modelId) => {
         const gen = geminiGenerationConfig(modelId, { thinking: { type: "enabled" } });
-        expect(gen.thinkingConfig).toBeUndefined();
+        expect(gen.thinkingConfig).toEqual({ includeThoughts: true });
         expect(JSON.stringify(gen)).not.toContain("null");
       }
     );
