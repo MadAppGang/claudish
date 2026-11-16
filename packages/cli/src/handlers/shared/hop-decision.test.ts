@@ -91,8 +91,16 @@ if (process.env.CLAUDISH_W2_TEST_CHILD !== import.meta.path) {
       status: 400,
       headers: { "x-claudish-auth-verdict": "terminal" },
       provider: "openai",
-      action: "stop",
-      reason: "credential-hold",
+      action: "advance",
+      reason: "credential-rejected",
+    },
+    {
+      name: "gateway credential rejection",
+      status: 400,
+      headers: { "x-claudish-auth-verdict": "terminal" },
+      provider: "openrouter",
+      action: "advance",
+      reason: "credential-rejected",
     },
     {
       name: "subscription credential rejection",
@@ -100,7 +108,23 @@ if (process.env.CLAUDISH_W2_TEST_CHILD !== import.meta.path) {
       headers: { "x-claudish-auth-verdict": "terminal" },
       provider: "kimi-coding",
       action: "advance",
-      reason: "subscription-credential-rejected",
+      reason: "credential-rejected",
+    },
+    {
+      name: "metered transient credential verdict",
+      status: 503,
+      headers: { "x-claudish-auth-verdict": "transient" },
+      provider: "openai",
+      action: "stop",
+      reason: "credential-hold",
+    },
+    {
+      name: "metered connection fault carrying a terminal verdict",
+      status: 400,
+      headers: { "x-claudish-auth-verdict": "terminal", "x-claudish-connection-error": "1" },
+      provider: "openai",
+      action: "stop",
+      reason: "credential-hold",
     },
     { name: "404", status: 404, provider: "openai", action: "advance", reason: "retryable" },
     { name: "plain 500", status: 500, provider: "openai", action: "stop", reason: "non-retryable" },
@@ -124,7 +148,6 @@ if (process.env.CLAUDISH_W2_TEST_CHILD !== import.meta.path) {
             status: item.status,
             headers: new Headers(item.headers),
             body: "",
-            provider: item.provider,
             name: item.provider,
           };
       expect(decideHopFailure(input)).toEqual({ action: item.action, reason: item.reason });
@@ -207,7 +230,6 @@ if (process.env.CLAUDISH_W2_TEST_CHILD !== import.meta.path) {
           "x-claudish-auth-verdict": "terminal",
         }),
         body: "quota",
-        provider: "kimi-coding",
         name: "Kimi Coding",
       }).action
     ).toBe("stop");

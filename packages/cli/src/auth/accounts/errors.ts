@@ -21,7 +21,7 @@
  *
  * Only the first carries quota wording. A disabled or logged-out pool that said
  * "usage limit reached" would advance a bare chain as if the plan were spent and
- * fire the "billed PER TOKEN" warning on a healthy subscription.
+ * print the spent-allowance notice on a healthy subscription.
  *
  * `upstreamStatus` preserves the actual failure through the inline 400 remap.
  * The auth verdict, not this status, controls credential-failure continuation.
@@ -246,7 +246,7 @@ export class NeedsReauthError extends AccountsError {
  *
  * **It must never carry quota wording.** A transient disk error that
  * masquerades as exhaustion would make a bare chain advance for the wrong
- * reason and would fire the "billed PER TOKEN" warning on a healthy plan.
+ * reason and would print the spent-allowance notice on a healthy plan.
  */
 export class RefreshUnavailableError extends AccountsError {
   readonly terminal = false;

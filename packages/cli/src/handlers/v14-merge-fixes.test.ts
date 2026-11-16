@@ -273,11 +273,13 @@ for (const phase of ["generic", "forced"]) {
 }
 
 for (const status of [401, 403]) {
-  test(`M3 generic api-key ${status} has no verdict despite another request's subscription record`, async () => {
+  // A rejected key is terminal on every tier (2026-11-12), so the generic
+  // site's verdict no longer depends on any billing record.
+  test(`M3 generic api-key ${status} is terminal whatever another request's billing record says`, async () => {
     const { result } = await run(`M3-generic-api-key-${status}`);
     expect(result.billingProjection).toBe(true);
     expect(result.status).toBe(400);
-    expect(result.verdict).toBeNull();
+    expect(result.verdict).toBe("terminal");
     expect(JSON.parse(result.text).error.upstream_status).toBe(status);
     expect(result.forced).toBe(0);
     expect(result.contacts).toHaveLength(1);
