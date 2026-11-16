@@ -1,9 +1,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
-import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { withoutCacheMarkers } from "../code-mode/hashes.js";
 import {
   capturedLines,
   startLogCapture,
@@ -11,7 +9,7 @@ import {
 } from "../recovery/test-helpers/capture-log.js";
 import { localTokenEstimate } from "../token-estimate.js";
 import { CompactionClient } from "./haiku-client.js";
-import { HistoryCompactor, canonicalJson, summaryMessageText } from "./history.js";
+import { HistoryCompactor, messageHash, summaryMessageText } from "./history.js";
 import { CompactionStore, type HistorySwapRecord, historyRecordKey } from "./store.js";
 
 // Installed per file and restored: bun runs every test file in one process.
@@ -87,12 +85,9 @@ function rig(store = new CompactionStore(root)) {
   };
 }
 
-/** The first 12 hex of one message's canonical, marker-free sha256. */
+/** The first 12 hex of one message's `messageHash`, as the log prints it. */
 function shortHash(message: unknown): string {
-  return createHash("sha256")
-    .update(canonicalJson(withoutCacheMarkers(message)))
-    .digest("hex")
-    .slice(0, 12);
+  return messageHash(message).slice(0, 12);
 }
 
 /**
@@ -203,10 +198,66 @@ test("a swap replays on the next tool round when the newest human message change
   expect(sent.messages.slice(1)).toEqual(next.messages.slice(6));
   expect(r.calls()).toBe(1);
 
-  // Message 6 was the swap request's newest message, which Claude Code
-  // changes after the response: that is not a tail change.
+  // A block removed from message 6 is a real content change: it is logged.
+  const lines = (await capturedLines()).filter((l) => l.includes("tail changed"));
+  expect(lines).toHaveLength(1);
+  expect(lines[0]).toEndWith(
+    `[compaction] session ${session}: history replayed at 6, tail changed: recorded [${shortHash(before.messages[6])}] current [${shortHash(next.messages[6])}]`
+  );
+  expect(lines[0]).not.toContain("Third request");
+});
+
+/**
+ * Claude Code 2.1.325's shape, captured from its requests: the turn's prompt
+ * is one text block carrying the cache marker while it is the newest
+ * message, and a plain string on every later request.
+ */
+function promptAsNewest(p: Payload): Payload {
+  const out = structuredClone(p);
+  out.messages[6] = {
+    role: "user",
+    content: [{ type: "text", text: "Third request: go on", cache_control: { type: "ephemeral" } }],
+  };
+  return out;
+}
+
+function promptAsString(p: Payload): Payload {
+  const out = structuredClone(p);
+  out.messages[6] = { role: "user", content: "Third request: go on" };
+  return out;
+}
+
+test("a prompt sent as a marked text block, then as a string, is not a tail change", async () => {
+  const r = rig();
+  const p = promptAsNewest(conversation());
+  r.windowAt(p, 0.7);
+  expect(r.h.compact(structuredClone(p), session).precomputeStarted).toBe(true);
+  await r.h.whenIdle();
+  r.windowAt(p, 0.9);
+  expect(r.h.compact(structuredClone(p), session).applied).toBe("swapped");
+
+  for (let n = 1; n <= 3; n++) {
+    const next = promptAsString(toolRound(p, n));
+    expect(r.h.compact(structuredClone(next), session).applied).toBe("replayed");
+  }
   const lines = (await capturedLines()).filter((l) => l.includes("tail changed"));
   expect(lines).toHaveLength(0);
+});
+
+test("a changed text of the swap request's newest message is a tail change", async () => {
+  const r = rig();
+  const p = promptAsNewest(conversation());
+  r.windowAt(p, 0.7);
+  r.h.compact(structuredClone(p), session);
+  await r.h.whenIdle();
+  r.windowAt(p, 0.9);
+  expect(r.h.compact(structuredClone(p), session).applied).toBe("swapped");
+
+  const next = toolRound(p, 1);
+  next.messages[6] = { role: "user", content: "Third request: go on, edited" };
+  expect(r.h.compact(structuredClone(next), session).applied).toBe("replayed");
+  const lines = (await capturedLines()).filter((l) => l.includes("tail changed"));
+  expect(lines).toHaveLength(1);
 });
 
 test("a change to a tail message before the swap request's newest one logs a tail change", async () => {

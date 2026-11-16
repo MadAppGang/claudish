@@ -211,11 +211,28 @@ export function messagesHash(messages: readonly unknown[], start: number, end: n
   return hash.digest("hex");
 }
 
-/** sha256 hex of one message: canonical JSON without `cache_control` markers. */
+/**
+ * sha256 hex of one message: canonical JSON without `cache_control` markers,
+ * with a content of exactly one text block hashed as that text. Claude Code
+ * sends its newest message as one text block carrying a cache marker, and
+ * the same message as a plain string on every later request; both hash
+ * equal here. Used to recognise one message across requests (a swap's tail,
+ * the real count's measured message), never for the prefix hashes.
+ */
 export function messageHash(message: unknown): string {
   return createHash("sha256")
-    .update(canonicalJson(withoutCacheMarkers(message)))
+    .update(canonicalJson(withSingleTextAsString(withoutCacheMarkers(message))))
     .digest("hex");
+}
+
+function withSingleTextAsString(message: unknown): unknown {
+  if (!message || typeof message !== "object") return message;
+  const m = message as Block;
+  if (!Array.isArray(m.content) || m.content.length !== 1) return message;
+  const only = m.content[0] as Block | null;
+  if (!only || only.type !== "text" || typeof only.text !== "string") return message;
+  if (Object.keys(only).some((k) => k !== "type" && k !== "text")) return message;
+  return { ...m, content: only.text };
 }
 
 /** The conversation thread of a request: sha256 of its first message. */
@@ -900,10 +917,10 @@ function logCount(sessionId: string, count: RequestCount, limit: number): void {
 }
 
 /**
- * True when a message of a replayed swap's `[b, end - 1)` differs from the
- * recorded one. Message `end - 1` is the swap request's newest message, which
- * Claude Code changes after the response (its reminder blocks), so it is not
- * compared. A record without per-message hashes compares the whole `[b, end)`.
+ * True when a message of a replayed swap's `[b, end)` differs from the
+ * recorded one, by `messageHash`, so the swap request's newest message
+ * coming back as a string is not a change. A record without per-message
+ * hashes compares the whole `[b, end)`.
  */
 function tailChanged(
   swap: HistorySwapRecord,
@@ -914,7 +931,7 @@ function tailChanged(
   if (!Array.isArray(recorded) || recorded.length !== swap.end - swap.boundary) {
     return hashes.range(swap.boundary, swap.end) !== swap.tailHash;
   }
-  for (let i = swap.boundary; i < swap.end - 1; i++) {
+  for (let i = swap.boundary; i < swap.end; i++) {
     if (messageHash(original[i]) !== recorded[i - swap.boundary]) return true;
   }
   return false;

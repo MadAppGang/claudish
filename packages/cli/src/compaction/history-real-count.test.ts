@@ -170,6 +170,23 @@ test("the previous response's usage, not chars / 4, decides the summary start", 
   expect(count).toContain(`of ${WINDOW} tokens`);
 });
 
+test("a prompt measured as a marked text block is still matched when it is sent as a string", async () => {
+  const r = rig();
+  // Claude Code 2.1.325 sends the newest prompt as one text block carrying the
+  // cache marker, and the same prompt as a plain string on later requests.
+  const first = conversation("FIRST");
+  first.messages[2] = {
+    role: "user",
+    content: [{ type: "text", text: "Go on", cache_control: { type: "ephemeral" } }],
+  };
+  await r.send(first);
+  const later = next(conversation("FIRST"), "Then this");
+  await r.send(later);
+
+  const count = (await capturedLines()).find((l) => l.includes("history count"));
+  expect(count).toContain(`(usage ${REAL} + `);
+});
+
 test("a thread with no usage yet is measured with the session's measured ratio", async () => {
   const r = rig();
   await r.send(conversation("FIRST"));
