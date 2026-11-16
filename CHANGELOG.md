@@ -2,6 +2,17 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.26.1] - 2026-11-16
+
+### Bug Fixes
+
+- send includeThoughts so a long think streams bytes *(antigravity)* ([`0ef29b8`](https://github.com/MadAppGang/claudish/commit/0ef29b8c8c7e6b3677c4db258bc92bccf1542c3f))
+
+### Documentation
+
+- record the silent think without includeThoughts *(antigravity)* ([`5f32098`](https://github.com/MadAppGang/claudish/commit/5f32098e9dc6b32e2dcb25e0c1d6b85204e98012))
+- update CHANGELOG.md for v14.26.0([`533e423`](https://github.com/MadAppGang/claudish/commit/533e4233b9d0c6b49bfc2420fcc76d9626169677))
+
 ## [14.26.0] - 2026-11-15
 
 ### Bug Fixes
