@@ -638,6 +638,68 @@ describe("provider-only rules with exact effort-map wire ids", () => {
   });
 });
 
+describe("provider-only rules with content-use opt-in wire ids", () => {
+  const optIn = "example-model-contributor";
+  let dir: string;
+  let path: string;
+
+  function write(entries: SlimModelEntry[]): void {
+    writeAllModelsCache(
+      {
+        catalogGenerationId: "provider-rule-content-use-test-data",
+        version: 3,
+        lastUpdated: new Date().toISOString(),
+        entries,
+        models: [],
+        plans: [],
+      },
+      path
+    );
+  }
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "claudish-provider-rule-content-use-"));
+    path = join(dir, "all-models.json");
+    write([]);
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("excludes an unknown opt-in wire id from a provider-only rule", () => {
+    expect(buildRoutingChain(["openrouter"], optIn, path)).toEqual([]);
+  });
+
+  test("excludes an opt-in wire id with a slash from a provider-only rule", () => {
+    expect(buildRoutingChain(["openrouter"], `meta/${optIn}`, path)).toEqual([]);
+  });
+
+  test("keeps an explicit provider and opt-in wire id entry verbatim", () => {
+    expect(buildRoutingChain([`ag@${optIn}`], "ignored", path)).toMatchObject([
+      { provider: "antigravity", modelSpec: `ag@${optIn}` },
+    ]);
+  });
+
+  test("keeps a standard connection whose wire id has an opt-in suffix", () => {
+    write([
+      catalogEntry(
+        "example-model-base",
+        [
+          { ...connection("antigravity", optIn), contentUse: "standard" } as ReturnType<
+            typeof connection
+          > & { contentUse: "standard" },
+        ],
+        []
+      ),
+    ]);
+
+    expect(buildRoutingChain(["antigravity"], optIn, path)).toMatchObject([
+      { provider: "antigravity", modelSpec: `ag@${optIn}` },
+    ]);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // loadRoutingRules — source composition without disk I/O
 // ---------------------------------------------------------------------------
@@ -3015,6 +3077,35 @@ describe("explainRoute", () => {
       "subscription-not-served",
       "subscription-credential-unreadable",
     ]);
+  });
+
+  test("explains how to type an excluded opt-in wire id explicitly", async () => {
+    const optIn = "example-model-contributor";
+    const catalog = makeTempCatalog({ modelId: "unrelated-model" });
+    try {
+      const explanation = await explainRoute(optIn, {
+        rules: {},
+        defaultProvider: {
+          provider: "openrouter",
+          source: "config-file",
+          legacyAutoPromoted: false,
+        },
+        cachePath: catalog.path,
+        network: "background",
+      });
+
+      expect(explanation.candidates).toContainEqual(
+        expect.objectContaining({
+          provider: "openrouter",
+          outcome: "excluded-by-content-use",
+        })
+      );
+      const description = describeRouteExplanation(explanation);
+      expect(description).toContain(`@${optIn}`);
+      expect(description).toMatch(/opt.?in/i);
+    } finally {
+      catalog.cleanup();
+    }
   });
 
   test("keeps the leading '@' of an OpenRouter preset in the wire id", async () => {
