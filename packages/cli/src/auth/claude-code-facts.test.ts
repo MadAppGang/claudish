@@ -30,6 +30,14 @@ describe("claudeCodeConfigDir follows Claude Code's CLAUDE_CONFIG_DIR rule", () 
 });
 
 describe("claudeCodeGlobalConfigPath", () => {
+  // Measured on Claude Code 2.1.325: an empty value moves the config dir to cwd,
+  // but `.claude.json` stays under HOME.
+  test("an empty value reads .claude.json under HOME", () => {
+    expect(claudeCodeGlobalConfigPath({ HOME: "/h", CLAUDE_CONFIG_DIR: "" }, "/w")).toBe(
+      "/h/.claude.json"
+    );
+  });
+
   // REGRESSION: the global config path trimmed CLAUDE_CONFIG_DIR before resolving it
   test("a value with surrounding spaces keeps them", () => {
     expect(claudeCodeGlobalConfigPath({ HOME: "/h", CLAUDE_CONFIG_DIR: " /x " }, "/w")).toBe(

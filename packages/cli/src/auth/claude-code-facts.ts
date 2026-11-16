@@ -9,10 +9,10 @@
  * Measured against **Claude Code 2.1.268**, except the `CLAUDE_CONFIG_DIR`
  * rule ({@link claudeCodeConfigDir}), measured on **Claude Code 2.1.325**.
  *
- * Not measured: where Claude Code keeps `.claude.json` when `CLAUDE_CONFIG_DIR`
- * is the empty string. Only a non-empty value was measured (2.1.325). This file
- * assumes the binary tests that variable for truthiness there, so an empty value
- * reads `~/.claude.json` under `HOME`, as when it is unset.
+ * `.claude.json` with `CLAUDE_CONFIG_DIR` set to the empty string, measured on
+ * Claude Code 2.1.325: the config dir is the working directory (backups land in
+ * `<cwd>/backups/`), but `.claude.json` stays at `~/.claude.json` under `HOME`,
+ * as when the variable is unset.
  */
 
 import { createHash } from "node:crypto";
@@ -88,8 +88,9 @@ export function claudeCodeSecureStorageServices(
 /**
  * Claude Code's global config file, where a Console login keeps its key
  * (`primaryApiKey`): `<CLAUDE_CONFIG_DIR>/.claude.json` when that is set to a
- * non-empty value (measured on Claude Code 2.1.325), else `~/.claude.json` under
- * `HOME`. That an empty value reads the `HOME` file is assumed, not measured.
+ * non-empty value, else `~/.claude.json` under `HOME`. Both measured on Claude
+ * Code 2.1.325, the empty value included: it moves the config dir to the working
+ * directory but leaves `.claude.json` under `HOME`.
  */
 export function claudeCodeGlobalConfigPath(
   env: NodeJS.ProcessEnv = process.env,

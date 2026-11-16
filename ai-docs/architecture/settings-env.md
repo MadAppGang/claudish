@@ -137,7 +137,8 @@ token (`sk-ant-oat<n>-`) is refused the same way, named as "your shell environme
 `login-only` branches then ask `claudeCodeStartupCredential` (`auth/claude-code-login.ts`), by
 presence only, which credential Claude Code would start with. A stored Console key
 (`primaryApiKey` in `<CLAUDE_CONFIG_DIR or HOME>/.claude.json`, where an empty
-`CLAUDE_CONFIG_DIR` is assumed, not measured, to mean `HOME`; or the Keychain item `Claude
+`CLAUDE_CONFIG_DIR` means `HOME`: Claude Code 2.1.325 then puts its config dir at the working
+directory but keeps `.claude.json` at `$HOME/.claude.json`, measured; or the Keychain item `Claude
 Code[-<hash>]`) with no claude.ai login refuses the launch: Claude Code 2.1.325 sends that key as
 `x-api-key` with no `authorization` and shows no login screen, so every request would get the
 401. No login of any kind refuses it with the `/login` text. A store that did not answer
