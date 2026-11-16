@@ -38,6 +38,7 @@ import { credentials } from "../../auth/credentials/authority.js";
 import { devinAuthHeaders } from "../../auth/credentials/devin-credential.js";
 import type { RequestAuth } from "../../auth/credentials/types.js";
 import { log } from "../../logger.js";
+import { isOptInWireId } from "../content-use.js";
 import { readDevinApiKey, readDevinServerUrl } from "../devin/devin-credentials.js";
 import { type DevinModelConfig, getServedDevinModels } from "../devin/devin-models.js";
 import { describeDevinRequestForLog, encodeDevinRequest } from "../devin/devin-request.js";
@@ -230,7 +231,15 @@ export class DevinProviderTransport implements ProviderTransport {
     if (served.length === 0) {
       return { model: null, reason: "Devin reported no models for this subscription" };
     }
-    const ranked = [...served].sort((a, b) => {
+    // A probe pick is chosen for the user, so it is never a content-use opt-in uid.
+    const ordinary = served.filter((model) => !isOptInWireId(model.uid));
+    if (ordinary.length === 0) {
+      return {
+        model: null,
+        reason: "Devin lists only content-use opt-in models for this subscription",
+      };
+    }
+    const ranked = [...ordinary].sort((a, b) => {
       const diff = b.contextWindow - a.contextWindow;
       return diff !== 0 ? diff : a.uid.localeCompare(b.uid);
     });
