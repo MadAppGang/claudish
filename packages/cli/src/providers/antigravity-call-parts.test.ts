@@ -12,6 +12,7 @@ import { describe, expect, test } from "bun:test";
 import type { Context } from "hono";
 import { GeminiAPIFormat } from "../adapters/gemini-api-format.js";
 import { createGeminiSseStream } from "../handlers/shared/stream-parsers/gemini-sse.js";
+import { agyLocalTime, agyUserRequest } from "./antigravity-content.js";
 import { AntigravityConversations, buildAntigravityEnvelope } from "./antigravity-envelope.js";
 
 function round() {
@@ -136,7 +137,9 @@ describe("a tool round on the Antigravity transport", () => {
       ["functionResponse"],
       ["functionResponse"],
     ]);
-    expect(contents[3].parts).toEqual([{ text: "NOTICE" }]);
+    expect(contents[3].parts).toEqual([
+      { text: agyUserRequest("NOTICE", agyLocalTime(new Date(1))) },
+    ]);
     // One model turn and two results: the recorded step count, unchanged by the split.
     expect(envelope.requestId.endsWith("/4")).toBe(true);
     expect(inner).toEqual(before);

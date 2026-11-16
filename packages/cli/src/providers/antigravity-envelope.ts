@@ -20,6 +20,7 @@
  */
 
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { agyContents, agyLocalTime } from "./antigravity-content.js";
 
 /** What the backend reports about the model a request is sent to. */
 export interface AntigravityEnvelopeModelMeta {
@@ -29,6 +30,8 @@ export interface AntigravityEnvelopeModelMeta {
   modelEnum?: string;
   /** `thinkingLevel` from `fetchAvailableModels`: the number behind the level sent beside an effort id. */
   thinkingLevel?: number;
+  /** `displayName` from `fetchAvailableModels` (`Gemini 4 Argon (Medium)`); named in the first message. */
+  displayName?: string;
 }
 
 /** The ids one conversation keeps across its requests. */
@@ -37,6 +40,12 @@ export interface AntigravityConversation {
   trajectoryId: string;
   /** Requests already sent in this conversation; the next request's ordinal. */
   requestCount: number;
+  /**
+   * The local time each user message and tool result was first sent, by the
+   * entry's key. A request repeats the whole history, and a repeated entry
+   * must carry the time it carried the first time.
+   */
+  times?: Map<string, string>;
 }
 
 /**
@@ -224,7 +233,19 @@ export function buildAntigravityEnvelope(input: AntigravityEnvelopeInput): Recor
   } = inner;
 
   const stepIndex = lastStepIndex(contents);
-  const request: Record<string, unknown> = { contents: toolResultsAsModelEntries(contents) };
+  const now = agyLocalTime(new Date(input.now ?? Date.now()));
+  conversation.times ??= new Map();
+  const times = conversation.times;
+  const worded = agyContents(contents, {
+    timeOf: (key) => {
+      const known = times.get(key);
+      if (known !== undefined) return known;
+      times.set(key, now);
+      return now;
+    },
+    modelDisplayName: meta?.displayName,
+  });
+  const request: Record<string, unknown> = { contents: toolResultsAsModelEntries(worded) };
   if (systemInstruction && typeof systemInstruction === "object") {
     const { role: _role, ...instruction } = systemInstruction as Record<string, unknown>;
     request.systemInstruction = { role: "user", ...instruction };
