@@ -14,7 +14,7 @@
  */
 
 import { log } from "../logger.js";
-import { getAgyClientVersion } from "./antigravity-client-version.js";
+import { getAgyClientBuild, getAgyClientVersion } from "./antigravity-client-version.js";
 import {
   currentAntigravityTokenLineage,
   lineageForAntigravityAccessToken,
@@ -125,9 +125,16 @@ function antigravityClientVersion(): string {
   return resolveAntigravityClientVersion().version;
 }
 
-/** The Antigravity CLI's User-Agent for one given client version. */
+/**
+ * The Antigravity CLI's User-Agent for one given client version. agy also names
+ * its build changelist (`cl=<number>`); it is sent when it was read from the
+ * agy that reported this version, and left out otherwise, because a changelist
+ * of another build would name a client that does not exist.
+ */
 function userAgentFor(version: string): string {
-  return `antigravity/cli/${version} (aidev_client; os_type=${process.platform}; arch=${process.arch}; auth_method=consumer)`;
+  const build = version === getAgyClientVersion() ? getAgyClientBuild() : null;
+  const cl = build ? ` cl=${build};` : "";
+  return `antigravity/cli/${version} (aidev_client; os_type=${process.platform}; arch=${process.arch};${cl} auth_method=consumer)`;
 }
 
 /**
