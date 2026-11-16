@@ -323,19 +323,27 @@ export class GeminiAPIFormat extends BaseAPIFormat {
     // wire with no published effort path sends none. The model-name rule below
     // serves the Antigravity transport only. There, an --effort pin outranks
     // thinking.type "disabled", and a request with reasoning off sends no
-    // thinking field at all: Antigravity answers 400 INVALID_ARGUMENT to
+    // level and no budget: Antigravity answers 400 INVALID_ARGUMENT to
     // thinkingBudget 0 on Gemini 2.5 Flash models, and Gemini 2.5 Pro cannot
     // turn thinking off. gemini-3 names get thinkingLevel and every other name
     // thinkingBudget, never both, because Gemini 3 answers 400 when both are sent.
+    //
+    // Every Antigravity body carries includeThoughts, with or without a level or
+    // budget. Without it the server sends no byte while the model thinks, and a
+    // think longer than the request deadline (measured: gemini-4-carbon silent
+    // for 270 s on an 86k-token review) is answered as an unreachable host. With
+    // it the thought summaries stream as `thought` parts. The flag cannot follow
+    // the effort resolved here: the transport chooses the model id that is sent,
+    // and that id can carry an effort this request never named.
     if (this.thinkingFromModelName) {
+      payload.generationConfig.thinkingConfig = { includeThoughts: true };
       if (!this.pinnedEffort && claudeRequest?.thinking?.type === "disabled") {
         log(`[GeminiAPIFormat] thinking omitted (disabled) for ${this.modelId}`);
       } else {
         const effort = this.resolveEffortLevel(claudeRequest);
         if (effort && matchesModelFamily(this.modelId, "gemini-3")) {
-          payload.generationConfig.thinkingConfig = {
-            thinkingLevel: this.effortToThinkingLevel(effort),
-          };
+          payload.generationConfig.thinkingConfig.thinkingLevel =
+            this.effortToThinkingLevel(effort);
           log(
             `[GeminiAPIFormat] thinkingLevel -> ${payload.generationConfig.thinkingConfig.thinkingLevel} (from ${effort}) for ${this.modelId}`
           );
@@ -350,7 +358,7 @@ export class GeminiAPIFormat extends BaseAPIFormat {
                 `[GeminiAPIFormat] thinking omitted (from ${effort}): max_tokens ${claudeRequest.max_tokens} leaves no valid budget for ${this.modelId}`
               );
             } else {
-              payload.generationConfig.thinkingConfig = { thinkingBudget: budget };
+              payload.generationConfig.thinkingConfig.thinkingBudget = budget;
               log(
                 `[GeminiAPIFormat] thinkingBudget -> ${budget} (from ${effort}) for ${this.modelId}`
               );
@@ -383,7 +391,7 @@ export class GeminiAPIFormat extends BaseAPIFormat {
    * An over-cap budget becomes half of max_tokens, not max_tokens - 1: the budget
    * shares the cap with the visible answer, and a budget one token under the cap
    * is valid but can leave the answer nothing. Returns undefined when half the
-   * cap is under Anthropic's minimum, and the caller then sends no thinking config.
+   * cap is under Anthropic's minimum, and the caller then sends no thinking budget.
    *
    * Gemini models are returned unchanged: none was measured to enforce this.
    */
@@ -420,7 +428,7 @@ export class GeminiAPIFormat extends BaseAPIFormat {
   /**
    * Gemini 2.5 `thinkingBudget` (int), capped at MAX_GEMINI_BUDGET. Returns
    * undefined for the off efforts (none, minimal): the caller then sends no
-   * thinking field, because Antigravity answers 400 INVALID_ARGUMENT to
+   * thinking budget, because Antigravity answers 400 INVALID_ARGUMENT to
    * thinkingBudget 0 on Gemini 2.5 Flash models and Pro cannot disable thinking
    * (minimum 128).
    */
@@ -479,8 +487,9 @@ export class GeminiAPIFormat extends BaseAPIFormat {
    *     on a real capture: `thoughtsTokenCount: 57` with zero reasoning text
    *     on the wire. gemini-sse.ts consumes that signature only to echo it
    *     back on tool calls; there is no reasoning text to strip. (A
-   *     `thought: true` flag would carry text, but only if `includeThoughts`
-   *     were requested, and claudish never sets it.)
+   *     `thought: true` part carries text only where `includeThoughts` was
+   *     requested, which is `ag@` alone; gemini-sse.ts routes such a part to
+   *     thinking output, never to the answer text.)
    *
    * And the filter could not be made correct: it asked "is this string
    * reasoning or an answer?", but for a reply like "OK" that bit does not
