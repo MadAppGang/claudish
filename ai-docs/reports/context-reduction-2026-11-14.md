@@ -760,6 +760,56 @@ example, has 10 `tools_changed` events). This is a different count from the
 "cache breaks after it" column above, which looks only at the requests after
 a compressed output.
 
+## Compaction cases: the same build with and without --compaction
+
+`cases/madbench.yaml` with `cases/compaction-cases.experiment.yaml`. Both
+arms run build a6952916 (sha256 `37ee19cf…6447`, checked in every launch
+log); `cases-baseline` starts it with `--quiet -y --debug-claudish`,
+`cases-compaction` adds `--compaction` and the key config. One madbench call
+per trial, behind the login-lifetime check. Costs are madbench's `cost`
+metric; Haiku is in tokens only. Hit rate and breaks come from
+`tools/cases-readout/cache-readout.ts`.
+
+### Case c, refactor: both arms 6/6, compaction cost 43% more
+
+The task: rename `nativeRouteFor` to `claudeSubscriptionRoute` and move it to
+`packages/cli/src/providers/claude-subscription-route.ts`. Grader: 5 parts
+(old name gone, new module exports it, nothing left in `native-route.ts`,
+typecheck, 118 tests).
+
+| Arm | Trial | Grade | Duration | Cost | Hit rate | Main requests | Breaks | Haiku in / out |
+|---|---|---|---|---|---|---|---|---|
+| `cases-baseline` | 1 | 5/5, 118 pass | 117 s | $0.2034 | 86.4% | 8 | 0 | |
+| `cases-baseline` | 2 | 5/5, 118 pass | 72 s | $0.1644 | 85.4% | 7 | 0 | |
+| `cases-baseline` | 3 | 5/5, 118 pass | 190 s | $0.1655 | 87.3% | 8 | 0 | |
+| `cases-compaction` | 1 | 5/5, 118 pass | 155 s | $0.2992 | 89.5% | 11 | 0 | 7,504 / 2,482 |
+| `cases-compaction` | 2 | 5/5, 118 pass | 116 s | $0.2156 | 90.1% | 11 | 0 | 7,497 / 2,487 |
+| `cases-compaction` | 3 | 5/5, 118 pass | 164 s | $0.2476 | 92.4% | 15 | 0 | 7,504 / 2,661 |
+
+Means: `cases-baseline` $0.1778 and 126 s; `cases-compaction` $0.2541
+(+42.9%) and 145 s. The cost ranges do not overlap ($0.1644 to $0.2034
+against $0.2156 to $0.2992).
+
+The key checks passed in all 6 trials (`ANTHROPIC_API_KEY entries in the
+launcher environment: 0`, `AGENT_ENV_KEY_UNSET CLAUDISH_CONFIG_present=0`).
+Each compaction trial made 1 Haiku call, HTTP 200, with no failed call, and
+read no recovery file.
+
+Every trial in both arms started with one Bash call that greps
+`nativeRouteFor` and prints all of `native-route.ts`: 17,088 to 17,176
+characters, the only output over the size limit. That is the file the task
+changes. Compaction compressed it. The compaction arm then made more tool
+calls (17 to 22 tool results against 10): in trial 1 it printed lines of
+`native-route.ts` again and grepped its imports again before it wrote the
+new module. Inferred: the summary dropped details of the file the agent was
+about to change, so it read them again, and those extra requests cost more
+than the compression saved. This is the same kind of loss as the known
+defect "a Read before an Edit is compressed", through Bash `cat` instead of
+Read.
+
+Verdict for case c: compaction did not help a short refactor. Both arms
+solved it every time; the compaction arm cost more in all 3 trials.
+
 ## Explanations (inference, not verified)
 
 - **Why the gateway costs more.** Shortened tool output leaves the agent
