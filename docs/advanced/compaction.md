@@ -183,7 +183,9 @@ The **limit** of a request is the lower of two numbers:
 - the context window the cloud models catalog lists for the request's model;
 - the `CLAUDE_CODE_AUTO_COMPACT_WINDOW` Claude Code was started with, when there is one.
 
-When the catalog lists no window for the model, history compaction is off for that request.
+When the catalog lists no window for the model, history compaction is off for that request. The
+debug log says so once per session and model:
+`[compaction] session <id>: history off: the catalog publishes no context window for <model>`.
 
 A request is measured with the **real token count**: the input tokens the model's provider
 reported for the previous request of the same conversation (uncached, cache read and cache write

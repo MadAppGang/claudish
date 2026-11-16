@@ -140,7 +140,10 @@ one of them is never compressed and never recorded, so it is sent as it is on ev
   a 1M model to 200K here too, as it does in Claude Code. An empty layer value clears the window;
   an unreadable layer at or above the deciding tier, or two layers of that tier that disagree,
   keep the child env's value. The value is clamped to Claude Code's 100K floor and 1M ceiling
-  (`setLaunchAutoCompactWindow`); empty or non-numeric records none. No catalog window ⇒ history off for that request. The model is the one the proxy
+  (`setLaunchAutoCompactWindow`); empty or non-numeric records none. No catalog window ⇒ history off for that request, with one
+  "history off: the catalog publishes no context window for <model>" line per session and model
+  (before it, the skip wrote nothing, and a foreign model the catalog does not size, such as
+  `glm-4.7` in generation `g-20261116161706980-7c7c9818`, looked like a route history never ran on). The model is the one the proxy
   routes the request to (`resolveHandlerForRequest`'s target after the slot map, role mapping and
   `--model`; the bare id for `claude@<id>`), never the raw `body.model`: a role mapping can send
   `claude-sonnet-*` to a model with a smaller window, or none. A `[1m]` suffix is removed for the

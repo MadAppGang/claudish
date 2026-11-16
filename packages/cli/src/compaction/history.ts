@@ -616,6 +616,8 @@ export class HistoryCompactor {
   /** Background summaries in flight, by session and thread. */
   private readonly inFlight = new Map<string, Promise<void>>();
   private readonly counter: RealTokenCount;
+  /** Sessions and models already told that history is off for want of a window. */
+  private readonly windowUnknownLogged = new Set<string>();
 
   constructor(private readonly deps: HistoryCompactorDeps) {
     this.counter = deps.counter ?? new RealTokenCount(deps.now);
@@ -725,11 +727,15 @@ export class HistoryCompactor {
 
     const active = this.replayActive(body, sessionId, thread, original, hashes, result);
 
+    const windowModel = routedModel ?? body.model;
     const limit = effectiveHistoryLimit(
-      (this.deps.contextWindowOf ?? catalogContextWindow)(routedModel ?? body.model),
+      (this.deps.contextWindowOf ?? catalogContextWindow)(windowModel),
       (this.deps.autoCompactWindow ?? getLaunchAutoCompactWindow)()
     );
-    if (limit === undefined) return result;
+    if (limit === undefined) {
+      this.logWindowUnknown(sessionId, windowModel);
+      return result;
+    }
     result.limit = limit;
     const counter = this.counter;
     let chars = charsOf(payload);
@@ -766,6 +772,17 @@ export class HistoryCompactor {
    * or for `topic` the topic floor when that is lower, so a summary is ready
    * when a topic changes.
    */
+  /** One line per session and model: history is off because no window is known. */
+  private logWindowUnknown(sessionId: string, model: unknown): void {
+    const name = typeof model === "string" && model.length > 0 ? model : "the request's model";
+    const key = `${sessionId}\0${name}`;
+    if (this.windowUnknownLogged.has(key)) return;
+    this.windowUnknownLogged.add(key);
+    log(
+      `[compaction] session ${sessionId}: history off: the catalog publishes no context window for ${name}`
+    );
+  }
+
   private prepareAt(limit: number): number {
     const at = this.deps.settings.precomputeAt * limit;
     if (this.deps.settings.policy !== "topic") return at;
