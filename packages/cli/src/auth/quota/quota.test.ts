@@ -10,6 +10,7 @@ import {
   compareModelRecency,
   parseModelVersion,
   planFromBuckets,
+  planFromSummary,
   selectBucket,
   shortenModelId,
 } from "./sources/antigravity.js";
@@ -124,6 +125,49 @@ describe("Codex quota headers", () => {
     for (const [minutes, expected] of cases) {
       expect(formatWindowMinutes(minutes)).toBe(expected);
     }
+  });
+});
+
+describe("Antigravity quota summary", () => {
+  const groups = [
+    {
+      displayName: "Gemini Models",
+      buckets: [
+        {
+          bucketId: "gemini-weekly",
+          window: "weekly",
+          resetTime: "2026-11-22T10:46:31Z",
+          remainingFraction: 1,
+        },
+        {
+          bucketId: "gemini-5h",
+          window: "5h",
+          resetTime: "2026-11-15T15:46:31Z",
+          remainingFraction: 0.75,
+        },
+      ],
+    },
+    {
+      displayName: "Gemini 4 Argon",
+      buckets: [{ bucketId: "gemini-argon-wtu-weekly", window: "weekly", remainingFraction: 0.4 }],
+    },
+  ];
+
+  test("one window per limit, in the server's order, named by group and window", () => {
+    const plan = planFromSummary(groups);
+    expect(plan?.windows).toEqual([
+      { id: "Gemini Models weekly", used_pct: 0, resets_at: "2026-11-22T10:46:31.000Z" },
+      { id: "Gemini Models 5h", used_pct: 25, resets_at: "2026-11-15T15:46:31.000Z" },
+      { id: "Gemini 4 Argon weekly", used_pct: 60 },
+    ]);
+    expect(plan?.source).toBe("provider");
+  });
+
+  test("a limit with no number is left out, and a summary with none reports nothing", () => {
+    expect(
+      planFromSummary([{ displayName: "Gemini Models", buckets: [{ window: "weekly" }] }])
+    ).toBeUndefined();
+    expect(planFromSummary([])).toBeUndefined();
   });
 });
 

@@ -40,12 +40,13 @@ function recordFetch(answer: () => Response | Promise<Response>): Seen[] {
 }
 
 describe("the account lookups of a start", () => {
-  test("are the Antigravity CLI's five, in its order, with the project as the body", () => {
+  test("are the Antigravity CLI's six, in its order, with the project as the body", () => {
     const calls = antigravityAccountCalls(ACCOUNT);
     expect(calls.map((call) => call.url)).toEqual([
       "https://www.googleapis.com/oauth2/v2/userinfo",
       "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAdminControls",
       "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchUserInfo",
+      "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
       "https://daily-cloudcode-pa.googleapis.com/v1internal:listExperiments",
       "https://aicode.googleapis.com/v1alpha:fetchConfig",
     ]);
@@ -54,10 +55,11 @@ describe("the account lookups of a start", () => {
       '{"project":"project-one"}',
       '{"project":"project-one"}',
       '{"project":"project-one"}',
+      '{"project":"project-one"}',
       undefined,
     ]);
     expect(calls[0].userAgent).toBe("Go-http-client/1.1");
-    expect(calls[4].userAgent).toBe(ACCOUNT.userAgent);
+    expect(calls[5].userAgent).toBe(ACCOUNT.userAgent);
   });
 
   test("leave out the two other Google hosts when the host is the user's own", () => {
@@ -69,6 +71,7 @@ describe("the account lookups of a start", () => {
     expect(calls.map((call) => call.url)).toEqual([
       "http://127.0.0.1:8899/v1internal:fetchAdminControls",
       "http://127.0.0.1:8899/v1internal:fetchUserInfo",
+      "http://127.0.0.1:8899/v1internal:retrieveUserQuotaSummary",
       "http://127.0.0.1:8899/v1internal:listExperiments",
     ]);
   });
@@ -117,7 +120,7 @@ describe("sending a side call", () => {
       return new Response("{}");
     });
     await sendAntigravitySideCalls(antigravityAccountCalls(ACCOUNT), "token-1");
-    expect(seen).toHaveLength(5);
+    expect(seen).toHaveLength(6);
   });
 
   test("a call that gets no answer ends at its time limit", async () => {

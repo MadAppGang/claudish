@@ -60,6 +60,7 @@ export function antigravityAccountCalls(
   calls.push(
     internal("fetchAdminControls"),
     internal("fetchUserInfo"),
+    internal("retrieveUserQuotaSummary"),
     internal("listExperiments")
   );
   if (account.defaultHost) {

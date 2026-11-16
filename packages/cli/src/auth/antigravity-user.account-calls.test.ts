@@ -34,7 +34,7 @@ async function settled(count: number): Promise<void> {
 
 test("setting up an account sends the Antigravity CLI's account lookups once", async () => {
   await setupAntigravityUser("access-token");
-  await settled(4);
+  await settled(5);
   await setupAntigravityUser("access-token");
   await new Promise((resolve) => setTimeout(resolve, 30));
 
@@ -42,6 +42,7 @@ test("setting up an account sends the Antigravity CLI's account lookups once", a
     "http://127.0.0.1:1/v1internal:loadCodeAssist",
     "http://127.0.0.1:1/v1internal:fetchAdminControls",
     "http://127.0.0.1:1/v1internal:fetchUserInfo",
+    "http://127.0.0.1:1/v1internal:retrieveUserQuotaSummary",
     "http://127.0.0.1:1/v1internal:listExperiments",
   ]);
 });

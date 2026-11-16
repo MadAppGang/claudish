@@ -1,33 +1,24 @@
 /**
  * Antigravity (Gemini subscription) quota adapter.
  *
- * Antigravity is the only provider claudish supports that offers a real usage
- * API: `retrieveUserQuota` returns one bucket per served model, each with a
- * remaining fraction and a reset time. Crucially the call is FREE — it is a
- * metadata request that consumes no model quota — which is what makes polling
- * it legitimate under the rule "never spend quota to measure quota". Codex,
- * whose only fresh reading costs an inference request, gets no `poll`.
+ * Antigravity offers two free usage readings, and neither consumes model quota,
+ * which is what makes polling them legitimate under the rule "never spend quota
+ * to measure quota". Codex, whose only fresh reading costs an inference
+ * request, gets no `poll`.
  *
- * ## Buckets are per-model, windows are not
+ * - Per MODEL: every record of the model list (`fetchAvailableModels`) carries
+ *   the remaining fraction and reset time of the limit that model spends.
+ * - Per GROUP: `retrieveUserQuotaSummary` returns the weekly and five-hour
+ *   limits of each group of models, which is what the Antigravity CLI shows.
+ *   A group names its models in prose only, so it cannot be tied to a model id.
  *
- * The status line renders a list of `{id, used_pct, resets_at}` windows, but
- * Antigravity reports per-MODEL capacity, not per time-window. Those are
- * different axes, so this adapter picks rather than aggregates: it reports the
- * bucket for the model the session is actually running. Averaging every served
- * model would produce a number describing nothing the user is spending, and
- * showing all of them would flood a one-line status bar.
+ * ## Which reading answers which question
  *
- * When the active model has no bucket, this reports NOTHING rather than
- * substituting another model's figure — see `selectBucket` for the measurement
- * that forced that rule.
- *
- * ## Import isolation (deliberate)
- *
- * `setupAntigravityUser` / `retrieveUserQuota` / `getAntigravityTierDisplayName`
- * currently live in `gemini-oauth.ts`. The `worktree-gemini-fix` branch deletes
- * that file and re-homes them in `antigravity-user.ts`. Every one of those
- * imports is confined to THIS module so that landing becomes a one-line edit
- * rather than a hunt across the quota subsystem.
+ * A session asks what the model it runs has left: that is the model's own
+ * record, and nothing else. When the active model has no record, this reports
+ * NOTHING rather than another model's figure; see `selectBucket` for the
+ * measurement that forced that rule. The `claudish quota` listing has no
+ * session and asks about the account: that is the group summary.
  */
 
 import { log } from "../../../logger.js";
@@ -37,8 +28,10 @@ import {
 } from "../../antigravity-token.js";
 import {
   type QuotaBucket,
+  type QuotaSummaryGroup,
   getAntigravityTierDisplayName,
-  retrieveUserQuota,
+  retrieveModelQuota,
+  retrieveUserQuotaSummary,
   setupAntigravityUser,
 } from "../../antigravity-user.js";
 import type { QuotaAdapter, QuotaPollContext } from "../adapter.js";
@@ -65,7 +58,7 @@ export function shortenModelId(modelId: string): string {
 const REASONING_TIERS = ["extra-low", "medium", "tiered", "high", "low"] as const;
 
 /** Used fraction of a bucket, or undefined when it reports no number. */
-function usedPctOf(bucket: QuotaBucket): number | undefined {
+function usedPctOf(bucket: { remainingFraction?: number }): number | undefined {
   if (typeof bucket.remainingFraction !== "number") return undefined;
   return toUsedPct((1 - bucket.remainingFraction) * 100);
 }
@@ -77,7 +70,7 @@ function usedPctOf(bucket: QuotaBucket): number | undefined {
  *
  * An earlier version fell back to the most-consumed bucket when nothing
  * matched. Measured against a real Antigravity Ultra account on 2026-08-05,
- * `retrieveUserQuota` returned buckets for only `gemini-2.5-flash`,
+ * the per-model quota call of that time returned buckets for only `gemini-2.5-flash`,
  * `-2.5-flash-lite`, `-2.5-pro` and `-3.1-flash-lite`, every one at 100%
  * remaining — a legacy Code Assist set that does not cover the Gemini 3.x
  * models an Antigravity subscription actually serves.
@@ -236,14 +229,48 @@ export function planFromBuckets(
   };
 }
 
-/** Shared by `poll` and `fetchExplicit` — both read the same free endpoint. */
+/**
+ * Turn the group summary into plan usage: one window per limit of each group,
+ * in the server's order, named by the group and the limit's window
+ * ("Gemini Models weekly"). A limit with no number is left out. Exported for
+ * testing.
+ */
+export function planFromSummary(groups: QuotaSummaryGroup[]): PlanUsage | undefined {
+  const windows: QuotaWindow[] = [];
+  for (const group of groups) {
+    for (const bucket of group.buckets ?? []) {
+      const used = usedPctOf(bucket);
+      if (used === undefined) continue;
+      const name = [group.displayName, bucket.window].filter(Boolean).join(" ");
+      const window: QuotaWindow = { id: name || bucket.bucketId || "quota", used_pct: used };
+      if (bucket.resetTime && !Number.isNaN(Date.parse(bucket.resetTime))) {
+        window.resets_at = new Date(bucket.resetTime).toISOString();
+      }
+      windows.push(window);
+    }
+  }
+  if (windows.length === 0) return undefined;
+  return {
+    label: getAntigravityTierDisplayName(),
+    windows,
+    source: "provider",
+    observed_at: new Date().toISOString(),
+  };
+}
+
+/** Shared by `poll` and `fetchExplicit`: both take the same free reading. */
 async function fetchPlan(ctx?: QuotaPollContext): Promise<PlanUsage | undefined> {
   try {
     const accessToken = await getValidAntigravityAccessToken();
     const { projectId } = await setupAntigravityUser(accessToken);
-    const quota = await retrieveUserQuota(accessToken, projectId);
-    if (!quota?.buckets?.length) return undefined;
-    return planFromBuckets(quota.buckets, ctx?.modelId);
+    if (!ctx?.modelId) {
+      const summary = await retrieveUserQuotaSummary(accessToken, projectId);
+      if (!summary?.groups?.length) return undefined;
+      return planFromSummary(summary.groups);
+    }
+    const quota = await retrieveModelQuota(accessToken, projectId);
+    if (!quota?.buckets.length) return undefined;
+    return planFromBuckets(quota.buckets, ctx.modelId);
   } catch (err) {
     // Non-fatal by construction: a quota reading is never worth failing a
     // session or a command over.
