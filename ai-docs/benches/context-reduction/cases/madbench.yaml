@@ -159,6 +159,58 @@ scenarios:
         cmd: sh "$HOME/.bench-tools/{{tool}}/evidence.sh"; ls "$HOME"/.claude/projects/*/*.jsonl >/dev/null 2>&1
         timeout: "60s"
 
+  # Case a: log-heavy debugging. The workspace is the parent of the fix that
+  # orders Gemini function responses by their function calls; the grade is
+  # that fix's own test file, copied in after the agent stops. The prompt
+  # FORCES long outputs: the adapters and handlers tests print about 112,000
+  # characters in about 95 s (the whole suite takes 44 minutes, past Claude
+  # Code's 10-minute Bash limit). Run with --param case_prep=install.
+  - name: log-debug
+    description: "find and fix why a Gemini model gets the wrong tool output after two parallel tool calls, from full test output"
+    repo:
+      url: ../../../..
+      ref: 7f8ffe7faabe19fd4984bdeba663cf383cf9c083
+    timeout: 75m
+    prompt: |
+      A bug report from a claudish user, on a Gemini model through the Gemini API:
+
+      "When the model calls two tools in one turn, for example two Read calls on two different files, it sometimes answers as if each Read returned the other file. There is no error anywhere. It looks like it happens when the second tool finishes first."
+
+      Find the cause in claudish and fix it.
+
+      1. From `packages/cli`, run `bun test src/adapters src/handlers` and `bun run build`, and read their complete output: do not pipe them through tail, head or grep.
+      2. Find the cause and fix it in the source. Add a test, beside the code it covers, that fails without your fix and passes with it.
+      3. Run `bun test src/adapters src/handlers` and `bun run typecheck` from `packages/cli` again, with complete output, and fix what fails.
+
+      Do not change `bun.lock` or any `package.json`. Do not stop to ask me anything: I am away until you finish. End with the cause, the test results and the list of files you changed.
+    checks:
+      - type: custom:exec
+        metric: Graded
+        command: ["bun", "./checks/log-debug-check.ts"]
+        timeout: "600s"
+      # The defect is in convertMessages in gemini-api-format.ts, so a fix
+      # updates that file. The rule also makes the check fail when the agent
+      # does nothing.
+      - type: file-changes
+        metric: StayedInBounds
+        must:
+          update: packages/cli/src/adapters/gemini-api-format.ts
+        must-not:
+          touch: [bun.lock, package.json, packages/cli/package.json]
+        ignore: [logs]
+      - type: exec
+        metric: VariantCheck
+        readout: true
+        in_sandbox: true
+        cmd: sh "$HOME/.bench-tools/{{tool}}/variant-check.sh"
+        timeout: "60s"
+      - type: exec
+        metric: ToolEvidence
+        readout: true
+        in_sandbox: true
+        cmd: sh "$HOME/.bench-tools/{{tool}}/evidence.sh"; ls "$HOME"/.claude/projects/*/*.jsonl >/dev/null 2>&1
+        timeout: "60s"
+
   # Case c: a mechanical refactor across the largest files. Run with
   # --param case_prep=install.
   - name: refactor
