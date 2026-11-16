@@ -268,32 +268,36 @@ describe("subscription probe envelope", () => {
     expect(sent.headers.get("User-Agent")).toBe(
       `antigravity/cli/1.4.9 (aidev_client; os_type=${process.platform}; arch=${process.arch}; auth_method=consumer)`
     );
-    expect(sent.headers.get("x-activity-request-id")).toBeTruthy();
+    expect(sent.headers.get("x-activity-request-id")).toBeNull();
     // Byte-exact: `1.0` would read back as `1` after a parse and re-serialize.
     expect(sent.bodyText).toContain(`"request":${REQUEST_TEXT}`);
     const body = JSON.parse(sent.bodyText);
     expect(Object.keys(body)).toEqual([
-      "model",
       "project",
-      "user_prompt_id",
+      "requestId",
       "request",
-      "enabled_credit_types",
+      "model",
+      "userAgent",
+      "requestType",
     ]);
     expect(body.model).toBe(MODEL);
     expect(body.project).toBe(PROJECT);
-    expect(body.user_prompt_id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(body.requestId).toMatch(/^agent\/[0-9a-f-]{36}\/\d+\/[0-9a-f-]{36}\/1$/);
     expect(body.request).toEqual(JSON.parse(REQUEST_TEXT));
-    expect(body.enabled_credit_types).toEqual(["GOOGLE_ONE_AI"]);
+    expect(body.userAgent).toBe("antigravity");
+    expect(body.requestType).toBe("agent");
     // No discovery call: the id is not resolved against the dynamic models catalog.
     expect(requests.some((r) => r.url.endsWith(":fetchAvailableModels"))).toBe(false);
   });
 
-  test("P3: a free-tier account sends no enabled_credit_types", async () => {
-    const requests = installFetch(undefined, "free-tier");
-    const harness = makeHarness();
-    await subscriptionProbeCommand(ARGS, harness.deps);
-    const body = JSON.parse(generateRequests(requests)[0].bodyText);
-    expect(Object.hasOwn(body, "enabled_credit_types")).toBe(false);
+  test("P3: no tier sends enabled_credit_types", async () => {
+    for (const tier of [undefined, "free-tier"] as const) {
+      const requests = installFetch(undefined, tier);
+      const harness = makeHarness();
+      await subscriptionProbeCommand(ARGS, harness.deps);
+      const body = JSON.parse(generateRequests(requests)[0].bodyText);
+      expect(Object.hasOwn(body, "enabled_credit_types")).toBe(false);
+    }
   });
 
   test("P4: honours AICODE_ENDPOINT_URL and strips its userinfo from sourceUrl", async () => {
@@ -580,8 +584,10 @@ describe("subscription probe argv", () => {
   });
 
   test("A6: buildProbeEnvelopeBody splices the request text and is valid JSON", () => {
-    const text = buildProbeEnvelopeBody("m", "p", "free-tier", '{"a":1.50}', "id");
-    expect(text).toBe('{"model":"m","project":"p","user_prompt_id":"id","request":{"a":1.50}}');
+    const text = buildProbeEnvelopeBody("m", "p", '{"a":1.50}', "id");
+    expect(text).toBe(
+      '{"project":"p","requestId":"id","request":{"a":1.50},"model":"m","userAgent":"antigravity","requestType":"agent"}'
+    );
     expect(JSON.parse(text).request).toEqual({ a: 1.5 });
   });
 });

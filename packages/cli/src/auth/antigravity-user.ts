@@ -359,6 +359,8 @@ interface AntigravityModelRecord {
   maxTokens?: number;
   maxOutputTokens?: number;
   displayName?: string;
+  /** The backend's own name for the model (`MODEL_PLACEHOLDER_M418`). */
+  model?: string;
 }
 
 /** The Antigravity `fetchAvailableModels` response (only the fields we read). */
@@ -404,6 +406,8 @@ export interface AntigravityModelMeta {
   contextWindow?: number;
   maxOutputTokens?: number;
   displayName?: string;
+  /** The backend's own name for the model, which a generation request repeats as `labels.model_enum`. */
+  modelEnum?: string;
 }
 
 /** The dynamic models catalog + default id for the Antigravity account. */
@@ -648,6 +652,9 @@ export async function getServedAntigravityModels(
           }
           if (typeof record?.displayName === "string" && record.displayName) {
             entry.displayName = record.displayName;
+          }
+          if (typeof record?.model === "string" && record.model) {
+            entry.modelEnum = record.model;
           }
           meta[id] = entry;
         }
