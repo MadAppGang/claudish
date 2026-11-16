@@ -45,6 +45,14 @@ export interface CompactionCallRequest {
   timeoutMs: number;
   /** For log lines: what the call is for. */
   purpose: string;
+  /** A JSON schema the answer must follow (`output_config.format`). */
+  schema?: Record<string, unknown>;
+  /**
+   * Text sent before `user` in its own block with a cache marker, so a
+   * prefix repeated across calls is read from the cache once it is long
+   * enough to be cached.
+   */
+  cachedPrefix?: string;
 }
 
 export type CompactionCallResult =
@@ -130,9 +138,23 @@ export class CompactionClient {
     const body = {
       model: this.opts.model,
       system: req.system,
-      messages: [{ role: "user", content: req.user }],
+      messages: [
+        {
+          role: "user",
+          content:
+            req.cachedPrefix === undefined
+              ? req.user
+              : [
+                  { type: "text", text: req.cachedPrefix, cache_control: { type: "ephemeral" } },
+                  { type: "text", text: req.user },
+                ],
+        },
+      ],
       max_tokens: req.maxTokens,
-      output_config: { effort: "low" },
+      output_config: {
+        effort: "low",
+        ...(req.schema ? { format: { type: "json_schema", schema: req.schema } } : {}),
+      },
     };
     const controller = new AbortController();
     this.inFlight.add(controller);
