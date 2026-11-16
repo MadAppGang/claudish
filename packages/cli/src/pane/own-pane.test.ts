@@ -4,7 +4,10 @@
  * The live two-pane case is in `hooks/session/interactive-driver.integration.test.ts`.
  */
 
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { ancestorPids, findOwnPane, panesOfList } from "./own-pane.js";
 
 const mine =
@@ -57,5 +60,57 @@ describe("findOwnPane", () => {
     const pids = await ancestorPids();
     expect(pids.has(process.pid)).toBe(true);
     expect(pids.has(process.ppid)).toBe(true);
+  });
+});
+
+describe("ancestorPids with a ps whose stdout stays open", () => {
+  const dirs: string[] = [];
+
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) {
+      const pidFile = join(dir, "holder.pid");
+      const holders = existsSync(pidFile) ? readFileSync(pidFile, "utf8").split("\n") : [];
+      for (const line of holders) {
+        const pid = Number(line.trim());
+        try {
+          if (pid > 1) process.kill(pid, "SIGKILL");
+        } catch {
+          // already gone
+        }
+      }
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * A `ps` stand-in that prints `answer` and exits at once, leaving a background
+   * process that inherited its stdout and holds the pipe's write end for 30 s.
+   */
+  function heldPipePs(answer: string): string {
+    const dir = mkdtempSync(join(tmpdir(), "own-pane-ps-"));
+    dirs.push(dir);
+    const ps = join(dir, "ps");
+    const pidFile = join(dir, "holder.pid");
+    writeFileSync(ps, `#!/bin/sh\nsleep 30 &\necho $! >> '${pidFile}'\necho ${answer}\n`);
+    chmodSync(ps, 0o755);
+    return ps;
+  }
+
+  test("answers once ps exits, without waiting for the pipe to close", async () => {
+    // every run names the same parent, so the walk visits it and stops at the depth limit
+    const parent = 4_242_424;
+    const ps = heldPipePs(String(parent));
+    const started = performance.now();
+    const outcome = await Promise.race([
+      ancestorPids(2, ps).then((pids) => ({ pids })),
+      new Promise<"hung">((resolve) => setTimeout(() => resolve("hung"), 1_500)),
+    ]);
+    expect(outcome).not.toBe("hung");
+    if (outcome === "hung") return;
+    // each run answers on its exit plus a short drain, never at a kill deadline
+    expect(performance.now() - started).toBeLessThan(800);
+    expect([...outcome.pids].sort((a, b) => a - b)).toEqual(
+      [process.pid, process.ppid, parent].sort((a, b) => a - b)
+    );
   });
 });
