@@ -10,6 +10,7 @@ import {
   compareModelRecency,
   parseModelVersion,
   planFromBuckets,
+  planFromSummary,
   selectBucket,
   shortenModelId,
 } from "./sources/antigravity.js";
@@ -127,6 +128,49 @@ describe("Codex quota headers", () => {
   });
 });
 
+describe("Antigravity quota summary", () => {
+  const groups = [
+    {
+      displayName: "Gemini Models",
+      buckets: [
+        {
+          bucketId: "gemini-weekly",
+          window: "weekly",
+          resetTime: "2026-11-22T10:46:31Z",
+          remainingFraction: 1,
+        },
+        {
+          bucketId: "gemini-5h",
+          window: "5h",
+          resetTime: "2026-11-15T15:46:31Z",
+          remainingFraction: 0.75,
+        },
+      ],
+    },
+    {
+      displayName: "Gemini 4 Argon",
+      buckets: [{ bucketId: "gemini-argon-wtu-weekly", window: "weekly", remainingFraction: 0.4 }],
+    },
+  ];
+
+  test("one window per limit, in the server's order, named by group and window", () => {
+    const plan = planFromSummary(groups);
+    expect(plan?.windows).toEqual([
+      { id: "Gemini Models weekly", used_pct: 0, resets_at: "2026-11-22T10:46:31.000Z" },
+      { id: "Gemini Models 5h", used_pct: 25, resets_at: "2026-11-15T15:46:31.000Z" },
+      { id: "Gemini 4 Argon weekly", used_pct: 60 },
+    ]);
+    expect(plan?.source).toBe("provider");
+  });
+
+  test("a limit with no number is left out, and a summary with none reports nothing", () => {
+    expect(
+      planFromSummary([{ displayName: "Gemini Models", buckets: [{ window: "weekly" }] }])
+    ).toBeUndefined();
+    expect(planFromSummary([])).toBeUndefined();
+  });
+});
+
 describe("Antigravity quota buckets", () => {
   test("does not fall back when the active model has no bucket", () => {
     expect(planFromBuckets(ANTIGRAVITY_QUOTA_BUCKETS, "gemini-3.6-flash")).toBeUndefined();
@@ -147,6 +191,21 @@ describe("Antigravity quota buckets", () => {
     // This previously asserted the opposite, incorrectly reporting a sibling
     // model's flash-lite quota for a session spending the flash model.
     expect(selectBucket(ANTIGRAVITY_QUOTA_BUCKETS, "gemini-3.1-flash")).toBeUndefined();
+
+    // A base id whose buckets are its effort variants: one limit when they agree.
+    const reset = "2026-11-17T05:00:00Z";
+    const agree = [
+      { modelId: "gemini-4-argon-medium", remainingFraction: 0.4, resetTime: reset },
+      { modelId: "gemini-4-argon-high", remainingFraction: 0.4, resetTime: reset },
+      { modelId: "gemini-4-argon-lite-high", remainingFraction: 0.9, resetTime: reset },
+    ];
+    expect(selectBucket(agree, "gemini-4-argon")).toEqual({
+      modelId: "gemini-4-argon",
+      remainingFraction: 0.4,
+      resetTime: reset,
+    });
+    const disagree = [agree[0], { ...agree[1], remainingFraction: 0.7 }];
+    expect(selectBucket(disagree, "gemini-4-argon")).toBeUndefined();
 
     const flashLiteBucket = selectBucket(ANTIGRAVITY_QUOTA_BUCKETS, "gemini-2.5-flash-lite-high");
     expect(flashLiteBucket?.modelId).toBe("gemini-2.5-flash-lite");

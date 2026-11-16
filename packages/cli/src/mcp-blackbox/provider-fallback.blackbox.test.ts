@@ -194,7 +194,7 @@ async function start(): Promise<StrictMcp> {
   writeFileSync(
     wrapper,
     `
-    import { writeFileSync } from "node:fs";
+    import { renameSync, writeFileSync } from "node:fs";
     import { join } from "node:path";
     const args = process.argv.slice(2);
     if (args.includes("-p")) {
@@ -204,7 +204,10 @@ async function start(): Promise<StrictMcp> {
       process.exit(0);
     }
     const id = args[args.indexOf("--session-id") + 1];
-    writeFileSync(join(${JSON.stringify(argvDir)}, id + ".json"), JSON.stringify(args));
+    // Written aside and renamed, so a reader sees either no file or a whole one.
+    const argvFile = join(${JSON.stringify(argvDir)}, id + ".json");
+    writeFileSync(argvFile + ".tmp", JSON.stringify(args));
+    renameSync(argvFile + ".tmp", argvFile);
     await import(${JSON.stringify(pathToFileURL(PANE_FAKE_CHILD).href)});
   `
   );
@@ -247,7 +250,9 @@ async function start(): Promise<StrictMcp> {
 
 const textOf = (answer: ToolAnswer): string => answer.content.map((part) => part.text).join("\n");
 const capturedArgv = (): string[][] =>
-  readdirSync(argvDir).map((file) => readJson<string[]>(join(argvDir, file)));
+  readdirSync(argvDir)
+    .filter((file) => file.endsWith(".json"))
+    .map((file) => readJson<string[]>(join(argvDir, file)));
 const modelOf = (argv: string[]): string => argv[argv.indexOf("--model") + 1];
 
 function seedListing(stale: boolean): ReturnType<typeof projectRecommendations> {
@@ -694,3 +699,10 @@ describe.skipIf(!MAGMUX_AVAILABLE)(
     }, 90_000);
   }
 );
+
+describe("captured pane-child argv", () => {
+  test("capturedArgv ignores an argv file that is still being written", () => {
+    writeFileSync(join(argvDir, "half-written-session.json.tmp"), '["--model", "kimi');
+    expect(capturedArgv()).toEqual([]);
+  });
+});

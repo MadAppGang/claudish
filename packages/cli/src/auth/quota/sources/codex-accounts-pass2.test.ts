@@ -14,7 +14,8 @@ fs.mkdirSync(root + "/.claudish", { recursive: true });
 fs.mkdirSync(root + "/.codex", { recursive: true });
 const legacy = root + "/.claudish/codex-oauth.json";
 fs.writeFileSync(legacy, JSON.stringify({ access_token: "legacy-test-access", refresh_token: "legacy-test-refresh", expires_at: Date.now() + 3600000, account_id: "legacy-test-id" }));
-fs.writeFileSync(root + "/.codex/models_cache.json", JSON.stringify({ models: [{ slug: "simulated-discovered-model" }] }));
+const models = process.env.MODELS ? JSON.parse(process.env.MODELS) : [{ slug: "simulated-discovered-model" }];
+fs.writeFileSync(root + "/.codex/models_cache.json", JSON.stringify({ models }));
 const config = root + "/config.json";
 const count = scenario === "single" ? 1 : scenario === "multi" ? 2 : 0;
 fs.writeFileSync(config, JSON.stringify(scenario === "legacy" || scenario === "unknown" ? {} : { subscriptionAccounts: { "openai-codex": { generation: 1, accounts: ["aaaaaaaaaaaa", "bbbbbbbbbbbb"].slice(0, count).map((id, i) => ({ id, label: "account-" + i, store: "file", addedAt: "2026-09-12T00:00:00Z" })), ...(scenario === "suppressed" ? { legacyCodexSuppressed: true } : {}) } } }));
@@ -24,7 +25,8 @@ setAccountRegistryForTests(registry);
 try { registry.isSynthesizedLegacyOnly(); } catch {}
 if (process.env.MUTATION === "remove-reader-guard") registry.isSynthesizedLegacyOnly = () => true;
 const { codexQuotaAdapter } = await import(src + "/auth/quota/sources/codex.ts");
-let legacyReads = 0, contacts = 0;
+let legacyReads = 0, contacts = 0, probeModel;
+
 const readFile = fs.readFileSync;
 const spy = spyOn(fs, "readFileSync").mockImplementation((path, ...args) => {
   if (String(path) === legacy) legacyReads++;
@@ -34,8 +36,9 @@ const spy = spyOn(fs, "readFileSync").mockImplementation((path, ...args) => {
 fs.readFileSync(legacy, "utf8");
 const calibration = legacyReads;
 legacyReads = 0;
-const listener = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(req) {
+const listener = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(req) {
   contacts++;
+  probeModel = (await req.json()).model;
   if (req.headers.get("authorization") !== "Bearer legacy-test-access") return new Response("wrong credential", { status: 400 });
   return new Response("simulated explicit response", { headers: { "x-codex-primary-used-percent": "25", "x-codex-primary-window-minutes": "300" } });
 } });
@@ -47,7 +50,7 @@ globalThis.fetch = (input, init) => {
 };
 try {
   const result = await codexQuotaAdapter.fetchExplicit();
-  console.log("RESULT " + JSON.stringify({ calibration, legacyReads, contacts, result }));
+  console.log("RESULT " + JSON.stringify({ calibration, legacyReads, contacts, probeModel, result }));
 } finally { spy.mockRestore(); listener.stop(true); }
 `;
 
@@ -92,3 +95,53 @@ for (const scenario of ["single", "multi", "suppressed", "unknown", "legacy"]) {
     }
   });
 }
+
+async function runLegacyProbe(models: Array<{ slug?: string; id?: string }>) {
+  const root = mkdtempSync(join(tmpdir(), "claudish-codex-probe-"));
+  try {
+    const child = Bun.spawn([process.execPath, "-e", program], {
+      cwd: resolve(src, ".."),
+      env: {
+        ...process.env,
+        HOME: root,
+        TEST_SRC: src,
+        SCENARIO: "legacy",
+        MODELS: JSON.stringify(models),
+        CLAUDISH_CONFIG: join(root, "config.json"),
+        CLAUDISH_ACCOUNTS_DIR: join(root, "accounts"),
+        CLAUDISH_DISABLE_KEYCHAIN: "1",
+        CLAUDISH_DISABLE_OP: "1",
+        CLAUDISH_DISABLE_CATALOG_WARM: "1",
+      },
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [stdout, stderr, exit] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    expect(exit, stderr).toBe(0);
+    const line = stdout.split("\n").find((line) => line.startsWith("RESULT "));
+    expect(line, stdout + stderr).toBeDefined();
+    return JSON.parse(line!.slice(7));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+test("Codex quota probe skips an opt-in slug", async () => {
+  const result = await runLegacyProbe([{ slug: "gpt-6-contributor" }, { slug: "gpt-6" }]);
+
+  expect(result.contacts).toBe(1);
+  expect(result.probeModel).toBe("gpt-6");
+});
+
+test("Codex quota probe sends no request when the cache has only opt-in slugs", async () => {
+  const result = await runLegacyProbe([{ slug: "gpt-6-contributor" }]);
+
+  expect(result.contacts).toBe(0);
+  expect(result.probeModel).toBeUndefined();
+  expect(result.result).toBeUndefined();
+});

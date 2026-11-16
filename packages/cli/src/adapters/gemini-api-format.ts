@@ -34,22 +34,53 @@ export interface GeminiAPIFormatOptions {
    * field to the connection's catalog wire.
    */
   thinkingFromModelName?: boolean;
+  /**
+   * Send a call back the way the Antigravity CLI does: the id the server gave
+   * the call on its `functionCall` and on its `functionResponse`, the result
+   * under `output`, and no thought signature on a call the server sent without
+   * one. Only the Antigravity transport sets it.
+   */
+  serverCallIds?: boolean;
 }
 
 export class GeminiAPIFormat extends BaseAPIFormat {
   private readonly thinkingFromModelName: boolean;
+  private readonly serverCallIds: boolean;
 
   constructor(modelId: string, wireFormat?: StreamFormat, options: GeminiAPIFormatOptions = {}) {
     super(modelId, wireFormat);
     this.thinkingFromModelName = options.thinkingFromModelName === true;
+    this.serverCallIds = options.serverCallIds === true;
   }
 
   /**
    * Map of tool_use_id → { name, thoughtSignature }.
    * Persists across requests (NOT cleared in reset) because Gemini requires
    * thoughtSignatures from previous responses to be echoed back in subsequent requests.
+   * `callId` is the id the server gave the call; `fromResponse` marks a call
+   * this process read from a response, as opposed to one met only in history.
    */
-  private toolCallMap = new Map<string, { name: string; thoughtSignature?: string }>();
+  private toolCallMap = new Map<
+    string,
+    { name: string; thoughtSignature?: string; callId?: string; fromResponse?: boolean }
+  >();
+
+  /** A tool result's part: `output` and the server's call id where the transport echoes them. */
+  private functionResponsePart(
+    toolInfo: { name: string; callId?: string },
+    text: string
+  ): Record<string, unknown> {
+    if (!this.serverCallIds) {
+      return { functionResponse: { name: toolInfo.name, response: { content: text } } };
+    }
+    return {
+      functionResponse: {
+        ...(toolInfo.callId ? { id: toolInfo.callId } : {}),
+        name: toolInfo.name,
+        response: { output: text },
+      },
+    };
+  }
 
   /**
    * The Claude call id behind a functionCall part, a functionResponse part, and
@@ -172,29 +203,17 @@ export class GeminiAPIFormat extends BaseAPIFormat {
               }
             }
 
-            parts.push({
-              functionResponse: {
-                name: toolInfo.name,
-                response: {
-                  content: textParts.join("\n") || "OK",
-                },
-              },
-            });
+            parts.push(this.functionResponsePart(toolInfo, textParts.join("\n") || "OK"));
 
             // Append image parts after the functionResponse
             parts.push(...imageParts);
           } else {
-            parts.push({
-              functionResponse: {
-                name: toolInfo.name,
-                response: {
-                  content:
-                    typeof block.content === "string"
-                      ? block.content
-                      : JSON.stringify(block.content),
-                },
-              },
-            });
+            parts.push(
+              this.functionResponsePart(
+                toolInfo,
+                typeof block.content === "string" ? block.content : JSON.stringify(block.content)
+              )
+            );
           }
           for (const part of parts.slice(firstResultPart)) {
             this.callIdOf.set(part, block.tool_use_id);
@@ -223,7 +242,11 @@ export class GeminiAPIFormat extends BaseAPIFormat {
           // If no signature found, use dummy to skip validation.
           // Required for Gemini 3/2.5 with thinking enabled.
           // Handles session recovery, migrations, or first request with history.
-          if (!thoughtSignature) {
+          // A call the server itself sent without a signature (the second of
+          // two parallel calls) goes back without one where the transport
+          // echoes calls as received.
+          const sentUnsigned = this.serverCallIds && toolInfo?.fromResponse === true;
+          if (!thoughtSignature && !sentUnsigned) {
             thoughtSignature = "skip_thought_signature_validator";
             log(
               `[GeminiAPIFormat] Using dummy thoughtSignature for tool ${block.name} (${block.id})`
@@ -232,6 +255,7 @@ export class GeminiAPIFormat extends BaseAPIFormat {
 
           const functionCallPart: any = {
             functionCall: {
+              ...(this.serverCallIds && toolInfo?.callId ? { id: toolInfo.callId } : {}),
               name: block.name,
               args: block.input,
             },
@@ -457,8 +481,8 @@ export class GeminiAPIFormat extends BaseAPIFormat {
    * Register a tool call from the streaming response.
    * Stores the tool ID, name, and thoughtSignature for use in subsequent requests.
    */
-  registerToolCall(toolId: string, name: string, thoughtSignature?: string): void {
-    this.toolCallMap.set(toolId, { name, thoughtSignature });
+  registerToolCall(toolId: string, name: string, thoughtSignature?: string, callId?: string): void {
+    this.toolCallMap.set(toolId, { name, thoughtSignature, callId, fromResponse: true });
     if (thoughtSignature) {
       log(`[GeminiAPIFormat] Captured thoughtSignature for tool ${name} (${toolId})`);
     }

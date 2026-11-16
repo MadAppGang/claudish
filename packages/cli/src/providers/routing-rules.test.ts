@@ -63,6 +63,7 @@ import {
   validateRoutingRulesAgainstProviders,
 } from "./routing-rules.js";
 import { clearRuntimeRegistry, registerRuntimeProvider } from "./runtime-providers.js";
+import { catalogEntry, connection, effortMap } from "./test-helpers/model-id-effort.js";
 
 const keychainGuardAtFileLoad = process.env.CLAUDISH_DISABLE_KEYCHAIN;
 const SYNTHETIC_MODEL_ID = "acme-x1.0";
@@ -506,6 +507,196 @@ describe("buildRoutingChain", () => {
     expect(routes[0].provider).toBe("google");
     // PROVIDER_TO_PREFIX["google"] = "g"
     expect(routes[0].modelSpec).toBe("g@gemini-2.5-pro");
+  });
+});
+
+describe("provider-only rules with exact effort-map wire ids", () => {
+  const base = "example-model";
+  const low = `${base}-low`;
+  const planId = "antigravity-test-plan";
+  let dir: string;
+  let path: string;
+
+  function seed(effortWireId = low): void {
+    const entry = {
+      ...catalogEntry(
+        base,
+        [connection("antigravity", base, effortMap({ low: effortWireId }))],
+        [effortWireId]
+      ),
+      subscriptionPlanIds: [planId],
+    };
+    writeAllModelsCache(
+      {
+        catalogGenerationId: "provider-rule-effort-test-data",
+        version: 3,
+        lastUpdated: new Date().toISOString(),
+        entries: [entry],
+        models: [],
+        plans: [
+          {
+            id: planId,
+            modelDiscovery: "catalog",
+            routeStatus: "supported",
+            route: catalogRouteForProvider("antigravity"),
+          },
+        ],
+      },
+      path
+    );
+  }
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "claudish-provider-rule-effort-"));
+    path = join(dir, "all-models.json");
+    seed();
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("keeps the exact Antigravity effort-map id on a provider-only rule", () => {
+    expect(buildRoutingChain(["antigravity"], low, path)).toMatchObject([
+      { provider: "antigravity", modelSpec: `ag@${low}` },
+    ]);
+  });
+
+  test("keeps the base wire id on the same provider-only rule", () => {
+    expect(buildRoutingChain(["antigravity"], base, path)).toMatchObject([
+      { provider: "antigravity", modelSpec: `ag@${base}` },
+    ]);
+  });
+
+  test("keeps the base id when a membership-resolved effort-map value opts content in", () => {
+    const optIn = `${base}-contributor`;
+    seed(optIn);
+    expect(buildRoutingChain(["antigravity"], optIn, path)).toMatchObject([
+      { provider: "antigravity", modelSpec: `ag@${base}` },
+    ]);
+  });
+
+  test("resolves an opt-in effort-map id absent from aliases without plan membership", () => {
+    const optIn = `${base}-contributor`;
+    writeAllModelsCache(
+      {
+        catalogGenerationId: "provider-rule-opt-in-reverse-test-data",
+        version: 3,
+        lastUpdated: new Date().toISOString(),
+        entries: [
+          catalogEntry(base, [connection("antigravity", base, effortMap({ low: optIn }))], []),
+        ],
+        models: [],
+        plans: [],
+      },
+      path
+    );
+
+    expect(buildRoutingChain(["antigravity"], optIn, path)).toMatchObject([
+      { provider: "antigravity", modelSpec: `ag@${base}` },
+    ]);
+  });
+
+  test("keeps the connection's published spelling for a case-insensitive alias", () => {
+    expect(buildRoutingChain(["antigravity"], "Example-Model-Low", path)).toMatchObject([
+      { provider: "antigravity", modelSpec: `ag@${low}` },
+    ]);
+  });
+
+  test("uses only the membership-resolved entry's effort map", () => {
+    const sharedLow = "shared-low";
+    writeAllModelsCache(
+      {
+        catalogGenerationId: "provider-rule-effort-scope-test-data",
+        version: 3,
+        lastUpdated: new Date().toISOString(),
+        entries: [
+          catalogEntry("a-base", [
+            connection("antigravity", "a-base", effortMap({ low: sharedLow })),
+          ]),
+          {
+            ...catalogEntry("b-base", [connection("antigravity", "b-base")], [sharedLow]),
+            subscriptionPlanIds: [planId],
+          },
+        ],
+        models: [],
+        plans: [
+          {
+            id: planId,
+            modelDiscovery: "catalog",
+            routeStatus: "supported",
+            route: catalogRouteForProvider("antigravity"),
+          },
+        ],
+      },
+      path
+    );
+
+    expect(buildRoutingChain(["antigravity"], sharedLow, path)).toMatchObject([
+      { provider: "antigravity", modelSpec: "ag@b-base" },
+    ]);
+  });
+});
+
+describe("provider-only rules with content-use opt-in wire ids", () => {
+  const optIn = "example-model-contributor";
+  let dir: string;
+  let path: string;
+
+  function write(entries: SlimModelEntry[]): void {
+    writeAllModelsCache(
+      {
+        catalogGenerationId: "provider-rule-content-use-test-data",
+        version: 3,
+        lastUpdated: new Date().toISOString(),
+        entries,
+        models: [],
+        plans: [],
+      },
+      path
+    );
+  }
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "claudish-provider-rule-content-use-"));
+    path = join(dir, "all-models.json");
+    write([]);
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("excludes an unknown opt-in wire id from a provider-only rule", () => {
+    expect(buildRoutingChain(["openrouter"], optIn, path)).toEqual([]);
+  });
+
+  test("excludes an opt-in wire id with a slash from a provider-only rule", () => {
+    expect(buildRoutingChain(["openrouter"], `meta/${optIn}`, path)).toEqual([]);
+  });
+
+  test("keeps an explicit provider and opt-in wire id entry verbatim", () => {
+    expect(buildRoutingChain([`ag@${optIn}`], "ignored", path)).toMatchObject([
+      { provider: "antigravity", modelSpec: `ag@${optIn}` },
+    ]);
+  });
+
+  test("keeps a standard connection whose wire id has an opt-in suffix", () => {
+    write([
+      catalogEntry(
+        "example-model-base",
+        [
+          { ...connection("antigravity", optIn), contentUse: "standard" } as ReturnType<
+            typeof connection
+          > & { contentUse: "standard" },
+        ],
+        []
+      ),
+    ]);
+
+    expect(buildRoutingChain(["antigravity"], optIn, path)).toMatchObject([
+      { provider: "antigravity", modelSpec: `ag@${optIn}` },
+    ]);
   });
 });
 
@@ -2886,6 +3077,35 @@ describe("explainRoute", () => {
       "subscription-not-served",
       "subscription-credential-unreadable",
     ]);
+  });
+
+  test("explains how to type an excluded opt-in wire id explicitly", async () => {
+    const optIn = "example-model-contributor";
+    const catalog = makeTempCatalog({ modelId: "unrelated-model" });
+    try {
+      const explanation = await explainRoute(optIn, {
+        rules: {},
+        defaultProvider: {
+          provider: "openrouter",
+          source: "config-file",
+          legacyAutoPromoted: false,
+        },
+        cachePath: catalog.path,
+        network: "background",
+      });
+
+      expect(explanation.candidates).toContainEqual(
+        expect.objectContaining({
+          provider: "openrouter",
+          outcome: "excluded-by-content-use",
+        })
+      );
+      const description = describeRouteExplanation(explanation);
+      expect(description).toContain(`@${optIn}`);
+      expect(description).toMatch(/opt.?in/i);
+    } finally {
+      catalog.cleanup();
+    }
   });
 
   test("keeps the leading '@' of an OpenRouter preset in the wire id", async () => {

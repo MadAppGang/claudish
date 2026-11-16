@@ -75,6 +75,7 @@ import {
 } from "../../auth/vertex-auth.js";
 import { log } from "../../logger.js";
 import { findEntryByModelId } from "../catalog-query.js";
+import { isOptInWireId } from "../content-use.js";
 import { type DiscoveredModel, rankDiscoveredModels } from "../model-discovery.js";
 import { type DiscoveryOutcome, isChatCapable } from "./probe-discovery.js";
 import { VERTEX_DEFAULT_PUBLISHER, parseVertexModel } from "./vertex-oauth.js";
@@ -365,7 +366,8 @@ async function verifyServed(
  * every other provider's discovery already use — so Vertex orders newest-first
  * like everything else rather than by a second rule invented here. Filtered by
  * the SHARED `isChatCapable`, so an embedding, image, TTS or video model is
- * never offered. Then narrowed to what the project answers for in its own
+ * never offered, and with no content-use opt-in id, so the probe never opts the
+ * user's content in. Then narrowed to what the project answers for in its own
  * location (see the header), and only then does `exclude` choose, so the Test
  * All retry loop gets the NEXT candidate rather than the same one again.
  */
@@ -392,15 +394,13 @@ export async function discoverVertexProbeModel(
     return fail(`Vertex AI model list failed: ${e instanceof Error ? e.message : String(e)}`);
   }
 
-  const ranked = rankDiscoveredModels(listing.models)
+  const chatCapable = rankDiscoveredModels(listing.models)
     .map((m) => m.id)
     .filter(isChatCapable);
+  // A probe pick is chosen for the user, so it is never a content-use opt-in id.
+  const ranked = chatCapable.filter((id) => !isOptInWireId(id));
   if (ranked.length === 0) {
-    return fail(
-      listing.listed === 0
-        ? `${listing.endpoint} listed no models for this project`
-        : `no chat-capable model among the ${listing.listed} that ${listing.endpoint} listed for this project`
-    );
+    return fail(noCandidateReason(listing, chatCapable.length));
   }
   if (!config) {
     // Unreachable: the listing above needs the project too. Narrowing only.
@@ -431,6 +431,18 @@ export async function discoverVertexProbeModel(
   }
   _cache.set(cacheKey, { ranked: served, expiresAt: Date.now() + CACHE_TTL_MS });
   return pickFrom(served, undefined, exclude);
+}
+
+/** Why a listing left no probe candidate: empty, no chat model, or only opt-in ids. */
+function noCandidateReason(
+  listing: { endpoint: string; listed: number },
+  chatCapableCount: number
+): string {
+  if (listing.listed === 0) return `${listing.endpoint} listed no models for this project`;
+  if (chatCapableCount > 0) {
+    return `no chat-capable model that is not a content-use opt-in id among the ${listing.listed} that ${listing.endpoint} listed for this project`;
+  }
+  return `no chat-capable model among the ${listing.listed} that ${listing.endpoint} listed for this project`;
 }
 
 function pickFrom(

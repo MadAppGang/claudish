@@ -104,8 +104,13 @@ afterEach(() => {
   resetState();
 });
 
+/** The account lookups sent beside discovery; `antigravity-side-calls.test.ts` covers them. */
+const ACCOUNT_LOOKUP =
+  /(userinfo|:fetchAdminControls|:fetchUserInfo|:retrieveUserQuotaSummary|:listExperiments|:fetchConfig)$/;
+
 function stubAntigravityFetch() {
   const fetchStub = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (ACCOUNT_LOOKUP.test(String(input).split("?")[0])) return Response.json({});
     expect(new Headers(init?.headers).get("User-Agent")).toStartWith("antigravity/cli/1.3.5 ");
     expect(new Headers(init?.headers).get("Authorization")).toBe("Bearer offline-discovery-token");
     const url = String(input);
@@ -157,7 +162,10 @@ describe("Antigravity discovery and picker order", () => {
     const result = await discoverProviderModelsCatalog("antigravity");
     expect(result.kind).toBe("served");
     if (result.kind !== "served") throw new Error(JSON.stringify(result));
-    expect(fetchStub).toHaveBeenCalledTimes(2);
+    const discoveryCalls = fetchStub.mock.calls.filter(
+      ([input]) => !ACCOUNT_LOOKUP.test(String(input).split("?")[0])
+    );
+    expect(discoveryCalls).toHaveLength(2);
     expect(agentIds).toHaveLength(13);
     expect(
       result.models

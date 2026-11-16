@@ -14,7 +14,9 @@
  */
 
 import { log } from "../logger.js";
-import { getAgyClientVersion } from "./antigravity-client-version.js";
+import { antigravityFetch } from "../providers/transport/antigravity-fetch.js";
+import { getAgyClientBuild, getAgyClientVersion } from "./antigravity-client-version.js";
+import { antigravityAccountCalls, sendAntigravitySideCalls } from "./antigravity-side-calls.js";
 import {
   currentAntigravityTokenLineage,
   lineageForAntigravityAccessToken,
@@ -125,9 +127,16 @@ function antigravityClientVersion(): string {
   return resolveAntigravityClientVersion().version;
 }
 
-/** The Antigravity CLI's User-Agent for one given client version. */
+/**
+ * The Antigravity CLI's User-Agent for one given client version. agy also names
+ * its build changelist (`cl=<number>`); it is sent when it was read from the
+ * agy that reported this version, and left out otherwise, because a changelist
+ * of another build would name a client that does not exist.
+ */
 function userAgentFor(version: string): string {
-  return `antigravity/cli/${version} (aidev_client; os_type=${process.platform}; arch=${process.arch}; auth_method=consumer)`;
+  const build = version === getAgyClientVersion() ? getAgyClientBuild() : null;
+  const cl = build ? ` cl=${build};` : "";
+  return `antigravity/cli/${version} (aidev_client; os_type=${process.platform}; arch=${process.arch};${cl} auth_method=consumer)`;
 }
 
 /**
@@ -177,6 +186,7 @@ export function resetAntigravityUserCache(): void {
   agServedCacheAt = 0;
   agServedCacheVersion = null;
   cachedAgLineage = null;
+  accountCallsSentFor = undefined;
 }
 
 /** Drop every per-account cache when the current token lineage is not the one it was cached under. */
@@ -188,6 +198,27 @@ function syncAccountCaches(): void {
   }
   resetAntigravityUserCache();
   cachedAgLineage = lineage;
+}
+
+/** The token lineage whose account lookups were sent since the caches were last dropped. */
+let accountCallsSentFor: string | null | undefined;
+
+/**
+ * Starts the account lookups the Antigravity CLI makes at a start, once for
+ * each set-up of an account. Not awaited: no answer is read.
+ */
+function startAccountCalls(accessToken: string, projectId: string, lineage: string | null): void {
+  if (accountCallsSentFor === lineage) return;
+  accountCallsSentFor = lineage;
+  void sendAntigravitySideCalls(
+    antigravityAccountCalls({
+      apiBase: apiBase(),
+      defaultHost: antigravityHost() === ANTIGRAVITY_DEFAULT_HOST,
+      userAgent: buildAntigravityUserAgent(),
+      projectId,
+    }),
+    accessToken
+  );
 }
 
 /** The lineage `accessToken` belongs to; the current one for a token not seen recently. */
@@ -209,7 +240,7 @@ function mayPublishFor(lineage: string | null): boolean {
 
 /** loadCodeAssist with the Antigravity identity (minimal `{ ideType }` metadata). */
 async function callLoadCodeAssistAntigravity(accessToken: string): Promise<LoadCodeAssistResponse> {
-  const res = await fetch(`${apiBase()}:loadCodeAssist`, {
+  const res = await antigravityFetch(`${apiBase()}:loadCodeAssist`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${accessToken}`,
@@ -274,6 +305,7 @@ export async function setupAntigravityUser(
     log("[Antigravity] Token lineage changed during setup; the result is not cached.");
   }
   log(`[Antigravity] User set up, project: ${projectId}, tier: ${resolvedTier}`);
+  startAccountCalls(accessToken, projectId, lineage);
   return { projectId, tierId: resolvedTier };
 }
 
@@ -294,46 +326,42 @@ export function getAntigravityTierFullName(): string {
   return cachedAgTierName || getAntigravityTierDisplayName();
 }
 
-/** Quota bucket from retrieveUserQuota. */
+/** One model's quota, from the `quotaInfo` of its record in the model list. */
 export interface QuotaBucket {
   modelId?: string;
   remainingFraction?: number;
-  remainingAmount?: string;
   resetTime?: string;
-  tokenType?: string;
+}
+
+/** One limit of a group in `retrieveUserQuotaSummary`: its weekly or its five-hour window. */
+export interface QuotaSummaryBucket {
+  bucketId?: string;
+  displayName?: string;
+  /** `weekly` or `5h`. */
+  window?: string;
+  resetTime?: string;
+  remainingFraction?: number;
+}
+
+/** The models that share limits, as `retrieveUserQuotaSummary` groups them. */
+export interface QuotaSummaryGroup {
+  displayName?: string;
+  description?: string;
+  buckets?: QuotaSummaryBucket[];
 }
 
 /**
- * Retrieve per-model quota usage. Returns buckets with remaining capacity per
- * model. Call after `setupAntigravityUser` (needs its projectId).
- *
- * THE USER-AGENT SELECTS WHICH TIER'S BUCKETS COME BACK. This call used to
- * send the gemini-cli UA (`GeminiCLI/0.5.6/gemini-code-assist`) it was written
- * with. That was known to be a live behavioural question rather than a
- * cosmetic one, and the measurement has now been made — same token, same
- * project, same endpoint, only the UA varied, on a real Ultra account
- * (2026-08-18):
- *
- *   gemini-cli UA  ->  4 buckets: gemini-2.5-flash, -2.5-flash-lite,
- *                      -2.5-pro, -3.1-flash-lite
- *   antigravity UA -> 24 buckets: the 3.x families (3.6-flash-*, 3.5-flash-*,
- *                      3.1-pro-*), plus claude-* and gpt-oss-* uids
- *
- * Those 4 are precisely the membership of the RETIRED free Code Assist plan.
- * Identifying as gemini-cli therefore asked the backend for a product the user
- * is not on, and the quota UI rendered "Antigravity Ultra" — a correct tier
- * label from `loadCodeAssist`, which always identified correctly — directly
- * above four models an Ultra subscriber does not use, all pinned at 0%.
- *
- * So this MUST match `loadCodeAssist`'s identity. Both calls hit the same host
- * and the backend answers each according to who is asking.
+ * The account's limits per model group, the call the Antigravity CLI reads its
+ * quota from. A group is named in prose only (`Gemini Models`), with no model
+ * id, so this answers "what is left on the account" and never "what is left for
+ * this model": `retrieveModelQuota` answers that.
  */
-export async function retrieveUserQuota(
+export async function retrieveUserQuotaSummary(
   accessToken: string,
   projectId: string
-): Promise<{ buckets?: QuotaBucket[] } | null> {
+): Promise<{ groups?: QuotaSummaryGroup[] } | null> {
   try {
-    const res = await fetch(`${apiBase()}:retrieveUserQuota`, {
+    const res = await antigravityFetch(`${apiBase()}:retrieveUserQuotaSummary`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -343,14 +371,49 @@ export async function retrieveUserQuota(
       body: JSON.stringify({ project: projectId }),
     });
     if (!res.ok) {
-      log(`[Antigravity] retrieveUserQuota failed: ${res.status}`);
+      log(`[Antigravity] retrieveUserQuotaSummary failed: ${res.status}`);
       return null;
     }
-    return (await res.json()) as { buckets?: QuotaBucket[] };
+    return (await res.json()) as { groups?: QuotaSummaryGroup[] };
   } catch (err) {
-    log(`[Antigravity] retrieveUserQuota error: ${err}`);
+    log(`[Antigravity] retrieveUserQuotaSummary error: ${err}`);
     return null;
   }
+}
+
+/**
+ * Per-model quota, read now from the model list: every record carries the
+ * remaining fraction and reset time of the limit that model spends
+ * (`quotaInfo`). One uncached `fetchAvailableModels` request, which is the
+ * request the Antigravity CLI makes; the served-models cache is not touched.
+ * Null when the list could not be read. Call after `setupAntigravityUser`
+ * (needs its projectId).
+ */
+export async function retrieveModelQuota(
+  accessToken: string,
+  projectId: string,
+  opts?: { signal?: AbortSignal }
+): Promise<{ buckets: QuotaBucket[] } | null> {
+  const raw = await fetchAntigravityAvailableModelsRaw(accessToken, projectId, opts);
+  if (raw.kind !== "answered" || raw.body.kind !== "json") {
+    log(
+      `[Antigravity] model quota not read: ${raw.kind === "answered" ? raw.status : "unreachable"}`
+    );
+    return null;
+  }
+  const models = (raw.body.value as FetchAvailableModelsResponse | null)?.models ?? {};
+  const buckets: QuotaBucket[] = [];
+  for (const [modelId, record] of Object.entries(models)) {
+    const quota = record?.quotaInfo;
+    if (!quota) continue;
+    const bucket: QuotaBucket = { modelId };
+    if (typeof quota.remainingFraction === "number") {
+      bucket.remainingFraction = quota.remainingFraction;
+    }
+    if (typeof quota.resetTime === "string") bucket.resetTime = quota.resetTime;
+    buckets.push(bucket);
+  }
+  return { buckets };
 }
 
 /** Per-model record inside `fetchAvailableModels` (only the fields we read). */
@@ -359,6 +422,11 @@ interface AntigravityModelRecord {
   maxTokens?: number;
   maxOutputTokens?: number;
   displayName?: string;
+  /** The backend's own name for the model (`MODEL_PLACEHOLDER_M418`). */
+  model?: string;
+  thinkingLevel?: number;
+  /** What is left of the limit this model spends, and when that limit resets. */
+  quotaInfo?: { remainingFraction?: number; resetTime?: string };
 }
 
 /** The Antigravity `fetchAvailableModels` response (only the fields we read). */
@@ -404,6 +472,10 @@ export interface AntigravityModelMeta {
   contextWindow?: number;
   maxOutputTokens?: number;
   displayName?: string;
+  /** The backend's own name for the model, which a generation request repeats as `labels.model_enum`. */
+  modelEnum?: string;
+  /** The backend's number for the model's thinking level (`thinkingLevel`: 2 on a `-medium` id). */
+  thinkingLevel?: number;
 }
 
 /** The dynamic models catalog + default id for the Antigravity account. */
@@ -539,7 +611,7 @@ export async function fetchAntigravityAvailableModelsRaw(
   };
   let res: Response;
   try {
-    res = await fetch(url, {
+    res = await antigravityFetch(url, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -648,6 +720,12 @@ export async function getServedAntigravityModels(
           }
           if (typeof record?.displayName === "string" && record.displayName) {
             entry.displayName = record.displayName;
+          }
+          if (typeof record?.model === "string" && record.model) {
+            entry.modelEnum = record.model;
+          }
+          if (typeof record?.thinkingLevel === "number") {
+            entry.thinkingLevel = record.thinkingLevel;
           }
           meta[id] = entry;
         }

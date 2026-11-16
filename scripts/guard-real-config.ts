@@ -566,6 +566,7 @@ const childEnv: Record<string, string | undefined> = {
   CLAUDISH_DISABLE_OP: "1",
   CLAUDISH_DISABLE_CATALOG_WARM: "1",
   CLAUDISH_DISABLE_BUNDLED_LIST: "1",
+  CLAUDISH_ANTIGRAVITY_PLAIN_FETCH: "1",
   CLAUDISH_CATALOG_INCOMPATIBLE_PATH: join(sentinelDir, "catalog-incompatible.json"),
 };
 for (const name of HOME_BYPASS_OVERRIDES) delete childEnv[name];

@@ -26,7 +26,13 @@ export interface GeminiSseOptions {
   raw?: RawStreamTap | null;
   onTokenUpdate?: (input: number, output: number) => void;
   /** Store tool call info (id, name, thoughtSignature) for future request context */
-  onToolCall?: (toolId: string, name: string, thoughtSignature?: string) => void;
+  onToolCall?: (
+    toolId: string,
+    name: string,
+    thoughtSignature?: string,
+    /** The id the provider gave the call (`functionCall.id`), when it gave one. */
+    callId?: string
+  ) => void;
   /**
    * Called once per `tool_use` block, for the token tracker's tool count.
    * Tool-argument interception is not this parser's job: it happens at the hook
@@ -46,6 +52,11 @@ export interface GeminiSseOptions {
    * (the adapter's history store) gets the upstream name unchanged.
    */
   mapToolName?: (upstreamName: string) => string;
+  /**
+   * Maps a call's arguments back to the argument names Claude Code declared,
+   * undoing the same alias. Given the upstream tool name. Identity when unset.
+   */
+  mapToolArguments?: (upstreamName: string, args: unknown) => unknown;
 }
 
 export function createGeminiSseStream(
@@ -345,7 +356,12 @@ export function createGeminiSseStream(
                       ? opts.mapToolName(part.functionCall.name)
                       : part.functionCall.name;
                     opts.onToolCallObserved?.(toolName);
-                    const args = JSON.stringify(part.functionCall.args || {});
+                    const upstreamArgs = part.functionCall.args || {};
+                    const args = JSON.stringify(
+                      opts.mapToolArguments
+                        ? opts.mapToolArguments(part.functionCall.name, upstreamArgs)
+                        : upstreamArgs
+                    );
 
                     const t = {
                       id: toolId,
@@ -358,7 +374,12 @@ export function createGeminiSseStream(
 
                     // Store tool call info + thoughtSignature for future requests
                     if (opts.onToolCall) {
-                      opts.onToolCall(toolId, part.functionCall.name, part.thoughtSignature);
+                      opts.onToolCall(
+                        toolId,
+                        part.functionCall.name,
+                        part.thoughtSignature,
+                        typeof part.functionCall.id === "string" ? part.functionCall.id : undefined
+                      );
                     }
 
                     send("content_block_start", {

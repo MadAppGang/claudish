@@ -9,6 +9,7 @@ import { GeminiRequestQueue } from "../../handlers/shared/gemini-queue.js";
 import * as logger from "../../logger.js";
 import * as allModelsCache from "../all-models-cache.js";
 import type { DiskCacheV3 } from "../all-models-cache.js";
+import { antigravityConversations } from "../antigravity-envelope.js";
 import { _resetCatalogClient, _setCatalogEntriesForTest } from "../catalog-client.js";
 import * as dynamicModelsCatalog from "../dynamic-models-catalog.js";
 import { invalidateModelDiscovery } from "../model-discovery.js";
@@ -193,6 +194,133 @@ function expectOwnRetry(sent: Envelope[]) {
     `[Antigravity] sending model ${sent[1]!.model} for ${BASE} (effort high, from request)`
   );
 }
+
+function labelsOf(envelope: Envelope): Record<string, string> {
+  return (envelope.request as { labels: Record<string, string> }).labels;
+}
+
+function transformIn(transport: AntigravityProviderTransport, session: string, text: string) {
+  return transport.transformPayload(
+    { contents: [{ role: "user", parts: [{ text }] }] },
+    {
+      output_config: { effort: "high" },
+      metadata: { user_id: JSON.stringify({ session_id: session }) },
+    }
+  ) as Envelope;
+}
+
+describe("a new Antigravity conversation writes its access record first", () => {
+  async function record(failAcl = false) {
+    const { transport } = await setupTransport();
+    const endpoint = transport.getEndpoint();
+    const headers = await transport.getHeaders();
+    antigravityConversations.clearNewTrajectories();
+    const seen: Array<{ url: string; body: string }> = [];
+    globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      seen.push({ url, body: String(init?.body) });
+      if (failAcl && url.endsWith(":writeTrajectoryAcls")) throw new Error("socket closed");
+      return new Response("ok", { status: 200 });
+    }) as typeof fetch;
+    const sendVia = (envelope: Envelope) =>
+      transport.fetch(endpoint, { method: "POST", headers, body: JSON.stringify(envelope) });
+    return { transport, endpoint, headers, seen, sendVia };
+  }
+
+  test("once, with the conversation's trajectory id, before its first generation request", async () => {
+    const { transport, endpoint, seen, sendVia } = await record();
+    const first = transformIn(transport, "acl-session", "acl-opening");
+    await sendVia(first);
+    await sendVia(transformIn(transport, "acl-session", "acl-opening"));
+
+    expect(seen.map((entry) => entry.url)).toEqual([
+      endpoint.replace(/:streamGenerateContent.*$/, ":writeTrajectoryAcls"),
+      endpoint,
+      endpoint,
+    ]);
+    expect(JSON.parse(seen[0]!.body)).toEqual({ trajectoryId: labelsOf(first).trajectory_id });
+  });
+
+  test("a failed write does not hold back the generation request", async () => {
+    const { transport, endpoint, seen, sendVia } = await record(true);
+    const response = await sendVia(transformIn(transport, "acl-session-2", "acl-opening"));
+
+    expect(response.status).toBe(200);
+    expect(seen.map((entry) => entry.url).at(-1)).toBe(endpoint);
+    expect(seen).toHaveLength(2);
+  });
+
+  test("a request writes its own conversation's record and leaves another's for that one's request", async () => {
+    const { transport, seen, sendVia } = await record();
+    const mine = transformIn(transport, "acl-session-3", "acl-mine");
+    const other = transformIn(transport, "acl-session-3", "acl-other");
+    await sendVia(mine);
+    const aclBodies = () =>
+      seen
+        .filter((entry) => entry.url.endsWith(":writeTrajectoryAcls"))
+        .map((e) => JSON.parse(e.body));
+    expect(aclBodies()).toEqual([{ trajectoryId: labelsOf(mine).trajectory_id }]);
+
+    await sendVia(other);
+    expect(aclBodies()).toEqual([
+      { trajectoryId: labelsOf(mine).trajectory_id },
+      { trajectoryId: labelsOf(other).trajectory_id },
+    ]);
+  });
+
+  test("a request cancelled during the write ends the write and is not sent", async () => {
+    const { transport, endpoint, headers } = await record();
+    const seen: string[] = [];
+    const cancel = new AbortController();
+    globalThis.fetch = ((input: unknown, init?: RequestInit) => {
+      seen.push(String(input));
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+        queueMicrotask(() => cancel.abort());
+      });
+    }) as typeof fetch;
+    const envelope = transformIn(transport, "acl-session-4", "acl-cancelled");
+
+    await expect(
+      transport.fetch(endpoint, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(envelope),
+        signal: cancel.signal,
+      })
+    ).rejects.toBeDefined();
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toEndWith(":writeTrajectoryAcls");
+  });
+});
+
+describe("Antigravity conversation ids follow the Claude Code session", () => {
+  test("the same opening in two sessions gets two conversations; a later request of one session keeps its own", async () => {
+    const { transport } = await setupTransport();
+    const first = labelsOf(transformIn(transport, "session-one", "same-opening"));
+    const other = labelsOf(transformIn(transport, "session-two", "same-opening"));
+    const again = labelsOf(transformIn(transport, "session-one", "same-opening"));
+
+    expect(other.cascade_id).not.toBe(first.cascade_id);
+    expect(other.trajectory_id).not.toBe(first.trajectory_id);
+    expect(again.cascade_id).toBe(first.cascade_id);
+    expect(again.trajectory_id).toBe(first.trajectory_id);
+  });
+
+  test("a capacity retry is sent in its primary request's conversation", async () => {
+    const { transport, sent, send } = await setupTransport();
+    const requestA = transformIn(transport, "session-one", "same-opening");
+    const requestB = transformIn(transport, "session-two", "same-opening");
+
+    const response = await send(requestA);
+
+    expect(response.status).toBe(200);
+    expect(sent).toHaveLength(2);
+    expect(labelsOf(sent[1]!).cascade_id).toBe(labelsOf(requestA).cascade_id);
+    expect(labelsOf(sent[1]!).trajectory_id).toBe(labelsOf(requestA).trajectory_id);
+    expect(labelsOf(sent[1]!).cascade_id).not.toBe(labelsOf(requestB).cascade_id);
+  });
+});
 
 describe("Antigravity request-scoped capacity retries", () => {
   test("retry retains A's body and request effort when B transforms before A enqueues", async () => {

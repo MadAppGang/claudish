@@ -171,12 +171,19 @@ function loadCodeAssistSuccess(): Response {
   });
 }
 
+/** The account lookups sent beside discovery; `antigravity-side-calls.test.ts` covers them. */
+const ACCOUNT_LOOKUP =
+  /(userinfo|:fetchAdminControls|:fetchUserInfo|:retrieveUserQuotaSummary|:listExperiments|:fetchConfig)$/;
+
 function installFetch(
   overrides: { setup?: Responder; models?: Responder } = {}
 ): RecordedRequest[] {
   const requests: RecordedRequest[] = [];
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const request = input instanceof Request ? input : undefined;
+    if (ACCOUNT_LOOKUP.test(new URL(request ? request.url : String(input)).pathname)) {
+      return Response.json({});
+    }
     const rawBody = init?.body ?? (request ? await request.clone().text() : undefined);
     const recorded: RecordedRequest = {
       url: request ? request.url : String(input),

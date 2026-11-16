@@ -1,4 +1,5 @@
 import { log } from "../logger.js";
+import type { AggregatorEntry } from "../model-loader.js";
 import {
   type CachedSubscriptionPlan,
   type DiskCacheV3,
@@ -29,7 +30,8 @@ import {
   type RouteRegistry,
   isRouteRegistry,
 } from "./connection-wire.js";
-import { allConnections, splitOptInConnections } from "./content-use.js";
+import { allConnections, isOptInWireId, splitOptInConnections } from "./content-use.js";
+import { implicitEffortWireId, publishedEffortWireId } from "./model-id-effort.js";
 import { _clearChatCapabilityIndex } from "./transport/probe-discovery.js";
 
 const MAX_CATALOG_PAGES = 40;
@@ -106,17 +108,17 @@ export function catalogOrigin(): "disk" | "bundled" | "none" {
   return getCatalogSnapshot()?.origin ?? "none";
 }
 
-export function latestOpusModelId(): string | null {
-  return latestAnthropicTierModelId("opus");
-}
-
-export function latestAnthropicTierModelId(tier: "opus" | "sonnet" | "haiku"): string | null {
+/** The newest `claude-<tier>-*` id whose model id `accept` takes (every id, by default). */
+export function latestAnthropicTierModelId(
+  tier: "opus" | "sonnet" | "haiku",
+  accept: (modelId: string) => boolean = () => true
+): string | null {
   // The disk catalog only: a recommended subset could name an older id as "latest".
   const snapshot = getCatalogSnapshot();
   if (snapshot?.origin !== "disk") return null;
   const { entries } = snapshot;
   const family = new RegExp(`^claude-${tier}-`, "i");
-  const matches = entries.filter((entry) => family.test(entry.modelId));
+  const matches = entries.filter((entry) => family.test(entry.modelId) && accept(entry.modelId));
   if (matches.length === 0) return null;
   matches.sort((a, b) => {
     const byDate = (b.releaseDate ?? "").localeCompare(a.releaseDate ?? "");
@@ -200,20 +202,146 @@ export function externalIdFor(entry: SlimModelEntry, provider: string): string |
   return wireIds.find((wireId) => !isMovingPointer(wireId)) ?? null;
 }
 
-/** Whether `entry` maps `wireId` exactly on a route bound to `provider`, opt-in rows included. */
+/**
+ * Whether `entry` maps `wireId` exactly on a route bound to `provider`, opt-in rows
+ * included: as a connection's `externalModelId`, or as an id its effort map
+ * (`modelIdEffort`) lists for a level or for `off`. An effort-map id is a wire id
+ * the connection publishes in its own right, so it is sent as typed and never
+ * folded back into the base through an alias.
+ */
 function publishesWireIdFor(entry: SlimModelEntry, provider: string, wireId: string): boolean {
   return allConnections(entry).some(
     (connection) =>
       connection.routeStatus === "mapped" &&
-      connection.externalModelId === wireId &&
-      catalogRouteMatchesProvider(connection.route, provider)
+      catalogRouteMatchesProvider(connection.route, provider) &&
+      (connection.externalModelId === wireId || effortMapListsWireId(connection, wireId))
   );
 }
 
+/** Whether a connection's effort map lists `wireId` as a level's id or as `off`. */
+function effortMapListsWireId(connection: AggregatorEntry, wireId: string): boolean {
+  return publishedEffortWireId(connection, wireId) === wireId;
+}
+
+/**
+ * {@link publishesWireIdFor} for a name routing chooses a provider for: ordinary
+ * connections only (`aggregators`), and an effort-map id only when it does not
+ * opt content in. A content-use opt-in id is never kept as typed here, so the
+ * steps of {@link resolveExternalId} after the exact one choose the base.
+ */
+function publishesImplicitWireIdFor(
+  entry: SlimModelEntry,
+  provider: string,
+  wireId: string
+): boolean {
+  return (entry.aggregators ?? []).some(
+    (connection) =>
+      connection.routeStatus === "mapped" &&
+      catalogRouteMatchesProvider(connection.route, provider) &&
+      (connection.externalModelId === wireId || implicitEffortWireId(connection, wireId) === wireId)
+  );
+}
+
+/**
+ * The wire id for a model spec typed with its provider (`meta@<id>`, a
+ * `provider@model` routing entry): an id the provider publishes, opt-in rows
+ * included, is sent verbatim. A content-use opt-in id (`isOptInWireId`) is
+ * always sent verbatim: no later step rewrites it to another id, whichever
+ * provider's connection or effort map lists it.
+ */
 export function resolveExternalId(
   userInput: string,
   provider: string,
   cachePath?: string
+): string | null {
+  return resolveWireId(userInput, provider, cachePath, "explicit");
+}
+
+/**
+ * The wire id for a name whose provider routing chose (a provider-only routing
+ * entry, which names no model). A content-use opt-in id is never sent: an id
+ * this provider's own effort map lists resolves to that connection's base id,
+ * an id two entries list that way resolves to nothing, and another provider's
+ * effort map is never read.
+ */
+export function resolveImplicitExternalId(
+  userInput: string,
+  provider: string,
+  cachePath?: string
+): string | null {
+  return resolveWireId(userInput, provider, cachePath, "implicit");
+}
+
+/**
+ * `explicit`: the user typed the provider with the name. `implicit`: routing
+ * chose the provider, so the answer is never a content-use opt-in id.
+ */
+type WireIdResolution = "explicit" | "implicit";
+
+/** What the provider-bound effort-map step decided for an implicit name. */
+type EffortMapOwner = { kind: "none" } | { kind: "ambiguous" } | { kind: "one"; wireId: string };
+
+/**
+ * The base id of the entry whose mapped connection on `provider` lists `wireId`
+ * in its effort map. Only this provider's connections count; owners with two
+ * different base ids are ambiguous.
+ */
+function effortMapOwnerFor(
+  entries: SlimModelEntry[],
+  provider: string,
+  wireId: string
+): EffortMapOwner {
+  const baseIds = new Set<string>();
+  for (const entry of entries) {
+    const owns = allConnections(entry).some(
+      (connection) =>
+        connection.routeStatus === "mapped" &&
+        catalogRouteMatchesProvider(connection.route, provider) &&
+        effortMapListsWireId(connection, wireId)
+    );
+    if (!owns) continue;
+    const baseId = externalIdFor(entry, provider);
+    if (baseId) baseIds.add(baseId);
+  }
+  const [first, ...rest] = baseIds;
+  if (first === undefined) return { kind: "none" };
+  if (rest.length > 0) return { kind: "ambiguous" };
+  return { kind: "one", wireId: first };
+}
+
+/**
+ * The steps of {@link resolveWireId} that answer before any model-id, alias,
+ * reverse or suffix lookup; `undefined` leaves the name to those lookups.
+ *
+ * 1. An id this provider publishes, typed exactly, is its own answer. On the
+ *    explicit path opt-in rows count too: this is how
+ *    `meta@muse-spark-1.3-contributor` is sent verbatim.
+ * 2. Explicit: any other content-use opt-in id is sent as typed, so no lookup
+ *    rewrites it. Implicit: an id this provider's own effort map lists names
+ *    its entry, before a model id or alias of the same spelling can, and an id
+ *    two entries list that way has no answer.
+ */
+function answerBeforeLookup(
+  entries: SlimModelEntry[],
+  provider: string,
+  userInput: string,
+  resolution: WireIdResolution
+): string | null | undefined {
+  const publishesExactly =
+    resolution === "explicit" ? publishesWireIdFor : publishesImplicitWireIdFor;
+  if (entries.some((entry) => publishesExactly(entry, provider, userInput))) return userInput;
+
+  if (resolution === "explicit") return isOptInWireId(userInput) ? userInput : undefined;
+  const owner = effortMapOwnerFor(entries, provider, userInput);
+  if (owner.kind === "one") return owner.wireId;
+  return owner.kind === "ambiguous" ? null : undefined;
+}
+
+function resolveWireId(
+  userInput: string,
+  provider: string,
+  cachePath: string | undefined,
+  resolution: WireIdResolution
 ): string | null {
   const entries = cachePath ? readAllModelsCache(cachePath)?.entries : getCatalogEntries();
 
@@ -223,12 +351,11 @@ export function resolveExternalId(
   }
   if (!entries) return null;
 
-  // An id this provider publishes, typed exactly, is its own answer — opt-in
-  // rows included. This is how `meta@muse-spark-1.3-contributor` is sent
-  // verbatim: every step below CHOOSES a wire id, and a chosen one is never a
-  // content-use opt-in (`content-use.ts`).
-  if (entries.some((entry) => publishesWireIdFor(entry, provider, userInput))) return userInput;
+  const answered = answerBeforeLookup(entries, provider, userInput, resolution);
+  if (answered !== undefined) return answered;
 
+  // Every step below CHOOSES a wire id, and a chosen one is never a content-use
+  // opt-in (`content-use.ts`).
   const byModelId = entries.find((entry) => entry.modelId === userInput);
   if (byModelId) return externalIdFor(byModelId, provider);
 
@@ -293,11 +420,10 @@ export function logResolution(
   result: ModelResolutionResult,
   quiet = false
 ): void {
-  if (result.wasResolved && !quiet) {
-    process.stderr.write(
-      `[Model] Resolved "${userInput}" → "${result.resolvedId}" (${result.sourceLabel})\n`
-    );
-  }
+  if (!result.wasResolved) return;
+  const line = `[Model] Resolved "${userInput}" → "${result.resolvedId}" (${result.sourceLabel})`;
+  log(line);
+  if (!quiet) process.stderr.write(`${line}\n`);
 }
 
 export { catalogWarmDisabledFor };

@@ -382,6 +382,21 @@ memory, `splitOptInConnections` applies this connection rule and moves opt-in co
 Readers holding only a wire id keep the suffix rule. [`routing.md`](../routing.md) lists the
 entry points and readers.
 
+Two of those readers close the remaining implicit paths. A provider-only routing entry (no `@`,
+the fallback hop included) excludes, as `excluded-by-content-use`, an opt-in name it cannot map to
+an ordinary connection of its provider, and its explanation names the `provider@<id>` to type to
+opt in. The transport's effort choice (`chooseModelIdForEffort`) never picks an opt-in id from an
+effort map; the provider's own resolution answers.
+
+An opt-in id typed with its provider is sent verbatim on every provider, Devin at any effort
+included: `resolveExternalId` never rewrites it to another id. The implicit lookup
+(`resolveImplicitExternalId`) reads only the requested provider's effort maps and resolves to
+nothing when two entries list the id. Antigravity's automatic choice and its capacity retry never
+pick an opt-in id.
+
+A typed opt-in id is sent verbatim even when the account does not list it. Devin's resolver, its
+probe pick and account-listed gathering never choose one.
+
 **Remove the suffix fallback when models-index publishes `contentUse` on every connection
 (backend M3).** Until then it is the one wire-id name rule claudish keeps. The trigger is field
 coverage, not Meta: OpenCode Zen's `-contributor-free` ids are covered by the same regex.

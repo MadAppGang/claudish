@@ -189,6 +189,13 @@ jobs:
         env:
           CLAUDISH_SKIP_LIVE_E2E: "1"
 
+      # The Antigravity HTTP client is used only where node:http writes the head it
+      # is given (Bun 1.4.0 and later), so the pinned 1.3.10 skips these tests.
+      - name: Antigravity HTTP client tests
+        working-directory: packages/cli
+        run: bun test src/providers/transport/antigravity-fetch.test.ts
+        timeout-minutes: 5
+
   # S1: a user hook module (.ts type import, .ts value import through the
   # Bun.plugin virtual module, .js) loads from a `--target bun` bundle and from a
   # `--compile` binary. The hermetic jobs run the same test on macOS with

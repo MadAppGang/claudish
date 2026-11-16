@@ -7,6 +7,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { HookEngine } from "../engine.js";
 import { UnavailableSink } from "../injection/sinks.js";
+import { observe, resetObserverModelCache } from "../observer/client.js";
 import type { RequestContext, ToolCallContext } from "../public.js";
 import { HookRegistry } from "../registry.js";
 import { RequestHooks } from "../request-stage.js";
@@ -22,6 +23,7 @@ import {
 const realFetch = globalThis.fetch;
 afterEach(() => {
   globalThis.fetch = realFetch;
+  resetObserverModelCache();
 });
 
 const ctx = {} as RequestContext;
@@ -136,5 +138,70 @@ describe("observer through the seam", () => {
       "plan-mode/plan-file-path",
       "session-context/no-harness-echo",
     ]);
+  });
+});
+
+async function runObserver(
+  models: Array<{ name: string; size: number; capabilities?: string[] }>,
+  configuredModel?: string
+) {
+  resetObserverModelCache();
+  const chatModels: string[] = [];
+  let discoveries = 0;
+  globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith("/api/tags")) {
+      discoveries++;
+      return new Response(JSON.stringify({ models }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.endsWith("/api/chat")) {
+      chatModels.push(JSON.parse(String(init?.body)).model);
+      return new Response(
+        JSON.stringify({ message: { content: JSON.stringify({ ruleId: null, confidence: 0 }) } }),
+        { headers: { "content-type": "application/json" } }
+      );
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  }) as unknown as typeof fetch;
+
+  const verdict = await observe(
+    {
+      model: "test-main",
+      toolNames: ["Write"],
+      harness: { planModeActive: false },
+      proposedCall: { name: "Write", argKeys: ["file_path"], paths: ["/p/x.md"] },
+      ruleVocabulary: [],
+    },
+    { observer: { enabled: true, ...(configuredModel ? { model: configuredModel } : {}) } }
+  );
+  return { chatModels, discoveries, verdict };
+}
+
+describe("observer model selection", () => {
+  it("skips the smallest model when its wire id is opt-in", async () => {
+    const size = 50 * 1024 * 1024;
+    const result = await runObserver([
+      { name: "small-contributor", size },
+      { name: "small-model", size: size + 1 },
+    ]);
+
+    expect(result.chatModels).toEqual(["small-model"]);
+  });
+
+  it("disables the observer when every discovered wire id is opt-in", async () => {
+    const result = await runObserver([{ name: "small-contributor", size: 50 * 1024 * 1024 }]);
+
+    expect(result.verdict).toBeNull();
+    expect(result.chatModels).toEqual([]);
+    expect(result.discoveries).toBe(1);
+  });
+
+  it("keeps an explicitly configured opt-in wire id", async () => {
+    const result = await runObserver([], "small-contributor");
+
+    expect(result.chatModels).toEqual(["small-contributor"]);
+    expect(result.discoveries).toBe(0);
   });
 });

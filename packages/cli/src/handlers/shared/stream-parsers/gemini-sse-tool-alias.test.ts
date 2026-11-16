@@ -32,6 +32,40 @@ async function drain(res: Response): Promise<string> {
 
 const agyToClaude = (n: string) => (n === "run_command" ? "Bash" : n);
 
+describe("gemini-sse mapToolArguments", () => {
+  test("gives the mapper the upstream tool name and sends its result as the call's input", async () => {
+    const seen: string[] = [];
+    const sse = await drain(
+      createGeminiSseStream(
+        ctx(),
+        upstream([{ functionCall: { name: "run_command", args: { CommandLine: "ls" } } }]),
+        {
+          modelName: "gemini-4-carbon",
+          mapToolName: agyToClaude,
+          mapToolArguments: (name, args) => {
+            seen.push(name);
+            return { command: (args as { CommandLine: string }).CommandLine };
+          },
+        }
+      )
+    );
+    expect(seen).toEqual(["run_command"]);
+    expect(sse).toContain('{\\"command\\":\\"ls\\"}');
+    expect(sse).not.toContain("CommandLine");
+  });
+
+  test("sends the upstream arguments when no mapper is given", async () => {
+    const sse = await drain(
+      createGeminiSseStream(
+        ctx(),
+        upstream([{ functionCall: { name: "run_command", args: { CommandLine: "ls" } } }]),
+        { modelName: "gemini-4-carbon" }
+      )
+    );
+    expect(sse).toContain('{\\"CommandLine\\":\\"ls\\"}');
+  });
+});
+
 describe("gemini-sse mapToolName", () => {
   test("restores an aliased tool name in the tool_use block", async () => {
     const sse = await drain(

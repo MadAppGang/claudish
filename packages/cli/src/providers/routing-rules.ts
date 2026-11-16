@@ -11,8 +11,14 @@ import type { RoutingEntry, RoutingRules } from "../profile-config.js";
 import { readAllModelsCache } from "./all-models-cache.js";
 import { DISPLAY_NAMES, PROVIDER_TO_PREFIX } from "./auto-route.js";
 import { bundledListLabel } from "./bundled-list-data.js";
-import { catalogOrigin, getCatalogEntries, resolveExternalId } from "./catalog-client.js";
+import {
+  catalogOrigin,
+  getCatalogEntries,
+  resolveExternalId,
+  resolveImplicitExternalId,
+} from "./catalog-client.js";
 import type { ConnectionPrice } from "./connection-price.js";
+import { isOptInWireId } from "./content-use.js";
 import { FRESH_MS, LIVE_MS } from "./dynamic-models-catalog-store.js";
 import {
   type AccountModelsList,
@@ -48,6 +54,7 @@ import {
   compareRouteCandidates,
   findCatalogEntry,
   gatherRouteCandidates,
+  isUnvouchedOptInWireId,
 } from "./route-candidates.js";
 import { buildCredentialHint } from "./routing-hints.js";
 import { shadowedEndpointRefusal } from "./shadowed-endpoint.js";
@@ -331,7 +338,9 @@ interface ResolvedEntry {
    * - `excluded-by-membership`: the entry's subscription plan publishes a
    *   membership that does not include the model.
    * - `excluded-by-content-use`: the provider maps the model only through a
-   *   content-use opt-in wire id, which claudish never chooses (`content-use.ts`).
+   *   content-use opt-in wire id, or the entry's wire id would be one that no
+   *   ordinary connection of the provider publishes. claudish never chooses
+   *   such an id (`content-use.ts`).
    * - `gateway-id-unknown`: the bundled recommended list keeps no connection for
    *   this gateway, and its models list has no exact id for the model.
    */
@@ -423,12 +432,19 @@ function resolveRoutingEntries(
     }
 
     // Every provider's wire id comes from the SAME catalog lookup
-    // (`aggregators[]`), not a per-provider resolver. This is what makes
-    // `ag@gemini-3.6-flash` reach `gemini-3.6-flash-high` and
-    // `together-ai@glm-5` reach `zai-org/GLM-5` without either provider
-    // needing bespoke code. No match → the name passes through unchanged.
+    // (`aggregators[]`), not a per-provider resolver: this is what makes
+    // `together-ai@glm-5` reach `zai-org/GLM-5` without bespoke code. An id
+    // the connection's effort map (`modelIdEffort`) publishes is kept as
+    // typed. For a base name this lookup returns the base; the effort-specific
+    // id is picked later from the effort map (`chooseConnectionModelId`).
+    // No match → the name passes through unchanged. A provider-only entry
+    // names no model, so its exact step never keeps a content-use opt-in id;
+    // only an explicit `provider@model` entry sends one as typed.
     if (!wireIdResolved) {
-      const externalId = resolveExternalId(modelName, provider, cachePath);
+      const externalId =
+        atIdx === -1
+          ? resolveImplicitExternalId(modelName, provider, cachePath)
+          : resolveExternalId(modelName, provider, cachePath);
       if (externalId === null && atIdx === -1 && readsGatewayList(provider, cachePath)) {
         const answer = gatewayListAnswer(provider, modelName, opts.gatewayLists);
         if (answer.wireId === undefined) {
@@ -444,6 +460,18 @@ function resolveRoutingEntries(
       } else {
         modelName = externalId ?? modelName;
       }
+    }
+
+    // A provider-only entry names no model, so it may never end on a content-use
+    // opt-in wire id that no ordinary connection of the provider publishes: an
+    // unknown name kept as typed, a name with a `/` passed through, or a
+    // gateway's list answer. Typed as `provider@<id>`, the same id is sent.
+    if (atIdx === -1 && isUnvouchedOptInWireId(provider, modelName, cachePath)) {
+      resolved.push({
+        route: routeFor(provider, modelName),
+        exclusion: "excluded-by-content-use",
+      });
+      continue;
     }
 
     resolved.push({ route: routeFor(provider, modelName) });
@@ -494,7 +522,7 @@ function gatewayListsNeeded(
     .filter(
       (provider) =>
         readsGatewayList(provider, cachePath) &&
-        resolveExternalId(model, provider, cachePath) === null
+        resolveImplicitExternalId(model, provider, cachePath) === null
     );
   return [...new Set(providers)];
 }
@@ -607,8 +635,9 @@ export type CandidateOutcome =
   /** The subscription plan's published membership does not include the model. */
   | "excluded-by-membership"
   /**
-   * The provider maps the model only through a content-use opt-in wire id, which
-   * claudish never chooses; typed exactly (`provider@<id>`), it is sent.
+   * The provider maps the model only through a content-use opt-in wire id, or a
+   * provider-only entry would send one that no ordinary connection publishes.
+   * claudish never chooses such an id; typed exactly (`provider@<id>`), it is sent.
    */
   | "excluded-by-content-use"
   /**
@@ -2431,15 +2460,35 @@ function describeCatalogOrigin(explanation: RouteExplanation): string {
  * What became of a lone fallback hop the filters dropped. The line names the
  * outcome the candidate has, so a dropped hop is never described as the route.
  */
-const DROPPED_FALLBACK_PHRASE: Record<Exclude<CandidateOutcome, "kept">, string> = {
+const DROPPED_FALLBACK_PHRASE: Record<
+  Exclude<CandidateOutcome, "kept" | "excluded-by-content-use">,
+  string
+> = {
   "no-credential": "has no credential",
   "credential-unreadable": "has a credential that could not be read",
   "not-served": "does not serve it",
   "excluded-by-membership": "is outside its plan's membership",
-  "excluded-by-content-use": "maps it only through a contributor (content-use opt-in) id",
   "unknown-provider": "is not a known provider shortcut",
   "gateway-id-unknown": "has no exact id for it in its models list",
 };
+
+/**
+ * The words for a dropped hop's outcome. `excluded-by-content-use` covers two
+ * cases: the hop's wire id is itself a content-use opt-in id, and the words
+ * name the explicit spec that sends it; or the provider maps the model only
+ * through one.
+ */
+function droppedHopPhrase(candidate: ExplainedCandidate): string {
+  if (candidate.outcome === "kept") return "";
+  if (candidate.outcome !== "excluded-by-content-use") {
+    return DROPPED_FALLBACK_PHRASE[candidate.outcome];
+  }
+  if (isOptInWireId(candidate.wireId)) {
+    const prefix = PROVIDER_TO_PREFIX[candidate.provider] ?? candidate.provider;
+    return `would send a contributor (content-use opt-in) id, which claudish never chooses; type ${prefix}@${candidate.wireId} to opt in`;
+  }
+  return "maps it only through a contributor (content-use opt-in) id";
+}
 
 /**
  * A readable catalog with no entry for the name. The only candidates are
@@ -2461,7 +2510,7 @@ function describeAbsentEntry(explanation: RouteExplanation): string {
   if (!fallback) return `${head} · ${firstHopPhrase(explanation)}`;
   return fallback.outcome === "kept"
     ? `${head} · fallback only`
-    : `${head} · fallback ${fallback.displayName} ${DROPPED_FALLBACK_PHRASE[fallback.outcome]}`;
+    : `${head} · fallback ${fallback.displayName} ${droppedHopPhrase(fallback)}`;
 }
 
 function firstHopPhrase(explanation: RouteExplanation): string {

@@ -22,13 +22,17 @@
  * - Project ID + tier via setupAntigravityUser()
  * - Endpoint: `antigravityHost()`/v1internal:streamGenerateContent?alt=sse —
  *   Antigravity's host, NOT Code Assist's `cloudcode-pa` (see antigravity-user.ts)
- * - Wraps payload in the CodeAssist envelope: {model, project, user_prompt_id, request}
+ * - Wraps payload in the CodeAssist envelope the Antigravity CLI sends
+ *   (antigravity-envelope.ts), sent by antigravity-fetch.ts
  * - GeminiRequestQueue for rate limiting
  * - gemini-sse stream format (with response wrapper)
  */
 
-import { randomUUID } from "node:crypto";
 import { type EffortLevel, isEffortLevel } from "../../adapters/base-api-format.js";
+import {
+  antigravityTrajectoryAclCall,
+  sendAntigravitySideCall,
+} from "../../auth/antigravity-side-calls.js";
 import {
   forceRefreshAntigravityToken,
   getValidAntigravityAccessToken,
@@ -39,7 +43,7 @@ import {
   getAntigravityTierDisplayName,
   getServedAntigravityModels,
   resetAntigravityUserCache,
-  retrieveUserQuota,
+  retrieveModelQuota,
   setupAntigravityUser,
 } from "../../auth/antigravity-user.js";
 import { credentials } from "../../auth/credentials/authority.js";
@@ -52,13 +56,21 @@ import {
 import { GeminiRequestQueue } from "../../handlers/shared/gemini-queue.js";
 import { log, logStderr } from "../../logger.js";
 import {
+  type AntigravityEnvelopeModelMeta,
+  antigravityConversations,
+  buildAntigravityEnvelope,
+} from "../antigravity-envelope.js";
+import {
   type AntigravityServedSet,
   antigravityBodyForModelId,
   chooseAntigravityServedModel,
   resolveAntigravityServedModel,
 } from "../antigravity-model-id.js";
+import { isOptInWireId } from "../content-use.js";
 import { type ModelIdChoice, logModelIdChoice } from "../model-id-effort-choice.js";
 import { wireChoicesFromClaudeRequest } from "../wire-request.js";
+import { antigravityFetch } from "./antigravity-fetch.js";
+import { conversationKey } from "./conversation-key.js";
 import type { DiscoveryOutcome } from "./probe-discovery.js";
 import { discoverProviderProbeModel } from "./provider-model-discovery.js";
 import type { ProviderTransport, StreamFormat } from "./types.js";
@@ -91,7 +103,7 @@ const DEFAULT_RATE_LIMIT_DELAY_MS = 10_000;
 const UNATTRIBUTED_RETRY_DELAY_MS = 1_000;
 /**
  * Budget for the quota reading that fact-checks an "out of quota" verdict.
- * `retrieveUserQuota` carries no timeout of its own, and this call sits on a
+ * `retrieveModelQuota` carries no timeout of its own, and this call sits on a
  * path that is ALREADY failing — a hung connection must not hold the user's
  * error response open. Timing out degrades to the honest "couldn't confirm"
  * wording, never to a wrong claim.
@@ -121,11 +133,6 @@ function effortOf(claudeRequest: unknown, pinned?: EffortLevel): EffortLevel | u
   const choices = wireChoicesFromClaudeRequest(claudeRequest);
   if (choices.reasoningOff) return "none";
   return isEffortLevel(choices.effort) ? choices.effort : undefined;
-}
-
-/** Generate a short random request ID (matches the Antigravity CLI activity logger) */
-function createActivityRequestId(): string {
-  return Math.random().toString(36).substring(7);
 }
 
 /** Classification of 429 responses from the Code Assist API */
@@ -250,9 +257,14 @@ interface AntigravityRequestState {
   sentId: string;
   /** What decided that id; names the level and source on each retry's line. */
   choice: ModelIdChoice | undefined;
+  /** The harness session the request belongs to, for the envelope's conversation ids. */
+  conversationScope: string;
   /** The capacity-retry id that served this request, when one did. */
   activeModelName?: string;
 }
+
+/** How long the access write of a new conversation may hold its first request. */
+const TRAJECTORY_ACL_TIMEOUT_MS = 3_000;
 
 export class AntigravityProviderTransport implements ProviderTransport {
   readonly name = "antigravity";
@@ -262,19 +274,51 @@ export class AntigravityProviderTransport implements ProviderTransport {
   }
   readonly streamFormat: StreamFormat = "gemini-sse";
 
+  /** Requests go out with the Antigravity CLI's request head, which `fetch` cannot write. */
+  async fetch(url: string, init: RequestInit): Promise<Response> {
+    await this.writeNewTrajectoryAcls(url, init);
+    return antigravityFetch(url, init);
+  }
+
+  /**
+   * Before a conversation's first generation request the Antigravity CLI
+   * writes its trajectory's access record. Sent with the request's own
+   * bearer; a failure is logged and the generation request goes out anyway.
+   */
+  private async writeNewTrajectoryAcls(url: string, init: RequestInit): Promise<void> {
+    if (!url.includes("GenerateContent")) return;
+    if (typeof init.body !== "string") return;
+    const trajectoryId = antigravityConversations.takeNewTrajectoryIn(init.body);
+    if (trajectoryId === null) return;
+    const headers = new Headers(init.headers as ConstructorParameters<typeof Headers>[0]);
+    const bearer = headers.get("authorization")?.replace(/^Bearer\s+/i, "");
+    if (!bearer) return;
+    const account = {
+      apiBase: `${antigravityHost()}/v1internal`,
+      userAgent: buildAntigravityUserAgent(),
+    };
+    await sendAntigravitySideCall(
+      antigravityTrajectoryAclCall(account, trajectoryId),
+      bearer,
+      TRAJECTORY_ACL_TIMEOUT_MS,
+      init.signal ?? undefined
+    );
+    // A request cancelled during the write is not sent.
+    init.signal?.throwIfAborted();
+  }
+
   /** The user-supplied model id (for messages + the credential ctx). */
   private modelName: string;
   /** The served id actually sent to the backend (mapped from modelName). */
   private servedModelName: string;
   private accessToken: string | null = null;
   private projectId: string | null = null;
-  private tierId: string | null = null;
 
   /**
    * The delegated per-request auth artifact (headers + CodeAssist-envelope
    * transform) from the credential authority, populated by refreshAuth(). The
    * PRIMARY request's headers + envelope come from here. The local
-   * accessToken/projectId/tierId below are kept in lockstep purely for the 429
+   * accessToken/projectId below are kept in lockstep purely for the 429
    * fallback chain and quota logic (request-routing concerns, not auth).
    */
   private cachedAuth: RequestAuth | null = null;
@@ -302,6 +346,8 @@ export class AntigravityProviderTransport implements ProviderTransport {
    * chain, and the model-not-found hint.
    */
   private servedModels: string[] = [];
+  /** What the backend reports per served id; the envelope reads the output cap and the model's own name. */
+  private modelMeta: Record<string, AntigravityEnvelopeModelMeta> = {};
   /**
    * The account's dynamic models catalog with the backend default and the ids it
    * declares unselectable, for per-request resolution.
@@ -365,22 +411,20 @@ export class AntigravityProviderTransport implements ProviderTransport {
 
   /**
    * Build the Antigravity headers from local OAuth state. Used by the 429
-   * fallback chain (handleCapacityExhausted), which needs a fresh
-   * x-activity-request-id per attempt. The PRIMARY request uses the delegated
-   * artifact's headers instead (see getHeaders()).
+   * fallback chain (handleCapacityExhausted). The PRIMARY request uses the
+   * delegated artifact's headers instead (see getHeaders()).
    */
   private buildLocalHeaders(): Record<string, string> {
     return {
       Authorization: `Bearer ${this.accessToken}`,
       "User-Agent": buildAntigravityUserAgent(),
-      "x-activity-request-id": createActivityRequestId(),
     };
   }
 
   /**
    * Refresh auth before each request. The transport delegates the request
    * artifact (headers + CodeAssist envelope) to the credential authority. It
-   * still mirrors accessToken/projectId/tierId locally (cache-hit reads) so the
+   * still mirrors accessToken/projectId locally (cache-hit reads) so the
    * 429 fallback chain and quota logic keep working.
    */
   async refreshAuth(): Promise<void> {
@@ -389,15 +433,15 @@ export class AntigravityProviderTransport implements ProviderTransport {
     });
     // Mirror local state for the fallback chain + quota (cache-hit reads).
     this.accessToken = await getValidAntigravityAccessToken();
-    const { projectId, tierId } = await setupAntigravityUser(this.accessToken);
+    const { projectId } = await setupAntigravityUser(this.accessToken);
     this.projectId = projectId;
-    this.tierId = tierId;
     this._displayName = getAntigravityTierDisplayName();
     // Discover the live served-model set (cache-hit after the first request) so
     // model-id resolution + the capacity fallback + the model-not-found hint all
     // reflect what THIS subscription actually serves today.
     const served = await getServedAntigravityModels(this.accessToken, this.projectId);
     this.served = served;
+    this.modelMeta = served.meta ?? {};
     this.servedModels = served.servedIds;
     // Resolve the requested id to a served id against the live set, with the
     // function the credential provider (which builds the primary envelope) and
@@ -497,11 +541,13 @@ export class AntigravityProviderTransport implements ProviderTransport {
    */
   transformPayload(payload: any, claudeRequest?: any): any {
     let choice: ModelIdChoice | undefined;
+    const conversationScope = conversationKey(claudeRequest);
     const request = {
       effort: effortOf(claudeRequest, this.pinnedEffort),
       onModelChoice: (decided: ModelIdChoice) => {
         choice = decided;
       },
+      conversationScope,
     };
     // PRIMARY request: the CodeAssist envelope comes from the delegated auth
     // artifact (which maps the model id). Fall back to the local builder if
@@ -512,7 +558,12 @@ export class AntigravityProviderTransport implements ProviderTransport {
     if (typeof envelope?.model === "string" && envelope.model) {
       this.servedModelName = envelope.model;
     }
-    const state: AntigravityRequestState = { payload, sentId: this.servedModelName, choice };
+    const state: AntigravityRequestState = {
+      payload,
+      sentId: this.servedModelName,
+      choice,
+      conversationScope,
+    };
     if (envelope && typeof envelope === "object") this.requests.set(envelope, state);
     this.lastRequest = envelope ? state : undefined;
     if (choice) logModelIdChoice("Antigravity", this.modelName, choice);
@@ -525,28 +576,33 @@ export class AntigravityProviderTransport implements ProviderTransport {
    */
   private buildLocalEnvelope(
     payload: unknown,
-    request: { effort?: EffortLevel; onModelChoice?: (choice: ModelIdChoice) => void }
+    request: {
+      effort?: EffortLevel;
+      onModelChoice?: (choice: ModelIdChoice) => void;
+      conversationScope?: string;
+    }
   ) {
     const choice = chooseAntigravityServedModel(this.modelName, this.served, request.effort);
     request.onModelChoice?.(choice);
-    return this.buildEnvelope(antigravityBodyForModelId(payload, choice.id), choice.id);
+    return this.buildEnvelope(
+      antigravityBodyForModelId(payload, choice.id, this.modelMeta[choice.id]?.thinkingLevel),
+      choice.id,
+      request.conversationScope
+    );
   }
 
   /**
    * Build the CodeAssist envelope for a given (already-served) model name.
    */
-  private buildEnvelope(innerPayload: any, model: string): any {
-    const envelope: any = {
+  private buildEnvelope(innerPayload: any, model: string, conversationScope?: string): any {
+    return buildAntigravityEnvelope({
+      inner: innerPayload,
       model,
-      project: this.projectId,
-      user_prompt_id: randomUUID(),
-      request: innerPayload,
-    };
-    // Paid tiers: enable Google One AI credits for capacity routing.
-    if (this.tierId && this.tierId !== "free-tier") {
-      envelope.enabled_credit_types = ["GOOGLE_ONE_AI"];
-    }
-    return envelope;
+      projectId: this.projectId,
+      meta: this.modelMeta[model],
+      conversation: antigravityConversations.of(innerPayload, conversationScope),
+      sessionId: antigravityConversations.sessionId,
+    });
   }
 
   /**
@@ -653,9 +709,11 @@ export class AntigravityProviderTransport implements ProviderTransport {
    * Handle MODEL_CAPACITY_EXHAUSTED by trying the other LIVE-served models.
    *
    * Candidates come from `this.servedModels` (discovered in refreshAuth),
-   * ordered by rank, excluding the model that just exhausted and every id the
-   * backend declares unselectable (`excludedIds`). The id's spelling decides
-   * nothing: a served `-fast` id is an ordinary candidate. With no candidate
+   * ordered by rank, excluding the model that just exhausted, every id the
+   * backend declares unselectable (`excludedIds`) and every content-use opt-in
+   * id (`isOptInWireId`), which is sent only when the user requested it exactly.
+   * Otherwise the id's spelling decides nothing: a served `-fast` id is an
+   * ordinary candidate. With no candidate
    * left, the original capacity failure is returned. Each
    * candidate's body is shaped from the original dialect payload by the id it
    * sends (`antigravityBodyForModelId`). A candidate that 404s (briefly unserved mid-tier-roll) or rate-limits is
@@ -671,7 +729,9 @@ export class AntigravityProviderTransport implements ProviderTransport {
     signal?: AbortSignal
   ): Promise<Response> {
     const excluded = this.served.excludedIds;
-    const candidates = this.servedModels.filter((m) => m !== sentId && !excluded?.has(m));
+    const candidates = this.servedModels.filter(
+      (m) => m !== sentId && !excluded?.has(m) && !isOptInWireId(m)
+    );
 
     if (candidates.length === 0) {
       log(`[Antigravity] ${sentId} capacity exhausted, no fallback models available`);
@@ -704,8 +764,13 @@ export class AntigravityProviderTransport implements ProviderTransport {
       tried.push(fallbackModel);
 
       const fallbackEnvelope = this.buildEnvelope(
-        antigravityBodyForModelId(originalPayload, fallbackModel),
-        fallbackModel
+        antigravityBodyForModelId(
+          originalPayload,
+          fallbackModel,
+          this.modelMeta[fallbackModel]?.thinkingLevel
+        ),
+        fallbackModel,
+        request.conversationScope
       );
       const headers = this.buildLocalHeaders();
       headers["Content-Type"] = "application/json";
@@ -768,10 +833,12 @@ export class AntigravityProviderTransport implements ProviderTransport {
     signal?: AbortSignal
   ): Promise<Response> {
     const init: RequestInit = { method: "POST", headers, body: JSON.stringify(envelope) };
-    if (!signal) return queue.enqueue(() => fetch(endpoint, init));
+    if (!signal) return queue.enqueue(() => antigravityFetch(endpoint, init));
     return queue.enqueue(
       () =>
-        signal.aborted ? Promise.reject(callAbortError()) : fetch(endpoint, { ...init, signal }),
+        signal.aborted
+          ? Promise.reject(callAbortError())
+          : antigravityFetch(endpoint, { ...init, signal }),
       { signal }
     );
   }
@@ -842,7 +909,7 @@ export class AntigravityProviderTransport implements ProviderTransport {
     if (!this.accessToken || !this.projectId) return undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const data = await Promise.race([
-      retrieveUserQuota(this.accessToken, this.projectId).catch(() => null),
+      retrieveModelQuota(this.accessToken, this.projectId).catch(() => null),
       new Promise<null>((resolve) => {
         timer = setTimeout(() => resolve(null), QUOTA_CHECK_TIMEOUT_MS);
       }),
@@ -868,8 +935,8 @@ export class AntigravityProviderTransport implements ProviderTransport {
    * for a model their subscription already covers. The reported case was exactly
    * this — a plan with allowance left, restored by re-running `agy`.
    *
-   * `retrieveUserQuota` is the same per-model bucket endpoint the status line
-   * reads, so the claim can be tested against the account itself. Three
+   * `retrieveModelQuota` is the same per-model reading the status line
+   * shows, so the claim can be tested against the account itself. Three
    * outcomes, and the middle one is why this exists at all:
    *   - allowance remains  → the 429 is not what it says; name the stale session.
    *   - reading failed     → say we could not confirm, rather than asserting.
@@ -940,7 +1007,7 @@ export class AntigravityProviderTransport implements ProviderTransport {
   private async logQuotaInfo(sentId: string): Promise<void> {
     if (!this.accessToken || !this.projectId) return;
     try {
-      const data = await retrieveUserQuota(this.accessToken, this.projectId);
+      const data = await retrieveModelQuota(this.accessToken, this.projectId);
       if (!data?.buckets?.length) return;
 
       const lines: string[] = [];
@@ -991,7 +1058,7 @@ export class AntigravityProviderTransport implements ProviderTransport {
   async getQuotaRemaining(modelName: string): Promise<number | undefined> {
     if (!this.accessToken || !this.projectId) return undefined;
     try {
-      const data = await retrieveUserQuota(this.accessToken, this.projectId);
+      const data = await retrieveModelQuota(this.accessToken, this.projectId);
       if (!data?.buckets?.length) return undefined;
       const bucket = data.buckets.find((b: any) => b.modelId === modelName);
       return typeof bucket?.remainingFraction === "number" ? bucket.remainingFraction : undefined;

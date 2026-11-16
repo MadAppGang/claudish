@@ -485,7 +485,6 @@ function chainDecisionOf(
     status: response.status,
     headers: response.headers,
     body,
-    provider,
     name: provider,
   });
   return { chainAction: decision.action, chainReason: decision.reason };

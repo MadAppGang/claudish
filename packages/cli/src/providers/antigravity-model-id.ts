@@ -14,6 +14,7 @@ import {
   findModelIdEffortConnection,
   lookupFamilyDefaultVariant,
 } from "../adapters/model-catalog.js";
+import { isOptInWireId } from "./content-use.js";
 import {
   type ConnectionMapDecision,
   type ModelIdChoice,
@@ -97,21 +98,36 @@ export function antigravityCarriesEffortInModelId(sent: string): boolean {
 }
 
 /**
- * The Gemini body for an attempt that sends `sent`: without the effort controls
- * (`thinkingLevel`, `thinkingBudget`) when `sent` carries the effort; unchanged
- * otherwise. `includeThoughts` and every other field are kept. Never mutates
- * `inner`, so every attempt shapes the same original dialect payload.
+ * The `thinkingLevel` string for the number the backend reports on a model
+ * record. Recorded: the Antigravity CLI sent "MEDIUM" for `gemini-4-argon-medium`,
+ * whose record says 2. 1 and 3 are the `-low` and `-high` records. Any other
+ * number (100 on `-xhigh`) has no recorded string and gives none.
  */
-export function antigravityBodyForModelId<T>(inner: T, sent: string): T {
+const BACKEND_THINKING_LEVELS: Record<number, string> = { 1: "LOW", 2: "MEDIUM", 3: "HIGH" };
+
+/**
+ * The Gemini body for an attempt that sends `sent`. When `sent` carries the
+ * effort, the request's own effort controls (`thinkingLevel`, `thinkingBudget`)
+ * are removed, and a Gemini id gets the level the backend reports for that id
+ * (`backendLevel`), as the Antigravity CLI sends it. Unchanged otherwise.
+ * `includeThoughts` and every other field are kept. Never mutates `inner`, so
+ * every attempt shapes the same original dialect payload.
+ */
+export function antigravityBodyForModelId<T>(inner: T, sent: string, backendLevel?: number): T {
   const body = inner as
     | { generationConfig?: { thinkingConfig?: Record<string, unknown> } }
     | null
     | undefined;
   const thinking = body?.generationConfig?.thinkingConfig;
   if (!thinking || typeof thinking !== "object") return inner;
-  if (!("thinkingLevel" in thinking) && !("thinkingBudget" in thinking)) return inner;
   if (!antigravityCarriesEffortInModelId(sent)) return inner;
+  const level =
+    backendLevel !== undefined && sent.trim().startsWith("gemini")
+      ? BACKEND_THINKING_LEVELS[backendLevel]
+      : undefined;
+  if (!level && !("thinkingLevel" in thinking) && !("thinkingBudget" in thinking)) return inner;
   const { thinkingLevel: _level, thinkingBudget: _budget, ...kept } = thinking;
+  if (level) kept.thinkingLevel = level;
   const generationConfig: Record<string, unknown> = { ...body?.generationConfig };
   if (Object.keys(kept).length > 0) generationConfig.thinkingConfig = kept;
   else delete generationConfig.thinkingConfig;
@@ -252,6 +268,10 @@ export function resolveAntigravityModelId(
  * variant rule replaces it. Exclusion gates only the mapped-base shortcut (an
  * excluded base goes through its map) and every automatic choice.
  *
+ * An automatic choice (the family rules, the family default, the backend's
+ * default) is never a content-use opt-in id (`isOptInWireId`). Such an id is
+ * sent only when it was requested exactly.
+ *
  * The ONE resolution the transport, the credential (which builds the primary
  * envelope), the routing availability check (`providerServesModel`) and route
  * gathering share. The check used to match the requested id exactly, so
@@ -277,6 +297,9 @@ export function chooseAntigravityServedModel(
   effort?: EffortLevel
 ): ModelIdChoice {
   const req = requested.trim();
+  // A content-use opt-in id reaches here only as the user typed it, and is sent
+  // as typed: listed or not, no mapped, family or sibling step may replace it.
+  if (isOptInWireId(req)) return { id: req, effort, source: "exact id" };
   // An exact listed id that is no connection's base is a fixed model: sent as
   // itself at any effort, excluded or not, before any family rule can move it.
   const isMappedBase = findModelIdEffortConnection(req, "antigravity") !== undefined;
@@ -291,8 +314,9 @@ export function chooseAntigravityServedModel(
   const decision = mappedAntigravityModelId(req, served, effort);
   if (decision?.usable) return decision.choice;
   if (servesSelectable(served, req)) return existingResolutionChoice(req, effort, decision);
-  // An automatic choice is never an id the backend excludes.
-  const selectable = served.servedIds.filter((id) => !isExcluded(served, id));
+  // An automatic choice is never an id the backend excludes, nor a content-use
+  // opt-in id: that one is sent only as an exact request, which returned above.
+  const selectable = served.servedIds.filter((id) => !isExcluded(served, id) && !isOptInWireId(id));
   const defaultId =
     served.defaultId && selectable.includes(served.defaultId) ? served.defaultId : null;
   const id = resolveAntigravityModelId(
