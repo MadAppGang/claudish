@@ -529,8 +529,17 @@ is an opt-in id that no ordinary mapped connection of that provider publishes ex
 name kept as typed, a name with a `/` passed through, or a gateway's list answer
 (`isUnvouchedOptInWireId`). Its explanation names the explicit spec that sends the id. The
 transport's effort choice (`chooseModelIdForEffort`) never returns an opt-in id from an effort map,
-for a level or for `off`; the provider's own resolution answers instead. An opt-in effort-map id
-reached implicitly resolves to the connection's base id (`resolveImplicitExternalId`).
+for a level or for `off`; the provider's own resolution answers instead.
+
+An opt-in id typed with its provider (`ag@<id>-contributor`, `dv@<id>-contributor`, a
+`provider@model` routing entry) is sent verbatim on every provider. `resolveExternalId` returns it
+right after its exact step, so no model-id, alias, reverse-lookup or suffix step rewrites it, and
+Devin's resolver keeps an exact opt-in uid at any effort. A provider-only entry resolves an opt-in
+id through `resolveImplicitExternalId`, whose step after the exact one reads only the requested
+provider's mapped connections: an id one entry's effort map lists resolves to that entry's base
+id, an id two entries list resolves to nothing (then `excluded-by-content-use`), and another
+provider's effort map is never read. Antigravity's automatic choice (`chooseAntigravityServedModel`)
+and its capacity retry (`handleCapacityExhausted`) never pick an opt-in id from the account's list.
 
 **Suffix-fallback removal trigger:** models-index publishes `contentUse` on every connection
 (backend task M3, `ai-docs/reports/BACKEND_TASKS_meta_muse_code_route-20261016.md`). Readers with

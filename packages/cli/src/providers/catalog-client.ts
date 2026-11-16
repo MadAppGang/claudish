@@ -30,7 +30,7 @@ import {
   type RouteRegistry,
   isRouteRegistry,
 } from "./connection-wire.js";
-import { allConnections, splitOptInConnections } from "./content-use.js";
+import { allConnections, isOptInWireId, splitOptInConnections } from "./content-use.js";
 import { implicitEffortWireId, publishedEffortWireId } from "./model-id-effort.js";
 import { _clearChatCapabilityIndex } from "./transport/probe-discovery.js";
 
@@ -245,34 +245,103 @@ function publishesImplicitWireIdFor(
 /**
  * The wire id for a model spec typed with its provider (`meta@<id>`, a
  * `provider@model` routing entry): an id the provider publishes, opt-in rows
- * included, is sent verbatim.
+ * included, is sent verbatim. A content-use opt-in id (`isOptInWireId`) is
+ * always sent verbatim: no later step rewrites it to another id, whichever
+ * provider's connection or effort map lists it.
  */
 export function resolveExternalId(
   userInput: string,
   provider: string,
   cachePath?: string
 ): string | null {
-  return resolveWireId(userInput, provider, cachePath, publishesWireIdFor);
+  return resolveWireId(userInput, provider, cachePath, "explicit");
 }
 
 /**
  * The wire id for a name whose provider routing chose (a provider-only routing
- * entry, which names no model): {@link resolveExternalId} without its
- * opt-in-inclusive exact step, so a content-use opt-in id is never sent.
+ * entry, which names no model). A content-use opt-in id is never sent: an id
+ * this provider's own effort map lists resolves to that connection's base id,
+ * an id two entries list that way resolves to nothing, and another provider's
+ * effort map is never read.
  */
 export function resolveImplicitExternalId(
   userInput: string,
   provider: string,
   cachePath?: string
 ): string | null {
-  return resolveWireId(userInput, provider, cachePath, publishesImplicitWireIdFor);
+  return resolveWireId(userInput, provider, cachePath, "implicit");
+}
+
+/**
+ * `explicit`: the user typed the provider with the name. `implicit`: routing
+ * chose the provider, so the answer is never a content-use opt-in id.
+ */
+type WireIdResolution = "explicit" | "implicit";
+
+/** What the provider-bound effort-map step decided for an implicit name. */
+type EffortMapOwner = { kind: "none" } | { kind: "ambiguous" } | { kind: "one"; wireId: string };
+
+/**
+ * The base id of the entry whose mapped connection on `provider` lists `wireId`
+ * in its effort map. Only this provider's connections count; owners with two
+ * different base ids are ambiguous.
+ */
+function effortMapOwnerFor(
+  entries: SlimModelEntry[],
+  provider: string,
+  wireId: string
+): EffortMapOwner {
+  const baseIds = new Set<string>();
+  for (const entry of entries) {
+    const owns = allConnections(entry).some(
+      (connection) =>
+        connection.routeStatus === "mapped" &&
+        catalogRouteMatchesProvider(connection.route, provider) &&
+        effortMapListsWireId(connection, wireId)
+    );
+    if (!owns) continue;
+    const baseId = externalIdFor(entry, provider);
+    if (baseId) baseIds.add(baseId);
+  }
+  const [first, ...rest] = baseIds;
+  if (first === undefined) return { kind: "none" };
+  if (rest.length > 0) return { kind: "ambiguous" };
+  return { kind: "one", wireId: first };
+}
+
+/**
+ * The steps of {@link resolveWireId} that answer before any model-id, alias,
+ * reverse or suffix lookup; `undefined` leaves the name to those lookups.
+ *
+ * 1. An id this provider publishes, typed exactly, is its own answer. On the
+ *    explicit path opt-in rows count too: this is how
+ *    `meta@muse-spark-1.3-contributor` is sent verbatim.
+ * 2. Explicit: any other content-use opt-in id is sent as typed, so no lookup
+ *    rewrites it. Implicit: an id this provider's own effort map lists names
+ *    its entry, before a model id or alias of the same spelling can, and an id
+ *    two entries list that way has no answer.
+ */
+function answerBeforeLookup(
+  entries: SlimModelEntry[],
+  provider: string,
+  userInput: string,
+  resolution: WireIdResolution
+): string | null | undefined {
+  const publishesExactly =
+    resolution === "explicit" ? publishesWireIdFor : publishesImplicitWireIdFor;
+  if (entries.some((entry) => publishesExactly(entry, provider, userInput))) return userInput;
+
+  if (resolution === "explicit") return isOptInWireId(userInput) ? userInput : undefined;
+  const owner = effortMapOwnerFor(entries, provider, userInput);
+  if (owner.kind === "one") return owner.wireId;
+  return owner.kind === "ambiguous" ? null : undefined;
 }
 
 function resolveWireId(
   userInput: string,
   provider: string,
   cachePath: string | undefined,
-  publishesExactly: (entry: SlimModelEntry, provider: string, wireId: string) => boolean
+  resolution: WireIdResolution
 ): string | null {
   const entries = cachePath ? readAllModelsCache(cachePath)?.entries : getCatalogEntries();
 
@@ -282,13 +351,11 @@ function resolveWireId(
   }
   if (!entries) return null;
 
-  // An id this provider publishes, typed exactly, is its own answer. On the
-  // explicit path opt-in rows count too: this is how
-  // `meta@muse-spark-1.3-contributor` is sent verbatim. Every step below
-  // CHOOSES a wire id, and a chosen one is never a content-use opt-in
-  // (`content-use.ts`).
-  if (entries.some((entry) => publishesExactly(entry, provider, userInput))) return userInput;
+  const answered = answerBeforeLookup(entries, provider, userInput, resolution);
+  if (answered !== undefined) return answered;
 
+  // Every step below CHOOSES a wire id, and a chosen one is never a content-use
+  // opt-in (`content-use.ts`).
   const byModelId = entries.find((entry) => entry.modelId === userInput);
   if (byModelId) return externalIdFor(byModelId, provider);
 
@@ -298,13 +365,8 @@ function resolveWireId(
     if (resolved) return resolved;
   }
 
-  // A wire id of any connection, its effort-map ids included, names the entry;
-  // the answer is the entry's ordinary base id for this provider.
   for (const entry of entries) {
-    if (
-      allExternalIds(entry).includes(userInput) ||
-      allConnections(entry).some((connection) => effortMapListsWireId(connection, userInput))
-    ) {
+    if (allExternalIds(entry).includes(userInput)) {
       const resolved = externalIdFor(entry, provider);
       if (resolved) return resolved;
     }

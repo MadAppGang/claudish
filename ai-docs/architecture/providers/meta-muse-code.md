@@ -388,6 +388,12 @@ an ordinary connection of its provider, and its explanation names the `provider@
 opt in. The transport's effort choice (`chooseModelIdForEffort`) never picks an opt-in id from an
 effort map; the provider's own resolution answers.
 
+An opt-in id typed with its provider is sent verbatim on every provider, Devin at any effort
+included: `resolveExternalId` never rewrites it to another id. The implicit lookup
+(`resolveImplicitExternalId`) reads only the requested provider's effort maps and resolves to
+nothing when two entries list the id. Antigravity's automatic choice and its capacity retry never
+pick an opt-in id.
+
 **Remove the suffix fallback when models-index publishes `contentUse` on every connection
 (backend M3).** Until then it is the one wire-id name rule claudish keeps. The trigger is field
 coverage, not Meta: OpenCode Zen's `-contributor-free` ids are covered by the same regex.
