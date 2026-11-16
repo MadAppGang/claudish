@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { GeminiAPIFormat } from "../../../adapters/gemini-api-format.js";
 import { applyStageB } from "../../../hooks/actions.js";
+import { agyDeclarationTemplate } from "../../../providers/antigravity-agy-request.js";
 import { aliasToolsForProvider } from "./tool-name-alias.js";
 
 const tool = (name: string) => ({
@@ -40,16 +41,37 @@ describe("aliasToolsForProvider: which names change", () => {
     ]);
   });
 
-  test("antigravity renames the agent, question, search, message and workflow tools", () => {
-    const names = ["Agent", "AskUserQuestion", "WebSearch", "SendMessage", "Workflow"];
+  test("antigravity renames the question, search and message tools", () => {
+    const names = ["AskUserQuestion", "WebSearch", "SendMessage"];
     const { request: out } = aliasToolsForProvider({ tools: names.map(tool) }, "antigravity");
     expect(out.tools.map((t: any) => t.name)).toEqual([
-      "invoke_subagent",
       "ask_question",
       "search_web",
       "send_message",
+    ]);
+  });
+
+  test("the agent and workflow tools keep their names: agy's take other arguments", () => {
+    const names = ["Agent", "Workflow"];
+    const { request: out, restore } = aliasToolsForProvider(
+      { tools: names.map(tool) },
+      "antigravity"
+    );
+    expect(out.tools.map((t: any) => t.name)).toEqual(names);
+    expect(["invoke_subagent", "run_workflow"].map(restore)).toEqual([
+      "invoke_subagent",
       "run_workflow",
     ]);
+  });
+
+  test("a renamed tool whose arguments translate carries agy's description", () => {
+    const names = ["Bash", "Read", "Write", "Edit", "AskUserQuestion", "WebSearch", "SendMessage"];
+    const { request: out } = aliasToolsForProvider({ tools: names.map(tool) }, "antigravity");
+    for (const declared of out.tools as any[]) {
+      expect(declared.description).toBe(agyDeclarationTemplate(declared.name)?.description);
+    }
+    const kept = aliasToolsForProvider({ tools: [tool("Grep")] }, "antigravity").request.tools[0];
+    expect(kept.description).toBe(tool("Grep").description);
   });
 
   test("antigravity keeps the search and listing names of agy's other tool set", () => {
@@ -59,9 +81,9 @@ describe("aliasToolsForProvider: which names change", () => {
   });
 
   test("a renamed name is restored to the Claude Code name", () => {
-    const names = ["Read", "Write", "Agent"];
+    const names = ["Read", "Write", "WebSearch"];
     const { restore } = aliasToolsForProvider({ tools: names.map(tool) }, "antigravity");
-    expect(["read_file", "write_file", "invoke_subagent"].map(restore)).toEqual(names);
+    expect(["read_file", "write_file", "search_web"].map(restore)).toEqual(names);
   });
 
   test("every other tool keeps its name", () => {
@@ -241,7 +263,6 @@ describe("aliasToolsForProvider: argument names", () => {
       })
     ).toEqual({
       command: "ls",
-      WaitMsBeforeAsync: 5000,
       description: "List files",
       run_in_background: true,
     });
@@ -260,16 +281,92 @@ describe("aliasToolsForProvider: argument names", () => {
     });
     expect(
       restoreArguments("edit_file", { Path: "/a.txt", Target: "x", Replacement: "y" })
-    ).toEqual({ file_path: "/a.txt", old_string: "x", new_string: "y" });
+    ).toEqual({ file_path: "/a.txt", old_string: "x", new_string: "y", replace_all: true });
+  });
+
+  test("a returned call loses the arguments Claude Code's tool does not take", () => {
+    const { restoreArguments } = aliasToolsForProvider(fileTools(), "antigravity");
+    expect(restoreArguments("read_file", { Path: "/a.txt", ByteOffset: 10 })).toEqual({
+      file_path: "/a.txt",
+    });
+    expect(
+      restoreArguments("write_file", {
+        Path: "/a.txt",
+        Content: "hi",
+        Overwrite: true,
+        Append: false,
+        ArtifactMetadata: { Summary: "s" },
+      })
+    ).toEqual({ file_path: "/a.txt", content: "hi" });
+  });
+
+  test("a write_file that appends is left as sent, so Write cannot replace the file", () => {
+    const { restoreArguments } = aliasToolsForProvider(fileTools(), "antigravity");
+    const sent = { Path: "/a.txt", Content: "more", Append: true };
+    expect(restoreArguments("write_file", sent)).toEqual(sent);
+  });
+
+  test("ask_question, search_web and send_message translate both ways", () => {
+    const question = {
+      question: "Which one?",
+      header: "Question 1",
+      options: [
+        { label: "A", description: "A" },
+        { label: "B", description: "B" },
+      ],
+      multiSelect: false,
+    };
+    const applied = aliasToolsForProvider(
+      {
+        tools: ["AskUserQuestion", "WebSearch", "SendMessage"].map(tool),
+        messages: [
+          {
+            role: "assistant",
+            content: [
+              {
+                type: "tool_use",
+                id: "1",
+                name: "AskUserQuestion",
+                input: { questions: [question] },
+              },
+              {
+                type: "tool_use",
+                id: "2",
+                name: "WebSearch",
+                input: { query: "q", allowed_domains: ["a.dev"] },
+              },
+              { type: "tool_use", id: "3", name: "SendMessage", input: { to: "x", message: "m" } },
+            ],
+          },
+        ],
+      },
+      "antigravity"
+    );
+    const sent = (applied.request.messages[0].content as any[]).map((call) => call.input);
+    expect(sent).toEqual([
+      { questions: [{ question: "Which one?", options: ["A", "B"], is_multi_select: false }] },
+      { query: "q" },
+      { Recipient: "x", Message: "m" },
+    ]);
+    expect(applied.restoreArguments("ask_question", sent[0])).toEqual({ questions: [question] });
+    expect(applied.restoreArguments("search_web", { query: "q", domain: "a.dev" })).toEqual({
+      query: "q",
+    });
+    expect(applied.restoreArguments("send_message", sent[2])).toEqual({ to: "x", message: "m" });
   });
 
   test("the round trip of a call's input is the input", () => {
     const applied = aliasToolsForProvider(fileTools(), "antigravity");
     const sent = applied.request.messages[0].content as any[];
     const given = fileTools().messages[0].content as any[];
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 2; i++) {
       expect(applied.restoreArguments(sent[i].name, sent[i].input)).toEqual(given[i].input);
     }
+    // `edit_file` replaces every occurrence of its target, which is `replace_all`.
+    expect(applied.restoreArguments(sent[2].name, sent[2].input)).toEqual({
+      ...given[2].input,
+      replace_all: true,
+    });
   });
 
   test("a custom tool under the native name keeps its arguments both ways", () => {
@@ -390,7 +487,9 @@ describe("hook description actions on an aliased request", () => {
       applied.forward
     );
     expect(results.map((r) => r.decision)).toEqual(["matched"]);
-    expect(claudeTools[0].description).toBe("Bash. NOTE");
+    expect(claudeTools[0].description).toBe(
+      `${agyDeclarationTemplate("run_command")?.description} NOTE`
+    );
     // The journal names the tool the hook asked for, not the wire name.
     expect((results[0].action as any).tool).toBe("Bash");
   });

@@ -9,6 +9,7 @@ test("two sessions that open with the same words are two conversations", () => {
   expect(conversations.of(inner, "session-b")).not.toBe(first);
   expect(conversations.of(inner, "session-b").cascadeId).not.toBe(first.cascadeId);
 });
+import { agyDeclarationTemplate } from "./antigravity-agy-request.js";
 import { agyLocalTime, agyUserRequest } from "./antigravity-content.js";
 import {
   AntigravityConversations,
@@ -68,6 +69,27 @@ function conversation() {
   return { cascadeId: CASCADE, trajectoryId: TRAJECTORY, requestCount: 0 };
 }
 
+const ENVIRONMENT = { os: "mac", shell: "zsh", workspace: "/work", appDataDir: "/data" };
+const AGY_NAMES = [
+  "read_file",
+  "run_command",
+  "manage_task",
+  "send_message",
+  "schedule",
+  "invoke_subagent",
+  "define_subagent",
+  "manage_subagents",
+  "write_file",
+  "edit_file",
+  "search_web",
+  "run_workflow",
+  "swarm",
+  "ask_question",
+  "call_mcp_tool",
+  "list_resources",
+  "read_resource",
+];
+
 const META = {
   maxOutputTokens: 65536,
   modelEnum: "MODEL_PLACEHOLDER_M418",
@@ -84,6 +106,7 @@ describe("the Antigravity envelope has the shape the Antigravity CLI sends", () 
       conversation: conversation(),
       sessionId: "-3750763034362895579",
       now: 1794739596876,
+      environment: ENVIRONMENT,
     });
 
     expect(JSON.stringify(envelope)).toBe(
@@ -106,7 +129,14 @@ describe("the Antigravity envelope has the shape the Antigravity CLI sends", () 
             },
           ],
           systemInstruction: { role: "user", parts: [{ text: "system text" }] },
+          // The request's own `read_file` and `run_command` do not carry agy's
+          // descriptions, so they are kept and agy's two are not sent.
           tools: [
+            ...AGY_NAMES.filter((name) => name !== "read_file" && name !== "run_command").map(
+              (name) => ({
+                functionDeclarations: [agyDeclarationTemplate(name)],
+              })
+            ),
             { functionDeclarations: [{ name: "read_file", description: "r", parameters: {} }] },
             { functionDeclarations: [{ name: "run_command", description: "c", parameters: {} }] },
           ],
