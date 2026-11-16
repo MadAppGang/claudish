@@ -588,5 +588,79 @@ describe("G: model-id effort connections do not send body effort controls", () =
       expect(envelope.request.generationConfig.thinkingConfig).toEqual(before);
       expect(before).toEqual({ thinkingBudget: 1024, includeThoughts: true });
     });
+
+    // Recorded from the Antigravity CLI 1.5.9 on gemini-4-argon-medium, whose
+    // model record says thinkingLevel 2:
+    //   "thinkingConfig": {"includeThoughts": true, "thinkingLevel": "MEDIUM"}
+    for (const [level, name] of [
+      [1, "LOW"],
+      [2, "MEDIUM"],
+      [3, "HIGH"],
+    ] as const) {
+      test(`${builder}: an effort id whose record says level ${level} sends ${name}`, async () => {
+        served = {
+          servedIds: [HIGH, MEDIUM, LOW, OFF],
+          defaultId: HIGH,
+          meta: { [LOW]: { thinkingLevel: level } },
+        };
+        const request = {
+          messages: [{ role: "user", content: "hello" }],
+          max_tokens: 32_768,
+          output_config: { effort: "high" },
+        };
+        const dialect = new GeminiAPIFormat(LOW, undefined, { thinkingFromModelName: true });
+        const payload = dialect.buildPayload(request, dialect.convertMessages(request), []);
+        const ag = await transport(builder, undefined, LOW);
+        const envelope = ag.transformPayload(payload, request);
+        expect(JSON.stringify(envelope.request.generationConfig.thinkingConfig)).toBe(
+          JSON.stringify({ includeThoughts: true, thinkingLevel: name })
+        );
+      });
+    }
+
+    test(`${builder}: a level with no recorded name sends no level`, async () => {
+      served = {
+        servedIds: [HIGH, MEDIUM, LOW, OFF],
+        defaultId: HIGH,
+        meta: { [LOW]: { thinkingLevel: 100 } },
+      };
+      const request = { messages: [{ role: "user", content: "hello" }], max_tokens: 32_768 };
+      const dialect = new GeminiAPIFormat(LOW, undefined, { thinkingFromModelName: true });
+      const payload = dialect.buildPayload(request, dialect.convertMessages(request), []);
+      const ag = await transport(builder, undefined, LOW);
+      const envelope = ag.transformPayload(payload, request);
+      expect(envelope.request.generationConfig.thinkingConfig).toEqual({ includeThoughts: true });
+    });
+
+    test(`${builder}: a plain id never takes the record's level`, async () => {
+      const plain = "gemini-plain-chat";
+      entries = [catalogEntry(plain, [connection("antigravity", plain)])];
+      _setCatalogEntriesForTest(entries);
+      served = { servedIds: [plain], defaultId: plain, meta: { [plain]: { thinkingLevel: 3 } } };
+      const request = {
+        messages: [{ role: "user", content: "hello" }],
+        max_tokens: 32_768,
+        thinking: { type: "disabled" },
+      };
+      const dialect = new GeminiAPIFormat(plain, undefined, { thinkingFromModelName: true });
+      const payload = dialect.buildPayload(request, dialect.convertMessages(request), []);
+      const ag = await transport(builder, undefined, plain);
+      const envelope = ag.transformPayload(payload, request);
+      expect(envelope.request.generationConfig.thinkingConfig).toEqual({ includeThoughts: true });
+    });
+
+    test(`${builder}: a Claude effort id sends no Gemini level`, async () => {
+      const base = "claude-opus-5-5";
+      const high = `${base}-high`;
+      entries = [catalogEntry(base, [connection("antigravity", base, effortMap({ high }))])];
+      _setCatalogEntriesForTest(entries);
+      served = { servedIds: [high], defaultId: high, meta: { [high]: { thinkingLevel: 3 } } };
+      const request = { messages: [{ role: "user", content: "hello" }], max_tokens: 32_768 };
+      const dialect = new GeminiAPIFormat(high, undefined, { thinkingFromModelName: true });
+      const payload = dialect.buildPayload(request, dialect.convertMessages(request), []);
+      const ag = await transport(builder, undefined, high);
+      const envelope = ag.transformPayload(payload, request);
+      expect(envelope.request.generationConfig.thinkingConfig).toEqual({ includeThoughts: true });
+    });
   }
 });

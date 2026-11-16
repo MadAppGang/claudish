@@ -369,6 +369,7 @@ interface AntigravityModelRecord {
   displayName?: string;
   /** The backend's own name for the model (`MODEL_PLACEHOLDER_M418`). */
   model?: string;
+  thinkingLevel?: number;
 }
 
 /** The Antigravity `fetchAvailableModels` response (only the fields we read). */
@@ -416,6 +417,8 @@ export interface AntigravityModelMeta {
   displayName?: string;
   /** The backend's own name for the model, which a generation request repeats as `labels.model_enum`. */
   modelEnum?: string;
+  /** The backend's number for the model's thinking level (`thinkingLevel`: 2 on a `-medium` id). */
+  thinkingLevel?: number;
 }
 
 /** The dynamic models catalog + default id for the Antigravity account. */
@@ -663,6 +666,9 @@ export async function getServedAntigravityModels(
           }
           if (typeof record?.model === "string" && record.model) {
             entry.modelEnum = record.model;
+          }
+          if (typeof record?.thinkingLevel === "number") {
+            entry.thinkingLevel = record.thinkingLevel;
           }
           meta[id] = entry;
         }

@@ -119,7 +119,7 @@ export class AntigravityCredentialProvider implements CredentialProvider {
         return buildAntigravityEnvelope({
           // When the id sent carries the effort, the body carries none beside
           // it; otherwise the dialect's control stays.
-          inner: antigravityBodyForModelId(inner, model),
+          inner: antigravityBodyForModelId(inner, model, served.meta?.[model]?.thinkingLevel),
           model,
           projectId,
           meta: served.meta?.[model],

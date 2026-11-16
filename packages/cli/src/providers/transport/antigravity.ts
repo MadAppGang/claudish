@@ -534,7 +534,10 @@ export class AntigravityProviderTransport implements ProviderTransport {
   ) {
     const choice = chooseAntigravityServedModel(this.modelName, this.served, request.effort);
     request.onModelChoice?.(choice);
-    return this.buildEnvelope(antigravityBodyForModelId(payload, choice.id), choice.id);
+    return this.buildEnvelope(
+      antigravityBodyForModelId(payload, choice.id, this.modelMeta[choice.id]?.thinkingLevel),
+      choice.id
+    );
   }
 
   /**
@@ -706,7 +709,11 @@ export class AntigravityProviderTransport implements ProviderTransport {
       tried.push(fallbackModel);
 
       const fallbackEnvelope = this.buildEnvelope(
-        antigravityBodyForModelId(originalPayload, fallbackModel),
+        antigravityBodyForModelId(
+          originalPayload,
+          fallbackModel,
+          this.modelMeta[fallbackModel]?.thinkingLevel
+        ),
         fallbackModel
       );
       const headers = this.buildLocalHeaders();
