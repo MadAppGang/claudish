@@ -23,6 +23,7 @@
 
 import type { AnthropicUsage } from "../handlers/shared/claude-api-usage.js";
 import { localTokenEstimate } from "../token-estimate.js";
+import type { CacheWriteSplit } from "./cache-prices.js";
 import { messageHash } from "./history.js";
 
 /** A measured ratio is kept inside these bounds (characters per token). */
@@ -31,6 +32,19 @@ export const MAX_CHARS_PER_TOKEN = 8;
 
 /** At most this many threads are remembered; the oldest go first. */
 export const MAX_MEASURED_THREADS = 512;
+
+/** Growth per request is the mean over at most this many recent measurements. */
+export const GROWTH_WINDOW = 6;
+
+/** What the swap policy reads about one thread's recent requests. */
+export interface ThreadObservation {
+  /** Time since the thread's previous request was sent; undefined for the first. */
+  gapMs?: number;
+  /** Mean prompt growth per request over the recent measurements; undefined below two. */
+  growthPerRequest?: number;
+  /** The newest measured cache write's split by TTL, if a response reported one. */
+  writeSplit?: CacheWriteSplit;
+}
 
 /** What one request sent, for the measurement its response brings back. */
 export interface UsageMark {
@@ -80,12 +94,65 @@ function ratioOf(chars: number, tokens: number): number {
   return Math.min(Math.max(chars / tokens, MIN_CHARS_PER_TOKEN), MAX_CHARS_PER_TOKEN);
 }
 
+/** The TTL split of a usage's cache write, when it reports one. */
+function writeSplitOf(usage: AnthropicUsage | undefined): CacheWriteSplit | undefined {
+  const c = usage?.cache_creation;
+  if (!c || typeof c !== "object") return undefined;
+  const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : 0);
+  const split = {
+    fiveMinute: n(c.ephemeral_5m_input_tokens),
+    oneHour: n(c.ephemeral_1h_input_tokens),
+  };
+  return split.fiveMinute + split.oneHour > 0 ? split : undefined;
+}
+
+/** Set `key` as the newest entry of `map`, dropping the oldest past `MAX_MEASURED_THREADS`. */
+function setBounded<V>(map: Map<string, V>, key: string, value: V): void {
+  map.delete(key);
+  map.set(key, value);
+  if (map.size > MAX_MEASURED_THREADS) {
+    const oldest = map.keys().next().value;
+    if (oldest !== undefined) map.delete(oldest);
+  }
+}
+
 export class RealTokenCount {
   private readonly byThread = new Map<string, Measurement>();
   private readonly ratioBySession = new Map<string, number>();
+  private readonly sentAt = new Map<string, number>();
+  private readonly recent = new Map<string, number[]>();
+  private readonly splitByThread = new Map<string, CacheWriteSplit>();
 
-  /** Describe what `payload` sends, for `record` once its response ends. */
+  constructor(private readonly now: () => number = Date.now) {}
+
+  /**
+   * The thread's gap, growth and cache-write split, as of a request about to
+   * be sent. Read before `mark`, which records this request's send time.
+   */
+  observe(sessionId: string, thread: string): ThreadObservation {
+    const key = `${sessionId}\n${thread}`;
+    const out: ThreadObservation = {};
+    const sent = this.sentAt.get(key);
+    if (sent !== undefined) out.gapMs = Math.max(0, this.now() - sent);
+    const counts = this.recent.get(key);
+    if (counts && counts.length >= 2) {
+      const growth = (counts[counts.length - 1] - counts[0]) / (counts.length - 1);
+      if (growth > 0) out.growthPerRequest = growth;
+    }
+    const split = this.splitByThread.get(key);
+    if (split) out.writeSplit = { ...split };
+    return out;
+  }
+
+  /** Tokens for `chars` characters of JSON, at the session's measured ratio, else 4. */
+  tokensOfChars(sessionId: string, chars: number): number {
+    const ratio = this.ratioBySession.get(sessionId) ?? 4;
+    return Math.ceil(Math.max(0, chars) / ratio);
+  }
+
+  /** Describe what `payload` sends, for `record` once its response ends. Records the send time. */
   mark(sessionId: string, thread: string, payload: unknown, chars = charsOf(payload)): UsageMark {
+    setBounded(this.sentAt, `${sessionId}\n${thread}`, this.now());
     const messages = messagesOf(payload);
     const last = messages[messages.length - 1];
     return {
@@ -102,23 +169,20 @@ export class RealTokenCount {
     const tokens = promptTokens(usage);
     if (tokens <= 0 || mark.chars <= 0 || mark.messageCount === 0) return;
     const key = `${mark.sessionId}\n${mark.thread}`;
-    this.byThread.delete(key);
-    this.byThread.set(key, {
+    setBounded(this.byThread, key, {
       messageCount: mark.messageCount,
       lastMessageHash: mark.lastMessageHash,
       chars: mark.chars,
       tokens,
     });
-    if (this.byThread.size > MAX_MEASURED_THREADS) {
-      const oldest = this.byThread.keys().next().value;
-      if (oldest !== undefined) this.byThread.delete(oldest);
-    }
-    this.ratioBySession.delete(mark.sessionId);
-    this.ratioBySession.set(mark.sessionId, ratioOf(mark.chars, tokens));
-    if (this.ratioBySession.size > MAX_MEASURED_THREADS) {
-      const oldest = this.ratioBySession.keys().next().value;
-      if (oldest !== undefined) this.ratioBySession.delete(oldest);
-    }
+    setBounded(this.ratioBySession, mark.sessionId, ratioOf(mark.chars, tokens));
+    // A drop (a swap, or Claude Code's own compaction) starts the growth window again.
+    const previous = this.recent.get(key) ?? [];
+    const last = previous[previous.length - 1];
+    const counts = last !== undefined && tokens < last ? [tokens] : [...previous, tokens];
+    setBounded(this.recent, key, counts.slice(-GROWTH_WINDOW));
+    const split = writeSplitOf(usage);
+    if (split) setBounded(this.splitByThread, key, split);
   }
 
   /** The count of `payload`, as it would be sent now. */

@@ -53,6 +53,7 @@ defaults:
   },
   "history": {
     "enabled": true,
+    "policy": "threshold",  // when a ready summary is sent: threshold, early or cost
     "precomputeAt": 0.6,    // start a summary at 60% of the limit
     "applyAt": 0.75         // send it at 75%, at the next user turn or complete tool round
   }
@@ -219,6 +220,38 @@ and does not compact.
 On a native Claude route launched with no `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, the limit is the
 catalog's window for the model, which can be larger than the window Claude Code compacts at. Claude
 Code may then compact before claudish's thresholds are reached.
+
+### When the summary is sent: `history.policy`
+
+| Policy | Default thresholds | Sends a ready summary |
+|---|---|---|
+| `threshold` (default) | 0.6 / 0.75 | once the count reaches `applyAt` |
+| `early` | 0.5 / 0.7 | once the count reaches `applyAt` |
+| `cost` | 0.5 / (unused) | only when the swap pays for itself, see below |
+
+The policy sets the default thresholds. A threshold written in the block wins.
+
+A swap is not free. It changes the start of the prompt, so the summary and every turn after it
+are written to the prompt cache again, at 1.25 times the input price for a 5-minute cache entry
+or 2 times for a 1-hour one, instead of read at the cache-read price. It then saves the cache read
+of the removed tokens on every later request. `cost` swaps only in one of three cases:
+
+- the requests projected before Claude Code compacts on its own (near 83% of the limit, at the
+  recent growth per request) reach the break-even count `nStar`;
+- the next request is projected to cross Claude Code's compaction point, so the swap replaces
+  Claude Code's own compaction;
+- more time than the cache lifetime passed since the previous request, so the cache is cold
+  and the request is written in full anyway.
+
+The prices come from the model's Claude API rates in the cloud models catalog. A model with no
+published cache-read rate (any non-Claude model) gets only the last two cases. Each decision is
+logged:
+
+```
+[compaction] history decision cost: hold, nStar=26.0, projected=6, L=80258, S=22, R=74003, reason=projected 6 < nStar 26.0
+```
+
+`L` is the kept tail, `S` the summary and `R` the tokens removed.
 
 ## Cost
 

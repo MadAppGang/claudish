@@ -60,7 +60,7 @@ export function claudeApiContextWindow(name: string): number {
  * that band is chosen here per turn; every other price is
  * `getModelPricing`'s, as for any provider.
  */
-function turnPricing(name: string, inputTokens: number): ModelPricing {
+export function claudeApiTurnPricing(name: string, inputTokens: number): ModelPricing {
   const entry = catalogEntryForRequest(CLAUDE_API_PROVIDER, name);
   const own = entry ? ownConnection(entry, CLAUDE_API_PROVIDER, name) : undefined;
   const banded =
@@ -160,7 +160,7 @@ export function createClaudeApiMeter(opts: {
           cacheReadTokens: cacheRead,
           cacheCreationTokens: cacheCreation,
         };
-        const pricing = turnPricing(turn.model, input);
+        const pricing = claudeApiTurnPricing(turn.model, input);
         if (canonicalModelId(turn.model) === mainId) {
           const before = tracker.getTotalCost();
           tracker.update(input, output, detail, undefined, pricing);

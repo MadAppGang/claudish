@@ -212,6 +212,42 @@ one of them is never compressed and never recorded, so it is sent as it is on ev
 - A summary that fails is recorded `failed` for its boundary and never retried there. A swap whose
   record did not reach disk is not sent (it could not be replayed after a restart).
 
+### The swap policy (`compaction/swap-policy.ts`, `compaction.history.policy`)
+
+A swap is one cache break. Bench case d on `0aed68ec` (Sonnet 5.5, 200K): the swap request wrote
+60,897 tokens fresh and removed about 74K; Claude Code compacted on its own about 6 requests
+later; the session cost +1.0% against no swap. So the swap paid less than its write. The break-even
+in requests after the swap is
+
+```
+N* = [(writeRatio − readRatio)·(L + S) + haikuCost / p] / (readRatio·R)
+```
+
+with `L` the kept tail, `S` the summary, `R` the removed tokens (prefix less `S`), `p` the main
+model's input price per token. Case d: `(1.25 − 0.05)·60,897 / (0.05·74,000) ≈ 19.7` requests on
+Sonnet 5.5, about 40 on Fable 5.2 (cache read 0.025× input). Six requests were far short.
+
+- `decideHistorySwap` is pure: every number is an argument, so the tests use the measured figures
+  directly. `threshold` and `early` swap at `applyAt` and only log `nStar`; `cost` swaps when the
+  projection `ceil((0.83·limit − count) / growth)` reaches `N*`, when it is ≤ 1 (the next request
+  crosses Claude Code's point: the swap replaces that compaction), or when the gap since the
+  thread's previous request exceeds the cache TTL (a cold cache rewrites everything anyway).
+  Without prices it never swaps on `N*`; without growth it holds until one of the other two cases.
+- Read ratio and base price: the model's own Claude API connection (`claudeApiTurnPricing`, the
+  meter's banded reader), `cachedRead / input`. Measured on the catalog: Sonnet 5.5 0.1/2, Opus 5.5
+  0.2/4, Fable 5.2 0.2/8, Haiku 5.5 tiered with a cache-read rate per band. A name that is not
+  `claude-*`, an estimate, or no published cache-read rate gives no ratios; nothing is guessed.
+- Write ratio: no Claude connection publishes `cachedWrite`, so `cache-prices.ts` uses Anthropic's
+  rule by TTL (5m 1.25×, 1h 2×), weighted by the newest `usage.cache_creation` split
+  (`ephemeral_5m_input_tokens`, `ephemeral_1h_input_tokens`, kept by `mergeSseUsage`). A published
+  `cachedWrite` replaces the 5m multiplier. The TTL is 1 h only when that write was all 1-hour.
+- Growth: the mean over the thread's last 6 measured counts; a drop (a swap, Claude Code's own
+  compaction) restarts the window. Gap: from the thread's previous `mark` (send time).
+- `haikuCost`: the ready summary record keeps the Haiku call's `inputTokens`/`outputTokens`, priced
+  at the Haiku model's band. By decision time this money is already spent; the formula keeps it
+  as specified.
+- `CLAUDE_CODE_COMPACT_AT` = 0.83 of the effective limit, from the 159K–170K of 200K measured.
+
 **Who owns compaction.** With a summary applied, Claude Code's view of the input (from the
 response `usage`) drops below its auto-compact threshold, so it does not compact. Its auto-compact
 stays on as the safety net when no summary is ready. No Claude Code setting is changed. On a

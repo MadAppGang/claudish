@@ -135,6 +135,9 @@ export type HistorySummaryRecord =
       summary: string;
       /** The prefix hash of the summary this one rolled forward from, if any. */
       basedOn?: string;
+      /** The Haiku call's usage, when it reported one. */
+      inputTokens?: number;
+      outputTokens?: number;
       decidedAt: string;
     }
   | {

@@ -23,6 +23,7 @@
 import { CompactionConfigSchema } from "../config-schema.js";
 import { claudeAdvisorModelFor } from "../handlers/advisor-claude-route.js";
 import type { ClaudishProfileConfig } from "../profile-config.js";
+import type { HistoryPolicy } from "./swap-policy.js";
 
 /** The environment variable that switches compaction on (`1`) or off (`0`). */
 export const COMPACTION_ENV_VAR = "CLAUDISH_COMPACTION";
@@ -44,6 +45,14 @@ export interface ToolOutputSettings {
 
 export interface HistorySettings {
   enabled: boolean;
+  /**
+   * When a ready summary is swapped in (`swap-policy.ts`): `threshold` at
+   * `applyAt`; `early` the same rule with earlier default thresholds; `cost`
+   * when the swap pays for itself before Claude Code compacts on its own.
+   * The policy sets the default thresholds; values written in the block win.
+   * Absent means `threshold`.
+   */
+  policy?: HistoryPolicy;
   /** Fraction of the effective limit at which a summary is prepared. */
   precomputeAt: number;
   /**
@@ -77,9 +86,19 @@ export const DEFAULT_COMPACTION_SETTINGS: Readonly<CompactionSettings> = Object.
   }),
   history: Object.freeze({
     enabled: true,
+    policy: "threshold" as HistoryPolicy,
     precomputeAt: 0.6,
     applyAt: 0.75,
   }),
+});
+
+/** The default thresholds of each history policy. `cost` reads only `precomputeAt`. */
+export const POLICY_THRESHOLDS: Readonly<
+  Record<HistoryPolicy, { precomputeAt: number; applyAt: number }>
+> = Object.freeze({
+  threshold: { precomputeAt: 0.6, applyAt: 0.75 },
+  early: { precomputeAt: 0.5, applyAt: 0.7 },
+  cost: { precomputeAt: 0.5, applyAt: 0.75 },
 });
 
 /**
@@ -128,7 +147,9 @@ export function readCompactionBlock(block: unknown): CompactionBlockReading {
     };
   }
   const data = parsed.data;
-  const history = { ...defaults.history, ...definedOnly(data.history ?? {}) };
+  const written = definedOnly(data.history ?? {});
+  const policy = written.policy ?? defaults.history.policy ?? "threshold";
+  const history = { ...defaults.history, ...POLICY_THRESHOLDS[policy], ...written, policy };
   // A block that names only one of the two thresholds must still leave them ordered.
   if (history.precomputeAt >= history.applyAt) {
     return {

@@ -44,11 +44,12 @@
 import { createHash } from "node:crypto";
 import { lookupModel, lookupModelForProvider } from "../adapters/model-catalog.js";
 import { withoutCacheMarkers } from "../code-mode/hashes.js";
-import { claudeApiContextWindow } from "../handlers/claude-api-meter.js";
+import { claudeApiContextWindow, claudeApiTurnPricing } from "../handlers/claude-api-meter.js";
 import type { AnthropicUsage } from "../handlers/shared/claude-api-usage.js";
 import { log } from "../logger.js";
 import { ONE_MILLION_CONTEXT_SUFFIX } from "../providers/claude-code-aliases.js";
 import { parseModelSpec } from "../providers/model-parser.js";
+import { type CachePricing, cacheRatios, cacheTtlMs } from "./cache-prices.js";
 import type { HistorySettings } from "./config.js";
 import type { CompactionCallResult, CompactionClient } from "./haiku-client.js";
 import { RealTokenCount, type RequestCount, type UsageMark, charsOf } from "./real-count.js";
@@ -59,6 +60,7 @@ import {
   type HistorySwapRecord,
   historyRecordKey,
 } from "./store.js";
+import { type HistoryPolicy, type SwapDecision, decideHistorySwap } from "./swap-policy.js";
 
 /** The first line of the summary message; the summary follows on the next line. */
 export const HISTORY_SUMMARY_MARKER = "[claudish: summary of the earlier conversation]";
@@ -85,6 +87,12 @@ export const RENDER_TEXT_MAX_CHARS = 20_000;
 export const HISTORY_INPUT_MAX_CHARS = 400_000;
 
 /** Claude Code's floor and ceiling for `CLAUDE_CODE_AUTO_COMPACT_WINDOW`. */
+/**
+ * The fraction of the effective limit at which Claude Code compacts on its
+ * own: measured near 0.83 on a 200K window.
+ */
+export const CLAUDE_CODE_COMPACT_AT = 0.83;
+
 export const AUTO_COMPACT_WINDOW_FLOOR = 100_000;
 export const AUTO_COMPACT_WINDOW_CEILING = 1_000_000;
 
@@ -538,8 +546,39 @@ export interface HistoryCompactorDeps {
   autoCompactWindow?: () => number | undefined;
   /** The timeout of one summary call. Defaults to `HISTORY_SUMMARY_TIMEOUT_MS`. */
   summaryTimeoutMs?: number;
-  /** The request counter. Defaults to a new `RealTokenCount`. */
+  /** The request counter. Defaults to a new `RealTokenCount` on `now`. */
   counter?: RealTokenCount;
+  /** The clock, in milliseconds. Defaults to `Date.now`. */
+  now?: () => number;
+  /**
+   * The rates of a request's model for an input of `inputTokens`. Defaults to
+   * the Claude API connection's rates for a `claude-*` name, else undefined.
+   */
+  pricesOf?: (model: unknown, inputTokens: number) => CachePricing | undefined;
+  /** What the Haiku call behind a ready summary cost, in dollars. */
+  haikuCostOf?: (summary: Extract<HistorySummaryRecord, { form: "ready" }>) => number;
+}
+
+/** The Claude API rates of a `claude-*` model; undefined for any other name. */
+export function claudeApiPrices(model: unknown, inputTokens: number): CachePricing | undefined {
+  if (typeof model !== "string") return undefined;
+  const name = model.toLowerCase().endsWith(ONE_MILLION_CONTEXT_SUFFIX)
+    ? model.slice(0, -ONE_MILLION_CONTEXT_SUFFIX.length)
+    : model;
+  if (!/^claude-/i.test(name)) return undefined;
+  return claudeApiTurnPricing(name, inputTokens);
+}
+
+/** The dollars a summary's recorded Haiku usage cost at `haikuModel`'s rates; 0 when not recorded. */
+export function summaryHaikuCost(
+  summary: Extract<HistorySummaryRecord, { form: "ready" }>,
+  haikuModel: string
+): number {
+  const input = summary.inputTokens ?? 0;
+  const output = summary.outputTokens ?? 0;
+  if (input + output <= 0) return 0;
+  const rates = claudeApiTurnPricing(haikuModel, input);
+  return (input * rates.inputCostPer1M + output * rates.outputCostPer1M) / 1_000_000;
 }
 
 /** Memoised prefix and range hashes of one request's messages. */
@@ -566,7 +605,7 @@ export class HistoryCompactor {
   private readonly counter: RealTokenCount;
 
   constructor(private readonly deps: HistoryCompactorDeps) {
-    this.counter = deps.counter ?? new RealTokenCount();
+    this.counter = deps.counter ?? new RealTokenCount(deps.now);
   }
 
   /**
@@ -596,19 +635,17 @@ export class HistoryCompactor {
     const counter = this.counter;
     let chars = charsOf(payload);
     let count = counter.count(sessionId, thread, payload, chars);
-    const { precomputeAt, applyAt } = this.deps.settings;
+    const { precomputeAt } = this.deps.settings;
     if (count.tokens >= precomputeAt * limit) logCount(sessionId, count, limit);
 
-    if (count.tokens >= applyAt * limit && isSwapPoint(original)) {
-      const swap = this.recordSwap(sessionId, thread, original, hashes, active?.boundary ?? 0);
-      if (swap) {
-        body.messages = applySwap(original, swap);
-        result.applied = "swapped";
-        result.boundary = swap.boundary;
-        chars = charsOf(payload);
-        count = counter.count(sessionId, thread, payload, chars);
-        logSwap(sessionId, swap, original);
-      }
+    const swap = this.decidedSwap(sessionId, thread, body, original, hashes, active, count, limit);
+    if (swap) {
+      body.messages = applySwap(original, swap);
+      result.applied = "swapped";
+      result.boundary = swap.boundary;
+      chars = charsOf(payload);
+      count = counter.count(sessionId, thread, payload, chars);
+      logSwap(sessionId, swap, original);
     }
     result.estimate = count.tokens;
     result.countSource = count.source;
@@ -648,20 +685,112 @@ export class HistoryCompactor {
   }
 
   /**
-   * Record a swap at the ready summary with the largest boundary above
-   * `above`, and return it. Undefined when no summary is ready or the record
-   * did not reach disk: a swap that is not on disk could not be replayed after
-   * a restart, so it is never sent.
+   * The new swap this request sends, recorded, or undefined. A decision is
+   * made at a swap point with a ready summary above the active boundary, once
+   * the count reaches `applyAt` (`threshold`, `early`) or `precomputeAt` (`cost`).
+   */
+  private decidedSwap(
+    sessionId: string,
+    thread: string,
+    body: Block,
+    original: readonly unknown[],
+    hashes: MessageHashes,
+    active: HistorySwapRecord | undefined,
+    count: RequestCount,
+    limit: number
+  ): HistorySwapRecord | undefined {
+    const policy: HistoryPolicy = this.deps.settings.policy ?? "threshold";
+    const { precomputeAt, applyAt } = this.deps.settings;
+    const gate = policy === "cost" ? precomputeAt : applyAt;
+    if (count.tokens < gate * limit || !isSwapPoint(original)) return undefined;
+    const last = original.length - 1;
+    const ready = this.bestSummary(
+      sessionId,
+      thread,
+      original,
+      hashes,
+      active?.boundary ?? 0,
+      last
+    );
+    if (!ready) return undefined;
+    const decision = this.decide(policy, sessionId, thread, body, original, ready, count, limit);
+    return decision.swap ? this.recordSwap(sessionId, thread, original, hashes, ready) : undefined;
+  }
+
+  /**
+   * Decide, with `decideHistorySwap`, whether swapping `ready` in now pays,
+   * and log the decision. The token figures are measured at the session's
+   * characters-per-token ratio: L the kept tail with thinking stripped, S the
+   * summary message, R the prefix it replaces less S.
+   */
+  private decide(
+    policy: HistoryPolicy,
+    sessionId: string,
+    thread: string,
+    body: Block,
+    original: readonly unknown[],
+    ready: Extract<HistorySummaryRecord, { form: "ready" }>,
+    count: RequestCount,
+    limit: number
+  ): SwapDecision {
+    const counter = this.counter;
+    const observed = counter.observe(sessionId, thread);
+    const tailTokens = counter.tokensOfChars(
+      sessionId,
+      charsOf(original.slice(ready.boundary).map(stripThinking))
+    );
+    const summaryTokens = counter.tokensOfChars(
+      sessionId,
+      charsOf({ role: "user", content: summaryMessageText(ready.summary) })
+    );
+    const prefixTokens = counter.tokensOfChars(
+      sessionId,
+      charsOf(original.slice(0, ready.boundary))
+    );
+    const removedTokens = Math.max(0, prefixTokens - summaryTokens);
+    const pricing = (this.deps.pricesOf ?? claudeApiPrices)(body.model, count.tokens);
+    const ratios = cacheRatios(pricing, observed.writeSplit);
+    const haikuCostUsd = (
+      this.deps.haikuCostOf ?? ((s) => summaryHaikuCost(s, this.deps.client.model))
+    )(ready);
+    const decision = decideHistorySwap({
+      policy,
+      count: count.tokens,
+      limit,
+      precomputeAt: this.deps.settings.precomputeAt,
+      applyAt: this.deps.settings.applyAt,
+      ccCompactAt: CLAUDE_CODE_COMPACT_AT * limit,
+      tailTokens,
+      summaryTokens,
+      removedTokens,
+      ...(ratios ? { ratios } : {}),
+      haikuCostUsd,
+      ...(observed.gapMs !== undefined ? { gapMs: observed.gapMs } : {}),
+      cacheTtlMs: cacheTtlMs(observed.writeSplit),
+      ...(observed.growthPerRequest !== undefined
+        ? { growthPerRequest: observed.growthPerRequest }
+        : {}),
+    });
+    const show = (n: number | undefined) =>
+      n === undefined ? "unknown" : Number.isFinite(n) ? n.toFixed(1) : "infinite";
+    log(
+      `[compaction] history decision ${policy}: ${decision.swap ? "swap" : "hold"}, nStar=${show(decision.nStar)}, projected=${decision.projectedRequestsBeforeCcCompact ?? "unknown"}, L=${tailTokens}, S=${summaryTokens}, R=${removedTokens}, reason=${decision.reason}`
+    );
+    return decision;
+  }
+
+  /**
+   * Record a swap at the ready summary `ready`, and return it. Undefined when
+   * the record did not reach disk: a swap that is not on disk could not be
+   * replayed after a restart, so it is never sent.
    */
   private recordSwap(
     sessionId: string,
     thread: string,
     original: readonly unknown[],
     hashes: MessageHashes,
-    above: number
+    ready: Extract<HistorySummaryRecord, { form: "ready" }>
   ): HistorySwapRecord | undefined {
-    const ready = this.bestSummary(sessionId, thread, original, hashes, above, original.length - 1);
-    if (!ready) return undefined;
     const swap: HistorySwapRecord = {
       kind: "history-swap",
       thread,
@@ -866,6 +995,9 @@ export class HistoryCompactor {
           boundary: job.boundary,
           summary: result.text,
           ...(job.basedOn ? { basedOn: job.basedOn } : {}),
+          ...(result.usage
+            ? { inputTokens: result.usage.input_tokens, outputTokens: result.usage.output_tokens }
+            : {}),
           decidedAt,
         }
       : {

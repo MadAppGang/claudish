@@ -255,6 +255,7 @@ export const CompactionConfigSchema = z
     history: z
       .object({
         enabled: z.boolean().optional(),
+        policy: z.enum(["threshold", "early", "cost"]).optional(),
         precomputeAt: z.number().gt(0).lt(1).optional(),
         applyAt: z.number().gt(0).lte(1).optional(),
       })
