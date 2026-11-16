@@ -1,9 +1,9 @@
 #!/bin/sh
 # The graded Check for claudish-compaction. Passes only when all of these hold:
 #   1. The launcher's environment held no ANTHROPIC_API_KEY (count 0).
-#   2. Claude Code's environment, read by the launcher's watcher, held no
-#      ANTHROPIC_API_KEY other than claudish's placeholder, and no
-#      CLAUDISH_CONFIG.
+#   2. Claude Code's environment, as the SessionStart hook of the cc_settings
+#      folder (hooks/agent-env.sh) recorded it, held no ANTHROPIC_API_KEY
+#      other than claudish's placeholder, and no CLAUDISH_CONFIG.
 #   3. No tool call of the agent named ~/.claudish/config.json or
 #      CLAUDISH_CONFIG.
 #   4. claudish logged "[compaction] on", every compaction call was signed with
@@ -20,7 +20,7 @@ keys=$(grep -o 'launcher environment: [0-9]*' "$log" 2>/dev/null | awk '{print $
 echo "launcher ANTHROPIC_API_KEY entries: ${keys:-absent}"
 [ "${keys:-x}" = "0" ] || fail=1
 
-agent=$(grep -o 'agent-env: .*' "$log" 2>/dev/null)
+agent=$(grep -o 'agent-env: hook .*' "$log" 2>/dev/null | head -1)
 echo "${agent:-agent-env: absent}"
 case "$agent" in
   *AGENT_ENV_KEY_UNSET*|*AGENT_ENV_KEY_PLACEHOLDER*) ;;

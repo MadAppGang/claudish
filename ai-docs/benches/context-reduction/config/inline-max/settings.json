@@ -1,3 +1,8 @@
 {
-  "bashOutputMaxChars": 128000
+  "bashOutputMaxChars": 128000,
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [{ "type": "command", "command": "sh \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/agent-env.sh\"" }] }
+    ]
+  }
 }

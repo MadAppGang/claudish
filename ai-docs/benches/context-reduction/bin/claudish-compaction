@@ -16,10 +16,9 @@
 #   - ./logs, where --debug-claudish writes claudish_<timestamp>.log, becomes a link
 #     into ~/.bench-out, so the debug log outlives an errored trial.
 #
-# A watcher then waits for the Claude Code process that claudish starts and
-# reads its environment with `ps eww`. It writes one label, never a value:
-# AGENT_ENV_KEY_UNSET, AGENT_ENV_KEY_PLACEHOLDER (claudish's own placeholder)
-# or AGENT_ENV_KEY_SET (any other value).
+# Claude Code's own environment is recorded by the SessionStart hook of the
+# cc_settings folder (config/*/hooks/agent-env.sh), into this launch log: the
+# sandbox refuses `ps`, so this script cannot read another process.
 set -u
 dir="$HOME/.bench-compaction"
 # The variables a case's preparation wrote (the long-session case: the
@@ -64,35 +63,6 @@ if [ ! -e logs ]; then
 fi
 
 placeholder="sk-ant-api03-placeholder-not-used-proxy-handles-auth-with-openrouter-key-xxxxxxxxxxxxxxxxxxxxx"
-watch_agent_env() {
-  i=0
-  while [ "$i" -lt 600 ]; do
-    pid=$(pgrep -f -- "--add-dir $HOME/.claudish/compaction/" | head -1)
-    if [ -n "$pid" ]; then
-      # A sandbox can refuse ps ("Operation not permitted"). Then nothing was
-      # read, and the label says so instead of reading as "unset".
-      if ! envline=$(ps eww -o command= -p "$pid" 2>&1); then
-        note "agent-env: pid $pid AGENT_ENV_UNREADABLE: $(echo "$envline" | head -1 | cut -c1-120)"
-        return
-      fi
-      found=$(echo "$envline" | grep -o ' ANTHROPIC_API_KEY=[^ ]*' | head -1)
-      if [ -z "$found" ]; then
-        label=AGENT_ENV_KEY_UNSET
-      elif [ "$found" = " ANTHROPIC_API_KEY=$placeholder" ]; then
-        label=AGENT_ENV_KEY_PLACEHOLDER
-      else
-        label=AGENT_ENV_KEY_SET
-      fi
-      config=$(echo "$envline" | grep -c ' CLAUDISH_CONFIG=')
-      note "agent-env: pid $pid $label CLAUDISH_CONFIG_present=$config"
-      return
-    fi
-    i=$((i + 1))
-    sleep 1
-  done
-  note "agent-env: AGENT_ENV_UNKNOWN: no Claude Code process with the compaction --add-dir in 600 s"
-}
-watch_agent_env &
 
 # On a foreign model claudish gives Claude Code its placeholder as
 # ANTHROPIC_API_KEY, and Claude Code asks "Detected a custom API key ... Do you

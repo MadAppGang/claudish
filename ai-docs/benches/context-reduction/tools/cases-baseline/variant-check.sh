@@ -2,7 +2,8 @@
 # The key and route check of the baseline arm of cases/. Passes only when:
 #   1. the launcher's environment held no ANTHROPIC_API_KEY (count 0);
 #   2. Claude Code's environment held no ANTHROPIC_API_KEY other than
-#      claudish's placeholder, and no CLAUDISH_CONFIG;
+#      claudish's placeholder, and no CLAUDISH_CONFIG, as the SessionStart
+#      hook of the cc_settings folder (hooks/agent-env.sh) recorded it;
 #   3. no tool call of the agent named ~/.claudish/config.json or
 #      CLAUDISH_CONFIG;
 #   4. the build's debug log exists and has no compaction line at all.
@@ -15,7 +16,7 @@ keys=$(grep -o 'launcher environment: [0-9]*' "$log" 2>/dev/null | awk '{print $
 echo "launcher ANTHROPIC_API_KEY entries: ${keys:-absent}"
 [ "${keys:-x}" = "0" ] || fail=1
 
-agent=$(grep -o 'agent-env: .*' "$log" 2>/dev/null)
+agent=$(grep -o 'agent-env: hook .*' "$log" 2>/dev/null | head -1)
 echo "${agent:-agent-env: absent}"
 case "$agent" in
   *AGENT_ENV_KEY_UNSET*|*AGENT_ENV_KEY_PLACEHOLDER*) ;;
