@@ -37,6 +37,7 @@ import {
   type SlimModelEntry,
   readAllModelsCache,
 } from "./all-models-cache.js";
+import { isOptInWireId } from "./content-use.js";
 
 /**
  * Minimal projection of a slim catalog entry for query consumers.
@@ -154,16 +155,20 @@ function getCachedEntries(): SlimModelEntry[] | null {
  * Returns `null` when:
  *   - the disk cache is missing or unparseable (`readAllModelsCache` → null), OR
  *   - the cache has no entries, OR
- *   - no entry's `aliases` array contains `alias`.
+ *   - no entry's `aliases` array contains `alias` with a `modelId` that
+ *     `accept` takes (every id, by default).
  *
  * Never throws.
  */
-export function findEntryByAlias(alias: string): CatalogEntryQueryResult | null {
+export function findEntryByAlias(
+  alias: string,
+  accept: (modelId: string) => boolean = () => true
+): CatalogEntryQueryResult | null {
   const entries = getCachedEntries();
   if (!entries || entries.length === 0) return null;
 
   for (const entry of entries) {
-    if (entry.aliases.includes(alias)) {
+    if (entry.aliases.includes(alias) && accept(entry.modelId)) {
       return project(entry);
     }
   }
@@ -199,7 +204,8 @@ export function findEntryByModelId(modelId: string): CatalogEntryQueryResult | n
  * The catalog may have multiple entries that share a common alias (e.g., two
  * models tagged "sonnet"); only ones with `supportsVision === true` qualify.
  * The first match wins — entries are searched in the order they appear in the
- * cache, which matches the order Firebase returns them.
+ * cache, which matches the order Firebase returns them. A content-use opt-in
+ * model id never qualifies: the vision model is chosen for the user.
  *
  * Returns `null` when:
  *   - the disk cache is missing or unparseable, OR
@@ -213,7 +219,11 @@ export function findVisionAlias(alias: string): CatalogEntryQueryResult | null {
   if (!entries || entries.length === 0) return null;
 
   for (const entry of entries) {
-    if (entry.supportsVision === true && entry.aliases.includes(alias)) {
+    if (
+      entry.supportsVision === true &&
+      entry.aliases.includes(alias) &&
+      !isOptInWireId(entry.modelId)
+    ) {
       return project(entry);
     }
   }

@@ -14,7 +14,8 @@
  */
 
 import { EFFORT_LEVELS, type EffortLevel, isEffortLevel } from "../adapters/base-api-format.js";
-import type { ModelIdEffort, ModelIdEffortLevel } from "../model-loader.js";
+import type { AggregatorEntry, ModelIdEffort, ModelIdEffortLevel } from "../model-loader.js";
+import { isOptInWireId } from "./content-use.js";
 
 /**
  * Trailing uid segments that mark a Devin speed premium (`-fast`, `-priority`),
@@ -54,6 +55,40 @@ export function readModelIdEffort(raw: unknown): ModelIdEffort | undefined {
   if (off) map.off = off;
   if (typeof record.baseServed === "boolean") map.baseServed = record.baseServed;
   return map;
+}
+
+/**
+ * The id `connection`'s effort map lists (for a level or as `off`) that equals
+ * `requested`, in the map's own spelling: an exact match first, then a
+ * case-insensitive one when exactly one distinct spelling matches. Undefined when
+ * the connection has no valid map, the map lists no such id, or two spellings
+ * match only case-insensitively. Whole-id comparison only; no suffix is ever parsed.
+ */
+export function publishedEffortWireId(
+  connection: Pick<AggregatorEntry, "modelIdEffort">,
+  requested: string
+): string | undefined {
+  const map = readModelIdEffort(connection.modelIdEffort);
+  if (!map) return undefined;
+  const ids = [...Object.values(map.values), ...(map.off ? [map.off] : [])];
+  if (ids.includes(requested)) return requested;
+  const lowered = requested.toLowerCase();
+  const spellings = new Set(ids.filter((id) => id.toLowerCase() === lowered));
+  return spellings.size === 1 ? [...spellings][0] : undefined;
+}
+
+/**
+ * {@link publishedEffortWireId} for a reader that CHOOSES the wire id: a bare
+ * name, a provider-only routing entry, or default candidate gathering. A map id
+ * that opts content in (`content-use.ts`) is never chosen, so the caller keeps
+ * the connection's base id. Only an explicit `provider@model` sends one.
+ */
+export function implicitEffortWireId(
+  connection: Pick<AggregatorEntry, "modelIdEffort">,
+  requested: string
+): string | undefined {
+  const id = publishedEffortWireId(connection, requested);
+  return id !== undefined && !isOptInWireId(id) ? id : undefined;
 }
 
 /** A plain object, or undefined. */
@@ -114,6 +149,10 @@ export interface ModelIdEffortProvider {
  *   An id the provider's `sendable` refuses is not replaced by another map id:
  *   the existing resolution answers instead.
  *
+ * - a map id that opts content in (`content-use.ts`), for a level or as `off`:
+ *   never chosen. The map decides nothing and the existing resolution answers,
+ *   so only a request that named the opt-in id itself sends it.
+ *
  * A request with no effort is given its level by the caller before it gets
  * here (`model-id-effort-choice.ts`); this function never invents one.
  */
@@ -122,7 +161,7 @@ export function chooseModelIdForEffort(
   effort: EffortLevel,
   provider: ModelIdEffortProvider
 ): string | undefined {
-  if (effort === "none") return map.off ? provider.sendable(map.off) : undefined;
-  const id = mapIdForEffort(map, effort);
-  return id ? provider.sendable(id) : undefined;
+  const id = effort === "none" ? map.off : mapIdForEffort(map, effort);
+  if (!id || isOptInWireId(id)) return undefined;
+  return provider.sendable(id);
 }

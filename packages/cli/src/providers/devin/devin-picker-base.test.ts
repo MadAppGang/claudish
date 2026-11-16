@@ -91,6 +91,15 @@ describe("Devin picker mapped base", () => {
     ]);
   });
 
+  test("H3 a default opt-in uid never becomes a picker row id", () => {
+    const optIn = `${BASE}-contributor`;
+    const rows = resolver.collapse(
+      [devinModel(optIn, "low", { isDefault: true })].map(devinModelsCatalogEntry)
+    );
+
+    expect(rows.map((row) => row.id)).not.toContain(optIn);
+  });
+
   function contextGroups() {
     const base = "glm-5-2";
     const extended = `${base}-1m`;

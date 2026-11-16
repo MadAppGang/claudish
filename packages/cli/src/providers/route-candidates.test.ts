@@ -32,6 +32,7 @@ import {
   routeOwnership,
 } from "./route-candidates.js";
 import { buildCatalogChain, route } from "./routing-rules.js";
+import { catalogEntry, connection, effortMap } from "./test-helpers/model-id-effort.js";
 
 const GENERATION = "g-20260921062451697-f490edba";
 
@@ -457,7 +458,112 @@ describe("the subscription band", () => {
   });
 });
 
+describe("exact effort-map wire ids in default candidate gathering", () => {
+  const base = "example-model";
+  const low = `${base}-low`;
+  const googleBase = "example-google-base";
+
+  function withEffortCatalog(run: (path: string) => void, effortWireId = low): void {
+    const dir = mkdtempSync(join(tmpdir(), "claudish-candidate-effort-"));
+    const path = join(dir, "all-models.json");
+    try {
+      writeAllModelsCache(
+        {
+          catalogGenerationId: "candidate-effort-test-data",
+          version: 3,
+          lastUpdated: new Date().toISOString(),
+          entries: [
+            catalogEntry(
+              base,
+              [
+                connection("antigravity", base, effortMap({ low: effortWireId })),
+                connection("google", googleBase),
+              ],
+              [effortWireId]
+            ),
+          ],
+          models: [],
+          plans: [],
+        },
+        path
+      );
+      run(path);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  test("keeps Antigravity's exact effort-map id and Google's base id", () => {
+    withEffortCatalog((path) => {
+      const candidates = gatherRouteCandidates(low, path).candidates;
+      expect(candidates.find(({ provider }) => provider === "google")?.wireId).toBe(googleBase);
+      expect(candidates.find(({ provider }) => provider === "antigravity")?.wireId).toBe(low);
+    });
+  });
+
+  test("keeps the base wire ids when gathering the base name", () => {
+    withEffortCatalog((path) => {
+      const candidates = gatherRouteCandidates(base, path).candidates;
+      expect(candidates.find(({ provider }) => provider === "google")?.wireId).toBe(googleBase);
+      expect(candidates.find(({ provider }) => provider === "antigravity")?.wireId).toBe(base);
+    });
+  });
+
+  test("keeps the connection's published spelling for a case-insensitive alias", () => {
+    withEffortCatalog((path) => {
+      const candidates = gatherRouteCandidates("Example-Model-Low", path).candidates;
+      expect(candidates.find(({ provider }) => provider === "google")?.wireId).toBe(googleBase);
+      expect(candidates.find(({ provider }) => provider === "antigravity")?.wireId).toBe(low);
+    });
+  });
+
+  test("keeps the base id when an effort-map value opts content in", () => {
+    const optIn = `${base}-contributor`;
+    withEffortCatalog((path) => {
+      const candidates = gatherRouteCandidates(optIn, path).candidates;
+      expect(candidates.find(({ provider }) => provider === "antigravity")?.wireId).toBe(base);
+    }, optIn);
+  });
+});
+
 describe("vendor claims and availability", () => {
+  test("never gathers an opt-in wire id from a vendor claim", () => {
+    const dir = mkdtempSync(join(tmpdir(), "claudish-opt-in-vendor-claim-"));
+    const path = join(dir, "all-models.json");
+    const requested = "example-model-contributor";
+    try {
+      writeAllModelsCache(
+        {
+          catalogGenerationId: "opt-in-vendor-claim-test-data",
+          version: 3,
+          lastUpdated: new Date().toISOString(),
+          entries: [
+            catalogEntry("example-model", [connection("google", "example-model")], [requested]),
+          ],
+          models: [],
+          plans: [],
+        },
+        path
+      );
+      const lists: AccountModelsListSnapshot = new Map([
+        [
+          "antigravity",
+          {
+            provider: "antigravity",
+            models: [{ id: requested, reported: "chat" }],
+            fetchedAt: Date.now(),
+            age: "live",
+            mayDeny: true,
+          },
+        ],
+      ]);
+      const gathered = gatherRouteCandidates(requested, path, lists);
+      expect(gathered.candidates.some(({ wireId }) => wireId === requested)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("a vendor claim is gathered but the dynamic models catalog may remove it", async () => {
     const gathered = gatherRouteCandidates("gemini-3.8-flash", cachePath);
     expect(gathered.candidates).toContainEqual(
@@ -548,6 +654,30 @@ describe("account-listed route candidates", () => {
     };
   }
   afterEach(_resetCatalogClient);
+
+  test("excludes an exact opt-in id matched by listedRow", () => {
+    const requested = "gemini-4-carbon-contributor";
+    seed([]);
+    const gathered = gatherWithLists(
+      requested,
+      path,
+      snapshot("antigravity", [{ id: requested, reported: "chat" }])
+    );
+
+    expect(gathered.candidates.some(({ wireId }) => wireId === requested)).toBe(false);
+  });
+
+  test("excludes an opt-in route candidate inferred from a listed sibling", () => {
+    const requested = "gemini-4-carbon-contributor";
+    seed([]);
+    const gathered = gatherWithLists(
+      requested,
+      path,
+      snapshot("antigravity", [{ id: "gemini-4-carbon-contributor-high", reported: "chat" }])
+    );
+
+    expect(gathered.candidates.some(({ wireId }) => wireId === requested)).toBe(false);
+  });
 
   test("adds Devin for a catalog-absent name in the account's own spelling", () => {
     seed([]);

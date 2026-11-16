@@ -1,7 +1,8 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import * as logger from "../logger.js";
 import type { AggregatorEntry } from "../model-loader.js";
 import {
   type DiskCacheV3,
@@ -14,10 +15,14 @@ import {
 import type { CachedSubscriptionPlan } from "./all-models-cache.js";
 import {
   _resetCatalogClient,
+  _setCatalogEntriesForTest,
   buildRoutesUrl,
   catalogWarmDisabledFor,
   getCatalogEntries,
+  logResolution,
   refreshCatalog,
+  resolveExternalId,
+  resolveImplicitExternalId,
   resolveTargetForCatalog,
 } from "./catalog-client.js";
 import { CATALOG_V3_ACCEPT } from "./catalog-v3.js";
@@ -28,6 +33,8 @@ import type {
   RouteRegistry,
 } from "./connection-wire.js";
 import { parseModelSpec } from "./model-parser.js";
+import { buildRoutingChain } from "./routing-rules.js";
+import { catalogEntry, connection, effortMap } from "./test-helpers/model-id-effort.js";
 
 // the reader of the previous release, kept verbatim as an oracle.
 const previousReleaseReader = (() => {
@@ -562,6 +569,251 @@ describe("resolveTargetForCatalog", () => {
       expect(bare).toEqual({ target: model, resolution: null });
     });
   }
+});
+
+describe("exact effort-map wire ids", () => {
+  const base = "example-model";
+  const low = `${base}-low`;
+  const high = `${base}-high`;
+  const off = `${base}-off`;
+  const mediumAlias = `${base}-medium`;
+  const devinBase = "example-devin-base-uid";
+  const devinLow = "example-devin-low-uid";
+  const googleBase = "example-google-base";
+
+  beforeEach(() => {
+    _setCatalogEntriesForTest([
+      catalogEntry(
+        base,
+        [
+          connection("antigravity", base, effortMap({ low, high }, { off })),
+          connection("devin", devinBase, effortMap({ low: devinLow })),
+          connection("google", googleBase),
+        ],
+        [low, high, off, mediumAlias, devinLow]
+      ),
+    ]);
+  });
+
+  test("keeps an exact Antigravity effort-map value even when it is an alias", () => {
+    expect(resolveExternalId(low, "antigravity")).toBe(low);
+  });
+
+  test("keeps an explicit Antigravity effort-map value that opts content in", () => {
+    const optIn = `${base}-contributor`;
+    _setCatalogEntriesForTest([
+      catalogEntry(base, [connection("antigravity", base, effortMap({ low: optIn }))], [optIn]),
+    ]);
+    expect(resolveExternalId(optIn, "antigravity")).toBe(optIn);
+  });
+
+  test("resolves an opt-in effort-map id absent from aliases to its base implicitly", () => {
+    const optIn = `${base}-contributor`;
+    _setCatalogEntriesForTest([
+      catalogEntry(base, [connection("antigravity", base, effortMap({ low: optIn }))], []),
+    ]);
+
+    expect(resolveImplicitExternalId(optIn, "antigravity")).toBe(base);
+  });
+
+  test("keeps an explicit opt-in effort-map id absent from aliases verbatim", () => {
+    const optIn = `${base}-contributor`;
+    _setCatalogEntriesForTest([
+      catalogEntry(base, [connection("antigravity", base, effortMap({ low: optIn }))], []),
+    ]);
+
+    expect(resolveExternalId(optIn, "antigravity")).toBe(optIn);
+  });
+
+  test("keeps an exact Devin effort-map uid even when it is an alias", () => {
+    expect(resolveExternalId(devinLow, "devin")).toBe(devinLow);
+  });
+
+  test("keeps an exact effort-map off id even when it is an alias", () => {
+    expect(resolveExternalId(off, "antigravity")).toBe(off);
+  });
+
+  test("keeps an explicit ag target whose wire id is an effort-map value", () => {
+    const target = `ag@${low}`;
+    const parsed = parseModelSpec(target);
+    const result = resolveTargetForCatalog(
+      target,
+      parsed.isExplicitProvider,
+      parsed.model,
+      parsed.provider
+    );
+
+    expect(result.resolution?.wasResolved).toBe(false);
+    expect(result.target).toBe(target);
+    expect(result.resolution?.resolvedId).toBe(low);
+  });
+
+  test("resolves a suffixed alias to the wire id of a connection with no effort map", () => {
+    expect(resolveExternalId(mediumAlias, "google")).toBe(googleBase);
+  });
+
+  test("does not preserve another provider's exact effort-map id", () => {
+    expect(resolveExternalId(low, "google")).toBe(googleBase);
+  });
+
+  test("resolves aliases absent from Antigravity's effort map to its base wire id", () => {
+    expect(resolveExternalId(mediumAlias, "antigravity")).toBe(base);
+    expect(resolveExternalId(devinLow, "antigravity")).toBe(base);
+  });
+
+  test("logs a model resolution through the debug logger as well as stderr", () => {
+    const logSpy = spyOn(logger, "log").mockImplementation(() => {});
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      logResolution(low, {
+        resolvedId: base,
+        wasResolved: true,
+        sourceLabel: "antigravity catalog",
+      });
+
+      expect(logSpy.mock.calls).toHaveLength(1);
+      expect(logSpy.mock.calls[0]![0]).toContain(`[Model] Resolved "${low}" → "${base}"`);
+      expect(stderrSpy).toHaveBeenCalledTimes(1);
+      expect(stderrSpy.mock.calls[0]![0]).toBe(
+        `[Model] Resolved "${low}" → "${base}" (antigravity catalog)\n`
+      );
+    } finally {
+      stderrSpy.mockRestore();
+      logSpy.mockRestore();
+    }
+  });
+
+  test("logs a quiet model resolution without writing to stderr", () => {
+    const logSpy = spyOn(logger, "log").mockImplementation(() => {});
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      logResolution(
+        low,
+        {
+          resolvedId: base,
+          wasResolved: true,
+          sourceLabel: "antigravity catalog",
+        },
+        true
+      );
+
+      expect(stderrSpy).not.toHaveBeenCalled();
+      expect(logSpy).toHaveBeenCalledTimes(1);
+      expect(logSpy.mock.calls[0]![0]).toContain(`[Model] Resolved "${low}" → "${base}"`);
+    } finally {
+      stderrSpy.mockRestore();
+      logSpy.mockRestore();
+    }
+  });
+});
+
+describe("content-use opt-in wire id resolution", () => {
+  const base = "example-model";
+  const optIn = `${base}-contributor`;
+
+  function writeEntries(entries: SlimModelEntry[]): string {
+    const path = tempCachePath();
+    writeAllModelsCache(
+      {
+        catalogGenerationId: "content-use-resolution-test-data",
+        version: 3,
+        lastUpdated: new Date().toISOString(),
+        entries,
+        models: [],
+        plans: [],
+      },
+      path
+    );
+    return path;
+  }
+
+  test("keeps an explicit opt-in id listed by another provider's effort map", () => {
+    _setCatalogEntriesForTest([
+      catalogEntry(base, [
+        connection("devin", base, effortMap({ low: optIn })),
+        connection("antigravity", base),
+      ]),
+    ]);
+
+    expect(resolveExternalId(optIn, "antigravity")).toBe(optIn);
+  });
+
+  test("keeps an explicit opt-in id published by another provider's connection", () => {
+    _setCatalogEntriesForTest([
+      catalogEntry(base, [connection("devin", optIn), connection("antigravity", base)]),
+    ]);
+
+    expect(resolveExternalId(optIn, "antigravity")).toBe(optIn);
+  });
+
+  test("resolves a non-opt-in id published only by another provider to the base", () => {
+    const otherProviderId = `${base}-other-provider`;
+    _setCatalogEntriesForTest([
+      catalogEntry(base, [connection("devin", otherProviderId), connection("antigravity", base)]),
+    ]);
+
+    expect(resolveExternalId(otherProviderId, "antigravity")).toBe(base);
+  });
+
+  test("implicit resolution reads the requested provider's effort map in either entry order", () => {
+    const shared = "shared-contributor";
+    const modelA = catalogEntry("model-a", [
+      connection("devin", "devin-a", effortMap({ low: shared })),
+      connection("antigravity", "ag-a"),
+    ]);
+    const modelB = catalogEntry("model-b", [
+      connection("antigravity", "ag-b", effortMap({ low: shared })),
+    ]);
+
+    for (const entries of [
+      [modelA, modelB],
+      [modelB, modelA],
+    ]) {
+      const path = writeEntries(entries);
+      expect(resolveImplicitExternalId(shared, "antigravity", path)).toBe("ag-b");
+    }
+  });
+
+  test("implicit resolution refuses an ambiguous opt-in id in either entry order", () => {
+    const shared = "shared-contributor";
+    const modelA = catalogEntry("model-a", [
+      connection("antigravity", "ag-a", effortMap({ low: shared })),
+    ]);
+    const modelB = catalogEntry("model-b", [
+      connection("antigravity", "ag-b", effortMap({ low: shared })),
+    ]);
+
+    for (const entries of [
+      [modelA, modelB],
+      [modelB, modelA],
+    ]) {
+      const path = writeEntries(entries);
+      expect(resolveImplicitExternalId(shared, "antigravity", path)).toBeNull();
+      expect(buildRoutingChain(["antigravity"], shared, path)).toEqual([]);
+    }
+  });
+
+  test("implicit resolution finds the effort-map owner before a variant entry", () => {
+    const family = "gemini-4-argon";
+    const variant = `${family}-contributor`;
+    const path = writeEntries([
+      catalogEntry(family, [connection("antigravity", family, effortMap({ low: variant }))]),
+      catalogEntry(variant, []),
+    ]);
+
+    expect(resolveImplicitExternalId(variant, "antigravity", path)).toBe(family);
+  });
+
+  test("a provider-only rule excludes an opt-in id listed only by another provider", () => {
+    const path = writeEntries([
+      catalogEntry(base, [
+        connection("devin", base, effortMap({ low: optIn })),
+        connection("antigravity", base),
+      ]),
+    ]);
+
+    expect(buildRoutingChain(["antigravity"], optIn, path)).toEqual([]);
+  });
 });
 
 describe("route registry refresh", () => {

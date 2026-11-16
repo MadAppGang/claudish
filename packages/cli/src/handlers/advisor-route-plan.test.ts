@@ -1,5 +1,5 @@
 import { describe, expect, mock, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -8,9 +8,11 @@ import {
   decideAdvisorStartup,
   evaluateAdvisorStartup,
 } from "../advisor-startup.js";
+import type { SlimModelEntry } from "../providers/all-models-cache.js";
 import type { ExplainedCandidate, RouteExplanation } from "../providers/routing-rules.js";
 import { RefusingHandler } from "../providers/wire-handler.js";
 import type { ClaudishConfig } from "../types.js";
+import type { ClaudeAdvisorModel } from "./advisor-claude-route.js";
 import { createAdvisorPanelGateway } from "./advisor-panel-gateway.js";
 import {
   type AdvisorModelPlan,
@@ -479,6 +481,84 @@ async function selectorPlans(selectors: string[]) {
     rmSync(home, { recursive: true, force: true });
   }
 }
+
+async function advisorModelForHaiku(entries: SlimModelEntry[]): Promise<ClaudeAdvisorModel> {
+  const home = mkdtempSync(join(tmpdir(), "claudish-advisor-opt-in-"));
+  const cachePath = join(home, ".claudish", "cloud-models-catalog-v3.json");
+  mkdirSync(join(home, ".claudish"), { recursive: true });
+  const allModelsCacheUrl = pathToFileURL(
+    join(import.meta.dir, "../providers/all-models-cache.ts")
+  ).href;
+  const advisorRouteUrl = pathToFileURL(join(import.meta.dir, "advisor-claude-route.ts")).href;
+  const script = `
+    const { writeAllModelsCache } = await import(${JSON.stringify(allModelsCacheUrl)});
+    const { claudeAdvisorModelFor } = await import(${JSON.stringify(advisorRouteUrl)});
+    writeAllModelsCache({
+      version: 3,
+      catalogGenerationId: "test-generation",
+      lastUpdated: "2026-11-16T00:00:00.000Z",
+      entries: JSON.parse(process.env.CATALOG_ENTRIES),
+      models: [],
+      plans: []
+    }, process.env.CATALOG_CACHE_PATH);
+    console.log(JSON.stringify(claudeAdvisorModelFor("haiku")));
+  `;
+  try {
+    const child = Bun.spawn([process.execPath, "--eval", script], {
+      env: {
+        ...process.env,
+        HOME: home,
+        CATALOG_CACHE_PATH: cachePath,
+        CATALOG_ENTRIES: JSON.stringify(entries),
+        CLAUDISH_CONFIG: join(home, "config.json"),
+        CLAUDISH_DISABLE_CATALOG_WARM: "1",
+        CLAUDISH_DISABLE_BUNDLED_LIST: "1",
+        CLAUDISH_DISABLE_KEYCHAIN: "1",
+        CLAUDISH_DISABLE_OP: "1",
+      },
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [stdout, stderr, code] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+    return JSON.parse(stdout) as ClaudeAdvisorModel;
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+}
+
+describe("Claude advisor opt-in model selection", () => {
+  test("skips an opt-in canonical model id matched by the tier alias", async () => {
+    const result = await advisorModelForHaiku([
+      { modelId: "claude-haiku-contributor", aliases: ["haiku"] },
+      { modelId: "claude-haiku-9", aliases: ["haiku"] },
+    ]);
+
+    expect(result).toEqual({ refused: false, id: "claude-haiku-9" });
+  });
+
+  test("skips the newest opt-in canonical model id in the tier fallback", async () => {
+    const result = await advisorModelForHaiku([
+      { modelId: "claude-haiku-contributor", aliases: [], releaseDate: "2026-02-01" },
+      { modelId: "claude-haiku-9", aliases: [], releaseDate: "2026-01-01" },
+    ]);
+
+    expect(result).toEqual({ refused: false, id: "claude-haiku-9" });
+  });
+
+  test("refuses the tier alias when every candidate is opt-in", async () => {
+    const result = await advisorModelForHaiku([
+      { modelId: "claude-haiku-contributor", aliases: ["haiku"] },
+    ]);
+
+    expect(result).toMatchObject({ refused: true, cause: "unresolved-alias", alias: "haiku" });
+  });
+});
 
 describe("G3 — Claude selectors are decided before routing", () => {
   test(

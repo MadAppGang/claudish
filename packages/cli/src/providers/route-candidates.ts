@@ -105,6 +105,7 @@ import {
 import { allConnections, isOptInWireId } from "./content-use.js";
 import type { AccountModelsListSnapshot } from "./dynamic-models-catalog.js";
 import type { DiscoveredModel } from "./model-discovery.js";
+import { implicitEffortWireId } from "./model-id-effort.js";
 import { expandSelection } from "./model-resolvers/registry.js";
 import { readProbeModelsCache } from "./probe-catalog.js";
 import { type RouteTier, getAllProviders, getProviderByName } from "./provider-definitions.js";
@@ -291,6 +292,7 @@ export function catalogModelId(model: string, cachePath?: string): string | unde
  * it as a hop. Both paths now ask the same question of the same function.
  */
 function gatherFromConnections(
+  model: string,
   entry: SlimModelEntry,
   candidates: RouteCandidate[],
   excluded: ExcludedCandidate[],
@@ -305,8 +307,13 @@ function gatherFromConnections(
       const tier = getProviderByName(provider)?.tier;
       if (!tier) continue;
 
-      const wireId = externalIdFor(entry, provider);
-      if (!wireId || wireId !== connection.externalModelId) continue;
+      const baseWireId = externalIdFor(entry, provider);
+      if (!baseWireId || baseWireId !== connection.externalModelId) continue;
+      // A requested name this connection's effort map lists (`<model>-low`,
+      // which the catalog also lists as an alias of the base) is sent in the
+      // map's spelling, unless that id opts content in. Every other hop keeps
+      // its base id, and the transport picks the effort's id from it.
+      const wireId = implicitEffortWireId(connection, model) ?? baseWireId;
 
       const candidate = connectionCandidate(entry, connection, provider, tier, wireId);
       // The catalog-published subscription tier only: a dynamic subscription's
@@ -487,6 +494,9 @@ function gatherVendorClaims(
   candidates: RouteCandidate[]
 ): void {
   if (!entry || !isChatModelEntry(entry)) return;
+  // A claim's wire id is the requested name verbatim, so a content-use opt-in
+  // name would be chosen for the user (`content-use.ts`): no claim.
+  if (isOptInWireId(model)) return;
   for (const def of getAllProviders()) {
     if (def.tier !== "dynamic-subscription") continue;
     if (!isVendorOwnRoute(catalogRouteForProvider(def.name), entry)) continue;
@@ -575,6 +585,9 @@ function gatherAccountListed(
   excluded: ExcludedCandidate[],
   cachePath: string | undefined
 ): void {
+  // An account-listed candidate's wire id is the requested name, so a
+  // content-use opt-in name would be chosen for the user (`content-use.ts`).
+  if (isOptInWireId(model)) return;
   for (const [provider, list] of lists) {
     const tier = getProviderByName(provider)?.tier;
     if (!tier) continue;
@@ -676,7 +689,7 @@ export function gatherRouteCandidates(
   // Source order is the dedupe rule: a real catalog connection beats a vendor
   // claim or an account list for the same (provider, wireId), because it
   // carries a price and a window they cannot know.
-  if (entry) gatherFromConnections(entry, gathered, setAside, unmappedRoutes, cachePath);
+  if (entry) gatherFromConnections(model, entry, gathered, setAside, unmappedRoutes, cachePath);
   gatherVendorClaims(model, entry, gathered);
   gatherAccountListed(model, entry, lists, gathered, setAside, cachePath);
 
@@ -794,6 +807,33 @@ export function catalogMapsOnlyOptIn(provider: string, model: string, cachePath?
   const mapsHere = (connection: AggregatorEntry) =>
     connection.routeStatus === "mapped" && catalogRouteMatchesProvider(connection.route, provider);
   return !(entry.aggregators ?? []).some(mapsHere) && (entry.optInConnections ?? []).some(mapsHere);
+}
+
+/**
+ * Would sending `wireId` to `provider` opt the request's content in, with no
+ * ordinary connection to vouch for it?
+ *
+ * For the wire id a provider-only routing entry ended on. True when the id has
+ * the opt-in shape (`isOptInWireId`) and no ordinary mapped connection of the
+ * provider (`aggregators`) publishes it exactly. A `contentUse: "standard"`
+ * connection whose id ends in `-contributor` is ordinary, so its id is false.
+ * Without a catalog the shape alone decides: nothing vouches for the id.
+ */
+export function isUnvouchedOptInWireId(
+  provider: string,
+  wireId: string,
+  cachePath?: string
+): boolean {
+  if (!isOptInWireId(wireId)) return false;
+  const entries = cachePath ? readAllModelsCache(cachePath)?.entries : getCatalogEntries();
+  return !(entries ?? []).some((entry) =>
+    (entry.aggregators ?? []).some(
+      (connection) =>
+        connection.routeStatus === "mapped" &&
+        catalogRouteMatchesProvider(connection.route, provider) &&
+        connection.externalModelId === wireId
+    )
+  );
 }
 
 /** Who decides which models a route serves. `unknown` denies nothing. */

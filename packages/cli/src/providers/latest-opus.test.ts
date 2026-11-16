@@ -5,7 +5,6 @@ import {
   _setCatalogEntriesForTest,
   getCatalogEntries,
   latestAnthropicTierModelId,
-  latestOpusModelId,
 } from "./catalog-client.js";
 
 function catalogEntry(modelId: string, releaseDate?: string): SlimModelEntry {
@@ -25,7 +24,7 @@ afterEach(() => {
   _resetCatalogClient();
 });
 
-describe("latestOpusModelId", () => {
+describe('latestAnthropicTierModelId("opus")', () => {
   test("newest releaseDate wins regardless of catalog order", () => {
     const older = catalogEntry("claude-opus-4-8", "2025-11-24");
     const newest = catalogEntry("claude-opus-5", "2026-08-01");
@@ -35,7 +34,7 @@ describe("latestOpusModelId", () => {
       [newest, older],
     ]) {
       _setCatalogEntriesForTest(entries);
-      expect(latestOpusModelId()).toBe("claude-opus-5");
+      expect(latestAnthropicTierModelId("opus")).toBe("claude-opus-5");
     }
   });
 
@@ -45,7 +44,7 @@ describe("latestOpusModelId", () => {
       catalogEntry("claude-opus-5", "2026-08-01"),
     ]);
 
-    expect(latestOpusModelId()).toBe("claude-opus-5");
+    expect(latestAnthropicTierModelId("opus")).toBe("claude-opus-5");
   });
 
   test("ignores non-Opus entries", () => {
@@ -55,13 +54,13 @@ describe("latestOpusModelId", () => {
       catalogEntry("claude-opus-4-8", "2025-11-24"),
     ]);
 
-    expect(latestOpusModelId()).toBe("claude-opus-4-8");
+    expect(latestAnthropicTierModelId("opus")).toBe("claude-opus-4-8");
 
     _setCatalogEntriesForTest([
       catalogEntry("claude-sonnet-5", "2027-01-01"),
       catalogEntry("gpt-5.6-luna", "2027-01-02"),
     ]);
-    expect(latestOpusModelId()).toBeNull();
+    expect(latestAnthropicTierModelId("opus")).toBeNull();
   });
 
   test("undated entries do not crash or outrank a dated entry", () => {
@@ -70,15 +69,15 @@ describe("latestOpusModelId", () => {
       catalogEntry("claude-opus-5", "2026-08-01"),
     ]);
 
-    expect(latestOpusModelId()).toBe("claude-opus-5");
+    expect(latestAnthropicTierModelId("opus")).toBe("claude-opus-5");
   });
 
   test("a cold catalog returns null", () => {
     _setCatalogEntriesForTest(null);
 
     expect(getCatalogEntries()).toBeNull();
-    expect(latestOpusModelId()).toBeNull();
-    expect(latestOpusModelId() ?? "claude-opus-5").toBe("claude-opus-5");
+    expect(latestAnthropicTierModelId("opus")).toBeNull();
+    expect(latestAnthropicTierModelId("opus") ?? "claude-opus-5").toBe("claude-opus-5");
   });
 
   test("never resurrects the dead hardcoded claude-opus-4-1 default", () => {
@@ -90,7 +89,7 @@ describe("latestOpusModelId", () => {
 
     // `claude-opus-4-1` is 404 on the live API and was the hardcoded default
     // that broke the native probe. It must not appear when the catalog omits it.
-    const selected = latestOpusModelId();
+    const selected = latestAnthropicTierModelId("opus");
     expect(selected).toBe("claude-opus-5");
     expect(selected).not.toBe("claude-opus-4-1");
   });
@@ -119,17 +118,6 @@ describe("latestAnthropicTierModelId", () => {
     const selected = latestAnthropicTierModelId("haiku");
     expect(selected).toBe("claude-haiku-5");
     expect(selected).not.toMatch(/^claude-opus-/i);
-  });
-
-  test("latestOpusModelId agrees with the generic Opus selector", () => {
-    _setCatalogEntriesForTest([
-      catalogEntry("claude-sonnet-5", "2027-01-01"),
-      catalogEntry("claude-opus-4-8", "2025-11-24"),
-      catalogEntry("claude-opus-5", "2026-08-01"),
-    ]);
-
-    expect(latestOpusModelId()).toBe("claude-opus-5");
-    expect(latestOpusModelId()).toBe(latestAnthropicTierModelId("opus"));
   });
 
   test("returns null when the requested tier has no rows", () => {

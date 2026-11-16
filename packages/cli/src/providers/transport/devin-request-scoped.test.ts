@@ -247,3 +247,28 @@ describe("Devin request-scoped resolved uid", () => {
     );
   });
 });
+
+describe("Devin probe pick content-use opt-in", () => {
+  test("skips an opt-in uid when an ordinary uid has the same context window", async () => {
+    const discovery = spyOn(devinModels, "getServedDevinModels").mockResolvedValue([
+      devinModel("claude-opus-5-high", "high", { family: "claude-opus-5" }),
+      devinModel("claude-opus-5-contributor", "low", { family: "claude-opus-5" }),
+    ]);
+    restore.push(() => discovery.mockRestore());
+
+    const result = await new DevinProviderTransport("claude-opus-5").discoverProbeModel();
+
+    expect(result.model).toBe("claude-opus-5-high");
+  });
+
+  test("returns no model when the dynamic models catalog lists only opt-in uids", async () => {
+    const discovery = spyOn(devinModels, "getServedDevinModels").mockResolvedValue([
+      devinModel("claude-opus-5-contributor", "low", { family: "claude-opus-5" }),
+    ]);
+    restore.push(() => discovery.mockRestore());
+
+    const result = await new DevinProviderTransport("claude-opus-5").discoverProbeModel();
+
+    expect(result.model).toBeNull();
+  });
+});

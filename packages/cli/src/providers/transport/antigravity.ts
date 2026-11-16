@@ -62,6 +62,7 @@ import {
   chooseAntigravityServedModel,
   resolveAntigravityServedModel,
 } from "../antigravity-model-id.js";
+import { isOptInWireId } from "../content-use.js";
 import { type ModelIdChoice, logModelIdChoice } from "../model-id-effort-choice.js";
 import { wireChoicesFromClaudeRequest } from "../wire-request.js";
 import { antigravityFetch } from "./antigravity-fetch.js";
@@ -673,9 +674,11 @@ export class AntigravityProviderTransport implements ProviderTransport {
    * Handle MODEL_CAPACITY_EXHAUSTED by trying the other LIVE-served models.
    *
    * Candidates come from `this.servedModels` (discovered in refreshAuth),
-   * ordered by rank, excluding the model that just exhausted and every id the
-   * backend declares unselectable (`excludedIds`). The id's spelling decides
-   * nothing: a served `-fast` id is an ordinary candidate. With no candidate
+   * ordered by rank, excluding the model that just exhausted, every id the
+   * backend declares unselectable (`excludedIds`) and every content-use opt-in
+   * id (`isOptInWireId`), which is sent only when the user requested it exactly.
+   * Otherwise the id's spelling decides nothing: a served `-fast` id is an
+   * ordinary candidate. With no candidate
    * left, the original capacity failure is returned. Each
    * candidate's body is shaped from the original dialect payload by the id it
    * sends (`antigravityBodyForModelId`). A candidate that 404s (briefly unserved mid-tier-roll) or rate-limits is
@@ -691,7 +694,9 @@ export class AntigravityProviderTransport implements ProviderTransport {
     signal?: AbortSignal
   ): Promise<Response> {
     const excluded = this.served.excludedIds;
-    const candidates = this.servedModels.filter((m) => m !== sentId && !excluded?.has(m));
+    const candidates = this.servedModels.filter(
+      (m) => m !== sentId && !excluded?.has(m) && !isOptInWireId(m)
+    );
 
     if (candidates.length === 0) {
       log(`[Antigravity] ${sentId} capacity exhausted, no fallback models available`);
