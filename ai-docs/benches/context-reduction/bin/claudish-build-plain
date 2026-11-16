@@ -58,7 +58,13 @@ watch_agent_env() {
   while [ "$i" -lt 600 ]; do
     pid=$(pgrep -f -- "--settings $HOME/.claudish/settings-$self-" | head -1)
     if [ -n "$pid" ]; then
-      found=$(ps eww -o command= -p "$pid" | grep -o ' ANTHROPIC_API_KEY=[^ ]*' | head -1)
+      # A sandbox can refuse ps ("Operation not permitted"). Then nothing was
+      # read, and the label says so instead of reading as "unset".
+      if ! envline=$(ps eww -o command= -p "$pid" 2>&1); then
+        note "agent-env: pid $pid AGENT_ENV_UNREADABLE: $(echo "$envline" | head -1 | cut -c1-120)"
+        return
+      fi
+      found=$(echo "$envline" | grep -o ' ANTHROPIC_API_KEY=[^ ]*' | head -1)
       if [ -z "$found" ]; then
         label=AGENT_ENV_KEY_UNSET
       elif [ "$found" = " ANTHROPIC_API_KEY=$placeholder" ]; then
@@ -66,7 +72,7 @@ watch_agent_env() {
       else
         label=AGENT_ENV_KEY_SET
       fi
-      config=$(ps eww -o command= -p "$pid" | grep -c ' CLAUDISH_CONFIG=')
+      config=$(echo "$envline" | grep -c ' CLAUDISH_CONFIG=')
       note "agent-env: pid $pid $label CLAUDISH_CONFIG_present=$config"
       return
     fi
@@ -76,5 +82,23 @@ watch_agent_env() {
   note "agent-env: AGENT_ENV_UNKNOWN: no Claude Code process with claudish's settings file in 600 s"
 }
 watch_agent_env &
+
+# On a foreign model claudish gives Claude Code its placeholder as
+# ANTHROPIC_API_KEY, and Claude Code asks "Detected a custom API key ... Do you
+# want to use this API key?" before it starts; nothing in the sandbox can
+# answer, so the agent never starts. Record the answer a user gives, "Yes", the
+# way Claude Code stores it: the key's last 20 characters in
+# customApiKeyResponses.approved of ~/.claude.json. The value is claudish's
+# public placeholder, not a credential. A native Claude route sets no key and
+# never reads the entry.
+bun -e '
+const path = process.argv[1], tail = process.argv[2].slice(-20);
+let c = {};
+try { c = JSON.parse(await Bun.file(path).text()); } catch {}
+const r = (c.customApiKeyResponses ??= {});
+r.approved = [...new Set([...(r.approved ?? []), tail])];
+r.rejected = (r.rejected ?? []).filter((x) => x !== tail);
+await Bun.write(path, JSON.stringify(c, null, 2));
+' "$HOME/.claude.json" "$placeholder" && note "launch: placeholder key approved in ~/.claude.json"
 
 exec "$@"
