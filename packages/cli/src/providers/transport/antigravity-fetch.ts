@@ -43,7 +43,16 @@ export function nodeHttpWritesOwnHead(bunVersion: string | undefined): boolean {
     if (!Number.isFinite(n)) return false;
     if (n !== need[i]) return n > need[i];
   }
-  return true;
+  // A prerelease of the first version was built before it.
+  return !bunVersion.includes("-");
+}
+
+/** What a caller may fix about the runtime; a test names both. */
+export interface AntigravityFetchRuntime {
+  /** How long a connection may stay silent, and how long the response head may take. */
+  idleTimeoutMs: number;
+  /** `process.versions.bun`; absent on Node. */
+  bunVersion: string | undefined;
 }
 
 /** Headers this client writes itself; a caller's value for one of them is not sent. */
@@ -180,11 +189,14 @@ function idleTimeoutError(ms: number): Error {
 export async function antigravityFetch(
   url: string | URL,
   init: RequestInit = {},
-  idleTimeoutMs: number = ANTIGRAVITY_IDLE_TIMEOUT_MS
+  runtime: AntigravityFetchRuntime = {
+    idleTimeoutMs: ANTIGRAVITY_IDLE_TIMEOUT_MS,
+    bunVersion: process.versions.bun,
+  }
 ): Promise<Response> {
   // These four hand the whole request to the runtime's `fetch`, redirects included.
   if (process.env[ANTIGRAVITY_PLAIN_FETCH_ENV] === "1") return fetch(url, init);
-  if (!nodeHttpWritesOwnHead(process.versions.bun)) return fetch(url, init);
+  if (!nodeHttpWritesOwnHead(runtime.bunVersion)) return fetch(url, init);
   if (init.body != null && typeof init.body !== "string") return fetch(url, init);
   let target = new URL(url);
   // Behind a proxy the runtime's `fetch` sends the request: it owns the tunnel
@@ -192,7 +204,7 @@ export async function antigravityFetch(
   if (proxyFor(target)) return fetch(url, init);
   let current = init;
   for (let hop = 0; ; hop++) {
-    const response = await sendOnce(target, current, idleTimeoutMs);
+    const response = await sendOnce(target, current, runtime.idleTimeoutMs);
     const location = response.headers.get("location");
     const redirected = (response.status === 307 || response.status === 308) && location;
     if (!redirected || init.redirect === "manual" || hop >= MAX_REDIRECTS) return response;
@@ -251,6 +263,13 @@ async function sendOnce(target: URL, init: RequestInit, idleTimeoutMs: number): 
       request.destroy(error);
       incoming?.destroy(error);
     });
+    // The socket timeout starts once a socket is connected. Until the response
+    // head arrives this timer is the limit, so a stalled lookup or a connection
+    // nobody answers ends too.
+    const untilResponse = setTimeout(
+      () => request.destroy(idleTimeoutError(idleTimeoutMs)),
+      idleTimeoutMs
+    );
     const onAbort = () => {
       request.destroy(signal?.reason);
       incoming?.destroy(signal?.reason);
@@ -259,10 +278,12 @@ async function sendOnce(target: URL, init: RequestInit, idleTimeoutMs: number): 
     signal?.addEventListener("abort", onAbort, { once: true });
 
     request.once("error", (error) => {
+      clearTimeout(untilResponse);
       release();
       reject(error);
     });
     request.once("response", (res) => {
+      clearTimeout(untilResponse);
       incoming = res;
       res.once("close", release);
       const status = res.statusCode ?? 0;
