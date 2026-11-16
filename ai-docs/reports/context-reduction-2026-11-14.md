@@ -848,7 +848,7 @@ reads the file again, and the compaction arm costs the same as the
 baseline. It also saves nothing: the file print was the only output over
 the threshold, so compaction had nothing else to act on.
 
-### Case d, long session in a 200K window: the main realistic case (incomplete)
+### Case d, long session in a 200K window: the main realistic case, first run on a6952916 (stopped)
 
 Case d is the case that answers "does compaction help a real long session":
 the `--context-window` task of `../madbench.yaml` word for word (graded by
@@ -909,6 +909,94 @@ that chained the typecheck after the tests. Each trial still had one
 complete scoped test run (bun's "Ran … tests across … files" line in the
 tool result). Without the kills the window would fill slightly sooner; the
 peaks and the compaction counts above are what these trials measured.
+
+### Case d on build 0aed68ec: one Claude Code compaction instead of two, same cost
+
+Build 0aed68ec (sha256 `dd5a05ab…6aee`, checked in every launch log)
+counts the history from the upstream's real usage plus an estimate of what
+was appended since, and can swap inside a turn after a complete tool round.
+The compaction arm uses `applyAt` 0.75 (`compaction-config-d075.json`,
+otherwise the same 13 keys as before). Both arms ran on this build with
+the Bench at d2876a13 (`BASH_DEFAULT_TIMEOUT_MS=600000`), 3 trials each.
+The forced-output condition above applies. The follow-up "Read
+`packages/cli/src/cli.ts` and `packages/cli/src/claude-runner.ts` in full,
+every line, without subagents" FORCES long input as well: about 110,000 to
+140,000 tokens of Read results, which compaction never compresses
+(`skipTools` `["Read"]`).
+
+| Arm | Trial | Grade | Duration | Cost | Hit rate | Main requests | Breaks | Peak input | Claude Code compactions | claudish swaps | Haiku calls, in / out |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| `cases-baseline` | 1 | pass, all checks | 2463 s | $3.0989 | 98.9% | 89 | 14 | 180,338 | 2 | | |
+| `cases-baseline` | 2 | pass, all checks | 1893 s | $3.9125 | 97.4% | 109 | 13 | 173,623 | 2 | | |
+| `cases-baseline` | 3 | pass, all checks | 1623 s | $3.1207 | 97.0% | 72 | 11 | 165,203 | 2 | | |
+| `cases-compaction` | 1 | pass, all checks | 2005 s | $3.1298 | 97.7% | 87 | 11 | 162,210 | 1 | 1 | 3, 78,812 / 6,975 |
+| `cases-compaction` | 2 | pass, all checks | 2220 s | $3.8321 | 98.0% | 102 | 10 | 157,630 | 1 | 2 | 7, 113,053 / 16,316 |
+| `cases-compaction` | 3 | pass, all checks | 2355 s | $3.2683 | 98.5% | 82 | 10 | 157,122 | 1 | 2 | 4, 83,504 / 12,769 |
+
+Means: `cases-baseline` $3.3774 and 1993 s; `cases-compaction` $3.4101
+(+1.0%) and 2193 s. The cost ranges overlap ($3.0989 to $3.9125 against
+$3.1298 to $3.8321). Peak input is the largest input + cache read + cache
+creation of one request in claudish's debug log. All Haiku calls answered
+HTTP 200. Compaction t2 also compressed one Bash output (16,114
+characters, 7,538 in / 623 out, included in its Haiku figures). Each trial
+got one 429 at its start (`rate-limits.sh`). No other madbench run was on
+the machine.
+
+Every baseline trial compacted twice, 65 to 81 s apart, inside the
+read-in-full follow-up: after the first compaction, the agent read the two
+files in 10 chunks of 2,800 to 17,000 tokens, one per request, and the
+context went from 59,889 to 167,589 tokens in 24 s (baseline t1). Every
+compaction trial compacted once. claudish's swap took away one Claude Code
+compaction per trial; it did not take away the one that the follow-up
+forces.
+
+The race in each compaction trial (times UTC, counts are claudish's
+history count; `applyAt` 0.75 of 200,000 = 150,000):
+
+| Trial | Summary start (count) | Summary took | Growth while it ran | First event | Claude Code compact_boundary |
+|---|---|---|---|---|---|
+| 1 | 15:16:34.4 (121,130), messages 0..72 | 11.2 s | 121,130 → 162,740 in 11.3 s | swap 15:16:45.7 at a human turn start, 162,210 → 88,541 | 15:17:40.0, preTokens 168,057 |
+| 2 | 17:34:26.5 (129,838), messages 0..94 | 13.3 s | 129,838 → 158,004 in 6.0 s | Claude Code, from about 17:34:32.8; summary ready 17:34:39.8, 7.3 s after the last request | 17:35:09.8, preTokens 164,320 |
+| 3 | 18:17:44.1 (124,692), messages 0..77 | 13.7 s | 124,692 → 153,411 in 12.6 s | swap 18:18:07.0 mid-turn, after a complete tool round, 158,181 → 77,357 | 18:19:09.3, preTokens 164,356 |
+
+After each swap the read-in-full follow-up refilled the space. In trial 1
+the six Reads after the swap went 88,541 → 158,276 in 17 s. In trial 3 a
+second summary (messages 0..93) started at 122,546 and was ready at
+18:18:35.7, 1.8 s before the next request; that request was already
+Claude Code's own compaction request (14,634 uncached input, 0 cache
+creation, 5,233 output tokens, `end_turn`). Claude Code decides to compact
+before it sends a request, from the previous answer's usage plus the new
+tool results, so a swap prevents its compaction only if it lands on an
+earlier request. In each trial the first request over `applyAt` came
+before the summary was ready (trial 1: 158,857 at 15:16:41.7; trial 3:
+153,411 at 18:17:56.6), so it went out unswapped. In trials 1 and 3 one
+more normal request followed and swapped (0.14 s and 9.2 s after the
+summary was ready); in trial 2 the next request was Claude Code's
+compaction request. In trial 1 the second summary was ready 0.48 s after Claude Code's compaction
+request. After Claude Code compacted, trials 2 and 3 swapped the new short
+history mid-turn (trial 2: 0..15 and 0..26; trial 3: 0..17).
+
+Claude Code saw the real usage of the swapped requests: trial 1's last
+answer before its compaction reported 158,276 input tokens, and Claude
+Code's preTokens was 168,057, not the unswapped history's 232,000 or so.
+The swap did not break the cache. After the swap request itself (cache read
+27,640, creation 60,897), each cache read equalled the previous read plus
+creation (88,676 + 12,413 = 101,089 in trial 1).
+
+In trial 1 every replay logged "history replayed at 72, tail changed":
+the last message recorded at the swap had a different hash on each later
+request, although `messageHash` strips cache markers. claudish does not log
+request bodies, so what changed in that message is not known. `applySwap`
+sends the current messages, so the model got the current content. Trials 2
+and 3 logged no such line.
+
+Verdict for case d: with this build, claudish's history swap acts before
+Claude Code in 2 of 3 trials and removes one of the two Claude Code
+compactions in every trial, at the same cost (+1.0%, ranges overlap) and
+the same grade (6/6 pass). The summary takes 11 to 14 s while the forced
+Read follow-up adds about 13,000 tokens every 2 to 3 s, so the gap between
+the summary start (about 121K to 130K) and Claude Code's compaction (about
+164K to 168K) is too small to win every time.
 
 ### Case a, log-heavy debugging, Claude Code defaults: large Bash output never reaches the model
 
