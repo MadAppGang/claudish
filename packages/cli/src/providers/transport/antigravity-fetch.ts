@@ -98,15 +98,20 @@ function envValue(...names: string[]): string | undefined {
   return undefined;
 }
 
-function bypassesProxy(host: string): boolean {
+/** Whether `NO_PROXY` names the target. An entry may end in `:port`, which then has to match too. */
+function bypassesProxy(target: URL): boolean {
   const list = envValue("NO_PROXY", "no_proxy");
   if (!list) return false;
-  const name = host.toLowerCase();
+  const name = target.hostname.toLowerCase();
+  const port = target.port || (target.protocol === "https:" ? "443" : "80");
   return list.split(",").some((raw) => {
-    const entry = raw
-      .trim()
-      .toLowerCase()
-      .replace(/^\*?\./, "");
+    let entry = raw.trim().toLowerCase();
+    const withPort = entry.match(/^(.*[^:]):(\d+)$/);
+    if (withPort) {
+      if (withPort[2] !== port) return false;
+      entry = withPort[1];
+    }
+    entry = entry.replace(/^\*?\./, "");
     if (!entry) return false;
     return entry === "*" || name === entry || name.endsWith(`.${entry}`);
   });
@@ -114,7 +119,7 @@ function bypassesProxy(host: string): boolean {
 
 /** The proxy the environment names for this URL, or null. */
 function proxyFor(target: URL): URL | null {
-  if (bypassesProxy(target.hostname)) return null;
+  if (bypassesProxy(target)) return null;
   const value =
     target.protocol === "https:"
       ? envValue("HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy")
@@ -127,20 +132,67 @@ function proxyFor(target: URL): URL | null {
   }
 }
 
-/** `fetch` for the Antigravity backend, with the Antigravity CLI's request head. */
+/**
+ * How long a connection may stay silent before the request fails. The
+ * runtime's `fetch` ends an idle request after five minutes; `node:http` never
+ * does, and three of the callers pass no signal.
+ */
+export const ANTIGRAVITY_IDLE_TIMEOUT_MS = 300_000;
+
+/** Redirects followed before the last answer is returned as it is. */
+const MAX_REDIRECTS = 5;
+
+function idleTimeoutError(ms: number): Error {
+  return Object.assign(new Error(`The Antigravity backend sent nothing for ${ms} ms`), {
+    code: "ETIMEDOUT",
+  });
+}
+
+/**
+ * `fetch` for the Antigravity backend, with the Antigravity CLI's request head.
+ * A 307 or 308 answer is followed with the same method and body, as `fetch`
+ * follows it, unless `init.redirect` is "manual"; the `Authorization` header is
+ * not sent to another origin.
+ */
 export async function antigravityFetch(
   url: string | URL,
-  init: RequestInit = {}
+  init: RequestInit = {},
+  idleTimeoutMs: number = ANTIGRAVITY_IDLE_TIMEOUT_MS
 ): Promise<Response> {
+  // These three hand the whole request to the runtime's `fetch`, redirects included.
   if (process.env[ANTIGRAVITY_PLAIN_FETCH_ENV] === "1") return fetch(url, init);
-
-  const target = new URL(url);
-  const secure = target.protocol === "https:";
+  if (init.body != null && typeof init.body !== "string") return fetch(url, init);
+  let target = new URL(url);
   // Behind a proxy the runtime's `fetch` sends the request: it owns the tunnel
   // and its TLS, and the request head is then the runtime's.
   if (proxyFor(target)) return fetch(url, init);
-  if (init.body != null && typeof init.body !== "string") return fetch(url, init);
+  let current = init;
+  for (let hop = 0; ; hop++) {
+    const response = await sendOnce(target, current, idleTimeoutMs);
+    const location = response.headers.get("location");
+    const redirected = (response.status === 307 || response.status === 308) && location;
+    if (!redirected || init.redirect === "manual" || hop >= MAX_REDIRECTS) return response;
+    await response.body?.cancel().catch(() => {});
+    if (init.redirect === "error") {
+      throw new TypeError(`The Antigravity backend answered ${response.status} with a redirect`);
+    }
+    const next = new URL(location, target);
+    if (next.origin !== target.origin) {
+      const kept: Record<string, string> = {};
+      const sent = new Headers(current.headers as ConstructorParameters<typeof Headers>[0]);
+      sent.forEach((value, name) => {
+        if (name.toLowerCase() !== "authorization") kept[name] = value;
+      });
+      current = { ...current, headers: kept };
+    }
+    target = next;
+    if (proxyFor(target)) return fetch(target.href, current);
+  }
+}
 
+/** One request over `node:http`, with a string body or none. */
+async function sendOnce(target: URL, init: RequestInit, idleTimeoutMs: number): Promise<Response> {
+  const secure = target.protocol === "https:";
   const signal = init.signal ?? undefined;
   if (signal?.aborted) throw signal.reason;
 
@@ -152,16 +204,29 @@ export async function antigravityFetch(
     // One connection per request: a pooled socket the server has closed answers
     // the next request with a reset, which would read as an unreachable network.
     const request = (secure ? https : http).request(target, { method, agent: false });
-    request.removeHeader("Connection");
-    for (const [name, value] of antigravityHeaderLines(
-      init.headers,
-      body?.length ?? null,
-      chunked
-    )) {
-      request.setHeader(name, value);
+    try {
+      request.removeHeader("Connection");
+      for (const [name, value] of antigravityHeaderLines(
+        init.headers,
+        body?.length ?? null,
+        chunked
+      )) {
+        request.setHeader(name, value);
+      }
+    } catch (error) {
+      // A header value the runtime refuses (a line break): nothing was sent.
+      request.once("error", () => {});
+      request.destroy();
+      reject(error);
+      return;
     }
 
     let incoming: http.IncomingMessage | undefined;
+    request.setTimeout(idleTimeoutMs, () => {
+      const error = idleTimeoutError(idleTimeoutMs);
+      request.destroy(error);
+      incoming?.destroy(error);
+    });
     const onAbort = () => {
       request.destroy(signal?.reason);
       incoming?.destroy(signal?.reason);

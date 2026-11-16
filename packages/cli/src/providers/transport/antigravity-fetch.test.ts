@@ -7,7 +7,7 @@ import {
   antigravityHeaderLines,
 } from "./antigravity-fetch.js";
 
-type Mode = "plain" | "gzip" | "hang" | "sse";
+type Mode = "plain" | "gzip" | "hang" | "sse" | "redirect";
 
 let received = "";
 let mode: Mode = "plain";
@@ -22,6 +22,8 @@ const ENV = [
   "https_proxy",
   "ALL_PROXY",
   "all_proxy",
+  "NO_PROXY",
+  "no_proxy",
 ];
 
 function requestComplete(text: string): boolean {
@@ -41,6 +43,16 @@ beforeAll(() => {
       data(socket, data) {
         received += Buffer.from(data).toString("latin1");
         if (mode === "hang" || !requestComplete(received)) return;
+        if (mode === "redirect") {
+          // The first request is sent on; the request that follows it is answered.
+          mode = "plain";
+          received += "\n--next--\n";
+          socket.write(
+            "HTTP/1.1 307 Temporary Redirect\r\nLocation: /moved\r\nContent-Length: 0\r\n\r\n"
+          );
+          socket.end();
+          return;
+        }
         if (mode === "gzip") {
           const body = gzipSync('{"ok":true}');
           socket.write(
@@ -235,6 +247,57 @@ describe("failures keep the vocabulary the callers classify", () => {
   });
 });
 
+describe("what fetch did for its callers and node:http does not", () => {
+  test("a connection that stays silent fails as a timed-out connection", async () => {
+    mode = "hang";
+    const failure = await antigravityFetch(
+      `${base}/x`,
+      { method: "POST", headers: HEADERS, body: "{}" },
+      150
+    ).catch((error) => error);
+    expect((failure as { code?: string }).code).toBe("ETIMEDOUT");
+    expect(classifyConnectionError(failure)?.kind).toBe("unreachable");
+  });
+
+  test("a header value with a line break rejects and sends nothing", async () => {
+    const failure = await antigravityFetch(`${base}/x`, {
+      method: "POST",
+      headers: { ...HEADERS, Authorization: "Bearer a\r\nX-Injected: 1" },
+      body: "{}",
+    }).catch((error) => error);
+    expect(failure).toBeInstanceOf(Error);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(received).toBe("");
+  });
+
+  test("a 307 is followed with the same method and body", async () => {
+    mode = "redirect";
+    const res = await antigravityFetch(`${base}/v1internal:loadCodeAssist`, {
+      method: "POST",
+      headers: HEADERS,
+      body: '{"a":1}',
+    });
+    expect(res.status).toBe(429);
+    const [first, second] = received.split("\n--next--\n");
+    expect(first).toContain("POST /v1internal:loadCodeAssist HTTP/1.1");
+    expect(second).toContain("POST /moved HTTP/1.1");
+    expect(second).toContain("Authorization: Bearer");
+    expect(second.endsWith('{"a":1}')).toBe(true);
+  });
+
+  test("redirect manual returns the 307 itself", async () => {
+    mode = "redirect";
+    const res = await antigravityFetch(`${base}/x`, {
+      method: "POST",
+      headers: HEADERS,
+      body: "{}",
+      redirect: "manual",
+    });
+    expect(res.status).toBe(307);
+    expect(res.headers.get("location")).toBe("/moved");
+  });
+});
+
 test("behind a proxy the runtime's fetch sends the request", async () => {
   process.env.HTTP_PROXY = "http://127.0.0.1:9";
   const calls: string[] = [];
@@ -252,6 +315,39 @@ test("behind a proxy the runtime's fetch sends the request", async () => {
     expect(await res.text()).toBe("via fetch");
     expect(calls).toEqual([`${base}/x`]);
     expect(received).toBe("");
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("NO_PROXY with the target's port sends the request itself; another port does not", async () => {
+  process.env.HTTP_PROXY = "http://127.0.0.1:9";
+  const port = new URL(base).port;
+  const calls: string[] = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    calls.push(String(input));
+    return new Response("via fetch");
+  }) as typeof fetch;
+  try {
+    process.env.NO_PROXY = `127.0.0.1:${port}`;
+    const direct = await antigravityFetch(`${base}/x`, {
+      method: "POST",
+      headers: HEADERS,
+      body: "{}",
+    });
+    await direct.text();
+    expect(calls).toEqual([]);
+    expect(received).toContain("POST /x HTTP/1.1");
+
+    process.env.NO_PROXY = "127.0.0.1:1";
+    const proxied = await antigravityFetch(`${base}/y`, {
+      method: "POST",
+      headers: HEADERS,
+      body: "{}",
+    });
+    expect(await proxied.text()).toBe("via fetch");
+    expect(calls).toEqual([`${base}/y`]);
   } finally {
     globalThis.fetch = original;
   }
