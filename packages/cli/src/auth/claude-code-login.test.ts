@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { claudeCodeSecureStorageServices } from "./claude-code-facts.js";
 import {
   claudeCodeStartupCredential,
@@ -92,5 +93,44 @@ describe("hasClaudeCodeLogin reads the login file from Claude Code's config dire
         keychainProbe: () => false,
       })
     ).toBe(true);
+  });
+});
+
+describe("hasClaudeCodeLogin Keychain probe under a relative CLAUDE_CONFIG_DIR", () => {
+  // A working directory that is not this process's, so only the injected cwd names it.
+  const childCwd = "/claudish-test-child-cwd";
+  const env = { HOME: "/h", CLAUDE_CONFIG_DIR: "rel" };
+  const hashed = createHash("sha256").update(`${childCwd}/rel`).digest("hex").slice(0, 8);
+  const childService = `Claude Code-credentials-${hashed}`;
+
+  // REGRESSION: the Keychain probe hashed CLAUDE_CONFIG_DIR against process.cwd(), not the injected cwd
+  test("finds the login item hashed from the injected cwd", () => {
+    expect(
+      hasClaudeCodeLogin({
+        env,
+        cwd: childCwd,
+        fileExists: () => false,
+        keychainProbe: (probeEnv, probeCwd) =>
+          keychainLoginPresent(
+            probeEnv ?? {},
+            (service) => (service === childService ? "found" : "absent"),
+            probeCwd
+          ),
+      })
+    ).toBe(true);
+  });
+
+  test("keychainLoginPresent asks the services resolved against the given cwd", () => {
+    const services: string[] = [];
+    keychainLoginPresent(
+      env,
+      (service) => {
+        services.push(service);
+        return "absent";
+      },
+      childCwd
+    );
+    expect(services).toEqual(claudeCodeSecureStorageServices("-credentials", env, childCwd));
+    expect(services).toContain(childService);
   });
 });
