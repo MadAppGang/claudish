@@ -23,7 +23,8 @@
  * `skipTools` (default `Read`: an Edit needs the file's exact text), and not a read of this
  * session's own recovery files (a tool_use input `file_path` inside the
  * session's folder): compressing that read again would hand the model one more
- * footer and never the full original.
+ * footer and never the full original. A Bash command that only prints files
+ * (`isFilePrintCommand`) is skipped for the same reason as Read.
  */
 
 import { createHash } from "node:crypto";
@@ -32,6 +33,7 @@ import { basename, isAbsolute, relative, resolve, sep } from "node:path";
 import { ADVISOR_TOOL_NAME } from "../handlers/advisor-decorator.js";
 import { log } from "../logger.js";
 import { DEFAULT_COMPACTION_SETTINGS, type ToolOutputSettings } from "./config.js";
+import { isFilePrintCommand } from "./file-print.js";
 import type { CompactionCallResult, CompactionClient } from "./haiku-client.js";
 import { type CompactionStore, type ToolOutputRecord, toolOutputKey } from "./store.js";
 
@@ -229,18 +231,15 @@ export class ToolOutputCompactor {
 
   /** Tool_result blocks of one message that meet every candidate condition. */
   private *eligibleBlocks(message: Block, scan: BlockScan): Generator<Located> {
-    const { sessionId, tools, minTokens } = scan;
     if (!Array.isArray(message.content)) return;
     for (const raw of message.content) {
       const block = raw as Block;
       if (!block || block.type !== "tool_result") continue;
       const toolUseId = block.tool_use_id;
       if (typeof toolUseId !== "string" || toolUseId.length === 0) continue;
-      if (block.is_error === true) continue;
-      if (isExcludedTool(tools.get(toolUseId), scan)) continue;
-      const text = toolResultText(block.content);
-      if (text === undefined || estimateTokens(text) < minTokens) continue;
-      yield { block, toolUseId, text, key: toolOutputKey(sessionId, toolUseId, text) };
+      const text = candidateText(block, toolUseId, scan);
+      if (text === undefined) continue;
+      yield { block, toolUseId, text, key: toolOutputKey(scan.sessionId, toolUseId, text) };
     }
   }
 
@@ -419,6 +418,34 @@ function isRecoveryRead(tool: ToolUse | undefined, scan: BlockScan): boolean {
   if (recoveryFile === undefined) return false;
   if (scan.isLast) {
     log(`[compaction] session ${scan.sessionId}: recovery read ${recoveryKeyOf(recoveryFile)}`);
+  }
+  return true;
+}
+
+/**
+ * The text of a tool_result block that may be compressed, else undefined: not
+ * an error, not an excluded tool, at least `minTokens`, and not a file print.
+ */
+function candidateText(block: Block, toolUseId: string, scan: BlockScan): string | undefined {
+  if (block.is_error === true) return undefined;
+  const tool = scan.tools.get(toolUseId);
+  if (isExcludedTool(tool, scan)) return undefined;
+  const text = toolResultText(block.content);
+  if (text === undefined || estimateTokens(text) < scan.minTokens) return undefined;
+  if (isFilePrint(tool, toolUseId, scan)) return undefined;
+  return text;
+}
+
+/**
+ * Whether the tool_use is a Bash command that only prints files
+ * (`isFilePrintCommand`). A fresh sighting is logged.
+ */
+function isFilePrint(tool: ToolUse | undefined, toolUseId: string, scan: BlockScan): boolean {
+  if (tool?.name !== "Bash") return false;
+  const command = (tool.input as { command?: unknown } | null | undefined)?.command;
+  if (typeof command !== "string" || !isFilePrintCommand(command)) return false;
+  if (scan.isLast) {
+    log(`[compaction] session ${scan.sessionId}: file print ${toolUseId} not compressed`);
   }
   return true;
 }

@@ -105,6 +105,24 @@ one of them is never compressed and never recorded, so it is sent as it is on ev
   message, the debug log gets one line, `[compaction] session <sessionId>: recovery read <key>`
   (the file's basename without `.txt` when it is a record key, else the basename); a later request
   that carries it earlier in the history logs nothing. A sibling session's folder is not exempt.
+- **A Bash command that only prints files** (`compaction/file-print.ts`, `isFilePrintCommand`). It
+  is the Read loss through Bash, measured in the context-reduction bench's refactor case on build
+  `a6952916`. Every trial's first call was
+  `cd packages/cli && grep -rn "nativeRouteFor" src; echo ---; cat src/providers/native-route.ts`
+  (17,088 to 17,176 characters). Compressed, the agent printed and grepped the file again to get
+  the exact text to edit: 17 to 22 tool results instead of 10, and +42.9% cost against the
+  baseline ($0.2541 vs $0.1778 mean, 3/3 passing in both arms). The rule is an allowlist, so a miss
+  only compresses as before. Outside quotes, the command splits into segments on `;`, `&&`, `||`
+  and newlines, and each segment into stages on `|`. Every stage must be a printer (`cat`, `nl`,
+  `head`, `tail`, `bat`, `less`, `more`, `sed -n '<range>p'`) or a locator (`cd`, `pwd`, `echo`,
+  `ls`, `wc`, `grep`, `egrep`, `rg`, `sort`, `uniq`, `cut`). At least one segment must start with
+  a printer that has a file operand and pipe it only into printers. `cat f | grep x` shows matches,
+  not the file, so it does not count. It is refused for any other program (`bun test`, a build),
+  a redirection other than `2>/dev/null` / `2>&1`, `$(…)`, backticks, `<(…)`, `&`, a heredoc,
+  `tail -f`, `sed -i`, or a shell keyword (`for`). It is checked after the size test, so only an
+  output that would have been compressed logs `[compaction] session <sessionId>: file print
+  <tool_use_id> not compressed`, and only when the block is in the request's last message. It is
+  not configurable.
 
 ## History swap shape (`compaction/history.ts`)
 

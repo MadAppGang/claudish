@@ -100,8 +100,8 @@ claudish keychain set ANTHROPIC_API_KEY
 ## Tool outputs
 
 A tool output is a candidate when it is text only, not an error, at least `minTokens` long, not
-the advisor's, not from a tool listed in `skipTools`, and not a read of the session's own recovery
-files. It is decided **once**, the first time it appears, before the model sees it:
+the advisor's, not from a tool listed in `skipTools`, not a read of the session's own recovery
+files, and not a Bash command that only prints files. It is decided **once**, the first time it appears, before the model sees it:
 
 - **Compressed:** the compression keeps every error line, file path, line number, identifier,
   command and number, and drops repeats, boilerplate and progress lines. The result ends with:
@@ -128,6 +128,14 @@ text, and a compressed `Read` drops the lines it would have to match. Set `"skip
 A read of the session's recovery files (any tool call whose `file_path` lies inside
 `~/.claudish/compaction/<session_id>/`) is never compressed either, whatever `skipTools` says, so
 the model always gets the full original it asked for.
+
+A Bash command that only prints files is never compressed either, for the same reason as `Read`.
+For example, `cd packages/cli && grep -rn "nativeRouteFor" src; cat src/providers/native-route.ts`
+is not compressed. claudish counts a command as a file print only when it is made of nothing but
+file printers (`cat`, `nl`, `head`, `tail`, `bat`, `less`, `more`, `sed -n '<range>p'`) and
+`cd`, `pwd`, `echo`, `ls`, `wc`, `grep`, `rg`, `sort`, `uniq` or `cut`, and at least one part
+prints a file. A command that runs anything else, such as `bun test` or a build, is compressed as
+usual, and so is a command with a redirection into a file or a `$(…)` substitution.
 
 ### The wait
 
