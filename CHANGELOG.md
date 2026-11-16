@@ -2,6 +2,76 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.27.0] - 2026-11-16
+
+### ⚠ BREAKING CHANGES
+
+- a claudish started inside another claudish session, with no --model, no CLAUDISH_MODEL and no profile model, no longer inherits the parent's ANTHROPIC_MODEL; give it --model. *(cli)* ([`d7342c6`](https://github.com/MadAppGang/claudish/commit/d7342c6944574149354d137e2a3a6584d12d6a93))
+
+### Bug Fixes
+
+- read every --settings value for the status line on a listing launch *(launch)* ([`9feeedb`](https://github.com/MadAppGang/claudish/commit/9feeedb100942022e16ffc57224c124f241d09b7))
+- write the whole restored settings file before renaming it *(launch)* ([`0992504`](https://github.com/MadAppGang/claudish/commit/09925043737d0d378646b437e1daafcf7a988024))
+- skip the restore promise when the settings file still fails to parse *(launch)* ([`c5849cd`](https://github.com/MadAppGang/claudish/commit/c5849cdf5f49fd6a68c113ba344da657e9d3d2c3))
+- fence restore ledger writes with the lock's holdsLock check *(launch)* ([`7be8d30`](https://github.com/MadAppGang/claudish/commit/7be8d3080a97f96d018abae54a6c7a5b9aa012da))
+- keep a refused --model URL out of the error message *(cli)* ([`530ccd5`](https://github.com/MadAppGang/claudish/commit/530ccd5603930d7ceed2569a5d628fdd53abfc75))
+- sum total_tokens across trackers sharing a token file *(status-line)* ([`abbf8f5`](https://github.com/MadAppGang/claudish/commit/abbf8f5d05e882c9d16970c299fe32e8a988b6ec))
+- say the recommended list is unavailable for a gateway x@ listing *(discovery)* ([`3d346dc`](https://github.com/MadAppGang/claudish/commit/3d346dcca573e4b4705011f044f1b678d6efb4e3))
+- name a surviving ANTHROPIC_SMALL_FAST_MODEL without its value *(launch)* ([`ecb8923`](https://github.com/MadAppGang/claudish/commit/ecb8923686d64a8da9777e0cbbebafb5e7bc9b07))
+- refuse a --settings value holding a JSON array at launch *(launch)* ([`cbe81fa`](https://github.com/MadAppGang/claudish/commit/cbe81faac74a6df1793ea3774a1fcf46a6066fed))
+- leave settings.json alone when model equals its original *(launch)* ([`c2c5881`](https://github.com/MadAppGang/claudish/commit/c2c58812ca5f3afc8e4a142672aa56d4653979df))
+- reset token file totals when the proxy shuts down *(proxy)* ([`95deddf`](https://github.com/MadAppGang/claudish/commit/95deddf4e9a7ae19fb41c805e9d2c13ff8e65bec))
+- print the model restore promise only for a registered watch *(launch)* ([`e608d8a`](https://github.com/MadAppGang/claudish/commit/e608d8ad4d39a234234ca98ed99d1f6543366b94))
+- read an unstattable restore ledger as nothing pending *(launch)* ([`65d9d09`](https://github.com/MadAppGang/claudish/commit/65d9d09deeb8b463452725b9c1e12be99f7a03d4))
+- ignore an ANTHROPIC_MODEL a parent claudish set for its child *(cli)* ([`7814f32`](https://github.com/MadAppGang/claudish/commit/7814f32bfebe27f6a38a5a36098d8676e32a8f91))
+- skip /models for a custom endpoint listed as name@ *(discovery)* ([`1bc28da`](https://github.com/MadAppGang/claudish/commit/1bc28da5983b6cf8b0fe4530e5cceb0bf4f5f03a))
+- route a pick of the user's own modelPicker spec as sent *(proxy)* ([`e6d4221`](https://github.com/MadAppGang/claudish/commit/e6d42216fcaa999d2d609c7fac0051c614b82abb))
+- list bundled recommended models in an offline lineup *(discovery)* ([`1a2e812`](https://github.com/MadAppGang/claudish/commit/1a2e812534eb3196b0fc017c8e60e9f9b5e46b31))
+- keep behavesAs on the user's own modelPicker rows *(launch)* ([`360edf3`](https://github.com/MadAppGang/claudish/commit/360edf32ab2a9cde80b6848b09630655d24d7b8b))
+- sum session totals across handlers on one token file *(status-line)* ([`532584e`](https://github.com/MadAppGang/claudish/commit/532584e8d95257aca2dc177c1d418939678eef7a))
+- remove ANTHROPIC_MODEL a parent claudish set from the child *(launch)* ([`05cdb04`](https://github.com/MadAppGang/claudish/commit/05cdb0469b07f0b67a184f4e7ece02682cfcaf57))
+- clear the routing chain when a later --model replaces it *(cli)* ([`6b5ac17`](https://github.com/MadAppGang/claudish/commit/6b5ac17f05e008eb8f445d6a22307267dfe32d0a))
+
+### Documentation
+
+- update CHANGELOG.md for v14.26.1([`497e293`](https://github.com/MadAppGang/claudish/commit/497e293c76b81a2bd26b1a8a55e758c8efa6ac2d))
+- state that a nested launch ignores the parent's ANTHROPIC_MODEL *(cli)* ([`d7342c6`](https://github.com/MadAppGang/claudish/commit/d7342c6944574149354d137e2a3a6584d12d6a93))
+- record when token file totals end in the R21 rule *(proxy)* ([`0d28890`](https://github.com/MadAppGang/claudish/commit/0d288900d6113ae2aa549ff27b55025c7e6c4ffa))
+- name the model restore's overwrite and rewrite limits *(launch)* ([`aa7fd9f`](https://github.com/MadAppGang/claudish/commit/aa7fd9f541163b56f071e7ec0dbc5d6ad3828339))
+- document the localProviders config key *(settings)* ([`fac3fc5`](https://github.com/MadAppGang/claudish/commit/fac3fc582f227d064a2691bc105d136e1db29454))
+- record the /model lineup rules with measurements *(architecture)* ([`32c2136`](https://github.com/MadAppGang/claudish/commit/32c21364725335de62c880dd87c3e6f596df2e04))
+- document --model provider@ listing entries for /model *(settings)* ([`dc75eb6`](https://github.com/MadAppGang/claudish/commit/dc75eb669cd41845259b8d8232e6aaa4db9b5fa6))
+- say /model reads modelPicker, not /v1/models *(custom-endpoints)* ([`1c78b26`](https://github.com/MadAppGang/claudish/commit/1c78b26f760739f1394249e0bba27b46652578f5))
+
+### New Features
+
+- put back the user's Claude Code model setting at exit *(launch)* ([`8fa8c1c`](https://github.com/MadAppGang/claudish/commit/8fa8c1c6b5eb98b94d1792d6c7f2ba73b94b39e9))
+- list the /model lineup on GET /v1/models with display_name *(proxy)* ([`20606d2`](https://github.com/MadAppGang/claudish/commit/20606d2e0157834519999855f7da89d952171f45))
+- route a picked Claude row on a Claude-model start as picked *(proxy)* ([`e04acda`](https://github.com/MadAppGang/claudish/commit/e04acdaa2b235af8c7db524f83f628f4c2491a15))
+- route a /model pick of a listed model spec as sent *(proxy)* ([`be2e544`](https://github.com/MadAppGang/claudish/commit/be2e544bd1abd2e72208695bcc62f84d004ddefa))
+- pass the /model lineup to Claude Code as modelPicker *(launch)* ([`4bcd552`](https://github.com/MadAppGang/claudish/commit/4bcd55252c9f578b23af85ad8dfb80aebfb79796))
+- start a listing-only launch on the Claude subscription *(launch)* ([`bf52819`](https://github.com/MadAppGang/claudish/commit/bf52819c074de1a4a0188bebdef8004eb1c43b4d))
+- accept repeated --model flags and provider@ listing entries *(cli)* ([`4699db0`](https://github.com/MadAppGang/claudish/commit/4699db0a961e87892456b7c752929690ebe900de))
+- build a /model lineup from listed providers' models *(discovery)* ([`be3c90d`](https://github.com/MadAppGang/claudish/commit/be3c90daac8e1220ca1a8ff792164dacb635e9a5))
+
+### Refactoring
+
+- name the created timestamp of GET /v1/models entries *(proxy)* ([`17b7481`](https://github.com/MadAppGang/claudish/commit/17b74811f7326f100f34e909e336767f80e8b20e))
+- drop the unused AbortSignal from recommended() *(discovery)* ([`0be751a`](https://github.com/MadAppGang/claudish/commit/0be751a3368bc6326b4adfb3cdba1d1583e71fa8))
+- use CLAUDE_CODE_DEFAULT_MAX_CONTEXT in sessionWindow *(launch)* ([`69b1426`](https://github.com/MadAppGang/claudish/commit/69b142652f687d59151ec8c523d151bc80c061f2))
+- rename liveAccountModelsCatalog and take a trigger *(discovery)* ([`9449b26`](https://github.com/MadAppGang/claudish/commit/9449b26f0eba21e75d85d24df94dc4f924dcc100))
+
+## [14.26.1] - 2026-11-16
+
+### Bug Fixes
+
+- send includeThoughts so a long think streams bytes *(antigravity)* ([`0ef29b8`](https://github.com/MadAppGang/claudish/commit/0ef29b8c8c7e6b3677c4db258bc92bccf1542c3f))
+
+### Documentation
+
+- record the silent think without includeThoughts *(antigravity)* ([`5f32098`](https://github.com/MadAppGang/claudish/commit/5f32098e9dc6b32e2dcb25e0c1d6b85204e98012))
+- update CHANGELOG.md for v14.26.0([`533e423`](https://github.com/MadAppGang/claudish/commit/533e4233b9d0c6b49bfc2420fcc76d9626169677))
+
 ## [14.26.0] - 2026-11-15
 
 ### Bug Fixes

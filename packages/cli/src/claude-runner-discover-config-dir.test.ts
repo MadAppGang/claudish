@@ -35,7 +35,9 @@ describe("discoverUserStatusLineCommand under CLAUDE_CONFIG_DIR", () => {
   // REGRESSION: the status line was read from ~/.claude/settings.json while CLAUDE_CONFIG_DIR named another directory
   test("reads the status line from $CLAUDE_CONFIG_DIR/settings.json", () => {
     const cfg = settingsDir("cfg-status", { statusLine: { type: "command", command: "cfg-cmd" } });
-    expect(discoverUserStatusLineCommand([], cwd, { CLAUDE_CONFIG_DIR: cfg })).toBe("cfg-cmd");
+    expect(discoverUserStatusLineCommand([], cwd, { env: { CLAUDE_CONFIG_DIR: cfg } })).toBe(
+      "cfg-cmd"
+    );
   });
 
   // REGRESSION: ~/.claude/settings.json supplied a status line Claude Code never loads under CLAUDE_CONFIG_DIR
@@ -48,7 +50,9 @@ describe("discoverUserStatusLineCommand under CLAUDE_CONFIG_DIR", () => {
     );
     try {
       const cfg = settingsDir("cfg-empty", {});
-      expect(discoverUserStatusLineCommand([], cwd, { CLAUDE_CONFIG_DIR: cfg })).toBeNull();
+      expect(
+        discoverUserStatusLineCommand([], cwd, { env: { CLAUDE_CONFIG_DIR: cfg } })
+      ).toBeNull();
     } finally {
       rmSync(homeSettings, { force: true });
     }
@@ -59,7 +63,7 @@ describe("discoverUserAdvisorModel under CLAUDE_CONFIG_DIR", () => {
   // REGRESSION: the advisor model was read from ~/.claude/settings.json while CLAUDE_CONFIG_DIR named another directory
   test("reads advisorModel from $CLAUDE_CONFIG_DIR/settings.json", () => {
     const cfg = settingsDir("cfg-advisor", { advisorModel: "opus" });
-    expect(discoverUserAdvisorModel([], cwd, { CLAUDE_CONFIG_DIR: cfg })).toBe("opus");
+    expect(discoverUserAdvisorModel([], cwd, { env: { CLAUDE_CONFIG_DIR: cfg } })).toBe("opus");
   });
 });
 
@@ -77,12 +81,12 @@ describe("settings discovery under env.HOME", () => {
 
   // REGRESSION: with no home injected, the user settings file was read under os.homedir() instead of env.HOME
   test("reads the status line from $HOME/.claude/settings.json of the env given", () => {
-    expect(discoverUserStatusLineCommand([], cwd, { HOME: home })).toBe("env-home-cmd");
+    expect(discoverUserStatusLineCommand([], cwd, { env: { HOME: home } })).toBe("env-home-cmd");
   });
 
   // REGRESSION: with no home injected, the user settings file was read under os.homedir() instead of env.HOME
   test("reads advisorModel from $HOME/.claude/settings.json of the env given", () => {
-    expect(discoverUserAdvisorModel([], cwd, { HOME: home })).toBe("opus");
+    expect(discoverUserAdvisorModel([], cwd, { env: { HOME: home } })).toBe("opus");
   });
 
   test("an injected home still wins over env.HOME", () => {
@@ -92,6 +96,8 @@ describe("settings discovery under env.HOME", () => {
       join(injected, ".claude", "settings.json"),
       JSON.stringify({ advisorModel: "haiku" })
     );
-    expect(discoverUserAdvisorModel([], cwd, { HOME: home }, { home: injected })).toBe("haiku");
+    expect(
+      discoverUserAdvisorModel([], cwd, { env: { HOME: home }, deps: { home: injected } })
+    ).toBe("haiku");
   });
 });

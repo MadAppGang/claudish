@@ -63,6 +63,27 @@ This starts an interactive session with Grok immediately.
 
 ---
 
+## Switch Models Inside the Session
+
+Give `--model` a provider shortcut with no model, and that provider's models appear in Claude
+Code's own `/model` list, after Claude's rows:
+
+```bash
+claudish --model devin@ --model ag@            # list Devin and Antigravity; start on Claude's default model
+claudish --model devin@swe-1.7 --model 'or@*'  # start on devin@swe-1.7; list Devin and every OpenRouter model
+```
+
+Pick a row in `/model` and the next request goes to that model, with no restart. `s` picks for
+this session only; Enter also saves the pick as Claude Code's default, and claudish puts your
+previous default back when the session exits. A gateway's `x@` lists its recommended models,
+`'x@*'` every chat model it serves (quote the `*`). A local server is listed only when
+`localProviders` enables it. Before Claude Code starts, claudish prints what it listed and why
+any provider is missing.
+
+Rules, refusals and limits: [Listing providers' models in `/model`](../settings-reference.md#522-listing-providers-models-in-claude-codes-model).
+
+---
+
 ## What You Get
 
 Everything Claude Code offers:
@@ -131,7 +152,7 @@ claudish --model mistralai/mistral-large-2411
 
 ## Session Tips
 
-**Switching models mid-session?** You can't. Exit and restart with a different model.
+**Switching models mid-session?** Launch with listing entries (`--model devin@`, see above) and pick in `/model`. Without them, exit and restart with a different model.
 
 **Context window exhausted?** Start fresh. Or switch to a model with larger context (Gemini 3 Pro has 1M tokens).
 

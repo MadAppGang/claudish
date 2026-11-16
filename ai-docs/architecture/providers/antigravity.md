@@ -633,5 +633,67 @@ Argument names are capitalised (`Path`, `CommandLine`, `Content`), unlike Claude
 claudish request by replay and the answer stayed 429; `agy`'s whole body under claudish's own
 token and headers answered 200. The one thing the server refused was a paragraph of the system
 text: see `adapters.md` § "Antigravity refuses one paragraph of Claude Code's system prompt".
-So the envelope, the `User-Agent` and the generation settings are recorded here as known
-differences, not as defects.
+So the envelope and the `User-Agent` are recorded here as known differences, not as defects.
+
+The generation settings are different: one of them was a defect that no 429 replay could show.
+See the next section.
+
+## `includeThoughts`: without it the server is silent while the model thinks (measured 2026-11-15)
+
+Claudish 14.26.0 wrote no `includeThoughts`. The server then sends no byte until the think ends.
+A think longer than the request's first-byte deadline (270 s at the default settings,
+`network-recovery.md`) is aborted and answered as an unreachable host, and Claude Code retries the
+same request.
+
+| Run | Build | Request sent | First answer | Result |
+|---|---|---|---|---|
+| A | 14.26.0, no flag | 23:08:12.874Z | none in 269.98 s | `TimeoutError: request deadline`, `[Recovery] skipped (no-budget) … site=fetch`, `Cannot reach Antigravity Ultra` |
+| B | with `includeThoughts: true` | 23:20:11.217Z | `Response status: 200` at 23:20:17.373Z (6.2 s) | thought parts stream; the answer (18,079 characters) was complete at 23:25:31Z |
+
+Both runs: `ag@gemini-4-carbon` sent as `gemini-4-carbon-medium`, the same session context (five
+files read, about 86k input tokens) and the same prompt, a review that needs a long think. Run B
+thought for more than four minutes, as run A did. The only difference is that the stream carried
+bytes.
+
+Ruled out by a control on 14.26.0 before the change: four parallel tool calls with the placeholder
+thought signature on calls 2 to 4, and the 86k-token body, answer 200 in 10 s when the task needs
+no long think.
+
+What the code does (`GeminiAPIFormat.buildPayload`, the `thinkingFromModelName` branch, which only
+Antigravity uses): **every** body carries `thinkingConfig.includeThoughts: true`. A resolved effort
+adds the `thinkingLevel` or the `thinkingBudget` beside it. A request with no effort, with thinking
+disabled (and no effort pin), or with an effort that has no budget carries the flag alone. When the
+sent model id carries the effort, `antigravityBodyForModelId` removes the level or budget and keeps
+the flag. The stream parser already turns a `thought: true` part into thinking output
+(`gemini-sse.ts`), and the converter does not send thinking blocks back on later requests.
+
+**The flag must not follow the effort this request resolved.** The transport chooses the model id
+that is sent, and that id can turn thinking on when the body names none: a request with no effort
+is sent as the connection's default level, and a level the effort map cannot serve falls to
+another. Measured: effort `none` on `ag@gemini-4-carbon` logged `sending model
+gemini-4-carbon-medium for gemini-4-carbon (effort none, from map id not usable)`. A first version
+of this repair wrote the flag only beside a level or budget, and such a request kept the silent
+think.
+
+Bodies measured with the flag, each from a one-line prompt:
+
+| Model spec | Effort | Sent id | `thinkingConfig` in the body | Answer |
+|---|---|---|---|---|
+| `ag@gemini-4-carbon` | medium | `gemini-4-carbon-medium` | flag alone | 200 |
+| `ag@gemini-4-carbon` | none | `gemini-4-carbon-medium` | flag alone | 200 |
+| `ag@gemini-3-flash` | medium | `gemini-3-flash` | `thinkingLevel` and flag | 200, three requests |
+| `ag@gemini-2.5-flash-lite` | none | `gemini-2.5-flash-lite` | flag alone | 200 |
+| `ag@gpt-oss-120b` | none | `gpt-oss-120b-medium` | flag alone | 200 |
+| `ag@gemini-2.5-pro` | none | `gemini-2.5-pro` | flag alone | 503 `No capacity available for model gemini-2.5-pro on the server` |
+| `ag@claude-sonnet-5-5` | medium | `claude-sonnet-5-5-medium` | flag alone | 429 `RESOURCE_EXHAUSTED` |
+
+The 503 is the server's capacity for that model, and no row is a 400. The Claude row is a 429 with
+the flag and, in a control on 14.26.0, without it: the flag is not the cause, and the Claude case
+stays unmeasured.
+
+Not measured: the other Gemini routes (`g@`, Vertex), which do not use this branch and can have
+the same silent think.
+
+One difference in the table is still open: `maxOutputTokens`. Thinking tokens count against it. Run
+B ended its first answer with `finishReason=MAX_TOKENS` at 32000 and Claude Code continued by
+itself. `agy` sends 65536.

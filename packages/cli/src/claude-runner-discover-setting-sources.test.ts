@@ -55,7 +55,7 @@ describe("discoverUserStatusLineCommand and --setting-sources", () => {
   test("--setting-sources user ignores the project settings file", () => {
     const { cwd, env } = freshCase();
     put(join(cwd, ".claude", "settings.json"), statusLine("proj-cmd"));
-    expect(discoverUserStatusLineCommand(["--setting-sources", "user"], cwd, env)).toBeNull();
+    expect(discoverUserStatusLineCommand(["--setting-sources", "user"], cwd, { env })).toBeNull();
   });
 
   // REGRESSION: an empty --setting-sources closed no layer, so the local file's status line was chained
@@ -64,24 +64,24 @@ describe("discoverUserStatusLineCommand and --setting-sources", () => {
     put(join(configDir, "settings.json"), statusLine("user-cmd"));
     put(join(cwd, ".claude", "settings.json"), statusLine("proj-cmd"));
     put(join(cwd, ".claude", "settings.local.json"), statusLine("local-cmd"));
-    expect(discoverUserStatusLineCommand(["--setting-sources", ""], cwd, env)).toBeNull();
+    expect(discoverUserStatusLineCommand(["--setting-sources", ""], cwd, { env })).toBeNull();
   });
 
   // REGRESSION: a linked worktree never read the main checkout's settings.local.json
   test("reads the main checkout's settings.local.json from a linked worktree", () => {
     const { main, worktree, env } = linkedWorktree();
     put(join(main, ".claude", "settings.local.json"), statusLine("local-cmd"));
-    expect(discoverUserStatusLineCommand([], worktree, env)).toBe("local-cmd");
+    expect(discoverUserStatusLineCommand([], worktree, { env })).toBe("local-cmd");
   });
 
   test("local overrides project overrides user", () => {
     const { cwd, configDir, env } = freshCase();
     put(join(configDir, "settings.json"), statusLine("user-cmd"));
-    expect(discoverUserStatusLineCommand([], cwd, env)).toBe("user-cmd");
+    expect(discoverUserStatusLineCommand([], cwd, { env })).toBe("user-cmd");
     put(join(cwd, ".claude", "settings.json"), statusLine("proj-cmd"));
-    expect(discoverUserStatusLineCommand([], cwd, env)).toBe("proj-cmd");
+    expect(discoverUserStatusLineCommand([], cwd, { env })).toBe("proj-cmd");
     put(join(cwd, ".claude", "settings.local.json"), statusLine("local-cmd"));
-    expect(discoverUserStatusLineCommand([], cwd, env)).toBe("local-cmd");
+    expect(discoverUserStatusLineCommand([], cwd, { env })).toBe("local-cmd");
   });
 });
 
@@ -90,24 +90,24 @@ describe("discoverUserAdvisorModel and --setting-sources", () => {
   test("--setting-sources user ignores the project settings file", () => {
     const { cwd, env } = freshCase();
     put(join(cwd, ".claude", "settings.json"), { advisorModel: "opus" });
-    expect(discoverUserAdvisorModel(["--setting-sources", "user"], cwd, env)).toBeUndefined();
+    expect(discoverUserAdvisorModel(["--setting-sources", "user"], cwd, { env })).toBeUndefined();
   });
 
   // REGRESSION: a linked worktree never read the main checkout's settings.local.json
   test("reads the main checkout's settings.local.json from a linked worktree", () => {
     const { main, worktree, env } = linkedWorktree();
     put(join(main, ".claude", "settings.local.json"), { advisorModel: "opus" });
-    expect(discoverUserAdvisorModel([], worktree, env)).toBe("opus");
+    expect(discoverUserAdvisorModel([], worktree, { env })).toBe("opus");
   });
 
   test("local overrides project overrides user", () => {
     const { cwd, configDir, env } = freshCase();
     put(join(configDir, "settings.json"), { advisorModel: "haiku" });
-    expect(discoverUserAdvisorModel([], cwd, env)).toBe("haiku");
+    expect(discoverUserAdvisorModel([], cwd, { env })).toBe("haiku");
     put(join(cwd, ".claude", "settings.json"), { advisorModel: "sonnet" });
-    expect(discoverUserAdvisorModel([], cwd, env)).toBe("sonnet");
+    expect(discoverUserAdvisorModel([], cwd, { env })).toBe("sonnet");
     put(join(cwd, ".claude", "settings.local.json"), { advisorModel: "opus" });
-    expect(discoverUserAdvisorModel([], cwd, env)).toBe("opus");
+    expect(discoverUserAdvisorModel([], cwd, { env })).toBe("opus");
   });
 });
 
@@ -118,14 +118,14 @@ describe("discoverUserAdvisorModel across several --settings", () => {
   test("a later --settings that clears advisorModel wins", () => {
     const { cwd, env } = freshCase();
     const args = ["--settings", settings("opus"), "--settings", settings("")];
-    expect(discoverUserAdvisorModel(args, cwd, env)).toBeUndefined();
+    expect(discoverUserAdvisorModel(args, cwd, { env })).toBeUndefined();
   });
 
   // REGRESSION: an earlier --settings value was returned over the one Claude Code applies last
   test("a later --settings value wins over an earlier one", () => {
     const { cwd, env } = freshCase();
     const args = ["--settings", settings("haiku"), "--settings", settings("opus")];
-    expect(discoverUserAdvisorModel(args, cwd, env)).toBe("opus");
+    expect(discoverUserAdvisorModel(args, cwd, { env })).toBe("opus");
   });
 
   // The first two-token --settings is merged into claudish's own file, which the
@@ -133,6 +133,6 @@ describe("discoverUserAdvisorModel across several --settings", () => {
   test("a forwarded --settings= value applies after the merged one", () => {
     const { cwd, env } = freshCase();
     const args = [`--settings=${settings("haiku")}`, "--settings", settings("opus")];
-    expect(discoverUserAdvisorModel(args, cwd, env)).toBe("haiku");
+    expect(discoverUserAdvisorModel(args, cwd, { env })).toBe("haiku");
   });
 });

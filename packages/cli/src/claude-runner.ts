@@ -64,9 +64,11 @@ import {
   magmuxPaneCapability,
   planMagmuxWrap,
 } from "./launcher/magmux-wrapper.js";
+import type { ModelPickerSources } from "./launcher/model-lineup.js";
 // Aliased: runClaudeWithProxy declares its own local `log` (a quiet-aware
 // console printer), and an unaliased import would be shadowed inside it.
 import { log as debugLog, logStderr } from "./logger.js";
+import { type ModelVarsScrub, recordModelVars, scrubInheritedModelVars } from "./model-vars-env.js";
 import { PANE_LAUNCH_VARS, isPaneChild } from "./pane/child-env.js";
 import { flagsRemoveRead } from "./pane/pane-launch.js";
 import { killStillLiveMembers, snapshotDescendants, waitForExit } from "./process-tree.js";
@@ -91,6 +93,9 @@ import { setClaudeCodeRunning } from "./telemetry.js";
 import { beginTerminalIsolation } from "./terminal-isolation.js";
 import { getThemeMode } from "./theme/theme-mode.js";
 import type { ClaudeLaunch, ClaudishConfig } from "./types.js";
+
+/** The `modelPicker` value claudish hands Claude Code on a launch with a /model lineup. */
+type ModelPickerValue = NonNullable<ClaudishConfig["modelLineup"]>["picker"];
 
 /**
  * Terminal-isolation state for the running session. Module-level because the
@@ -129,6 +134,9 @@ function releaseTerminalIsolation(): void {
  * NOT be set — Claude Code needs its real subscription credentials so
  * NativeHandler can forward them to api.anthropic.com. Any other bare name
  * (`o4-mini`) is routed by the proxy, so it does not count.
+ *
+ * A launch that only lists providers (`--model devin@`, no full spec, no tier)
+ * counts too: it starts on Claude's default model ({@link startsOnClaudeSubscription}).
  */
 export function hasNativeAnthropicMapping(config: ClaudishConfig): boolean {
   const models = [
@@ -138,7 +146,21 @@ export function hasNativeAnthropicMapping(config: ClaudishConfig): boolean {
     config.modelHaiku,
     config.modelSubagent,
   ];
-  return models.some((m) => m && nativeRouteFor(m) !== null);
+  return models.some((m) => m && nativeRouteFor(m) !== null) || startsOnClaudeSubscription(config);
+}
+
+/**
+ * A launch with listing entries (`--model devin@`) and no start model: no full
+ * `--model` spec, no routing chain, no profile tier, not `--monitor`. Claude
+ * Code starts on Claude's default model, on the user's own Claude login, and
+ * the listed providers' models are picked from `/model`.
+ */
+export function startsOnClaudeSubscription(config: ClaudishConfig): boolean {
+  if ((config.modelListings?.length ?? 0) === 0) return false;
+  if (config.monitor) return false;
+  if (config.model || (config.modelChain?.length ?? 0) > 0) return false;
+  const tiers = [config.modelOpus, config.modelSonnet, config.modelHaiku, config.modelSubagent];
+  return !tiers.some((m) => typeof m === "string" && m.length > 0);
 }
 
 /**
@@ -562,7 +584,13 @@ export function settingsCredentialFindings(
   if (customHeadersSignWithKey(env.ANTHROPIC_CUSTOM_HEADERS)) {
     findings.push({ where: "environment", kind: "custom-headers-auth" });
   }
-  for (const layer of claudeSettingsLayers(config.claudeArgs ?? [], env, deps)) {
+  const layers = claudeSettingsLayers(
+    config.claudeArgs ?? [],
+    env,
+    deps,
+    settingsArgScopeOf(config)
+  );
+  for (const layer of layers) {
     // A `--settings` file is named by its path, which the user can open and edit.
     const where = layer.file ?? layer.where;
     if (layer.settings === null) {
@@ -671,6 +699,39 @@ function settingsArgOccurrences(args: readonly string[]): SettingsArgOccurrence[
   return out;
 }
 
+/**
+ * Which passthrough `--settings` values a settings discovery reads.
+ * `"first"`: the value after the first `--settings` token, the launch with no
+ * listing entry. `"every"`: every occurrence in both spellings, argv order, the
+ * ones {@link mergeEverySettingsArg} merges on a launch with a /model lineup.
+ */
+export type SettingsArgScope = "first" | "every";
+
+/** The scope that matches what `mergeUserSettingsIfPresent` will merge for this launch. */
+export function settingsArgScopeOf(config: Pick<ClaudishConfig, "modelLineup">): SettingsArgScope {
+  return config.modelLineup?.picker ? "every" : "first";
+}
+
+/** How a settings discovery reads this launch. Every field defaults to the running process. */
+export interface SettingsDiscoveryOptions {
+  /** Which `--settings` values the merge takes; {@link settingsArgScopeOf} for a launch. */
+  scope?: SettingsArgScope;
+  /** The environment the child inherits (`CLAUDE_CONFIG_DIR`, `HOME`). */
+  env?: NodeJS.ProcessEnv;
+  deps?: ChildAuthControlDeps;
+}
+
+/** The settings layers a discovery reads: those the child receives, launched from `cwd`. */
+function discoverySettingsLayers(
+  claudeArgs: readonly string[],
+  cwd: string,
+  { scope = "first", env = process.env, deps = {} }: SettingsDiscoveryOptions
+): SettingsLayer[] {
+  return claudeSettingsLayers(claudeArgs, env, { ...deps, cwd }, scope).filter(
+    (layer) => !layer.droppedByMerge
+  );
+}
+
 /** The auth header names (lowercase) an ANTHROPIC_CUSTOM_HEADERS value (one `Name: value` per line) sets. */
 function customHeaderAuthNames(value: unknown): Set<"authorization" | "x-api-key"> {
   const names = new Set<"authorization" | "x-api-key">();
@@ -724,7 +785,8 @@ function settingsAuthSource(settings: Record<string, unknown>): ChildAuthSource 
  * A missing, unreadable or malformed settings FILE is skipped (Claude Code does
  * not apply a file it cannot parse either). `where` is the path, or `--settings`.
  *
- * `--settings` values follow the launcher exactly (`runClaudeWithProxy`):
+ * `--settings` values follow the launcher exactly (`runClaudeWithProxy`), under
+ * the launch's {@link SettingsArgScope}. Scope `"first"`:
  * `mergeUserSettingsIfPresent` takes only the FIRST two-token `--settings <v>`
  * (`indexOf`), merges it into claudish's temp file and splices it out — when it
  * cannot be parsed it is dropped, so the child never sees it and it is skipped
@@ -732,26 +794,35 @@ function settingsAuthSource(settings: Record<string, unknown>): ChildAuthSource 
  * `--settings=<v>`) is forwarded to the child verbatim with the passthrough
  * args, so each one is inspected, and one claudish cannot read or parse is
  * returned with `settings: null` — the child may still apply it, and unknown
- * provenance never counts as controlled (A1).
+ * provenance never counts as controlled (A1). Scope `"every"` (a launch with a
+ * /model lineup): {@link mergeEverySettingsArg} merges and splices EVERY
+ * occurrence, so each readable one is a merged layer and each unreadable one is
+ * dropped.
  */
 function readableClaudeSettingsLayers(
   config: ClaudishConfig,
   env: NodeJS.ProcessEnv,
   deps: ChildAuthControlDeps
 ): SettingsLayer[] {
-  return claudeSettingsLayers(config.claudeArgs ?? [], env, deps).filter(
-    (layer) => !layer.droppedByMerge
-  );
+  return claudeSettingsLayers(
+    config.claudeArgs ?? [],
+    env,
+    deps,
+    settingsArgScopeOf(config)
+  ).filter((layer) => !layer.droppedByMerge);
 }
 
 /**
- * {@link readableClaudeSettingsLayers}, plus the first two-token `--settings`
- * value when it cannot be read or parsed, marked `droppedByMerge`.
+ * {@link readableClaudeSettingsLayers}, plus each `--settings` value the merge
+ * splices out because it cannot be read or parsed, marked `droppedByMerge`.
+ * `scope` names the values the merge takes, the same rule
+ * {@link mergeUserSettingsIfPresent} follows for this launch.
  */
 function claudeSettingsLayers(
   claudeArgs: readonly string[],
   env: NodeJS.ProcessEnv,
-  deps: ChildAuthControlDeps
+  deps: ChildAuthControlDeps,
+  scope: SettingsArgScope
 ): SettingsLayer[] {
   const readFile = deps.readFile ?? ((path: string) => readFileSync(path, "utf-8"));
   // Claude Code finds its home in `HOME` first, so a non-empty `env.HOME` wins
@@ -778,7 +849,9 @@ function claudeSettingsLayers(
     if (settings) layers.push({ where: file, settings, tier });
   }
   const occurrences = settingsArgOccurrences(claudeArgs);
-  const merged = occurrences.find((o) => o.spelling === "separate");
+  const first = occurrences.find((o) => o.spelling === "separate");
+  const isMerged = (occurrence: SettingsArgOccurrence): boolean =>
+    scope === "every" || occurrence === first;
   occurrences.forEach((occurrence, i) => {
     // `where` never carries the value: an inline `--settings` may hold a secret.
     const where = occurrences.length > 1 ? `--settings (occurrence ${i + 1})` : "--settings";
@@ -786,11 +859,11 @@ function claudeSettingsLayers(
     if (!occurrence.value) return;
     const settings = readSettingsSource(occurrence.value, readFile);
     const file = isInlineSettings(occurrence.value) ? {} : { file: occurrence.value };
-    if (occurrence === merged && !settings) {
+    if (isMerged(occurrence) && !settings) {
       layers.push({ where, settings, tier: "cli", droppedByMerge: true, ...file });
       return;
     }
-    const mergedMark = occurrence === merged ? { merged: true as const } : {};
+    const mergedMark = isMerged(occurrence) ? { merged: true as const } : {};
     layers.push({ where, settings, tier: "cli", ...file, ...mergedMark });
   });
   return layers;
@@ -805,7 +878,7 @@ function claudeSettingsLayers(
  * NFC-normalized first, as the binary does, so a decomposed `cafe\u0301` reads
  * the composed `caf\u00e9` path. The directory is {@link claudeCodeConfigDir}'s.
  */
-function userSettingsFile(configDir: string | undefined, home: string, cwd: string): string {
+export function userSettingsFile(configDir: string | undefined, home: string, cwd: string): string {
   return join(
     claudeCodeConfigDir({ CLAUDE_CONFIG_DIR: configDir, HOME: home }, cwd),
     "settings.json"
@@ -904,9 +977,9 @@ interface SettingsLayer {
   where: string;
   settings: Record<string, unknown> | null;
   tier: SettingsTier;
-  /** The first two-token `--settings` value, unreadable, which the merge splices out. */
+  /** A `--settings` value the merge takes but cannot read, so it splices it out. */
   droppedByMerge?: true;
-  /** The first two-token `--settings` value, readable: the one the merge folds into claudish's file. */
+  /** A readable `--settings` value the merge folds into claudish's file. */
   merged?: true;
   /** A `--settings` value that names a file: its path. Absent for inline JSON, which may hold a secret. */
   file?: string;
@@ -961,6 +1034,84 @@ export function settingsClaudeLoginToken(
   return "absent";
 }
 
+/** A non-managed tier's rank in Claude Code's precedence, higher wins. */
+const NON_MANAGED_TIER_RANK: Readonly<Record<Exclude<SettingsTier, "managed">, number>> = {
+  user: 0,
+  project: 1,
+  local: 2,
+  cli: 3,
+};
+
+/**
+ * What the settings layers this launch's Claude Code loads say about
+ * `modelPicker` and `availableModels`: the same layers `childAuthControl`
+ * reads (managed, user, project, local with `--setting-sources` honoured,
+ * every passthrough `--settings`). Claude Code takes `modelPicker` from the
+ * highest layer that sets it, with no merge: among non-managed layers the
+ * command line beats local, local beats project, project beats user, and a
+ * later `--settings` occurrence beats an earlier one. A managed `modelPicker`
+ * beats claudish's own `--settings` value, and `availableModels` in any layer
+ * may hide rows; both are named so the launch can say so. Files only, no network.
+ */
+export function modelPickerSources(
+  config: ClaudishConfig,
+  env: NodeJS.ProcessEnv = process.env,
+  deps: ChildAuthControlDeps = {}
+): ModelPickerSources {
+  let user: ModelPickerSources["user"] = null;
+  let userRank = -1;
+  let managed: string | null = null;
+  const availableModels: string[] = [];
+  const layers = claudeSettingsLayers(
+    config.claudeArgs ?? [],
+    env,
+    deps,
+    settingsArgScopeOf(config)
+  );
+  layers.forEach((layer, index) => {
+    const settings = layer.settings;
+    if (settings === null) return;
+    const where = layer.file ?? layer.where;
+    if ("availableModels" in settings) availableModels.push(where);
+    if (!("modelPicker" in settings)) return;
+    if (layer.tier === "managed") {
+      managed = where;
+      return;
+    }
+    const rank = NON_MANAGED_TIER_RANK[layer.tier] * 10_000 + index;
+    if (rank < userRank) return;
+    userRank = rank;
+    const picker = settings.modelPicker;
+    const record =
+      picker && typeof picker === "object" && !Array.isArray(picker)
+        ? (picker as Record<string, unknown>)
+        : {};
+    user = {
+      where,
+      options: Array.isArray(record.options) ? record.options : [],
+      ...("replaceBuiltInOptions" in record
+        ? { replaceBuiltInOptions: record.replaceBuiltInOptions }
+        : {}),
+    };
+  });
+  return { user, managed, availableModels };
+}
+
+/**
+ * The passthrough `--settings` occurrences (1-based, argv order, either
+ * spelling) whose value claudish cannot read or parse. An occurrence with no
+ * value is not one: it hands Claude Code nothing.
+ */
+export function unreadableSettingsArgs(
+  config: ClaudishConfig,
+  deps: ChildAuthControlDeps = {}
+): number[] {
+  const readFile = deps.readFile ?? ((path: string) => readFileSync(path, "utf-8"));
+  return settingsArgOccurrences(config.claudeArgs ?? []).flatMap((occurrence, i) =>
+    occurrence.value && readSettingsSource(occurrence.value, readFile) === null ? [i + 1] : []
+  );
+}
+
 /** A settings file tier `--setting-sources` can turn on or off. */
 type SettingSource = "user" | "project" | "local";
 
@@ -1013,7 +1164,9 @@ function readSettingsSource(
   try {
     const raw = isInlineSettings(source) ? source : readFile(source);
     const parsed = JSON.parse(raw) as unknown;
-    return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
   } catch {
     return null;
   }
@@ -1374,7 +1527,8 @@ export function cleanupStaleTokenFiles(
  * that one is the arm-predicate cutoff below which configuring a window turns
  * auto-compaction off. They are free to drift, so they get separate names.
  *
- * Used only to render an honest status line — never to set anything.
+ * Used only to render an honest status line and the /model lineup's
+ * smaller-window note — never to set anything.
  */
 export const CLAUDE_CODE_DEFAULT_MAX_CONTEXT = 200_000;
 
@@ -1434,9 +1588,12 @@ function highestTierValues(
  * Reads the settings layers Claude Code loads for this launch
  * ({@link claudeSettingsLayers}: `--setting-sources` honoured, the user file
  * under `CLAUDE_CONFIG_DIR`, the main checkout's `settings.local.json`) and takes
- * the highest of: the `--settings` value claudish merges, local, project, user.
- * A later `--settings` is forwarded verbatim, so its status line replaces the
- * chained one in the child anyway; managed settings were never consulted.
+ * the highest of: the `--settings` values claudish merges, local, project, user.
+ * `options.scope` names the merged values ({@link settingsArgScopeOf}); among
+ * several the later one in argv order wins, as in the merge. A `--settings`
+ * value the merge does not take is forwarded verbatim, so its status line
+ * replaces the chained one in the child anyway; managed settings were never
+ * consulted.
  * Only `type: "command"` can be chained — an `agent`-type or absent status line
  * has no stdout for us to append to, so those keep claudish's own line.
  *
@@ -1447,14 +1604,16 @@ function highestTierValues(
 export function discoverUserStatusLineCommand(
   claudeArgs: string[] = [],
   cwd: string = process.cwd(),
-  env: NodeJS.ProcessEnv = process.env,
-  deps: ChildAuthControlDeps = {}
+  options: SettingsDiscoveryOptions = {}
 ): string | null {
   try {
-    const layers = claudeSettingsLayers(claudeArgs, env, { ...deps, cwd }).filter(
-      (layer) => !layer.droppedByMerge && (layer.tier !== "cli" || layer.merged)
+    const layers = discoverySettingsLayers(claudeArgs, cwd, options).filter(
+      (layer) => layer.tier !== "cli" || layer.merged
     );
-    const values = highestTierValues(layers, "statusLine", ["cli", "local", "project", "user"]);
+    // Merged `--settings` values are applied in argv order, the later one winning.
+    const merged = highestTierValues(layers, "statusLine", ["cli"]);
+    if (merged) return chainableCommandOf(merged.at(-1));
+    const values = highestTierValues(layers, "statusLine", ["local", "project", "user"]);
     if (!values) return null;
     const commands = values.map(chainableCommandOf);
     return commands.every((command) => command === commands[0]) ? commands[0] : null;
@@ -1554,7 +1713,8 @@ export function createTempSettingsFile(
   _modelDisplay: string,
   port: string,
   proxyAuthMode: boolean,
-  userStatusLineCommand?: string | null
+  userStatusLineCommand?: string | null,
+  modelPicker?: ModelPickerValue
 ): {
   path: string;
   statusLine: { type: string; command: string; padding: number };
@@ -1733,7 +1893,12 @@ export function createTempSettingsFile(
   // outright, which removes the warning. (Verified: setting this suppresses the
   // message; users can still override via their own --settings, which is merged
   // on top of this temp file.)
-  const settings = buildClaudishSettingsOverlay(statusLine, proxyAuthMode);
+  const settings = buildClaudishSettingsOverlay(
+    statusLine,
+    proxyAuthMode,
+    isPaneChild(),
+    modelPicker
+  );
 
   // 0600: mergeUserSettingsIfPresent later writes the caller's --settings into this
   // file, and that layer can carry settings.local.json `env` secrets (mcp-sessions.md,
@@ -1816,6 +1981,12 @@ export function scrubChildEnv(
  *   `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN` still outranks the setting (measured order in
  *   Claude Code 2.1.319). Interactive use outside a pane keeps the user's value.
  *
+ * - `modelPicker` is added ONLY on a launch with a /model lineup: the user's own
+ *   rows and the listed providers' models, set last. Claude Code takes the whole
+ *   value from the highest layer that sets it (no merge), so this one replaces
+ *   any lower layer's, `replaceBuiltInOptions` included: the value never carries
+ *   that key, so Claude's own rows stay.
+ *
  * Claude Code merges settings sources per key, so every other key of the user's
  * settings files still applies; this overlay only wins on the keys it sets.
  *
@@ -1824,7 +1995,8 @@ export function scrubChildEnv(
 export function buildClaudishSettingsOverlay(
   statusLine: { type: string; command: string; padding: number },
   proxyAuthMode: boolean,
-  paneChild: boolean = isPaneChild()
+  paneChild: boolean = isPaneChild(),
+  modelPicker?: ModelPickerValue
 ): Record<string, unknown> {
   const settings: Record<string, unknown> = { statusLine, disableClaudeAiConnectors: true };
   if (proxyAuthMode) {
@@ -1836,7 +2008,67 @@ export function buildClaudishSettingsOverlay(
     settings.wheelScrollAccelerationEnabled = false;
     settings.tui = "fullscreen";
   }
+  if (modelPicker) settings.modelPicker = modelPicker;
   return settings;
+}
+
+/**
+ * The keys claudish sets in a merged `--settings` value: its status line, and the
+ * defaults and pane-child keys {@link buildClaudishSettingsOverlay} sets. Mutates
+ * `userSettings`.
+ */
+function applyClaudishSettingsKeys(
+  userSettings: Record<string, unknown>,
+  statusLine: { type: string; command: string; padding: number },
+  proxyAuthMode: boolean,
+  paneChild: boolean
+): void {
+  // Install the claudish statusLine. This replaces any statusLine the user's
+  // --settings carried — but it is not a loss: discoverUserStatusLineCommand()
+  // already read that same value (it is the top precedence tier it consults),
+  // so when it is a `type: "command"` line the statusLine being installed here
+  // is the CHAINED one that runs the user's command first.
+  userSettings.statusLine = statusLine;
+
+  // Default claude.ai connectors off (suppresses the proxy-mode warning) —
+  // but let the user override it if they explicitly set the field.
+  if (!("disableClaudeAiConnectors" in userSettings)) {
+    userSettings.disableClaudeAiConnectors = true;
+  }
+
+  // In proxy mode, force the console login method so the placeholder-API-key session
+  // isn't blocked by a claude.ai-forcing user/project/local setting — unless the user's
+  // own --settings explicitly sets forceLoginMethod, in which case respect their choice.
+  if (proxyAuthMode && !("forceLoginMethod" in userSettings)) {
+    userSettings.forceLoginMethod = "console";
+  }
+
+  // In an MCP pane child, suppress the dangerous-mode confirmation (see
+  // buildClaudishSettingsOverlay) unless the caller's --settings decides it.
+  if (paneChild && !("skipDangerousModePermissionPrompt" in userSettings)) {
+    userSettings.skipDangerousModePermissionPrompt = true;
+  }
+
+  // In an MCP pane child, keep the REPL box out of vim mode so the submit Enter
+  // reaches it (see buildClaudishSettingsOverlay). Forced over the caller's
+  // --settings: a pane child in vim mode cannot accept a prompt at all.
+  if (paneChild) {
+    userSettings.editorMode = "normal";
+  }
+
+  // In an MCP pane child, one wheel event must move one row, or scroll_session's
+  // row count ramps (see buildClaudishSettingsOverlay). Forced over the caller's
+  // --settings, like editorMode.
+  if (paneChild) {
+    userSettings.wheelScrollAccelerationEnabled = false;
+  }
+
+  // In an MCP pane child, run the fullscreen view, the only one that handles
+  // scroll_session's wheel events (see buildClaudishSettingsOverlay). Forced over
+  // the caller's --settings, like editorMode.
+  if (paneChild) {
+    userSettings.tui = "fullscreen";
+  }
 }
 
 /**
@@ -1850,14 +2082,29 @@ export function buildClaudishSettingsOverlay(
  *
  * Mutates: config.claudeArgs (removes --settings and path if found)
  * Mutates: tempSettingsPath file content (replaces with merged JSON)
+ *
+ * On a launch with a /model lineup (`modelPicker` given) EVERY passthrough
+ * `--settings` occurrence is merged instead, see {@link mergeEverySettingsArg}.
  */
 export function mergeUserSettingsIfPresent(
   config: ClaudishConfig,
   tempSettingsPath: string,
   statusLine: { type: string; command: string; padding: number },
   proxyAuthMode: boolean,
-  paneChild: boolean = isPaneChild()
+  paneChild: boolean = isPaneChild(),
+  modelPicker?: ModelPickerValue
 ): void {
+  if (modelPicker) {
+    mergeEverySettingsArg(
+      config,
+      tempSettingsPath,
+      statusLine,
+      proxyAuthMode,
+      paneChild,
+      modelPicker
+    );
+    return;
+  }
   const idx = config.claudeArgs.indexOf("--settings");
   if (idx === -1 || !config.claudeArgs[idx + 1]) {
     // No --settings in passthrough args; nothing to merge.
@@ -1870,52 +2117,7 @@ export function mergeUserSettingsIfPresent(
     // Claude Code accepts --settings as either a file path or an inline JSON string.
     const userSettings = parseSettingsArg(userSettingsValue);
 
-    // Install the claudish statusLine. This replaces any statusLine the user's
-    // --settings carried — but it is not a loss: discoverUserStatusLineCommand()
-    // already read that same value (it is the top precedence tier it consults),
-    // so when it is a `type: "command"` line the statusLine being installed here
-    // is the CHAINED one that runs the user's command first.
-    userSettings.statusLine = statusLine;
-
-    // Default claude.ai connectors off (suppresses the proxy-mode warning) —
-    // but let the user override it if they explicitly set the field.
-    if (!("disableClaudeAiConnectors" in userSettings)) {
-      userSettings.disableClaudeAiConnectors = true;
-    }
-
-    // In proxy mode, force the console login method so the placeholder-API-key session
-    // isn't blocked by a claude.ai-forcing user/project/local setting — unless the user's
-    // own --settings explicitly sets forceLoginMethod, in which case respect their choice.
-    if (proxyAuthMode && !("forceLoginMethod" in userSettings)) {
-      userSettings.forceLoginMethod = "console";
-    }
-
-    // In an MCP pane child, suppress the dangerous-mode confirmation (see
-    // buildClaudishSettingsOverlay) unless the caller's --settings decides it.
-    if (paneChild && !("skipDangerousModePermissionPrompt" in userSettings)) {
-      userSettings.skipDangerousModePermissionPrompt = true;
-    }
-
-    // In an MCP pane child, keep the REPL box out of vim mode so the submit Enter
-    // reaches it (see buildClaudishSettingsOverlay). Forced over the caller's
-    // --settings: a pane child in vim mode cannot accept a prompt at all.
-    if (paneChild) {
-      userSettings.editorMode = "normal";
-    }
-
-    // In an MCP pane child, one wheel event must move one row, or scroll_session's
-    // row count ramps (see buildClaudishSettingsOverlay). Forced over the caller's
-    // --settings, like editorMode.
-    if (paneChild) {
-      userSettings.wheelScrollAccelerationEnabled = false;
-    }
-
-    // In an MCP pane child, run the fullscreen view, the only one that handles
-    // scroll_session's wheel events (see buildClaudishSettingsOverlay). Forced over
-    // the caller's --settings, like editorMode.
-    if (paneChild) {
-      userSettings.tui = "fullscreen";
-    }
+    applyClaudishSettingsKeys(userSettings, statusLine, proxyAuthMode, paneChild);
 
     // Overwrite the temp settings file with the merged result. It can carry the
     // caller's settings.local.json `env` secrets (mcp-sessions.md, inherited-settings
@@ -1938,6 +2140,71 @@ export function mergeUserSettingsIfPresent(
   // contains the merged result), or the user's settings were invalid (let the temp file win
   // rather than passing an unreadable path to Claude Code for a second error).
   config.claudeArgs.splice(idx, 2);
+}
+
+/**
+ * The merge on a launch with a /model lineup. Claude Code would receive any
+ * `--settings` left in the passthrough args after claudish's own, and which of
+ * two values it applies is unmeasured, so a user value could replace the
+ * lineup's `modelPicker`. So EVERY occurrence, in either spelling, is merged
+ * here in argv order (a later occurrence's key replaces an earlier one's), the
+ * claudish keys are applied, `modelPicker` is set last, the one file is
+ * written, and every occurrence is spliced out: Claude Code receives exactly one
+ * `--settings`, claudish's. An occurrence claudish cannot read refuses the
+ * launch earlier (`decideModelListings`); one that fails here anyway is dropped
+ * with a warning naming its occurrence, never its value.
+ */
+function mergeEverySettingsArg(
+  config: ClaudishConfig,
+  tempSettingsPath: string,
+  statusLine: { type: string; command: string; padding: number },
+  proxyAuthMode: boolean,
+  paneChild: boolean,
+  modelPicker: ModelPickerValue
+): void {
+  const occurrences = settingsArgOccurrences(config.claudeArgs);
+  // No --settings: the overlay already carries the claudish keys and modelPicker.
+  if (occurrences.length === 0) return;
+
+  const merged: Record<string, unknown> = {};
+  let mergedAny = false;
+  occurrences.forEach((occurrence, i) => {
+    if (!occurrence.value) return;
+    const label = occurrences.length > 1 ? `--settings (occurrence ${i + 1})` : "--settings";
+    // The parser the settings layers use, so the merge and the discoveries agree on what is readable.
+    const parsed = readSettingsSource(occurrence.value, (path) => readFileSync(path, "utf-8"));
+    if (parsed === null) {
+      if (!config.quiet)
+        console.warn(`[claudish] Warning: could not merge user settings: ${label}`);
+      return;
+    }
+    Object.assign(merged, parsed);
+    mergedAny = true;
+  });
+
+  if (mergedAny) {
+    applyClaudishSettingsKeys(merged, statusLine, proxyAuthMode, paneChild);
+    merged.modelPicker = modelPicker;
+    try {
+      // 0600 for the same reason as the single-value merge: the caller's settings
+      // can carry `env` secrets.
+      chmodSync(tempSettingsPath, 0o600);
+      writeFileSync(tempSettingsPath, JSON.stringify(merged, null, 2), {
+        encoding: "utf-8",
+        mode: 0o600,
+      });
+    } catch {
+      if (!config.quiet) {
+        console.warn("[claudish] Warning: could not write the merged --settings file");
+      }
+    }
+  }
+
+  // Last occurrence first, so earlier indices stay valid.
+  for (const occurrence of [...occurrences].reverse()) {
+    const width = occurrence.spelling === "separate" && occurrence.value !== undefined ? 2 : 1;
+    config.claudeArgs.splice(occurrence.index, width);
+  }
 }
 
 /**
@@ -2274,8 +2541,8 @@ export interface AdvisorModelArg {
  *
  * Inside the command-line tier the child applies its `--settings` values in
  * argv order, the later one winning: claudish's own file (holding the merged
- * first two-token value) comes first, then every forwarded value in the order
- * given. So the value of the last of them that names the key is the one
+ * values, `options.scope` naming which) comes first, then every forwarded value
+ * in the order given. So the value of the last of them that names the key is the one
  * returned, and a later empty value clears an earlier model. When two layers of
  * another tier disagree (the main checkout's and the working directory's
  * `settings.local.json`, whose order is not measured), any value they name is
@@ -2288,13 +2555,10 @@ export interface AdvisorModelArg {
 export function discoverUserAdvisorModel(
   claudeArgs: string[] = [],
   cwd: string = process.cwd(),
-  env: NodeJS.ProcessEnv = process.env,
-  deps: ChildAuthControlDeps = {}
+  options: SettingsDiscoveryOptions = {}
 ): string | undefined {
   try {
-    const layers = claudeSettingsLayers(claudeArgs, env, { ...deps, cwd }).filter(
-      (layer) => !layer.droppedByMerge
-    );
+    const layers = discoverySettingsLayers(claudeArgs, cwd, options);
     const asModel = (value: unknown): string | undefined =>
       typeof value === "string" && value !== "" ? value : undefined;
     for (const tier of SETTINGS_TIER_ORDER) {
@@ -2344,7 +2608,9 @@ export function resolveAdvisorModelArg(
 ): AdvisorModelArg {
   if (!config.advisor) return { args: [], source: "off" };
 
-  const userChoice = discoverUserAdvisorModel(config.claudeArgs, cwd);
+  const userChoice = discoverUserAdvisorModel(config.claudeArgs, cwd, {
+    scope: settingsArgScopeOf(config),
+  });
   if (userChoice) return { args: [], model: userChoice, source: "inherited" };
 
   return {
@@ -2445,24 +2711,96 @@ export function relayChildStderr(stream: NodeJS.ReadableStream): void {
   });
 }
 
+/**
+ * The model id claudish hands Claude Code for this launch, or undefined when
+ * Claude Code picks its own. Use the actual model spec (no translation), so any
+ * model works. A profile launch with tiers and no `--model` sets none, so the
+ * proxy can match tier names (opus/sonnet/haiku) and apply its mappings; so do
+ * `--monitor` and `--advisor` with no main model, which are native sessions (the
+ * "unknown" placeholder would become ANTHROPIC_MODEL=unknown and Anthropic 400s
+ * the very first request). A launch that only lists providers starts on
+ * Claude's default model, so it sets none either.
+ */
+export function childModelIdOf(config: ClaudishConfig): string | undefined {
+  const hasProfileMappings =
+    config.modelOpus || config.modelSonnet || config.modelHaiku || config.modelSubagent;
+  return (
+    config.model ||
+    (hasProfileMappings ||
+    config.monitor ||
+    isAdvisorNativeSession(config) ||
+    startsOnClaudeSubscription(config)
+      ? undefined
+      : "unknown")
+  );
+}
+
+/**
+ * The model variables claudish sets in this launch's Claude Code child: the
+ * launch model as `ANTHROPIC_MODEL` and `ANTHROPIC_SMALL_FAST_MODEL`, the id a
+ * Claude launch gives Claude Code (`claudeLaunchModel`) on a monitor session.
+ *
+ * A launch with listing entries sets no `ANTHROPIC_SMALL_FAST_MODEL`: Claude
+ * Code's background requests then follow the model picked in `/model` instead
+ * of staying on the start model.
+ */
+export function childModelVarsFor(
+  config: ClaudishConfig
+): Partial<Record<"ANTHROPIC_MODEL" | "ANTHROPIC_SMALL_FAST_MODEL", string>> {
+  const modelId = childModelIdOf(config);
+  const id =
+    config.monitor || isAdvisorNativeSession(config)
+      ? (config.claudeLaunchModel ?? modelId)
+      : modelId;
+  if (!id) return {};
+  if ((config.modelListings?.length ?? 0) > 0) return { ANTHROPIC_MODEL: id };
+  return { ANTHROPIC_MODEL: id, ANTHROPIC_SMALL_FAST_MODEL: id };
+}
+
+/**
+ * True when the launch's Claude Code child keeps the user's own Claude login:
+ * not a proxy-auth launch, and not the Claude API launch (whose child holds
+ * only claudish's placeholder token).
+ */
+export function childKeepsLogin(config: ClaudishConfig): boolean {
+  return !isProxyAuthMode(config) && config.claudeLaunch !== "api";
+}
+
+/**
+ * Remove from `env` the inherited model variables this launch does not set
+ * itself (`scrubInheritedModelVars`), and return what was removed and what
+ * stays. Mutates `env`; pass a copy to preview the child's result.
+ */
+export function scrubChildModelVars(
+  config: ClaudishConfig,
+  env: Record<string, string | undefined>
+): ModelVarsScrub {
+  const set = childModelVarsFor(config);
+  return scrubInheritedModelVars(
+    env,
+    { model: Boolean(set.ANTHROPIC_MODEL), smallFast: Boolean(set.ANTHROPIC_SMALL_FAST_MODEL) },
+    { keepsLogin: childKeepsLogin(config) }
+  );
+}
+
+/** What the caller runs at fixed points of one Claude Code launch. */
+export interface RunHooks {
+  /** Awaited once, after the temp settings path is in Claude Code's argv and before spawn. Never rejects. */
+  beforeSpawn?(settingsPath: string): Promise<void>;
+  /** Called once, synchronously, right after Claude Code (or the magmux wrap) is spawned. */
+  onChildSpawned?(pid: number): void;
+  /** Called by a signal shutdown's deadline only, before `onCleanup` and `process.exit`. */
+  onDeadline?(): void;
+}
+
 export async function runClaudeWithProxy(
   config: ClaudishConfig,
   proxyUrl: string,
-  onCleanup?: () => void
+  onCleanup?: () => void,
+  hooks: RunHooks = {}
 ): Promise<number> {
-  // Use actual OpenRouter model ID (no translation)
-  // This ensures ANY model works, not just our shortlist
-  // In profile/multi-model mode, don't set a single model - let Claude Code use its defaults
-  // so the proxy can match tier names (opus/sonnet/haiku) and apply profile mappings
-  const hasProfileMappings =
-    config.modelOpus || config.modelSonnet || config.modelHaiku || config.modelSubagent;
-  // `--advisor` with no main model is a native session: Claude Code must pick its
-  // own model exactly as under --monitor. The "unknown" placeholder would become
-  // ANTHROPIC_MODEL=unknown and Anthropic 400s the very first request.
   const advisorNativeSession = isAdvisorNativeSession(config);
-  const modelId =
-    config.model ||
-    (hasProfileMappings || config.monitor || advisorNativeSession ? undefined : "unknown");
+  const modelId = childModelIdOf(config);
 
   // Extract port from proxy URL for token file path
   const portMatch = proxyUrl.match(/:(\d+)/);
@@ -2525,25 +2863,49 @@ export async function runClaudeWithProxy(
   // Chain, don't clobber: find the status line the user would otherwise have
   // seen so claudish's segment can be appended to it. Must run BEFORE
   // mergeUserSettingsIfPresent, which splices --settings out of claudeArgs.
-  const userStatusLineCommand = discoverUserStatusLineCommand(config.claudeArgs);
+  const userStatusLineCommand = discoverUserStatusLineCommand(config.claudeArgs, process.cwd(), {
+    scope: settingsArgScopeOf(config),
+  });
 
   // Same timing constraint as the status line: this reads the user's --settings
   // value, which mergeUserSettingsIfPresent splices out of claudeArgs below.
   const advisorModelArg = resolveAdvisorModelArg(config);
+
+  // ONE modelPicker value, carried by both writers of the temp settings file:
+  // the overlay, and the merge of the user's --settings that replaces it.
+  const modelPicker = config.modelLineup?.picker;
 
   // Create temporary settings file with custom status line for this instance
   const {
     path: tempSettingsPath,
     statusLine,
     tokenFilePath,
-  } = createTempSettingsFile(modelId ?? "default", port, forceConsoleLogin, userStatusLineCommand);
+  } = createTempSettingsFile(
+    modelId ?? "default",
+    port,
+    forceConsoleLogin,
+    userStatusLineCommand,
+    modelPicker
+  );
 
   // From the moment the file exists: a signal before this line would leave it behind
   // and end the process without the caller's teardown. Claude Code is attached below.
-  const signalShutdown = setupSignalHandlers(tempSettingsPath, config.quiet, onCleanup);
+  const signalShutdown = setupSignalHandlers(
+    tempSettingsPath,
+    config.quiet,
+    onCleanup,
+    hooks.onDeadline
+  );
 
   // Merge user's --settings into our temp settings file if user provided one
-  mergeUserSettingsIfPresent(config, tempSettingsPath, statusLine, forceConsoleLogin);
+  mergeUserSettingsIfPresent(
+    config,
+    tempSettingsPath,
+    statusLine,
+    forceConsoleLogin,
+    isPaneChild(),
+    modelPicker
+  );
 
   // Build claude arguments
   const claudeArgs: string[] = [];
@@ -2736,6 +3098,18 @@ export async function runClaudeWithProxy(
     env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
   }
 
+  // The model variables a parent claudish set (a nested launch, a tool shell of
+  // a claudish session) are removed where this launch does not set them itself:
+  // otherwise a launch on Claude's default model would start on the parent's
+  // model. Runs once, before the branch, so both branches get it.
+  const childModelVars = childModelVarsFor(config);
+  const inheritedModelVars = scrubChildModelVars(config, env);
+  if (inheritedModelVars.removed.length > 0) {
+    debugLog(
+      `[claude-runner] Removed inherited model variables claudish set: ${inheritedModelVars.removed.join(", ")}`
+    );
+  }
+
   // Handle API key and model based on mode
   if (config.monitor || advisorNativeSession) {
     // Monitor mode, or `--advisor` with no main model: Don't set ANTHROPIC_API_KEY
@@ -2767,12 +3141,8 @@ export async function runClaudeWithProxy(
     // Don't override ANTHROPIC_MODEL - let Claude Code use its default
     // (unless user explicitly specified a model). A Claude launch keeps the
     // user's spec in `config.model` (`claude@<id>`, `anthropic@<id>`); Claude
-    // Code is given the id it can serve.
-    const launchModelId = config.claudeLaunchModel ?? modelId;
-    if (launchModelId) {
-      env[ENV.ANTHROPIC_MODEL] = launchModelId;
-      env[ENV.ANTHROPIC_SMALL_FAST_MODEL] = launchModelId;
-    }
+    // Code is given the id it can serve (`childModelVarsFor`).
+    recordModelVars(env, childModelVars);
     if (config.claudeLaunch) {
       debugLog(claudeLaunchAuthLine(config.claudeLaunch, env, config.claudeLaunchKeySource));
     }
@@ -2781,10 +3151,7 @@ export async function runClaudeWithProxy(
     // When using profile mode (no explicit --model), DON'T override ANTHROPIC_MODEL
     // Let Claude Code use its default model names (e.g., "claude-sonnet-4-5-20250929")
     // so the proxy can match "opus"/"sonnet"/"haiku" in the model name and apply mappings
-    if (modelId) {
-      env[ENV.ANTHROPIC_MODEL] = modelId;
-      env[ENV.ANTHROPIC_SMALL_FAST_MODEL] = modelId;
-    }
+    recordModelVars(env, childModelVars);
     if (shouldPreserveNativeAuth(config)) {
       // Native Claude model, or classifier passthrough with resolvable Anthropic
       // creds — Claude Code talks to Anthropic directly for those requests,
@@ -2876,7 +3243,8 @@ export async function runClaudeWithProxy(
       // [100K, its understood window], so this can only make it compact EARLIER —
       // never overflow. Respect a user-set value; otherwise use the real
       // per-provider window from the cloud catalog (never hardcoded).
-      const realWindow = await computeMainThreadContextWindow(config);
+      // A lineup launch computed it already, for its launch report.
+      const realWindow = config.mainThreadWindow ?? (await computeMainThreadContextWindow(config));
       const contextEnv = resolveContextWindowEnv(realWindow, process.env);
       seedTokenFileWindow(resolveTokenFilePath(port), realWindow);
       Object.assign(env, contextEnv.vars);
@@ -2934,6 +3302,12 @@ export async function runClaudeWithProxy(
 
   // Find Claude binary (supports CLAUDE_PATH, local installation, and global PATH)
   const claudeBinary = await findClaudeBinary();
+
+  // The caller records the `--settings` path Claude Code is about to receive, so
+  // a process carrying it can be found even if this launcher dies before the
+  // child's pid is recorded. Before the check below, which must stay the last
+  // point a signal can stop the spawn.
+  await hooks.beforeSpawn?.(tempSettingsPath);
 
   // The last `await` before Claude Code starts, on either spawn path below, so a signal
   // handler can run only up to here. One that has run means nothing is to be started.
@@ -3103,6 +3477,13 @@ export async function runClaudeWithProxy(
         shell: needsShell,
       });
   signalShutdown.attachClaudeCode(proc);
+  if (proc.pid !== undefined) {
+    try {
+      hooks.onChildSpawned?.(proc.pid);
+    } catch (err) {
+      log(`[claudish] onChildSpawned hook failed: ${err}`);
+    }
+  }
 
   if (wrap) {
     wrap.watch(proc);
@@ -3383,7 +3764,8 @@ interface SignalShutdown {
 export function setupSignalHandlers(
   tempSettingsPath: string,
   quiet: boolean,
-  onCleanup?: () => void
+  onCleanup?: () => void,
+  onDeadline?: () => void
 ): SignalShutdown {
   // Windows only supports SIGINT and SIGTERM reliably
   // SIGHUP doesn't exist on Windows
@@ -3444,6 +3826,13 @@ export function setupSignalHandlers(
   const armDeadline = (code: number): void => {
     const deadline = setTimeout(() => {
       debugLog(`[claudish] Signal shutdown passed ${SIGNAL_SHUTDOWN_BUDGET_MS} ms; exiting`);
+      // The deadline-only hook runs first: it is the last chance this process has
+      // for work the caller's normal teardown would have done.
+      try {
+        onDeadline?.();
+      } catch {
+        // Ignore hook errors
+      }
       try {
         onCleanup?.();
       } catch {

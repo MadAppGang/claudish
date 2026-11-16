@@ -52,18 +52,14 @@ import { LIVE_MS } from "../providers/dynamic-models-catalog-store.js";
 import {
   type AccountModelsList,
   isPersistedListProvider,
+  liveOrStoredModelsCatalog,
   loadAccountModelsLists,
   onAccountModelsListChanged,
-  readAccountModelsList,
   refreshAccountModelsList,
 } from "../providers/dynamic-models-catalog.js";
 import { type CatalogClient, createCatalogClient } from "../providers/model-catalog.js";
 import { type DescriptionIndex, loadModelDescriptions } from "../providers/model-descriptions.js";
-import {
-  type ModelsCatalogOutcome,
-  discoverProviderModelsCatalog,
-  servedOutcomeOf,
-} from "../providers/model-discovery.js";
+import { type ModelsCatalogOutcome, servedOutcomeOf } from "../providers/model-discovery.js";
 import { pickerProviderReady } from "../providers/picker-readiness.js";
 import { getAllProviders, getProviderByName } from "../providers/provider-definitions.js";
 
@@ -217,27 +213,9 @@ function storedOutcome(
   return outcome.kind === "rows" ? { ...outcome, listFetchedAt: list.fetchedAt } : null;
 }
 
-/**
- * The live leg for a provider that keeps a stored list: the account-bound
- * refresh, so the answer is written through for the next process. A list
- * younger than `LIVE_MS` is already the live answer and is read, not fetched.
- * With no credential the plain discovery runs, because its failure is the
- * notice that names the missing credential.
- */
-async function liveAccountModelsCatalog(provider: string): Promise<ModelsCatalogOutcome> {
-  const result = await refreshAccountModelsList(provider, "picker-provider", {
-    minAgeMs: LIVE_MS,
-  });
-  if (result.kind === "refreshed") {
-    return result.outcome.kind === "served"
-      ? servedOutcomeOf(result.outcome.models)
-      : result.outcome;
-  }
-  if (result.reason === "too-recent") {
-    const list = await readAccountModelsList(provider);
-    if (list) return servedOutcomeOf(list.models);
-  }
-  return discoverProviderModelsCatalog(provider);
+/** The picker's live leg for a provider that keeps a stored list (`liveOrStoredModelsCatalog`). */
+function pickerLiveModelsCatalog(provider: string): Promise<ModelsCatalogOutcome> {
+  return liveOrStoredModelsCatalog(provider, "picker-provider");
 }
 
 /**
@@ -378,7 +356,7 @@ export function createPickerDataSource(): PickerDataSource {
         provider,
         names.get(provider) ?? provider,
         catalog,
-        isPersistedListProvider(provider) ? liveAccountModelsCatalog : undefined
+        isPersistedListProvider(provider) ? pickerLiveModelsCatalog : undefined
       );
     },
 

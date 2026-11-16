@@ -22,6 +22,11 @@ Claudish:
 
 No interaction. No model selector. Just results.
 
+A listing entry (`--model devin@`, a shortcut with no model) fills `/model` in an interactive
+session. Single-shot mode accepts it but fetches no list; the session starts on the last full
+model spec, or on Claude's default model when there is none. See
+[Listing providers' models in `/model`](../settings-reference.md#522-listing-providers-models-in-claude-codes-model).
+
 ---
 
 ## When to Use This
