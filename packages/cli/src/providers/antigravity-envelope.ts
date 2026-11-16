@@ -49,6 +49,8 @@ export interface AntigravityConversation {
  */
 export class AntigravityConversations {
   private readonly byFirstMessage = new Map<string, AntigravityConversation>();
+  /** Trajectories created and not yet handed out by `takeNewTrajectories`. */
+  private readonly newTrajectories = new Set<string>();
   /** One id for the process, as `agy` keeps one across the requests of a run. */
   readonly sessionId: string;
 
@@ -72,11 +74,19 @@ export class AntigravityConversations {
     }
     const created = { cascadeId: this.newId(), trajectoryId: this.newId(), requestCount: 0 };
     this.byFirstMessage.set(key, created);
+    this.newTrajectories.add(created.trajectoryId);
     if (this.byFirstMessage.size > this.limit) {
       const oldest = this.byFirstMessage.keys().next().value;
       if (oldest !== undefined) this.byFirstMessage.delete(oldest);
     }
     return created;
+  }
+
+  /** The trajectories created since the last call, each handed out once. */
+  takeNewTrajectories(): string[] {
+    const ids = [...this.newTrajectories];
+    this.newTrajectories.clear();
+    return ids;
   }
 }
 

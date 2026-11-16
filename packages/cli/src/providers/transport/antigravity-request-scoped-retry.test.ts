@@ -9,6 +9,7 @@ import { GeminiRequestQueue } from "../../handlers/shared/gemini-queue.js";
 import * as logger from "../../logger.js";
 import * as allModelsCache from "../all-models-cache.js";
 import type { DiskCacheV3 } from "../all-models-cache.js";
+import { antigravityConversations } from "../antigravity-envelope.js";
 import { _resetCatalogClient, _setCatalogEntriesForTest } from "../catalog-client.js";
 import * as dynamicModelsCatalog from "../dynamic-models-catalog.js";
 import { invalidateModelDiscovery } from "../model-discovery.js";
@@ -207,6 +208,48 @@ function transformIn(transport: AntigravityProviderTransport, session: string, t
     }
   ) as Envelope;
 }
+
+describe("a new Antigravity conversation writes its access record first", () => {
+  async function record(failAcl = false) {
+    const { transport } = await setupTransport();
+    const endpoint = transport.getEndpoint();
+    const headers = await transport.getHeaders();
+    antigravityConversations.takeNewTrajectories();
+    const seen: Array<{ url: string; body: string }> = [];
+    globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      seen.push({ url, body: String(init?.body) });
+      if (failAcl && url.endsWith(":writeTrajectoryAcls")) throw new Error("socket closed");
+      return new Response("ok", { status: 200 });
+    }) as typeof fetch;
+    const sendVia = (envelope: Envelope) =>
+      transport.fetch(endpoint, { method: "POST", headers, body: JSON.stringify(envelope) });
+    return { transport, endpoint, seen, sendVia };
+  }
+
+  test("once, with the conversation's trajectory id, before its first generation request", async () => {
+    const { transport, endpoint, seen, sendVia } = await record();
+    const first = transformIn(transport, "acl-session", "acl-opening");
+    await sendVia(first);
+    await sendVia(transformIn(transport, "acl-session", "acl-opening"));
+
+    expect(seen.map((entry) => entry.url)).toEqual([
+      endpoint.replace(/:streamGenerateContent.*$/, ":writeTrajectoryAcls"),
+      endpoint,
+      endpoint,
+    ]);
+    expect(JSON.parse(seen[0]!.body)).toEqual({ trajectoryId: labelsOf(first).trajectory_id });
+  });
+
+  test("a failed write does not hold back the generation request", async () => {
+    const { transport, endpoint, seen, sendVia } = await record(true);
+    const response = await sendVia(transformIn(transport, "acl-session-2", "acl-opening"));
+
+    expect(response.status).toBe(200);
+    expect(seen.map((entry) => entry.url).at(-1)).toBe(endpoint);
+    expect(seen).toHaveLength(2);
+  });
+});
 
 describe("Antigravity conversation ids follow the Claude Code session", () => {
   test("the same opening in two sessions gets two conversations; a later request of one session keeps its own", async () => {

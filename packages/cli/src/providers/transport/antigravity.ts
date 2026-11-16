@@ -30,6 +30,10 @@
 
 import { type EffortLevel, isEffortLevel } from "../../adapters/base-api-format.js";
 import {
+  antigravityTrajectoryAclCall,
+  sendAntigravitySideCall,
+} from "../../auth/antigravity-side-calls.js";
+import {
   forceRefreshAntigravityToken,
   getValidAntigravityAccessToken,
 } from "../../auth/antigravity-token.js";
@@ -258,6 +262,9 @@ interface AntigravityRequestState {
   activeModelName?: string;
 }
 
+/** How long the access write of a new conversation may hold its first request. */
+const TRAJECTORY_ACL_TIMEOUT_MS = 3_000;
+
 export class AntigravityProviderTransport implements ProviderTransport {
   readonly name = "antigravity";
   private _displayName = "Antigravity";
@@ -267,8 +274,34 @@ export class AntigravityProviderTransport implements ProviderTransport {
   readonly streamFormat: StreamFormat = "gemini-sse";
 
   /** Requests go out with the Antigravity CLI's request head, which `fetch` cannot write. */
-  fetch(url: string, init: RequestInit): Promise<Response> {
+  async fetch(url: string, init: RequestInit): Promise<Response> {
+    await this.writeNewTrajectoryAcls(url, init);
     return antigravityFetch(url, init);
+  }
+
+  /**
+   * Before a conversation's first generation request the Antigravity CLI
+   * writes its trajectory's access record. Sent with the request's own
+   * bearer; a failure is logged and the generation request goes out anyway.
+   */
+  private async writeNewTrajectoryAcls(url: string, init: RequestInit): Promise<void> {
+    if (!url.includes("GenerateContent")) return;
+    const trajectories = antigravityConversations.takeNewTrajectories();
+    if (trajectories.length === 0) return;
+    const headers = new Headers(init.headers as ConstructorParameters<typeof Headers>[0]);
+    const bearer = headers.get("authorization")?.replace(/^Bearer\s+/i, "");
+    if (!bearer) return;
+    const account = {
+      apiBase: `${antigravityHost()}/v1internal`,
+      userAgent: buildAntigravityUserAgent(),
+    };
+    for (const trajectoryId of trajectories) {
+      await sendAntigravitySideCall(
+        antigravityTrajectoryAclCall(account, trajectoryId),
+        bearer,
+        TRAJECTORY_ACL_TIMEOUT_MS
+      );
+    }
   }
 
   /** The user-supplied model id (for messages + the credential ctx). */
