@@ -57,6 +57,7 @@ else
 fi
 note "launch: build $build sha256 $(shasum -a 256 "$build" | cut -d' ' -f1)"
 note "launch: cwd $(pwd)"
+note "launch: claude version $(claude --version 2>&1 | head -1)"
 if [ ! -e logs ]; then
   ln -s "$live/debug" logs
   note "launch: ./logs -> $live/debug"

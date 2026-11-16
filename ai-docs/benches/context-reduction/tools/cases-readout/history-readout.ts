@@ -254,6 +254,12 @@ for (const arg of process.argv.slice(2)) {
     `swaps=${swaps.length} decisions=${decisions.length} (swap ${decisions.filter((d) => d.action === "swap").length}, hold ${decisions.filter((d) => d.action === "hold").length}) ` +
       `haiku_calls=${haiku.length} ${haiku.reduce((s, h) => s + h.in, 0)} in / ${haiku.reduce((s, h) => s + h.out, 0)} out`,
   );
+  // The launch log sits two folders above the claudish log (<launch>/debug/x.log).
+  const launchLog = logPath.split("/").slice(0, -2).concat("launch.log").join("/");
+  const launchText = (await Bun.file(launchLog).exists()) ? await Bun.file(launchLog).text() : "";
+  const ccVersion = launchText.match(/launch: claude version (.*)/)?.[1] ?? "not recorded";
+  const hookLine = launchText.match(/agent-env: hook .*/)?.[0] ?? "no hook line";
+  console.log(`claude_code=${ccVersion} | ${hookLine}`);
   if (Object.keys(hops).length || fallbacks.length) {
     const oa = reqs.filter((q) => q.host !== undefined && q.input !== undefined);
     const cached = oa.filter((q) => q.cachedReported).length;
