@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { claudeCodeSecureStorageServices } from "./claude-code-facts.js";
-import { claudeCodeStartupCredential, keychainLoginPresent } from "./claude-code-login.js";
+import {
+  claudeCodeStartupCredential,
+  hasClaudeCodeLogin,
+  keychainLoginPresent,
+} from "./claude-code-login.js";
 
 /** Runs the startup check over no files and records every Keychain service it asks about. */
 function probed(env: NodeJS.ProcessEnv): string[] {
@@ -74,5 +78,19 @@ describe("the picker's Keychain login probe asks the launch check's services", (
     const [service] = claudeCodeSecureStorageServices("-credentials", env);
     expect(keychainLoginPresent(env, (s) => (s === service ? "found" : "absent"))).toBe(true);
     expect(keychainLoginPresent(env, () => "absent")).toBe(false);
+  });
+});
+
+describe("hasClaudeCodeLogin reads the login file from Claude Code's config directory", () => {
+  // REGRESSION: an empty CLAUDE_CONFIG_DIR looked for .credentials.json under ~/.claude, not under cwd
+  test("an empty CLAUDE_CONFIG_DIR finds the login file in the given working directory", () => {
+    expect(
+      hasClaudeCodeLogin({
+        env: { HOME: "/h", CLAUDE_CONFIG_DIR: "" },
+        cwd: "/w",
+        fileExists: (path) => path === "/w/.credentials.json",
+        keychainProbe: () => false,
+      })
+    ).toBe(true);
   });
 });

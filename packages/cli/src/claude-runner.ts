@@ -19,6 +19,7 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { isatty } from "node:tty";
 import { lookupModelForProvider } from "./adapters/model-catalog.js";
+import { claudeCodeConfigDir } from "./auth/claude-code-facts.js";
 import {
   type ClaudeCodeLoginDeps,
   type KeychainCredentialProbe,
@@ -744,11 +745,13 @@ function claudeSettingsLayers(
  * against `cwd`: `""` loads `<cwd>/settings.json`, and `"<cfg> "` loads
  * `<cfg> /settings.json` (`resolve` keeps the space). The directory is
  * NFC-normalized first, as the binary does, so a decomposed `cafe\u0301` reads
- * the composed `caf\u00e9` path.
+ * the composed `caf\u00e9` path. The directory is {@link claudeCodeConfigDir}'s.
  */
 function userSettingsFile(configDir: string | undefined, home: string, cwd: string): string {
-  const dir = (configDir ?? join(home, ".claude")).normalize("NFC");
-  return join(resolve(cwd, dir), "settings.json");
+  return join(
+    claudeCodeConfigDir({ CLAUDE_CONFIG_DIR: configDir, HOME: home }, cwd),
+    "settings.json"
+  );
 }
 
 /**
