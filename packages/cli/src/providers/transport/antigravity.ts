@@ -65,6 +65,7 @@ import {
 import { type ModelIdChoice, logModelIdChoice } from "../model-id-effort-choice.js";
 import { wireChoicesFromClaudeRequest } from "../wire-request.js";
 import { antigravityFetch } from "./antigravity-fetch.js";
+import { conversationKey } from "./conversation-key.js";
 import type { DiscoveryOutcome } from "./probe-discovery.js";
 import { discoverProviderProbeModel } from "./provider-model-discovery.js";
 import type { ProviderTransport, StreamFormat } from "./types.js";
@@ -251,6 +252,8 @@ interface AntigravityRequestState {
   sentId: string;
   /** What decided that id; names the level and source on each retry's line. */
   choice: ModelIdChoice | undefined;
+  /** The harness session the request belongs to, for the envelope's conversation ids. */
+  conversationScope: string;
   /** The capacity-retry id that served this request, when one did. */
   activeModelName?: string;
 }
@@ -502,11 +505,13 @@ export class AntigravityProviderTransport implements ProviderTransport {
    */
   transformPayload(payload: any, claudeRequest?: any): any {
     let choice: ModelIdChoice | undefined;
+    const conversationScope = conversationKey(claudeRequest);
     const request = {
       effort: effortOf(claudeRequest, this.pinnedEffort),
       onModelChoice: (decided: ModelIdChoice) => {
         choice = decided;
       },
+      conversationScope,
     };
     // PRIMARY request: the CodeAssist envelope comes from the delegated auth
     // artifact (which maps the model id). Fall back to the local builder if
@@ -517,7 +522,12 @@ export class AntigravityProviderTransport implements ProviderTransport {
     if (typeof envelope?.model === "string" && envelope.model) {
       this.servedModelName = envelope.model;
     }
-    const state: AntigravityRequestState = { payload, sentId: this.servedModelName, choice };
+    const state: AntigravityRequestState = {
+      payload,
+      sentId: this.servedModelName,
+      choice,
+      conversationScope,
+    };
     if (envelope && typeof envelope === "object") this.requests.set(envelope, state);
     this.lastRequest = envelope ? state : undefined;
     if (choice) logModelIdChoice("Antigravity", this.modelName, choice);
@@ -530,26 +540,31 @@ export class AntigravityProviderTransport implements ProviderTransport {
    */
   private buildLocalEnvelope(
     payload: unknown,
-    request: { effort?: EffortLevel; onModelChoice?: (choice: ModelIdChoice) => void }
+    request: {
+      effort?: EffortLevel;
+      onModelChoice?: (choice: ModelIdChoice) => void;
+      conversationScope?: string;
+    }
   ) {
     const choice = chooseAntigravityServedModel(this.modelName, this.served, request.effort);
     request.onModelChoice?.(choice);
     return this.buildEnvelope(
       antigravityBodyForModelId(payload, choice.id, this.modelMeta[choice.id]?.thinkingLevel),
-      choice.id
+      choice.id,
+      request.conversationScope
     );
   }
 
   /**
    * Build the CodeAssist envelope for a given (already-served) model name.
    */
-  private buildEnvelope(innerPayload: any, model: string): any {
+  private buildEnvelope(innerPayload: any, model: string, conversationScope?: string): any {
     return buildAntigravityEnvelope({
       inner: innerPayload,
       model,
       projectId: this.projectId,
       meta: this.modelMeta[model],
-      conversation: antigravityConversations.of(innerPayload),
+      conversation: antigravityConversations.of(innerPayload, conversationScope),
       sessionId: antigravityConversations.sessionId,
     });
   }
@@ -714,7 +729,8 @@ export class AntigravityProviderTransport implements ProviderTransport {
           fallbackModel,
           this.modelMeta[fallbackModel]?.thinkingLevel
         ),
-        fallbackModel
+        fallbackModel,
+        request.conversationScope
       );
       const headers = this.buildLocalHeaders();
       headers["Content-Type"] = "application/json";

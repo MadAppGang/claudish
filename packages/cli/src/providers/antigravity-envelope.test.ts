@@ -1,4 +1,14 @@
 import { describe, expect, test } from "bun:test";
+
+test("two sessions that open with the same words are two conversations", () => {
+  let n = 0;
+  const conversations = new AntigravityConversations(8, () => `id-${n++}`, "s");
+  const inner = { contents: [{ role: "user", parts: [{ text: "hi" }] }] };
+  const first = conversations.of(inner, "session-a");
+  expect(conversations.of(inner, "session-a")).toBe(first);
+  expect(conversations.of(inner, "session-b")).not.toBe(first);
+  expect(conversations.of(inner, "session-b").cascadeId).not.toBe(first.cascadeId);
+});
 import {
   AntigravityConversations,
   buildAntigravityEnvelope,

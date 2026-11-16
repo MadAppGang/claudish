@@ -40,10 +40,12 @@ export interface AntigravityConversation {
 }
 
 /**
- * The conversations of one process, found by their first message. A request
- * carries the whole history, so the first content entry is the same on every
- * request of one conversation and differs between conversations (a subagent
- * opens with its own task). Bounded: the oldest conversation is dropped first.
+ * The conversations of one process, found by the harness session they belong
+ * to (`scope`) and their first message. A request carries the whole history, so
+ * the first content entry is the same on every request of one conversation and
+ * differs between the conversations of one session (a subagent opens with its
+ * own task); the scope keeps two sessions that open with the same words apart.
+ * Bounded: the oldest conversation is dropped first.
  */
 export class AntigravityConversations {
   private readonly byFirstMessage = new Map<string, AntigravityConversation>();
@@ -59,8 +61,8 @@ export class AntigravityConversations {
   }
 
   /** The conversation `inner` belongs to, created on its first request. */
-  of(inner: unknown): AntigravityConversation {
-    const key = firstMessageKey(inner);
+  of(inner: unknown, scope = ""): AntigravityConversation {
+    const key = `${scope}\n${firstMessageKey(inner)}`;
     const known = this.byFirstMessage.get(key);
     if (known) {
       // Re-insert so the map's order is least recently used first.

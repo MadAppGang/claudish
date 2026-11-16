@@ -111,7 +111,11 @@ export class AntigravityCredentialProvider implements CredentialProvider {
       },
       transformPayload: (
         inner: any,
-        request?: { effort?: EffortLevel; onModelChoice?: (choice: ModelIdChoice) => void }
+        request?: {
+          effort?: EffortLevel;
+          onModelChoice?: (choice: ModelIdChoice) => void;
+          conversationScope?: string;
+        }
       ) => {
         const choice = chooseAntigravityServedModel(ctx.model, served, request?.effort);
         request?.onModelChoice?.(choice);
@@ -123,7 +127,7 @@ export class AntigravityCredentialProvider implements CredentialProvider {
           model,
           projectId,
           meta: served.meta?.[model],
-          conversation: antigravityConversations.of(inner),
+          conversation: antigravityConversations.of(inner, request?.conversationScope),
           sessionId: antigravityConversations.sessionId,
         });
       },
