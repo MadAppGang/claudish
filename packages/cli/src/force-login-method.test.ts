@@ -410,6 +410,49 @@ describe("shouldHideIncidentalAnthropicKey", () => {
     ).toBe(false);
   });
 
+  // Presence of a Claude Code login, injected: the real Keychain and ~/.claude are never read.
+  const loginPresent = {
+    env: {},
+    fileExists: (path: string) => path.endsWith(".credentials.json"),
+    keychainProbe: () => false,
+  };
+  const loginAbsent = { env: {}, fileExists: () => false, keychainProbe: () => false };
+  const classifierOnly = () =>
+    baseConfig({ model: "x-ai/grok-code-fast-1", classifierProvider: "anthropic" });
+
+  // REGRESSION: a shell ANTHROPIC_API_KEY stayed in Claude Code's environment on a classifier-only launch with a Claude login present
+  test("classifier-only passthrough + API key + Claude login present → true", () => {
+    expect(shouldHideIncidentalAnthropicKey(classifierOnly(), apiKeyEnv, loginPresent)).toBe(true);
+  });
+
+  test("classifier-only passthrough + API key + no Claude login → false", () => {
+    expect(shouldHideIncidentalAnthropicKey(classifierOnly(), apiKeyEnv, loginAbsent)).toBe(false);
+  });
+
+  test("classifier-only passthrough + API key + login + API billing opt-in → false", () => {
+    expect(
+      shouldHideIncidentalAnthropicKey(
+        baseConfig({
+          model: "x-ai/grok-code-fast-1",
+          classifierProvider: "anthropic",
+          anthropicApiBilling: true,
+        }),
+        apiKeyEnv,
+        loginPresent
+      )
+    ).toBe(false);
+  });
+
+  test("native mapping + API key + no Claude login → true (unchanged)", () => {
+    expect(
+      shouldHideIncidentalAnthropicKey(
+        baseConfig({ model: "claude-opus-4-6" }),
+        apiKeyEnv,
+        loginAbsent
+      )
+    ).toBe(true);
+  });
+
   test("no native mapping or classifier config + API key → false", () => {
     expect(
       shouldHideIncidentalAnthropicKey(baseConfig({ model: "x-ai/grok-code-fast-1" }), apiKeyEnv)

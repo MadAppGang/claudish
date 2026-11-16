@@ -215,25 +215,37 @@ export function wantsAnthropicApiBilling(
  * Code, so the session bills to the claude.ai subscription instead of the
  * metered API?
  *
- * Gated on `hasNativeAnthropicMapping`, NOT on the wider
- * `shouldPreserveNativeAuth`. The two differ for exactly one case: classifier
- * passthrough enabled with no native role mapping. There, a real
- * ANTHROPIC_API_KEY may be the user's ONLY Anthropic credential, so hiding it
- * would strand the very request the passthrough exists to serve — the login
- * gate `hasResolvableAnthropicAuth` was added to avoid. The exposure that buys
- * is bounded: under classifier-only passthrough the main loop runs on a foreign
- * provider, so the sole traffic that key can bill is the classifier call.
+ * Never when there is no key, or when API billing is opted in. Always on a
+ * launch with a native Claude role mapping: Claude Code talks to Anthropic for
+ * that role, and the key would override the user's login.
+ *
+ * On a classifier-only passthrough launch (no native mapping), only when Claude
+ * Code holds a login of its own ({@link hasClaudeCodeLogin}, presence only, no
+ * secret read). A key left in the child signs more than the classifier call: the
+ * vision proxy forwards the inbound `x-api-key` to Anthropic for image
+ * descriptions, and a launch with role mappings and no default model passes an
+ * unmapped Claude name through on the inbound credential. With a login present
+ * all of that bills the subscription instead. With no login the key may be the
+ * user's ONLY Anthropic credential, and hiding it would strand the classifier
+ * request at the login gate `hasResolvableAnthropicAuth` exists to avoid, so it
+ * stays.
+ *
+ * `loginDeps` defaults to reading `env`, the child's environment.
  *
  * Split out of runClaudeWithProxy purely so this rule is testable — that
  * function spawns a process and cannot be exercised directly.
  */
 export function shouldHideIncidentalAnthropicKey(
   config: ClaudishConfig,
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
+  loginDeps: ClaudeCodeLoginDeps = { env }
 ): boolean {
-  if (!hasNativeAnthropicMapping(config)) return false;
   if (!env.ANTHROPIC_API_KEY) return false;
-  return !wantsAnthropicApiBilling(config, env);
+  const nativeMapping = hasNativeAnthropicMapping(config);
+  if (!nativeMapping && !classifierPassthroughEnabled(config)) return false;
+  if (wantsAnthropicApiBilling(config, env)) return false;
+  if (nativeMapping) return true;
+  return hasClaudeCodeLogin(loginDeps);
 }
 
 // claudish's placeholder credentials live in a leaf module the credential layer
@@ -444,7 +456,7 @@ export function childAuthControl(
     }
     if (
       isRealAnthropicEnvCredential(env, "ANTHROPIC_API_KEY") &&
-      !shouldHideIncidentalAnthropicKey(config, env)
+      !shouldHideIncidentalAnthropicKey(config, env, { env, cwd: deps.cwd })
     ) {
       return { controlled: false, reason: "user-api-key", where: "environment" };
     }
@@ -2828,16 +2840,19 @@ export async function runClaudeWithProxy(
     }
   };
 
-  if (!config.monitor && hasNativeAnthropicMapping(config)) {
+  const nativeModelNotice = !config.monitor && hasNativeAnthropicMapping(config);
+  if (nativeModelNotice) {
     log("[claudish] Native Claude model detected — using Claude Code subscription credentials");
-    if (hidAnthropicApiKey) {
-      log(
-        "[claudish]   ANTHROPIC_API_KEY found but hidden so it can't override that subscription · " +
-          (config.claudeSubscriptionPin
-            ? "use anthropic@<id> to bill the Claude API instead"
-            : "use --anthropic-api-billing (or anthropicApiBilling: true) to bill the API instead")
-      );
-    }
+  }
+  // Also printed on a classifier-only passthrough launch, which hides the key
+  // when Claude Code holds a login (shouldHideIncidentalAnthropicKey).
+  if (hidAnthropicApiKey) {
+    log(
+      `[claudish]   ANTHROPIC_API_KEY found but hidden so it can't override ${nativeModelNotice ? "that subscription" : "your Claude Code subscription"} · ` +
+        (config.claudeSubscriptionPin
+          ? "use anthropic@<id> to bill the Claude API instead"
+          : "use --anthropic-api-billing (or anthropicApiBilling: true) to bill the API instead")
+    );
   }
   if (gatewayNotice) log(`[claudish] ${gatewayNotice}`);
 
