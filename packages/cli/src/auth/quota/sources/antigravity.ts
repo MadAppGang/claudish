@@ -110,7 +110,20 @@ export function selectBucket(
     const match = usable.find((b) => b.modelId === base);
     if (match) return match;
   }
-  return undefined;
+
+  // The other direction: the routed spec is a base id and the buckets are its
+  // effort variants ("gemini-4-argon" for "gemini-4-argon-medium" and
+  // "-high"). They are one model's limit only when every variant reports the
+  // same number; variants that disagree report nothing.
+  const variants = usable.filter((b) =>
+    REASONING_TIERS.some((tier) => b.modelId === `${activeModelId}-${tier}`)
+  );
+  if (variants.length === 0) return undefined;
+  const [first] = variants;
+  const same = variants.every(
+    (b) => b.remainingFraction === first.remainingFraction && b.resetTime === first.resetTime
+  );
+  return same ? { ...first, modelId: activeModelId } : undefined;
 }
 
 /** Build a window from one bucket. */
