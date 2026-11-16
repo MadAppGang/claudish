@@ -154,16 +154,20 @@ function getCachedEntries(): SlimModelEntry[] | null {
  * Returns `null` when:
  *   - the disk cache is missing or unparseable (`readAllModelsCache` → null), OR
  *   - the cache has no entries, OR
- *   - no entry's `aliases` array contains `alias`.
+ *   - no entry's `aliases` array contains `alias` with a `modelId` that
+ *     `accept` takes (every id, by default).
  *
  * Never throws.
  */
-export function findEntryByAlias(alias: string): CatalogEntryQueryResult | null {
+export function findEntryByAlias(
+  alias: string,
+  accept: (modelId: string) => boolean = () => true
+): CatalogEntryQueryResult | null {
   const entries = getCachedEntries();
   if (!entries || entries.length === 0) return null;
 
   for (const entry of entries) {
-    if (entry.aliases.includes(alias)) {
+    if (entry.aliases.includes(alias) && accept(entry.modelId)) {
       return project(entry);
     }
   }

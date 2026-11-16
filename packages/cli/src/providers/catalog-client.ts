@@ -112,13 +112,17 @@ export function latestOpusModelId(): string | null {
   return latestAnthropicTierModelId("opus");
 }
 
-export function latestAnthropicTierModelId(tier: "opus" | "sonnet" | "haiku"): string | null {
+/** The newest `claude-<tier>-*` id whose model id `accept` takes (every id, by default). */
+export function latestAnthropicTierModelId(
+  tier: "opus" | "sonnet" | "haiku",
+  accept: (modelId: string) => boolean = () => true
+): string | null {
   // The disk catalog only: a recommended subset could name an older id as "latest".
   const snapshot = getCatalogSnapshot();
   if (snapshot?.origin !== "disk") return null;
   const { entries } = snapshot;
   const family = new RegExp(`^claude-${tier}-`, "i");
-  const matches = entries.filter((entry) => family.test(entry.modelId));
+  const matches = entries.filter((entry) => family.test(entry.modelId) && accept(entry.modelId));
   if (matches.length === 0) return null;
   matches.sort((a, b) => {
     const byDate = (b.releaseDate ?? "").localeCompare(a.releaseDate ?? "");

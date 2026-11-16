@@ -21,6 +21,7 @@ import {
   ONE_MILLION_CONTEXT_SUFFIX,
   claudeCodeTierAlias,
 } from "../providers/claude-code-aliases.js";
+import { isOptInWireId } from "../providers/content-use.js";
 
 /** The Anthropic API origin. `NativeHandler` forwards to it; the advisor calls it. */
 export const ANTHROPIC_API_ORIGIN = "https://api.anthropic.com";
@@ -83,8 +84,11 @@ export function claudeAdvisorModelFor(model: string): ClaudeAdvisorModel {
   const tier = claudeCodeTierAlias(normalized);
   if (tier) {
     // The TIER's alias, not the name: `internal` and `default` select the opus
-    // tier, and the catalog's alias table knows the tier.
-    const resolved = findEntryByAlias(tier)?.modelId ?? latestAnthropicTierModelId(tier);
+    // tier, and the catalog's alias table knows the tier. The id is chosen for
+    // the user, so a content-use opt-in id is never the answer.
+    const notOptIn = (modelId: string) => !isOptInWireId(modelId);
+    const resolved =
+      findEntryByAlias(tier, notOptIn)?.modelId ?? latestAnthropicTierModelId(tier, notOptIn);
     if (resolved) return { refused: false, id: resolved };
     return {
       refused: true,
