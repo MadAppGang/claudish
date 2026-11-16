@@ -396,3 +396,114 @@ scenarios:
         in_sandbox: true
         cmd: sh "$HOME/.bench-tools/{{tool}}/evidence.sh"; ls "$HOME"/.claude/projects/*/*.jsonl >/dev/null 2>&1
         timeout: "60s"
+
+  # Topic changes in one session, for a compaction that decides on a change
+  # of topic. Five turns on one snapshot, each a task of its own:
+  #   A (prompt)     the Gemini tool-output bug of log-debug    start
+  #   B (follow-up)  the 12 research questions, read in person  TRUE change
+  #   C (follow-up)  the nativeRouteFor refactor                TRUE change
+  #   D (follow-up)  a regression test for A's fix              NOT a change
+  #   E (follow-up)  a doc comment in C's new module            NOT a change
+  # A, B, C and D are graded by the graders of log-debug, research and
+  # refactor, and by checks/regression-check.ts. A asks for no test, so D's
+  # test is new work that only the session's memory of A can direct. B forbids
+  # subagents, so the reading lands in the main context. Run with
+  # --param case_prep=long-session (a 200K auto-compact window).
+  - name: topic-change
+    description: "five tasks in one session, two true topic changes and two returns, in a 200K window"
+    repo:
+      url: ../../../..
+      ref: 7f8ffe7faabe19fd4984bdeba663cf383cf9c083
+    timeout: 180m
+    prompt: |
+      A bug report from a claudish user, on a Gemini model through the Gemini API:
+
+      "When the model calls two tools in one turn, for example two Read calls on two different files, it sometimes answers as if each Read returned the other file. There is no error anywhere. It looks like it happens when the second tool finishes first."
+
+      Find the cause in claudish and fix it.
+
+      1. From `packages/cli`, run `bun test src/adapters src/handlers` and `bun run build`, and read their complete output: do not pipe them through tail, head or grep.
+      2. Find the cause and fix it in the source.
+      3. Run `bun test src/adapters src/handlers` and `bun run typecheck` from `packages/cli` again, with complete output, and fix what fails.
+
+      Do not change `bun.lock` or any `package.json`. Do not stop to ask me anything: I am away until you finish. End with the cause, the test results and the list of files you changed.
+    follow_ups:
+      - |
+        New task, unrelated to the bug. I need exact answers to 12 questions about this claudish source tree. Answer from the code in `packages/cli/src`, not from memory. Read the code yourself, without subagents.
+
+        Write the file `answers.md` in the top-level folder: exactly 12 lines, one per question, in the form `N. value`. The value only: no backticks, no explanation.
+
+        Questions:
+
+        1. What is the lowest magmux version claudish accepts for a pane session? (a version string)
+        2. Which function decides whether one environment variable is withheld from a pane child's environment? (a function name)
+        3. claudish remaps terminal upstream errors to HTTP 400. Which file defines the function that recovers the real upstream status? (a path from the top-level folder)
+        4. Which environment variable does claudish set to "1" in pure proxy mode so that Claude Code skips its fast-mode organisation check? (a variable name)
+        5. Which function under `packages/cli/src/pane/` tells whether the current process runs inside a session that a claudish MCP server started? (a function name)
+        6. Under `~/.claudish/`, what is the file name of the key claudish uses to name the files of the dynamic models catalog? (a file name)
+        7. Which environment variable lets a parent process choose where the proxy's token tracker writes its counts, ahead of the port? (a variable name)
+        8. For how many milliseconds is an account's dynamic models catalog list young enough to deny a model? (an integer)
+        9. After how many milliseconds without a stream event does the Responses stream stall guard fire by default? (an integer)
+        10. claudish can collect a complete message from an SSE stream outside the Responses parser. What stall timeout, in milliseconds, does that collector use? (an integer)
+        11. Which file defines the function that decides whether a model spec goes to the native Claude passthrough (a bare Claude name such as `opus`)? (a path from the top-level folder)
+        12. Which environment variable does claudish set to "1" for every child it starts in an MCP pane session, so that a claudish inside knows it is one level deep? (a variable name)
+
+        Do not change any file except `answers.md` in this task.
+      - |
+        New task, unrelated to the two before. Refactor claudish in `packages/cli/src`. Keep the behaviour exactly as it is.
+
+        1. Rename the exported function `nativeRouteFor` (now in `packages/cli/src/providers/native-route.ts`) to `claudeSubscriptionRoute`.
+        2. Move it to a new module, `packages/cli/src/providers/claude-subscription-route.ts`, which exports it. `native-route.ts` must not define it or re-export it any more.
+        3. Update every caller and every test, and every comment that names the old function. When you are done, the name `nativeRouteFor` must not appear anywhere under `packages/cli/src`.
+        4. Run `bun run typecheck` from `packages/cli`, and `bun test` for the test files you changed, and fix what fails.
+
+        Do not change `answers.md`. End with the typecheck and test results and the list of files you changed.
+      - "Back to the bug you fixed in the first task. Add a regression test for that fix in a new file, `packages/cli/src/adapters/gemini-parallel-tool-order.test.ts`: it must fail without your fix and pass with it. Run it with `bun test` from `packages/cli` and give me the result."
+      - "In the module you created in the refactor, add a one-line doc comment above `claudeSubscriptionRoute` that says what it returns. Then run `bun run typecheck` from `packages/cli` once more and give me the result."
+    checks:
+      # A: the 8 known tests of the fix commit.
+      - type: custom:exec
+        metric: Graded
+        command: ["bun", "./checks/log-debug-check.ts"]
+        timeout: "600s"
+      # B: the 12 answers.
+      - type: custom:exec
+        metric: GradedAnswers
+        command: ["bun", "./checks/answers-check.ts"]
+        timeout: "60s"
+      # C: the five parts of the refactor.
+      - type: custom:exec
+        metric: GradedRefactor
+        command: ["bun", "./checks/refactor-check.ts"]
+        timeout: "600s"
+      # D: the regression test fails without the fix and passes with it.
+      - type: custom:exec
+        metric: GradedRegression
+        command: ["bun", "./checks/regression-check.ts"]
+        timeout: "600s"
+      - type: file-changes
+        metric: StayedInBounds
+        must:
+          create: [answers.md, packages/cli/src/providers/claude-subscription-route.ts, packages/cli/src/adapters/gemini-parallel-tool-order.test.ts]
+          update: [packages/cli/src/adapters/gemini-api-format.ts, packages/cli/src/providers/native-route.ts]
+        must-not:
+          touch: [bun.lock, package.json, packages/cli/package.json]
+        ignore: [logs]
+      - type: exec
+        metric: CompactionOrder
+        readout: true
+        in_sandbox: true
+        cmd: sh "$HOME/.bench-tools/cases-readout/compaction-order.sh"; ls "$HOME"/.claude/projects/*/*.jsonl >/dev/null 2>&1
+        timeout: "60s"
+      - type: exec
+        metric: VariantCheck
+        readout: true
+        in_sandbox: true
+        cmd: sh "$HOME/.bench-tools/{{tool}}/variant-check.sh"
+        timeout: "60s"
+      - type: exec
+        metric: ToolEvidence
+        readout: true
+        in_sandbox: true
+        cmd: sh "$HOME/.bench-tools/{{tool}}/evidence.sh"; ls "$HOME"/.claude/projects/*/*.jsonl >/dev/null 2>&1
+        timeout: "60s"

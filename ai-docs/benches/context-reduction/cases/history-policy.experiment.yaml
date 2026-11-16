@@ -1,4 +1,4 @@
-description: "history policies: claudish's history compaction under three swap policies, against no compaction"
+description: "history policies: claudish's history compaction under four swap policies, against no compaction"
 bench: ./madbench.yaml
 
 # Every arm runs the build named by --param claudish_build, on the
@@ -42,3 +42,10 @@ variants:
     params:
       binary: ../bin/claudish-compaction
       tool: policy-cost
+  # swap when a decider labels the new human turn a change of topic. The
+  # decider (haiku or embed) comes from the claudish_config file, so the two
+  # topic arms are this one variant with two config files.
+  - name: history-topic
+    params:
+      binary: ../bin/claudish-compaction
+      tool: policy-topic
