@@ -317,14 +317,22 @@ export class CredentialAuthority {
    * credential was replaced or removed, until the next request rewrote it.
    * Clearing returns the answer to "which credential WOULD sign", which is the
    * honest answer when nothing has been signed since.
+   *
+   * A named invalidation covers every name the provider instance is registered
+   * under: each one's signed arm is cleared and each one is notified, so a
+   * listener that keyed its state by an alias drops it too.
    */
   invalidate(name?: string): void {
-    clearSignedArm(name);
-    this.notifyInvalidated(name);
     if (name) {
+      for (const registered of this.namesSharing(name)) {
+        clearSignedArm(registered);
+        this.notifyInvalidated(registered);
+      }
       this.registry.get(name)?.invalidate?.();
       return;
     }
+    clearSignedArm();
+    this.notifyInvalidated();
     // Dedup: providers registered under aliases share one instance.
     const seen = new Set<CredentialProvider>();
     for (const p of this.registry.values()) {
