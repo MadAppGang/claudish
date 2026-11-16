@@ -722,6 +722,72 @@ if (isMcpMode) {
 }
 
 /**
+ * Print a launch's /model lineup report and hand the lineup to the runner.
+ *
+ * - `mainThreadWindow`: the main thread's window, computed once here and reused
+ *   by the runner; the report compares every listed row against the window the
+ *   session is sized for (`sessionWindow`).
+ * - `modelLineup`: the rows, and the ONE `modelPicker` value both writers of the
+ *   `--settings` temp file carry (the user's own rows first, from the highest
+ *   settings layer that sets them).
+ * - The report names each provider not listed and why, the settings notices,
+ *   the posture line, the model variables the child keeps from the user's
+ *   environment and the ones it drops because a parent claudish set them.
+ *   Upstream text reaches stderr only through `redactSecrets` and `logStderr`.
+ */
+async function reportModelLineup(
+  config: import("./types.js").ClaudishConfig,
+  lineup: import("./launcher/model-lineup.js").ModelLineup
+): Promise<void> {
+  const { lineupReport, modelPickerSetting, routedUserRows, sessionWindow } = await import(
+    "./launcher/model-lineup.js"
+  );
+  const {
+    computeMainThreadContextWindow,
+    isProxyAuthMode,
+    modelPickerSources,
+    scrubChildModelVars,
+    startsOnClaudeSubscription,
+  } = await import("./claude-runner.js");
+  const { nativeRouteFor } = await import("./providers/native-route.js");
+  const { redactSecrets } = await import("./redact.js");
+  const { logStderr } = await import("./logger.js");
+
+  const computed = await computeMainThreadContextWindow(config);
+  config.mainThreadWindow = computed;
+  const picker = modelPickerSetting(lineup.rows, modelPickerSources(config, process.env));
+  // A preview on a copy: the runner scrubs the child's own environment.
+  const inherited = scrubChildModelVars(config, { ...process.env });
+  const posture = startsOnClaudeSubscription(config)
+    ? "claude-start"
+    : typeof config.model === "string"
+      ? nativeRouteFor(config.model) !== null
+        ? "claude-model-start"
+        : "foreign-start"
+      : isProxyAuthMode(config)
+        ? "tiers"
+        : "claude-model-start";
+  const lines = lineupReport(lineup, {
+    sizedFor: sessionWindow(process.env, computed),
+    settingsNotices: picker.notices,
+    posture,
+    inheritedModelVars: inherited.survived,
+  });
+  if (inherited.removed.length > 0) {
+    lines.push(
+      `[claudish] /model: removed ${inherited.removed.join(", ")}, set by a parent claudish session, from this session`
+    );
+  }
+  for (const line of lines) logStderr(redactSecrets(line.replace(/^\[claudish\] /, "")));
+  const userRows = routedUserRows(picker.setting.options, lineup.rows);
+  config.modelLineup = {
+    rows: lineup.rows,
+    picker: picker.setting,
+    ...(userRows.length > 0 ? { userRows } : {}),
+  };
+}
+
+/**
  * Run CLI mode
  */
 async function runCli() {
@@ -835,6 +901,19 @@ async function runCli() {
       const { ensureEndpointsRegistered } = await import("./providers/endpoint-registration.js");
       ensureEndpointsRegistered();
     });
+
+    // A launch with listing entries (`--model devin@`) resolves the providers it
+    // lists in /model now that custom endpoints are registered, and refuses the
+    // forms whose rows could never be routed, before the picker, key validation,
+    // the catalog warm or any fetch.
+    if (cliConfig._modelFlags?.hasLineup) {
+      const { decideModelListings } = await import("./launcher/claude-launch.js");
+      const decision = decideModelListings(cliConfig, cliConfig._modelFlags);
+      if (!decision.ok) {
+        console.error(`[claudish] Error: ${decision.message}`);
+        process.exit(1);
+      }
+    }
 
     // Team mode: run models in parallel (skip normal Claude Code path)
     if (cliConfig.team && cliConfig.team.length > 0) {
@@ -1072,6 +1151,7 @@ async function runCli() {
       interactive: cliConfig.interactive,
       monitor: cliConfig.monitor,
       advisorNativeSession,
+      hasModelListings: (cliConfig.modelListings?.length ?? 0) > 0,
       model: cliConfig.model,
       hasProfileTiers,
     });
@@ -1302,7 +1382,7 @@ async function runCli() {
     // API key, and a settings layer that would hand the child one refuses the
     // launch here, before spawn. A Claude API launch (`anthropic@<id>`) resolves
     // its key here, and the proxy signs every request with it.
-    const { advisorKeyLookupAllowed, prepareClaudeLaunch } = await import(
+    const { advisorKeyLookupAllowed, claudeRowsAsPicked, prepareClaudeLaunch } = await import(
       "./launcher/claude-launch.js"
     );
     const preparedLaunch = await traceSpan("startup:claude-launch", () =>
@@ -1317,6 +1397,30 @@ async function runCli() {
       for (const line of preparedLaunch.banner) process.stderr.write(`${line}\n`);
     }
     const launchSigning = preparedLaunch.signing;
+
+    // === /model lineup: the listed providers' models ===
+    // Started now and awaited right before the proxy starts, so its fetches
+    // overlap the advisor check, the stdin read, the port search and the resume
+    // picker. It resolves by its own deadline and never rejects: a provider that
+    // fails is reported, and the launch goes on without its rows. Print mode
+    // has no /model, so nothing is fetched there.
+    const lineupListings = cliConfig.modelListings ?? [];
+    let lineupPromise: Promise<import("./launcher/model-lineup.js").ModelLineup> | null = null;
+    if (lineupListings.length > 0 && cliConfig.interactive) {
+      lineupPromise = import("./launcher/model-lineup.js")
+        .then((m) => traceSpan("startup:model-lineup", () => m.buildModelLineup(lineupListings)))
+        .catch((err: unknown) => ({
+          rows: [],
+          outcomes: lineupListings.map((l) => ({
+            kind: "not-listed" as const,
+            provider: l.provider,
+            reason: err instanceof Error ? err.message : String(err),
+          })),
+        }));
+    } else if (lineupListings.length > 0) {
+      log("[model-lineup] print mode: listing entries accepted, no /model list is fetched");
+    }
+
     let advisorRuntime: import("./handlers/advisor-panel-gateway.js").AdvisorRuntime | undefined;
     if (cliConfig.advisor) {
       const { evaluateAdvisorStartup } = await import("./advisor-startup.js");
@@ -1449,6 +1553,13 @@ async function runCli() {
       process.env.CLAUDISH_CONTEXT_WINDOW = String(cliConfig.contextWindow);
     }
 
+    // The lineup's report goes to stderr before Claude Code takes the screen,
+    // in quiet mode too: a provider whose rows are missing must say why.
+    if (lineupPromise) {
+      const lineup = await lineupPromise;
+      await reportModelLineup(cliConfig, lineup);
+    }
+
     const proxy = await traceSpan("startup:proxy-start", () =>
       createProxyServer(
         port,
@@ -1465,6 +1576,21 @@ async function runCli() {
           ...(cliConfig.claudeLaunch === "api" && cliConfig.claudeLaunchModel
             ? { claudeApiMainModel: cliConfig.claudeLaunchModel }
             : {}),
+          // The listed specs and the user's own claudish-spec rows, as data: a
+          // /model pick of one is routed as sent.
+          ...(cliConfig.modelLineup
+            ? {
+                modelLineup: [
+                  ...cliConfig.modelLineup.rows,
+                  ...(cliConfig.modelLineup.userRows ?? []),
+                ].map((row) => ({
+                  model: row.model,
+                  label: row.label,
+                })),
+              }
+            : {}),
+          // A Claude row picked in /model runs as picked on a Claude-model start.
+          ...(claudeRowsAsPicked(cliConfig) ? { claudeRowsAsPicked: true } : {}),
           apiBillingOptIn: wantsAnthropicApiBilling(cliConfig),
           advisorKeyLookup: advisorKeyLookupAllowed(cliConfig),
           summarizeTools: cliConfig.summarizeTools,
@@ -1488,6 +1614,43 @@ async function runCli() {
         }
       )
     );
+
+    // The user's Claude Code `model` setting: a pending restore an earlier session
+    // left (a crash, a deadline exit) is swept by every interactive launch, and a
+    // launch with a /model lineup records the setting so its exit can put it back.
+    // Before the diag output takes stderr, so the sweep's lines reach the user.
+    // A machine with no pending restore only stats a missing file.
+    let modelSettingWatch: import("./launcher/model-setting-restore.js").ModelSettingWatch | null =
+      null;
+    if (cliConfig.interactive) {
+      const { modelSettingLedgerPath } = await import("./launcher/model-setting-ledger-path.js");
+      const { statSync } = await import("node:fs");
+      // `throwIfNoEntry` covers only a missing file; EACCES or ENOTDIR still
+      // throws, and here, before the try/finally that shuts the proxy down, a
+      // throw would fail the launch. Any error reads as "nothing pending".
+      let ledgerPending = false;
+      try {
+        ledgerPending =
+          statSync(modelSettingLedgerPath(process.env), { throwIfNoEntry: false }) !== undefined;
+      } catch {
+        ledgerPending = false;
+      }
+      if (ledgerPending || cliConfig.modelLineup) {
+        const restore = await import("./launcher/model-setting-restore.js");
+        if (ledgerPending) await restore.sweepModelSettingLedger();
+        if (cliConfig.modelLineup) {
+          modelSettingWatch = await restore.beginModelSettingWatch(
+            cliConfig.modelLineup.rows.map((row) => row.model)
+          );
+          // The promise only for a registered watch; an inert one reported its cause.
+          if (modelSettingWatch.registered && cliConfig.modelLineup.rows.length > 0) {
+            const { MODEL_RESTORE_PROMISE } = await import("./launcher/model-lineup.js");
+            const { logStderr } = await import("./logger.js");
+            logStderr(MODEL_RESTORE_PROMISE);
+          }
+        }
+      }
+    }
 
     // Route diagnostic output to log file
     const diag = createDiagOutput({
@@ -1513,7 +1676,18 @@ async function runCli() {
       diag.cleanup();
     };
     try {
-      exitCode = await runClaudeWithProxy(cliConfig, proxy.url, cleanupDiag);
+      exitCode = await runClaudeWithProxy(
+        cliConfig,
+        proxy.url,
+        cleanupDiag,
+        modelSettingWatch
+          ? {
+              beforeSpawn: modelSettingWatch.recordSettingsArg,
+              onChildSpawned: modelSettingWatch.recordChild,
+              onDeadline: modelSettingWatch.endSync,
+            }
+          : {}
+      );
     } finally {
       // Clear diagOutput BEFORE cleanup to prevent write-after-end
       setDiagOutput(null);
@@ -1526,6 +1700,9 @@ async function runCli() {
         write("\n[claudish] Shutting down proxy server...");
       }
       await proxy.shutdown();
+      // Puts back the user's Claude Code model setting when this was the last
+      // session holding it; awaited, so it lands before process.exit.
+      await modelSettingWatch?.end();
     }
 
     if (!cliConfig.quiet) {

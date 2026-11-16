@@ -29,6 +29,7 @@ import { scrubInheritedFastModeGates } from "../fast-mode-gates.js";
 import { HARNESS_GATEWAY_OFF_VAR, scrubInheritedHarnessGatewayTarget } from "../harness-gateway.js";
 import { scrubInheritedHostRouting } from "../host-routing-env.js";
 import { subscriptionSettingsCheck } from "../launcher/claude-launch.js";
+import { scrubInheritedModelVars } from "../model-vars-env.js";
 import { PANE_LAUNCH_VARS } from "../pane/child-env.js";
 import { isStrippedFromChildEnv, resolveClaudishLaunch } from "../pane/pane-launch.js";
 import { sanitizeForReport } from "../redact.js";
@@ -149,6 +150,10 @@ export function claudeCodePrintEnv(
   scrubInheritedHostRouting(env);
   // A server started inside a gateway session inherits that session's X-Target-URL.
   scrubInheritedHarnessGatewayTarget(env);
+  // A server started inside a claudish session inherits the model variables that
+  // session set; this child runs on the Claude Code login, which cannot serve a
+  // claudish provider spec, and gets its model from --model.
+  scrubInheritedModelVars(env, { model: false, smallFast: false }, { keepsLogin: true });
   return env;
 }
 

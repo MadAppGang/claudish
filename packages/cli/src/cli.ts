@@ -34,6 +34,7 @@ import {
 } from "./model-loader.js";
 import { parseModelParams } from "./model-params.js";
 import { compareByReleaseDateDesc, isPickableProvider } from "./model-selector.js";
+import { isModelVarSetByClaudish } from "./model-vars-env.js";
 import {
   type CredentialLookup,
   type ProbeChainLink,
@@ -69,7 +70,12 @@ import { parseContextWindow } from "./providers/context-window-limit.js";
 import { ensureEndpointsRegistered } from "./providers/endpoint-registration.js";
 import { explainRouteSettled } from "./providers/explain-route-settled.js";
 import { describeMuseSigningSource } from "./providers/meta-muse/muse-credentials.js";
-import { parseModelChain, parseModelSpec } from "./providers/model-parser.js";
+import {
+  parseListingEntry,
+  parseModelChain,
+  parseModelFlags,
+  parseModelSpec,
+} from "./providers/model-parser.js";
 import { NATIVE_NOT_PROBED } from "./providers/native-route.js";
 import { fetchOllamaModels } from "./providers/ollama-discovery.js";
 import { type ProbeResult, describeProbeState, probeLink } from "./providers/probe-live.js";
@@ -94,6 +100,7 @@ import {
 } from "./providers/routing-rules.js";
 import { nativeShortcutForVendor, renderRecommendedText } from "./recommended-listing.js";
 import { setRecoveryFlagOverrides } from "./recovery/settings.js";
+import { redactSecrets } from "./redact.js";
 import { cliAnsi } from "./theme/ansi.js";
 import type { ClaudishConfig, ModelTier } from "./types.js";
 import { VERSION } from "./version.js";
@@ -508,8 +515,11 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
 
   if (claudishModel) {
     config.model = claudishModel; // Claudish-specific takes priority
-  } else if (anthropicModel) {
-    config.model = anthropicModel; // Fall back to Claude Code standard
+  } else if (anthropicModel && !isModelVarSetByClaudish(process.env, "ANTHROPIC_MODEL")) {
+    // Fall back to Claude Code standard. A value a parent claudish set for its
+    // own child (and recorded) is not the user's choice: a nested launch with
+    // no --model does not start on the parent's model.
+    config.model = anthropicModel;
   }
 
   // Parse model mappings from env vars
@@ -593,6 +603,9 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
     config.logLevel = "debug";
   }
 
+  // Every `--model` value, in argv order, for the listing-entry check after the loop.
+  const modelValues: string[] = [];
+
   // Parse command line arguments
   let i = 0;
   while (i < args.length) {
@@ -616,9 +629,14 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       // Native SELECTORS (`internal`, `default`) are normalized to the tier they
       // select before anything downstream sees them — Claude Code exits 1 on the
       // selector and 0 on the tier. See normalizeNativeModelSpec.
+      // Each `--model` replaces the model AND the chain: a later single spec
+      // must not leave an earlier value's chain behind for the readers that
+      // take `modelChain` before `model`.
       const chain = parseModelChain(modelArg).map(normalizeNativeModelSpec);
       config.model = chain[0]; // Accept any model ID
       if (chain.length > 1) config.modelChain = chain;
+      else delete config.modelChain;
+      modelValues.push(modelArg);
     } else if (arg === "--model-pinned") {
       // Written by a parent claudish on the pane child it spawns with a pinned
       // `--model` (pane-launch.ts): the pin is a routing chain the parent gathered
@@ -1130,6 +1148,22 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
     }
 
     i++;
+  }
+
+  // A listing entry (`--model devin@`, `--model 'or@*'`) makes this a lineup
+  // launch: the providers' models are listed in Claude Code's /model. The last
+  // full spec starts it (none: Claude's default model), every earlier one is a
+  // pinned row, and a chain cannot be combined with it. With no listing entry
+  // nothing changes: the loop above already gave today's last-wins answer.
+  if (modelValues.some((value) => parseListingEntry(value) !== null)) {
+    const flags = parseModelFlags(modelValues);
+    if (!flags.ok) {
+      console.error(`[claudish] Error: ${redactSecrets(flags.message)}`);
+      process.exit(1);
+    }
+    config.model = flags.value.start;
+    delete config.modelChain;
+    config._modelFlags = flags.value;
   }
 
   // Determine if this will be interactive mode BEFORE API key check
@@ -2436,6 +2470,9 @@ ${shortcutTable}
 ${h("OPTIONS")}
   ${green("-i, --interactive")}        Run in interactive mode (default when no prompt given)
   ${green("-m, --model")} ${yellow("<model>")}      Model to use (required for single-shot mode)
+                           ${dim("--model <provider>@ (no model) lists that provider's models in /model;")}
+                           ${dim("--model '<provider>@*' lists every model a gateway serves. Repeat --model")}
+                           ${dim("to list several; the last <provider>@<model> starts the session.")}
   ${green("--profile")} ${yellow("<name>")}         Use named profile for model mapping (default profile if omitted)
   ${green("--default-provider")} ${yellow("<name>")} Fallback provider for bare model names (claudish provider or customEndpoints key)
                            ${dim('"" disables it. Precedence: this flag > CLAUDISH_DEFAULT_PROVIDER env > config.json')}

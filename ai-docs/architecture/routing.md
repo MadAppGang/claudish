@@ -61,6 +61,20 @@ Claudish supports local models via:
 Local APIs report `prompt_tokens` as the FULL conversation context on every request, not an
 increment — see `ai-docs/architecture/context-window.md`.
 
+## Listing entries and a /model pick
+
+A `--model` value with a provider shortcut and no model (`devin@`, `'or@*'`) is a listing entry,
+not a model spec: it is never routed as a model, and it starts nothing. Listing
+entries are resolved by `decideModelListings` after endpoint registration, so a custom endpoint
+name counts; `claude@` and `custom-url@` are refused. With a listing entry the LAST full spec
+starts the session and earlier ones become rows; with none, repeated `--model` keeps last-wins.
+A row's `model` is a full claudish model spec, and the proxy routes a request whose `model`
+equals one exactly as sent, ahead of the slot map, the role-mapping substring match and the
+`--model` fallback. On a launch that keeps the user's login with a Claude start model (or none), a
+Claude-named request runs the picked Claude model on the native passthrough
+(`claudeRowsAsPicked`); a foreign start keeps the old rule. Rules, measurements and the restore of
+the user's default model: [`model-lineup.md`](model-lineup.md).
+
 ## MCP callers pass bare names: an unrequested `provider@` is removed (2026-10-23)
 
 The agent that calls the MCP tools often writes a `provider@` the user never asked for: it

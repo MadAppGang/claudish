@@ -51,6 +51,17 @@ Pinning such a session through claudish's `--settings` file would hold for the s
 but Claude Code carries `--settings` into a session sent to the background, which would then
 point at a proxy that stops when claudish's child exits.
 
+**A /model lineup on the login is refused under a settings base URL.** A launch with listing
+entries (`--model devin@`) whose child keeps the login (a listing-only Claude start, the same with
+`--anthropic-api-billing`, or classifier passthrough with a resolvable login) would send every
+`/model` pick of a listed model to the settings gateway, which cannot route a claudish spec. So
+`decideModelListings` refuses it before any fetch, naming the file; a proxy-auth lineup launch is
+host-managed and is not refused. Separately, any launch where claudish does not set
+`ANTHROPIC_MODEL` or `ANTHROPIC_SMALL_FAST_MODEL` itself removes one a parent claudish set
+(recorded in `CLAUDISH_SET_MODEL_VARS`) and, when the child keeps the login, one holding an
+explicit claudish spec Claude Code cannot serve. Both rules and
+their reasons: [`model-lineup.md`](model-lineup.md) R17 and R18.
+
 ## The two Claude launches
 
 `--model claude@<id>` and `--model anthropic@<id>` (`a@`, `api@`) each start a monitor session
