@@ -257,6 +257,7 @@ export function buildAntigravityEnvelope(input: AntigravityEnvelopeInput): Recor
   const now = agyLocalTime(new Date(input.now ?? Date.now()));
   conversation.times ??= new Map();
   const times = conversation.times;
+  conversation.firstModelDisplayName ??= meta?.displayName;
   const worded = agyContents(contents, {
     timeOf: (key) => {
       const known = times.get(key);
@@ -264,7 +265,7 @@ export function buildAntigravityEnvelope(input: AntigravityEnvelopeInput): Recor
       times.set(key, now);
       return now;
     },
-    modelDisplayName: (conversation.firstModelDisplayName ??= meta?.displayName),
+    modelDisplayName: conversation.firstModelDisplayName,
     wordedTools: agyWordedTools(tools),
   });
   const request: Record<string, unknown> = { contents: toolResultsAsModelEntries(worded) };
