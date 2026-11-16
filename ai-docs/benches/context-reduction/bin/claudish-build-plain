@@ -17,8 +17,8 @@
 set -u
 dir="$HOME/.bench-compaction"
 mkdir -p "$dir"
-# The variables a case's preparation wrote (case d: the auto-compact window),
-# the same file bin/claudish-cases-compaction reads.
+# The variables a case's preparation wrote (the long-session case: the
+# auto-compact window), the same file bin/claudish-compaction reads.
 if [ -f "$dir/launch-env" ]; then
   set -a
   . "$dir/launch-env"

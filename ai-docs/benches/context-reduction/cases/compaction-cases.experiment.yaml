@@ -17,9 +17,10 @@ variants:
       binary: ../bin/claudish-build-plain
       tool: cases-baseline
   # The build with --compaction --debug-claudish, the key in the run's
-  # ~/.claudish/config.json from --param claudish_config. The wrapper exports
-  # a case's launch-env, then runs ../bin/claudish-compaction.
+  # ~/.claudish/config.json from --param claudish_config. The binary must be
+  # one self-contained file: the agent pane may run it but may not read any
+  # other host file, so a wrapper that runs a sibling script exits 126.
   - name: cases-compaction
     params:
-      binary: ../bin/claudish-cases-compaction
+      binary: ../bin/claudish-compaction
       tool: claudish-compaction

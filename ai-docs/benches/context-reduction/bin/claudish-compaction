@@ -22,6 +22,13 @@
 # or AGENT_ENV_KEY_SET (any other value).
 set -u
 dir="$HOME/.bench-compaction"
+# The variables a case's preparation wrote (the long-session case: the
+# auto-compact window). No file, no change.
+if [ -f "$dir/launch-env" ]; then
+  set -a
+  . "$dir/launch-env"
+  set +a
+fi
 # The process id keeps two starts in the same second apart: madbench starts
 # the binary once to probe it before the session.
 live="$HOME/.bench-out/claudish-compaction-launch-$(date +%Y%m%dT%H%M%S)-$$"
