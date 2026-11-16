@@ -1,0 +1,44 @@
+description: "history policies: claudish's history compaction under three swap policies, against no compaction"
+bench: ./madbench.yaml
+
+# Every arm runs the build named by --param claudish_build, on the
+# long-session Scenarios with --param case_prep=long-session. The policy arms
+# read compaction.history.policy from the config that --param
+# claudish_config names; each arm's start.sh refuses a config for another
+# policy, so a config passed to the wrong arm stops the trial before spend.
+# The model is --param model (default claude-sonnet-5-5). One arm per
+# madbench call, one trial per call:
+#
+#   madbench cases/history-policy.experiment.yaml --variant history-cost \
+#     --scenario long-session --param case_prep=long-session \
+#     --param claudish_build=/absolute/path/to/a/compiled/claudish \
+#     --param claudish_config=/absolute/path/to/a/0600/config/with/policy/cost
+#
+# The baseline arm takes no claudish_config.
+guard_changes:
+  allow:
+    - harness/binary
+    - sandbox/provision/steps/1
+
+variants:
+  # The build with --debug-claudish and no --compaction. No key file.
+  - name: history-baseline
+    params:
+      binary: ../bin/claudish-build-plain
+      tool: cases-baseline
+  # precompute 0.6, apply 0.75.
+  - name: history-threshold
+    params:
+      binary: ../bin/claudish-compaction
+      tool: policy-threshold
+  # precompute 0.5, apply 0.7.
+  - name: history-early
+    params:
+      binary: ../bin/claudish-compaction
+      tool: policy-early
+  # summary at 0.5; swap when the break-even function says it pays, when the
+  # next request would cross Claude Code's point, or when the cache is cold.
+  - name: history-cost
+    params:
+      binary: ../bin/claudish-compaction
+      tool: policy-cost

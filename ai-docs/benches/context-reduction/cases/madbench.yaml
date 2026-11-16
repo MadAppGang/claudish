@@ -170,6 +170,80 @@ scenarios:
         cmd: sh "$HOME/.bench-tools/{{tool}}/evidence.sh"; ls "$HOME"/.claude/projects/*/*.jsonl >/dev/null 2>&1
         timeout: "60s"
 
+  # Case d without the forced whole-file reads. Everything is as in
+  # long-session except the second follow-up: it asks for the same document
+  # but leaves to the agent what to read, instead of "Read cli.ts and
+  # claude-runner.ts in full, every line". The first and third follow-ups still
+  # FORCE the complete test, typecheck and build output. Run with
+  # --param case_prep=long-session.
+  - name: long-session-natural
+    description: "the --context-window task, then three turns of full test output and a self-directed trace, in a 200K window"
+    repo:
+      url: ../../../..
+      ref: fe1a93ec9d6bc63538bbb1401663eb30a51e2e33
+    timeout: 150m
+    prompt: |
+      I want a new claudish flag: `--context-window <size>`. It sets the context window for a local model (LM Studio or Ollama). Today the LM Studio window is fixed at 64,000 tokens and I cannot change it from the command line.
+
+      Work in this order.
+
+      1. Explore first, with subagents. Start at least two subagents with the Agent tool, at the same time, and wait for their reports before you edit anything. One maps how `packages/cli/src/cli.ts` parses flags (`parseArgs`, the passthrough walker that decides which arguments go to Claude Code) and how a flag value reaches the proxy. The other maps how the local providers decide their context window: the LM Studio instance code (`ensureLMStudioInstance`, the machine and device selection under `packages/cli/src/providers/`), the local transport under `packages/cli/src/providers/transport/`, the Ollama path, and the picker rows built by `expandModelsToMachines`.
+
+      2. Build the feature in `packages/cli`:
+         - `--context-window <size>` accepts a plain number or a number with a `k` or `m` suffix, in either case, with an optional decimal: `128000`, `128k`, `64K`, `1m`, `1.5m`. It refuses an empty value, `abc`, `0`, `-5`, `12x` and `k`.
+         - `parseArgs` sets `config.contextWindow` to the number of tokens. With no flag it stays undefined. A bad value prints an error that names `--context-window` and exits with code 1.
+         - A new module `packages/cli/src/providers/context-window-limit.ts` exports `parseContextWindow(text)`, which returns the number of tokens or `undefined` for a bad value, and `contextWindowLimit()`, which reads the environment variable `CLAUDISH_CONTEXT_WINDOW`.
+         - claudish writes the flag's value to `CLAUDISH_CONTEXT_WINDOW` before the proxy starts, so every local provider path reads one value.
+         - The value is a limit, not a demand: the window in use is the lesser of the limit and what the model has loaded. It applies to local providers only (lmstudio, ollama).
+         - The LM Studio default rises from 64,000 to 128,000 tokens.
+         - Picker rows from `expandModelsToMachines` carry `maxContextWindow`: the model's maximum, or, for a copy that already runs on that machine, the size that copy was loaded with.
+         - When `ensureLMStudioInstance` refuses because a running instance has a smaller window, the message names the flag with the running size, for example `--context-window 8192`.
+         - A limit above the model's maximum loads the maximum.
+         - The passthrough walker treats `--context-window 128k` as claudish's own flag with one value, and does not pass it to Claude Code.
+         - The flag appears in the `--help` text.
+
+      3. Add tests for what you built, beside the code they cover, and run them with `bun test` from `packages/cli`. Run `bun run typecheck` there too. Fix what fails.
+
+      4. Get the work reviewed. Start one more subagent with the Agent tool and have it review every file you changed against the list in item 2, point by point, and look for a case the tests miss. Wait for its report. Fix each real finding. Then run `bun test` and `bun run typecheck` from `packages/cli` once more.
+
+      Do not change `bun.lock` or any `package.json`. Do not add dependencies. Do not stop to ask me anything: I am away until you finish. End with the test and typecheck results and the list of files you changed.
+    follow_ups:
+      - "Run `bun test src/adapters src/handlers` from `packages/cli` and read its complete output: do not pipe it through tail, head or grep. Then run `bun run typecheck` and `bun run build` from `packages/cli`, also with complete output. Fix anything that fails, and give me the totals."
+      - "Write `packages/cli/CONTEXT-WINDOW.md`: how the `--context-window` value travels from the command line to an LM Studio or an Ollama request, with each function name in order and the file it is in. Trace it yourself, without subagents, and read whatever you need to get it right."
+      - "In two sentences: what were the two exploration subagents in the first turn asked to map? Then run `bun test src/adapters src/handlers` and `bun run typecheck` from `packages/cli` one last time, with complete output, and give me the totals."
+    checks:
+      # The same checks as long-session.
+      - type: custom:exec
+        metric: Graded
+        command: ["bun", "../checks/grade-check.ts"]
+        timeout: "600s"
+      - type: file-changes
+        metric: StayedInBounds
+        must:
+          create: packages/cli/src/providers/context-window-limit.ts
+          update: packages/cli/src/cli.ts
+        must-not:
+          touch: [bun.lock, package.json, packages/cli/package.json]
+        ignore: [logs]
+      - type: exec
+        metric: CompactionOrder
+        readout: true
+        in_sandbox: true
+        cmd: sh "$HOME/.bench-tools/cases-readout/compaction-order.sh"; ls "$HOME"/.claude/projects/*/*.jsonl >/dev/null 2>&1
+        timeout: "60s"
+      - type: exec
+        metric: VariantCheck
+        readout: true
+        in_sandbox: true
+        cmd: sh "$HOME/.bench-tools/{{tool}}/variant-check.sh"
+        timeout: "60s"
+      - type: exec
+        metric: ToolEvidence
+        readout: true
+        in_sandbox: true
+        cmd: sh "$HOME/.bench-tools/{{tool}}/evidence.sh"; ls "$HOME"/.claude/projects/*/*.jsonl >/dev/null 2>&1
+        timeout: "60s"
+
   # Case a: log-heavy debugging. The workspace is the parent of the fix that
   # orders Gemini function responses by their function calls; the grade is
   # that fix's own test file, copied in after the agent stops. The prompt
