@@ -90,13 +90,9 @@ describe("aliasToolsForProvider on a request", () => {
     expect(toolUses[1].name).toBe("TodoWrite");
   });
 
-  test("keeps the input schema, the tool_use input and the tool_result id untouched", () => {
+  test("keeps a schema with no properties and the tool_result id untouched", () => {
     const { request: out } = aliasToolsForProvider(request(), "antigravity");
     expect(out.tools[0].input_schema).toEqual({ type: "object" });
-    const bash = (out.messages[0].content as any[]).find(
-      (b: any) => b.type === "tool_use" && b.name === "run_command"
-    );
-    expect(bash.input).toEqual({ command: "ls" });
     expect((out.messages[1].content as any[])[0].tool_use_id).toBe("t1");
   });
 
@@ -130,6 +126,169 @@ describe("aliasToolsForProvider on a request", () => {
     const { request: out, restore, forward } = aliasToolsForProvider(before, "antigravity");
     expect(out.tools.map((t: any) => restore(t.name))).toEqual(before.tools.map((t) => t.name));
     expect(before.tools.map((t) => forward(t.name))).toEqual(out.tools.map((t: any) => t.name));
+  });
+});
+
+describe("aliasToolsForProvider: argument names", () => {
+  const schema = (properties: Record<string, unknown>, required: string[]) => ({
+    type: "object",
+    properties,
+    required,
+  });
+  const str = { type: "string" };
+  const num = { type: "number" };
+  const fileTools = () => ({
+    tools: [
+      {
+        name: "Bash",
+        input_schema: schema(
+          { command: str, timeout: num, description: str, run_in_background: { type: "boolean" } },
+          ["command"]
+        ),
+      },
+      {
+        name: "Read",
+        input_schema: schema({ file_path: str, offset: num, limit: num, pages: str }, [
+          "file_path",
+        ]),
+      },
+      { name: "Write", input_schema: schema({ file_path: str, content: str }, ["file_path"]) },
+      {
+        name: "Edit",
+        input_schema: schema(
+          { file_path: str, old_string: str, new_string: str, replace_all: { type: "boolean" } },
+          ["file_path", "old_string", "new_string"]
+        ),
+      },
+      { name: "TodoWrite", input_schema: schema({ file_path: str }, ["file_path"]) },
+    ],
+    messages: [
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "t1",
+            name: "Bash",
+            input: { command: "ls", description: "List files", timeout: 9000 },
+          },
+          {
+            type: "tool_use",
+            id: "t2",
+            name: "Read",
+            input: { file_path: "/a.txt", offset: 2, limit: 2 },
+          },
+          {
+            type: "tool_use",
+            id: "t3",
+            name: "Edit",
+            input: { file_path: "/a.txt", old_string: "x", new_string: "y" },
+          },
+          { type: "tool_use", id: "t4", name: "TodoWrite", input: { file_path: "/a.txt" } },
+        ],
+      },
+    ],
+  });
+
+  test("the four file and shell tools declare the names agy declares", () => {
+    const { request: out } = aliasToolsForProvider(fileTools(), "antigravity");
+    const declared = (index: number) => out.tools[index].input_schema as any;
+    expect(Object.keys(declared(0).properties)).toEqual([
+      "CommandLine",
+      "timeout",
+      "toolSummary",
+      "IsDaemon",
+    ]);
+    expect(declared(0).required).toEqual(["CommandLine"]);
+    expect(Object.keys(declared(1).properties)).toEqual(["Path", "pages", "StartLine", "EndLine"]);
+    expect(declared(1).required).toEqual(["Path"]);
+    expect(Object.keys(declared(2).properties)).toEqual(["Path", "Content"]);
+    expect(Object.keys(declared(3).properties)).toEqual([
+      "Path",
+      "Target",
+      "Replacement",
+      "replace_all",
+    ]);
+    expect(declared(3).required).toEqual(["Path", "Target", "Replacement"]);
+  });
+
+  test("a tool that is not renamed keeps its schema and its call's input", () => {
+    const { request: out } = aliasToolsForProvider(fileTools(), "antigravity");
+    expect(Object.keys((out.tools[4].input_schema as any).properties)).toEqual(["file_path"]);
+    expect((out.messages[0].content as any[])[3].input).toEqual({ file_path: "/a.txt" });
+  });
+
+  test("a call in the history carries agy's names, a line range by its first and last line", () => {
+    const { request: out } = aliasToolsForProvider(fileTools(), "antigravity");
+    const calls = out.messages[0].content as any[];
+    expect(calls[0].input).toEqual({
+      CommandLine: "ls",
+      toolSummary: "List files",
+      timeout: 9000,
+    });
+    expect(calls[1].input).toEqual({ Path: "/a.txt", StartLine: 2, EndLine: 3 });
+    expect(calls[2].input).toEqual({ Path: "/a.txt", Target: "x", Replacement: "y" });
+  });
+
+  test("a returned call's arguments go back to Claude Code's names", () => {
+    const { restoreArguments } = aliasToolsForProvider(fileTools(), "antigravity");
+    expect(
+      restoreArguments("run_command", {
+        CommandLine: "ls",
+        WaitMsBeforeAsync: 5000,
+        toolSummary: "List files",
+        IsDaemon: true,
+      })
+    ).toEqual({
+      command: "ls",
+      WaitMsBeforeAsync: 5000,
+      description: "List files",
+      run_in_background: true,
+    });
+    expect(restoreArguments("read_file", { Path: "/a.txt", StartLine: 2, EndLine: 3 })).toEqual({
+      file_path: "/a.txt",
+      offset: 2,
+      limit: 2,
+    });
+    expect(restoreArguments("read_file", { Path: "/a.txt", EndLine: 40 })).toEqual({
+      file_path: "/a.txt",
+      limit: 40,
+    });
+    expect(restoreArguments("write_file", { Path: "/a.txt", Content: "hi" })).toEqual({
+      file_path: "/a.txt",
+      content: "hi",
+    });
+    expect(
+      restoreArguments("edit_file", { Path: "/a.txt", Target: "x", Replacement: "y" })
+    ).toEqual({ file_path: "/a.txt", old_string: "x", new_string: "y" });
+  });
+
+  test("the round trip of a call's input is the input", () => {
+    const applied = aliasToolsForProvider(fileTools(), "antigravity");
+    const sent = applied.request.messages[0].content as any[];
+    const given = fileTools().messages[0].content as any[];
+    for (let i = 0; i < 3; i++) {
+      expect(applied.restoreArguments(sent[i].name, sent[i].input)).toEqual(given[i].input);
+    }
+  });
+
+  test("a custom tool under the native name keeps its arguments both ways", () => {
+    const applied = aliasToolsForProvider(
+      {
+        tools: [{ name: "read_file", input_schema: schema({ file_path: str }, ["file_path"]) }],
+        messages: [],
+      },
+      "antigravity"
+    );
+    expect(Object.keys((applied.request.tools[0].input_schema as any).properties)).toEqual([
+      "file_path",
+    ]);
+    expect(applied.restoreArguments("read_file", { Path: "/a.txt" })).toEqual({ Path: "/a.txt" });
+  });
+
+  test("a provider with no alias returns the arguments as given", () => {
+    const { restoreArguments } = aliasToolsForProvider(fileTools(), "openai");
+    expect(restoreArguments("run_command", { CommandLine: "ls" })).toEqual({ CommandLine: "ls" });
   });
 });
 

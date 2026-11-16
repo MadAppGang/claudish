@@ -52,6 +52,11 @@ export interface GeminiSseOptions {
    * (the adapter's history store) gets the upstream name unchanged.
    */
   mapToolName?: (upstreamName: string) => string;
+  /**
+   * Maps a call's arguments back to the argument names Claude Code declared,
+   * undoing the same alias. Given the upstream tool name. Identity when unset.
+   */
+  mapToolArguments?: (upstreamName: string, args: unknown) => unknown;
 }
 
 export function createGeminiSseStream(
@@ -351,7 +356,12 @@ export function createGeminiSseStream(
                       ? opts.mapToolName(part.functionCall.name)
                       : part.functionCall.name;
                     opts.onToolCallObserved?.(toolName);
-                    const args = JSON.stringify(part.functionCall.args || {});
+                    const upstreamArgs = part.functionCall.args || {};
+                    const args = JSON.stringify(
+                      opts.mapToolArguments
+                        ? opts.mapToolArguments(part.functionCall.name, upstreamArgs)
+                        : upstreamArgs
+                    );
 
                     const t = {
                       id: toolId,
