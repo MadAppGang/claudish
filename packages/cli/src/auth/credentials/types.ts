@@ -198,6 +198,8 @@ export interface KeyOrigin {
   source: KeySource;
   /** `maskCredential` of the key: its first and last four characters. */
   masked: string;
+  /** Set while the key is a replacement the user just saved (`replaceKey`). */
+  replaced?: true;
 }
 
 /** The answer to "resolve the key now, for a use that signs with it". */

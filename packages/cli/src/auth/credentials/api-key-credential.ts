@@ -226,8 +226,14 @@ export class ApiKeyCredentialProvider implements CredentialProvider {
   /** Remember where a resolved key came from, masked. Returns the resolution. */
   private settle(key: string, source: KeySource): KeyResolution {
     this.cachedKey = key;
-    this.lastOrigin = { source, masked: maskCredential(key) };
+    this.lastOrigin = this.originOf(key, source);
     return { key, source };
+  }
+
+  /** The origin of `key` from `source`, marked `replaced` when it is the held replacement. */
+  private originOf(key: string, source: KeySource): KeyOrigin {
+    const masked = maskCredential(key);
+    return this.replacement?.key === key ? { source, masked, replaced: true } : { source, masked };
   }
 
   /**
@@ -441,6 +447,7 @@ export class ApiKeyCredentialProvider implements CredentialProvider {
   replaceKey(key: string, source: KeySource): void {
     this.invalidate();
     this.replacement = { key, source };
+    this.lastOrigin = this.originOf(key, source);
   }
 
   /**
