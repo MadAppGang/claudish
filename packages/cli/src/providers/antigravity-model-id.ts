@@ -98,21 +98,36 @@ export function antigravityCarriesEffortInModelId(sent: string): boolean {
 }
 
 /**
- * The Gemini body for an attempt that sends `sent`: without the effort controls
- * (`thinkingLevel`, `thinkingBudget`) when `sent` carries the effort; unchanged
- * otherwise. `includeThoughts` and every other field are kept. Never mutates
- * `inner`, so every attempt shapes the same original dialect payload.
+ * The `thinkingLevel` string for the number the backend reports on a model
+ * record. Recorded: the Antigravity CLI sent "MEDIUM" for `gemini-4-argon-medium`,
+ * whose record says 2. 1 and 3 are the `-low` and `-high` records. Any other
+ * number (100 on `-xhigh`) has no recorded string and gives none.
  */
-export function antigravityBodyForModelId<T>(inner: T, sent: string): T {
+const BACKEND_THINKING_LEVELS: Record<number, string> = { 1: "LOW", 2: "MEDIUM", 3: "HIGH" };
+
+/**
+ * The Gemini body for an attempt that sends `sent`. When `sent` carries the
+ * effort, the request's own effort controls (`thinkingLevel`, `thinkingBudget`)
+ * are removed, and a Gemini id gets the level the backend reports for that id
+ * (`backendLevel`), as the Antigravity CLI sends it. Unchanged otherwise.
+ * `includeThoughts` and every other field are kept. Never mutates `inner`, so
+ * every attempt shapes the same original dialect payload.
+ */
+export function antigravityBodyForModelId<T>(inner: T, sent: string, backendLevel?: number): T {
   const body = inner as
     | { generationConfig?: { thinkingConfig?: Record<string, unknown> } }
     | null
     | undefined;
   const thinking = body?.generationConfig?.thinkingConfig;
   if (!thinking || typeof thinking !== "object") return inner;
-  if (!("thinkingLevel" in thinking) && !("thinkingBudget" in thinking)) return inner;
   if (!antigravityCarriesEffortInModelId(sent)) return inner;
+  const level =
+    backendLevel !== undefined && sent.trim().startsWith("gemini")
+      ? BACKEND_THINKING_LEVELS[backendLevel]
+      : undefined;
+  if (!level && !("thinkingLevel" in thinking) && !("thinkingBudget" in thinking)) return inner;
   const { thinkingLevel: _level, thinkingBudget: _budget, ...kept } = thinking;
+  if (level) kept.thinkingLevel = level;
   const generationConfig: Record<string, unknown> = { ...body?.generationConfig };
   if (Object.keys(kept).length > 0) generationConfig.thinkingConfig = kept;
   else delete generationConfig.thinkingConfig;

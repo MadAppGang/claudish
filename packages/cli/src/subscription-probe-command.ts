@@ -41,6 +41,7 @@ import {
   antigravityUserAgentFor,
   resolveAntigravityClientVersion,
 } from "./auth/antigravity-user.js";
+import { antigravityFetch } from "./providers/transport/antigravity-fetch.js";
 import {
   type AntigravitySessionDeps,
   type FailureClass,
@@ -462,29 +463,25 @@ export async function runProbeWith(
   return result.exitCode;
 }
 
+/** The `requestId` of a conversation's first request, as the Antigravity CLI forms it. */
+function firstRequestId(): string {
+  return `agent/${randomUUID()}/${Date.now()}/${randomUUID()}/1`;
+}
+
 /**
- * The CodeAssist envelope `AntigravityCredentialProvider` builds:
- * `{model, project, user_prompt_id, request}`, plus `enabled_credit_types` on a
- * paid tier. `request` is the file's own text, spliced in.
+ * The CodeAssist envelope keys the Antigravity CLI sends, in its order:
+ * `{project, requestId, request, model, userAgent, requestType}`. `request` is
+ * the file's own text, spliced in, so nothing is added inside it.
  */
 export function buildProbeEnvelopeBody(
   model: string,
   projectId: string,
-  tierId: string,
   requestText: string,
-  userPromptId: string = randomUUID()
+  requestId: string = firstRequestId()
 ): string {
-  const head = JSON.stringify({ model, project: projectId, user_prompt_id: userPromptId });
-  const credits =
-    tierId && tierId !== "free-tier"
-      ? `,"enabled_credit_types":${JSON.stringify(["GOOGLE_ONE_AI"])}`
-      : "";
-  return `${head.slice(0, -1)},"request":${requestText}${credits}}`;
-}
-
-/** A short random id, as the Antigravity CLI's activity logger makes one. */
-function createActivityRequestId(): string {
-  return Math.random().toString(36).substring(7);
+  const head = JSON.stringify({ project: projectId, requestId });
+  const tail = JSON.stringify({ model, userAgent: "antigravity", requestType: "agent" });
+  return `${head.slice(0, -1)},"request":${requestText},${tail.slice(1)}`;
 }
 
 async function determineAntigravity(
@@ -519,17 +516,16 @@ async function determineAntigravity(
   try {
     let res: Response;
     try {
-      res = await fetch(url, {
+      res = await antigravityFetch(url, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${session.accessToken}`,
           "Content-Type": "application/json",
           "User-Agent": antigravityUserAgentFor(version.version),
-          "x-activity-request-id": createActivityRequestId(),
         },
         // Untrimmed: JSON allows whitespace around a value, so the splice stays
         // valid and the caller's bytes reach the wire as written.
-        body: buildProbeEnvelopeBody(args.model, session.projectId, session.tierId, request.text),
+        body: buildProbeEnvelopeBody(args.model, session.projectId, request.text),
         signal: controller.signal,
         // A 3xx is the answer. Following it would POST a second generation
         // and report the second response's status instead of the first.

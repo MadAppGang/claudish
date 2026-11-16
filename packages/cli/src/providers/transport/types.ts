@@ -341,6 +341,13 @@ export interface ProviderTransport {
   getRequestInit?(): Record<string, any>;
 
   /**
+   * The HTTP client for this transport's requests, in place of the runtime's
+   * `fetch`. For a backend whose own client writes a request head `fetch`
+   * cannot reproduce (header order, no `Accept`, a chunked body).
+   */
+  fetch?(url: string, init: RequestInit): Promise<Response>;
+
+  /**
    * Dynamic context window discovered at runtime (e.g., from local model API).
    * ComposedHandler calls this after refreshAuth to update TokenTracker.
    */

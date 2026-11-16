@@ -194,6 +194,48 @@ function expectOwnRetry(sent: Envelope[]) {
   );
 }
 
+function labelsOf(envelope: Envelope): Record<string, string> {
+  return (envelope.request as { labels: Record<string, string> }).labels;
+}
+
+function transformIn(transport: AntigravityProviderTransport, session: string, text: string) {
+  return transport.transformPayload(
+    { contents: [{ role: "user", parts: [{ text }] }] },
+    {
+      output_config: { effort: "high" },
+      metadata: { user_id: JSON.stringify({ session_id: session }) },
+    }
+  ) as Envelope;
+}
+
+describe("Antigravity conversation ids follow the Claude Code session", () => {
+  test("the same opening in two sessions gets two conversations; a later request of one session keeps its own", async () => {
+    const { transport } = await setupTransport();
+    const first = labelsOf(transformIn(transport, "session-one", "same-opening"));
+    const other = labelsOf(transformIn(transport, "session-two", "same-opening"));
+    const again = labelsOf(transformIn(transport, "session-one", "same-opening"));
+
+    expect(other.cascade_id).not.toBe(first.cascade_id);
+    expect(other.trajectory_id).not.toBe(first.trajectory_id);
+    expect(again.cascade_id).toBe(first.cascade_id);
+    expect(again.trajectory_id).toBe(first.trajectory_id);
+  });
+
+  test("a capacity retry is sent in its primary request's conversation", async () => {
+    const { transport, sent, send } = await setupTransport();
+    const requestA = transformIn(transport, "session-one", "same-opening");
+    const requestB = transformIn(transport, "session-two", "same-opening");
+
+    const response = await send(requestA);
+
+    expect(response.status).toBe(200);
+    expect(sent).toHaveLength(2);
+    expect(labelsOf(sent[1]!).cascade_id).toBe(labelsOf(requestA).cascade_id);
+    expect(labelsOf(sent[1]!).trajectory_id).toBe(labelsOf(requestA).trajectory_id);
+    expect(labelsOf(sent[1]!).cascade_id).not.toBe(labelsOf(requestB).cascade_id);
+  });
+});
+
 describe("Antigravity request-scoped capacity retries", () => {
   test("retry retains A's body and request effort when B transforms before A enqueues", async () => {
     const { transport, sent, send } = await setupTransport();

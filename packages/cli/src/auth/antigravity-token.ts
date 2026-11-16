@@ -31,7 +31,7 @@
 
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
+import { closeSync, existsSync, openSync, readSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { log, logStderr } from "../logger.js";
@@ -148,6 +148,12 @@ export interface AntigravityTokenDeps {
    * real agy); `defaultDeps` always supplies it.
    */
   readAgyVersion?: () => string | null;
+  /**
+   * Read the installed agy's build changelist, the number agy sends as `cl=` in
+   * its User-Agent, or null when agy is absent or the binary does not name one.
+   * Optional for the same reason as `readAgyVersion`.
+   */
+  readAgyBuild?: () => string | null;
   /** Current time in ms since epoch (defaults to Date.now). */
   now: () => number;
 }
@@ -339,12 +345,55 @@ function defaultReadAgyVersion(): string | null {
   }
 }
 
+/** The build stamp the agy binary carries; the number is the changelist it was built at. */
+const AGY_BUILD_STAMP = /changelist (\d+) with baseline/;
+/** Bytes read per step of the scan (the stamp sat 151 MB into a 223 MB binary). */
+const AGY_BUILD_SCAN_CHUNK = 8 << 20;
+/** Bytes carried over between steps, so a stamp across a boundary is still found. */
+const AGY_BUILD_SCAN_OVERLAP = 64;
+
+/**
+ * Find the build changelist inside an agy binary. agy prints only its version;
+ * the changelist exists nowhere else on disk. Exported for its test.
+ */
+export function readAgyBuildFromBinary(path: string): string | null {
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, "r");
+    const chunk = Buffer.alloc(AGY_BUILD_SCAN_CHUNK);
+    let position = 0;
+    for (;;) {
+      const read = readSync(fd, chunk, 0, chunk.length, position);
+      if (read <= 0) return null;
+      const found = chunk.subarray(0, read).toString("latin1").match(AGY_BUILD_STAMP);
+      if (found) return found[1];
+      if (read < chunk.length) return null;
+      position += read - AGY_BUILD_SCAN_OVERLAP;
+    }
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+function defaultReadAgyBuild(): string | null {
+  const agy = locateAgyBinary();
+  if (!agy) return null;
+  try {
+    return readAgyBuildFromBinary(realpathSync(agy));
+  } catch {
+    return null;
+  }
+}
+
 const defaultDeps: AntigravityTokenDeps = {
   readStore: defaultReadStore,
   writeStore: defaultWriteStore,
   deleteStore: defaultDeleteStore,
   runAgyRefresh: defaultRunAgyRefresh,
   readAgyVersion: defaultReadAgyVersion,
+  readAgyBuild: defaultReadAgyBuild,
   now: () => Date.now(),
 };
 
@@ -565,7 +614,7 @@ function needsRefresh(tok: AntigravityToken, now: number): boolean {
 function captureAgyClientVersion(accessToken: string, deps: AntigravityTokenDeps): void {
   if (!deps.readAgyVersion || agyClientVersionReadFor(accessToken)) return;
   const read = deps.readAgyVersion();
-  recordAgyClientVersionRead(read, accessToken);
+  recordAgyClientVersionRead(read, accessToken, read ? (deps.readAgyBuild?.() ?? null) : null);
   if (read) {
     log(`[Antigravity] Client version from agy: ${read}`);
   } else {

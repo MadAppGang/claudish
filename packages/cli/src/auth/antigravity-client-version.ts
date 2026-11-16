@@ -21,10 +21,21 @@
 /** The last good version, and the access token the last read was made for. */
 let version: string | null = null;
 let readForToken: string | null = null;
+/**
+ * The build changelist of the agy the version was read from (`cl=<number>` in
+ * agy's User-Agent), or null when it could not be read. It belongs to one
+ * version: a read that changes the version replaces it, null included.
+ */
+let build: string | null = null;
 
 /** The version read from `agy --version`, or null when no read has ever succeeded. */
 export function getAgyClientVersion(): string | null {
   return version;
+}
+
+/** The build changelist of the agy whose version is in use, or null when unknown. */
+export function getAgyClientBuild(): string | null {
+  return build;
 }
 
 /** True when a read was already made for this access token (successful or not). */
@@ -38,11 +49,20 @@ export function agyClientVersionReadFor(accessToken: string): boolean {
  * from the version agy last reported to the fallback floor — but still marks
  * the token as read, so the failure is not retried on every request.
  *
+ * `readBuild` is the build changelist read from the same agy. It is taken with
+ * every successful version read, so the pair always describes one binary.
+ *
  * Returns true when the version in use changed.
  */
-export function recordAgyClientVersionRead(read: string | null, accessToken: string): boolean {
+export function recordAgyClientVersionRead(
+  read: string | null,
+  accessToken: string,
+  readBuild: string | null = null
+): boolean {
   readForToken = accessToken;
-  if (read === null || read === version) return false;
+  if (read === null) return false;
+  build = readBuild;
+  if (read === version) return false;
   version = read;
   return true;
 }
@@ -51,4 +71,5 @@ export function recordAgyClientVersionRead(read: string | null, accessToken: str
 export function _resetAgyClientVersion(): void {
   version = null;
   readForToken = null;
+  build = null;
 }

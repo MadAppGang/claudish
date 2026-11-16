@@ -14,7 +14,8 @@
  */
 
 import { log } from "../logger.js";
-import { getAgyClientVersion } from "./antigravity-client-version.js";
+import { antigravityFetch } from "../providers/transport/antigravity-fetch.js";
+import { getAgyClientBuild, getAgyClientVersion } from "./antigravity-client-version.js";
 import {
   currentAntigravityTokenLineage,
   lineageForAntigravityAccessToken,
@@ -125,9 +126,16 @@ function antigravityClientVersion(): string {
   return resolveAntigravityClientVersion().version;
 }
 
-/** The Antigravity CLI's User-Agent for one given client version. */
+/**
+ * The Antigravity CLI's User-Agent for one given client version. agy also names
+ * its build changelist (`cl=<number>`); it is sent when it was read from the
+ * agy that reported this version, and left out otherwise, because a changelist
+ * of another build would name a client that does not exist.
+ */
 function userAgentFor(version: string): string {
-  return `antigravity/cli/${version} (aidev_client; os_type=${process.platform}; arch=${process.arch}; auth_method=consumer)`;
+  const build = version === getAgyClientVersion() ? getAgyClientBuild() : null;
+  const cl = build ? ` cl=${build};` : "";
+  return `antigravity/cli/${version} (aidev_client; os_type=${process.platform}; arch=${process.arch};${cl} auth_method=consumer)`;
 }
 
 /**
@@ -209,7 +217,7 @@ function mayPublishFor(lineage: string | null): boolean {
 
 /** loadCodeAssist with the Antigravity identity (minimal `{ ideType }` metadata). */
 async function callLoadCodeAssistAntigravity(accessToken: string): Promise<LoadCodeAssistResponse> {
-  const res = await fetch(`${apiBase()}:loadCodeAssist`, {
+  const res = await antigravityFetch(`${apiBase()}:loadCodeAssist`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${accessToken}`,
@@ -333,7 +341,7 @@ export async function retrieveUserQuota(
   projectId: string
 ): Promise<{ buckets?: QuotaBucket[] } | null> {
   try {
-    const res = await fetch(`${apiBase()}:retrieveUserQuota`, {
+    const res = await antigravityFetch(`${apiBase()}:retrieveUserQuota`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -359,6 +367,9 @@ interface AntigravityModelRecord {
   maxTokens?: number;
   maxOutputTokens?: number;
   displayName?: string;
+  /** The backend's own name for the model (`MODEL_PLACEHOLDER_M418`). */
+  model?: string;
+  thinkingLevel?: number;
 }
 
 /** The Antigravity `fetchAvailableModels` response (only the fields we read). */
@@ -404,6 +415,10 @@ export interface AntigravityModelMeta {
   contextWindow?: number;
   maxOutputTokens?: number;
   displayName?: string;
+  /** The backend's own name for the model, which a generation request repeats as `labels.model_enum`. */
+  modelEnum?: string;
+  /** The backend's number for the model's thinking level (`thinkingLevel`: 2 on a `-medium` id). */
+  thinkingLevel?: number;
 }
 
 /** The dynamic models catalog + default id for the Antigravity account. */
@@ -539,7 +554,7 @@ export async function fetchAntigravityAvailableModelsRaw(
   };
   let res: Response;
   try {
-    res = await fetch(url, {
+    res = await antigravityFetch(url, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -648,6 +663,12 @@ export async function getServedAntigravityModels(
           }
           if (typeof record?.displayName === "string" && record.displayName) {
             entry.displayName = record.displayName;
+          }
+          if (typeof record?.model === "string" && record.model) {
+            entry.modelEnum = record.model;
+          }
+          if (typeof record?.thinkingLevel === "number") {
+            entry.thinkingLevel = record.thinkingLevel;
           }
           meta[id] = entry;
         }
