@@ -149,14 +149,17 @@ parallel. An output still unanswered at the deadline is sent unchanged.
 The original is written to `~/.claudish/compaction/<session_id>/<key>.txt` (the folder is `0700`,
 the files `0600`). The model reads it with the `Read` tool when the compressed text is not enough.
 
-So that `Read` needs no permission prompt, claudish starts Claude Code with
-`--add-dir ~/.claudish/compaction/<session_id>/`, the session's own folder and no other. To know the
+So that `Read` needs no permission prompt, claudish starts Claude Code with a Read allow rule for
+the session's own folder and no other:
+`--allowedTools "Read(//<home>/.claudish/compaction/<session_id>/**)"`. The rule adds to any
+`--allowedTools` rules of your own. claudish does not use `--add-dir` here: Claude Code asks whether
+you trust each added folder, and the launch waits on that question. To know the
 session id before Claude Code starts, claudish:
 
 - uses the id you passed with `--session-id <uuid>` or `--resume <uuid>`;
 - otherwise passes a new `--session-id <uuid>` itself.
 
-In these cases the id is not known in advance, no folder is added, and Claude Code asks before it
+In these cases the id is not known in advance, no rule is added, and Claude Code asks before it
 reads a recovery file:
 
 - `--continue` (`-c`);

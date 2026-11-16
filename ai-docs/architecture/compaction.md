@@ -318,7 +318,7 @@ with one warning.
 
 ```
 ~/.claudish/compaction/                  0700
-~/.claudish/compaction/<session_id>/     0700   (also the only --add-dir)
+~/.claudish/compaction/<session_id>/     0700   (the only folder the Read rule allows)
   <key>.json  0600   one record: tool-output, history-summary or history-swap
   <key>.txt   0600   the original tool output, for Read
 ```
@@ -332,10 +332,28 @@ by `compactionSessionPlan`) or the resume picker chose is kept. Opening a sessio
 launcher's folder setup set the folder's mtime to now (`touchSessionFolder`), so a resumed session
 that only replays records does not expire. The folder's own mtime counts because the launcher creates the
 folder before Claude Code starts, and it stays empty until the first large output: a rule on
-files alone would let a second claudish starting at that moment delete a live session's folder. `--add-dir` names the session's own folder only, so no session can Read another's
-outputs. The session id is known before Claude Code starts (`--session-id`, `--resume <uuid>`, or
-one claudish mints); with `--continue`, a bare `--resume` or `--fork-session` alone, no
-folder is added and Read asks for permission.
+files alone would let a second claudish starting at that moment delete a live session's folder.
+
+The launcher passes `--allowedTools "Read(//<folder>/**)"` for the session's own folder only, so no
+session can Read another's outputs. The session id is known before Claude Code starts
+(`--session-id`, `--resume <uuid>`, or one claudish mints); with `--continue`, a bare `--resume` or
+`--fork-session` alone, no rule is added and Read asks for permission.
+
+Why not `--add-dir`, measured on Claude Code 2.1.326 against a mock Messages endpoint in a sandbox
+HOME, the mock answering one Read of a file in the session folder:
+
+| Launch | Result |
+|---|---|
+| `--add-dir <folder>`, interactive | stops at "Adding a new directory: … Is this a directory you created or one you trust? … Your answer holds for this session." (`No, exit` / `Yes, add it`) |
+| no flag, `-p`, `--permission-mode default` | Read refused: "Claude requested permissions to read from … but you haven't granted it yet." |
+| `--allowedTools "Read(//<folder>/**)"`, `-p` and interactive | no question, Read returns the file |
+| the same, two rules (real and given spelling) after one `--allowedTools` | Read returns the file |
+| claudish's rule first, the user's `--allowedTools "Bash(ls:*)"` later | Read returns the file |
+| a rule for another session's folder | Read prompts |
+
+The answer to the trust question holds for one session, so one stable folder per user would ask on
+every launch too. Claude Code matches the real path, so the rule names the real spelling and, when it
+differs (`/var` → `/private/var`), the given one. claudish never writes Claude Code's trust records.
 
 ## Out of scope, and why
 

@@ -3359,8 +3359,8 @@ export async function runClaudeWithProxy(
     sessionHooksNeedDriver: hookEngine !== null && sessionHooksNeedBinding(hookEngine),
   });
   const sessionFlags = sessionFlagsOf(config.claudeArgs);
-  // Compaction's recovery files are Read from the session's own folder, added
-  // with `--add-dir` (only that folder). The session id must be known before
+  // Compaction's recovery files are Read from the session's own folder, allowed
+  // by a Read rule for that folder only. The session id must be known before
   // Claude Code starts, so claudish mints one unless the user's arguments fix it
   // or leave it to Claude Code (`--continue`, a bare `--resume`), when nothing is
   // added. Nothing is written to the child's environment.

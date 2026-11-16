@@ -1,7 +1,15 @@
 /**
- * What compaction adds to Claude Code's argv: `--add-dir` for the session's
- * own compaction folder, so the model may Read a compressed output's recovery
- * file without a permission prompt, and no other session's folder.
+ * What compaction adds to Claude Code's argv: a Read allow rule for the
+ * session's own compaction folder (`--allowedTools "Read(//<folder>/**)"`), so
+ * the model may Read a compressed output's recovery file without a permission
+ * prompt, and no other session's folder.
+ *
+ * Not `--add-dir`: Claude Code 2.1.326 asks "Is this a directory you created or
+ * one you trust?" for every added folder not trusted before, and the launch
+ * waits on that question; the answer holds for one session only. A Read allow
+ * rule asks nothing, headless or interactive, and adds to the user's own
+ * `--allowedTools` rules. Claude Code matches the real path, so the rule names
+ * the folder's real spelling and, when it differs, the spelling claudish uses.
  *
  * The folder is named by the session id, which must be known before Claude
  * Code starts:
@@ -18,6 +26,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { realpathSync } from "node:fs";
 import { logStderr } from "../logger.js";
 import { ensureSessionFolder } from "./store.js";
 
@@ -98,20 +107,25 @@ export function compactionKeepSessionIds(
 
 /** What the launcher puts in front of Claude Code's argv for compaction. */
 export interface CompactionLaunch {
-  /** Arguments for the FRONT of argv: `[--session-id <minted>] --add-dir <folder>`, or none. */
+  /** Arguments for the FRONT of argv: `[--session-id <minted>] --allowedTools <Read rules>`, or none. */
   leadingArgs: string[];
   /** The session id the folder is named by; null when unknown. */
   sessionId: string | null;
   /** The id claudish minted and passes as `--session-id`; null when it minted none. */
   mintedSessionId: string | null;
-  /** The folder added; null when none. */
+  /** The folder the Read rules allow; null when none. */
   dir: string | null;
+}
+
+/** The Read allow rules for one folder: its real spelling, then the given one when it differs. */
+export function compactionReadRules(dir: string): string[] {
+  return [...new Set([realpathSync(dir), dir])].map((path) => `Read(/${path}/**)`);
 }
 
 /**
  * Plan compaction's arguments and create the session's folder (0700). The
- * arguments go at the FRONT of argv: `--add-dir` takes a variadic list, so
- * placed after the user's arguments it would swallow a positional prompt.
+ * arguments go at the FRONT of argv: `--allowedTools` takes a variadic list,
+ * so placed after the user's arguments it would swallow a positional prompt.
  */
 export function prepareCompactionLaunch(
   userArgs: ReadonlyArray<string>,
@@ -126,7 +140,11 @@ export function prepareCompactionLaunch(
   const sessionId = plan.kind === "known" ? plan.sessionId : (minted as string);
   const dir = ensureSessionFolder(root, sessionId);
   return {
-    leadingArgs: [...(minted ? ["--session-id", minted] : []), "--add-dir", dir],
+    leadingArgs: [
+      ...(minted ? ["--session-id", minted] : []),
+      "--allowedTools",
+      ...compactionReadRules(dir),
+    ],
     sessionId,
     mintedSessionId: minted,
     dir,
@@ -149,7 +167,7 @@ export function compactionLaunchArgs(
     return { leadingArgs: launch.leadingArgs, mintedSessionId: launch.mintedSessionId };
   } catch (err) {
     logStderr(
-      `[compaction] the session folder could not be prepared; no --add-dir added: ${err instanceof Error ? err.message : String(err)}`
+      `[compaction] the session folder could not be prepared; no Read rule added: ${err instanceof Error ? err.message : String(err)}`
     );
     return { leadingArgs: [], mintedSessionId: null };
   }

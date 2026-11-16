@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { acquireSigningLease } from "../redact.js";
@@ -44,10 +44,12 @@ test("a folder that cannot be prepared adds nothing and warns through the redact
 test("a folder that can be prepared returns the leading arguments", () => {
   const result = compactionLaunchArgs([], join(dir, "root"), () => "minted-id");
   expect(result.mintedSessionId).toBe("minted-id");
+  const folder = join(dir, "root", "minted-id");
+  const spellings = [...new Set([realpathSync(folder), folder])];
   expect(result.leadingArgs).toEqual([
     "--session-id",
     "minted-id",
-    "--add-dir",
-    join(dir, "root", "minted-id"),
+    "--allowedTools",
+    ...spellings.map((p) => `Read(/${p}/**)`),
   ]);
 });

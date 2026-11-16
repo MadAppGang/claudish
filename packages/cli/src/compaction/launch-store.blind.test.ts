@@ -45,7 +45,9 @@ if (process.env.COMPACTION_BLIND_FILE !== import.meta.path) {
   }) as unknown as typeof fetch;
 
   const { createHash } = await import("node:crypto");
-  const { mkdirSync, writeFileSync, utimesSync, existsSync, statSync } = await import("node:fs");
+  const { mkdirSync, writeFileSync, utimesSync, existsSync, statSync, realpathSync } = await import(
+    "node:fs"
+  );
   const { prepareCompactionLaunch } = await import("./launch.js");
   const {
     CompactionStore,
@@ -57,6 +59,13 @@ if (process.env.COMPACTION_BLIND_FILE !== import.meta.path) {
   } = await import("./store.js");
   const uuid = "1a530299-13b3-4f99-86ef-dc43bea3d47d";
   const minted = "a2bc9d87-d61e-4786-98b6-f4127d3fa911";
+  // Claude Code 2.1.326 asks a trust question for every `--add-dir` folder and
+  // stops the launch on it; a Read allow rule needs no question. Its paths are
+  // the folder's real spelling and, when it differs, the spelling given.
+  function readRules(dir: string): string[] {
+    const real = realpathSync(dir);
+    return [...new Set([real, dir])].map((p) => `Read(/${p}/**)`);
+  }
   let root: string;
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), "compaction-launch-"));
@@ -74,7 +83,8 @@ if (process.env.COMPACTION_BLIND_FILE !== import.meta.path) {
     test("REQ-16: known id adds only its own session folder: " + args.join(" "), () => {
       const plan = prepareCompactionLaunch(args, root, () => minted);
       expect(plan.sessionId).toBe(uuid);
-      expect(plan.leadingArgs).toEqual(["--add-dir", join(root, uuid)]);
+      expect(plan.leadingArgs).toEqual(["--allowedTools", ...readRules(join(root, uuid))]);
+      expect(plan.leadingArgs).not.toContain("--add-dir");
       expect(plan.dir).toBe(join(root, uuid));
       expect(statSync(plan.dir!).mode & 0o777).toBe(0o700);
       expect(plan.leadingArgs).not.toContain(root);
@@ -84,7 +94,13 @@ if (process.env.COMPACTION_BLIND_FILE !== import.meta.path) {
     const args = ["--model", "claude-sonnet-5-5"];
     const original = [...args];
     const plan = prepareCompactionLaunch(args, root, () => minted);
-    expect(plan.leadingArgs).toEqual(["--session-id", minted, "--add-dir", join(root, minted)]);
+    expect(plan.leadingArgs).toEqual([
+      "--session-id",
+      minted,
+      "--allowedTools",
+      ...readRules(join(root, minted)),
+    ]);
+    expect(plan.leadingArgs).not.toContain("--add-dir");
     expect(plan.sessionId).toBe(minted);
     expect(plan.dir).toBe(join(root, minted));
     expect(statSync(plan.dir!).mode & 0o777).toBe(0o700);
