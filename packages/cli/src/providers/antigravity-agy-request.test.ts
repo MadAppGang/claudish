@@ -108,6 +108,30 @@ describe("withAgyTools", () => {
     expect(kept.description).not.toContain("{{");
   });
 
+  test("a placeholder in a description that is not agy's is not filled", () => {
+    const mine = { name: "swarm", description: "Return the literal string {{os}}" };
+    const changed = {
+      ...aliased("run_command"),
+      description: `${agyDeclarationTemplate("run_command")?.description} Keep {{shell}}`,
+    };
+    const out = withAgyTools([{ functionDeclarations: [mine, changed] }], ENVIRONMENT) as any[];
+    expect(out.at(-2).functionDeclarations[0]).toEqual(mine);
+    const kept = out.at(-1).functionDeclarations[0].description as string;
+    expect(kept).toContain("Operating System: mac. Shell: zsh.");
+    expect(kept.endsWith(" Keep {{shell}}")).toBe(true);
+  });
+
+  test("an entry with an empty declaration list keeps its other capability", () => {
+    const out = withAgyTools(
+      [
+        { functionDeclarations: [{ name: "Skill" }] },
+        { functionDeclarations: [], googleSearch: {} },
+      ],
+      ENVIRONMENT
+    ) as any[];
+    expect(out.at(-1)).toEqual({ googleSearch: {} });
+  });
+
   test("an entry that declares no function keeps its place after agy's declarations", () => {
     const out = withAgyTools(
       [{ googleSearch: {} }, { functionDeclarations: [{ name: "Skill" }] }],

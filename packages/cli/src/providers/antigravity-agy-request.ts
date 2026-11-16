@@ -128,13 +128,20 @@ export function withAgyTools(tools: unknown, environment: AgyEnvironment): unkno
       continue;
     }
     const { functionDeclarations, ...rest } = entry;
+    // An entry that declares nothing can still hold another capability.
+    if (functionDeclarations.length === 0 && Object.keys(rest).length > 0) out.push(rest);
     for (const declaration of functionDeclarations as Declaration[]) {
       if (replaced.has(declaration?.name)) continue;
       // A renamed tool whose description something changed after the alias
-      // (a hook) is kept as it is, with the template's placeholders filled.
+      // (a hook) is kept as it is. Where it still holds `agy`'s description,
+      // that part has its placeholders filled; no other text is touched.
+      const template = BY_NAME.get(declaration?.name)?.description;
       const kept =
-        typeof declaration?.description === "string" && BY_NAME.has(declaration.name)
-          ? { ...declaration, description: fill(declaration.description, values) }
+        template && typeof declaration.description === "string"
+          ? {
+              ...declaration,
+              description: declaration.description.replace(template, () => fill(template, values)),
+            }
           : declaration;
       out.push({ ...rest, functionDeclarations: [kept] });
     }

@@ -850,10 +850,20 @@ request in the request's order.
 - What a translation drops on a returned call: `WaitMsBeforeAsync` (`Bash` has no wait before
   background), `ByteOffset`, `Overwrite`, `ArtifactMetadata`, and `search_web`'s `domain`
   (`WebSearch` can restrict to a site, not prefer one). `edit_file` replaces every occurrence, so
-  `Edit` gets `replace_all: true`. `ask_question` options become a label and a description with
+  `Edit` gets `replace_all: true` unless the call states it. `ask_question` options become a label and a description with
   the same text, under the header `Question <n>`.
-- A `write_file` call with `Append: true` is not translated. `Write` would replace the file, so
-  the call reaches it without `file_path` and fails.
+- Three calls are not translated, because Claude Code's tool would do something else. Each
+  reaches Claude Code without `file_path`, fails there, and the model reads the error:
+  a `write_file` with `Append: true` (`Write` replaces the file); a `write_file` without
+  `Overwrite: true` on a file that exists (`agy` refuses it; the file is looked up on this
+  machine, where Claude Code runs); a `read_file` with a `ByteOffset` above 0 (`Read` has none).
+- A call made against Claude Code's own schema, which a declaration kept after a hook carries,
+  keeps an explicit `replace_all`, a question's `header`, `multiSelect` and option descriptions.
+- Known limits. `ask_question` as `agy` declares it allows more options than `AskUserQuestion`
+  takes (4): such a call fails Claude Code's validation. A question in the history is sent with
+  its option labels only, an `Edit` without its `replace_all`, a `WebSearch` without its domain
+  lists: `agy`'s declarations have no such arguments. A user's own tool that carries an `agy` name AND `agy`'s exact
+  description is taken for a renamed one.
 - Result wording (`Created At` / `Completed At`) is still only on the four file and shell tools.
   `agy`'s wording of a web search, a question or a message was not recorded.
 

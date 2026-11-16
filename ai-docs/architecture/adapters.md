@@ -264,8 +264,10 @@ arguments translate both ways. They carry the argument names `agy` 1.5.9 declare
 `restoreArguments` undoes it on a returned call, through the Gemini parser's `mapToolArguments`;
 a call that reached Claude Code with `CommandLine` would fail `Bash`'s schema. It also drops what
 Claude Code's tool does not take (`WaitMsBeforeAsync`, `ByteOffset`, `Overwrite`,
-`ArtifactMetadata`, `domain`), adds `replace_all: true` to an `edit_file` call, and leaves a
-`write_file` call with `Append: true` untranslated so that `Write` refuses it.
+`ArtifactMetadata`, `domain`), adds `replace_all: true` to an `edit_file` call that does not
+state it, and leaves untranslated, so that Claude Code's tool refuses it, a `write_file` that
+appends, a `write_file` without `Overwrite: true` on a file that exists, and a `read_file` at a
+byte offset.
 
 The seven also get `agy`'s description. That description is the mark the envelope builder reads:
 a declaration under an `agy` name that carries it is Claude Code's own tool, and is replaced by

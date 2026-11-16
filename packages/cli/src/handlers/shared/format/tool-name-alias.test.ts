@@ -286,7 +286,7 @@ describe("aliasToolsForProvider: argument names", () => {
 
   test("a returned call loses the arguments Claude Code's tool does not take", () => {
     const { restoreArguments } = aliasToolsForProvider(fileTools(), "antigravity");
-    expect(restoreArguments("read_file", { Path: "/a.txt", ByteOffset: 10 })).toEqual({
+    expect(restoreArguments("read_file", { Path: "/a.txt", ByteOffset: 0 })).toEqual({
       file_path: "/a.txt",
     });
     expect(
@@ -304,6 +304,51 @@ describe("aliasToolsForProvider: argument names", () => {
     const { restoreArguments } = aliasToolsForProvider(fileTools(), "antigravity");
     const sent = { Path: "/a.txt", Content: "more", Append: true };
     expect(restoreArguments("write_file", sent)).toEqual(sent);
+  });
+
+  test("a write_file on a file that exists is translated only with Overwrite: true", () => {
+    const { restoreArguments } = aliasToolsForProvider(fileTools(), "antigravity");
+    const existing = import.meta.path;
+    const sent = { Path: existing, Content: "x", Overwrite: false };
+    expect(restoreArguments("write_file", sent)).toEqual(sent);
+    expect(restoreArguments("write_file", { Path: existing, Content: "x" })).toEqual({
+      Path: existing,
+      Content: "x",
+    });
+    expect(restoreArguments("write_file", { ...sent, Overwrite: true })).toEqual({
+      file_path: existing,
+      content: "x",
+    });
+  });
+
+  test("a read_file that continues at a byte offset is left as sent", () => {
+    const { restoreArguments } = aliasToolsForProvider(fileTools(), "antigravity");
+    const sent = { Path: "/a.txt", StartLine: 1, ByteOffset: 46080 };
+    expect(restoreArguments("read_file", sent)).toEqual(sent);
+  });
+
+  test("a call made against Claude Code's own schema keeps its values", () => {
+    const { restoreArguments } = aliasToolsForProvider(
+      { tools: ["Edit", "AskUserQuestion"].map(tool) },
+      "antigravity"
+    );
+    expect(
+      restoreArguments("edit_file", {
+        Path: "/a.txt",
+        Target: "x",
+        Replacement: "y",
+        replace_all: false,
+      })
+    ).toEqual({ file_path: "/a.txt", old_string: "x", new_string: "y", replace_all: false });
+    const question = {
+      question: "Which?",
+      header: "Features",
+      options: [{ label: "A", description: "first" }],
+      multiSelect: true,
+    };
+    expect(restoreArguments("ask_question", { questions: [question] })).toEqual({
+      questions: [question],
+    });
   });
 
   test("ask_question, search_web and send_message translate both ways", () => {

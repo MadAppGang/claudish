@@ -30,6 +30,7 @@
  * arguments Claude Code's tools cannot be given.
  */
 
+import { existsSync } from "node:fs";
 import { agyDeclarationTemplate } from "../../../providers/antigravity-agy-request.js";
 
 /** Claude Code built-in → the agy-native name. A fixed, hand-verified set. */
@@ -162,15 +163,20 @@ function questionsFromWire(args: Arguments): Arguments {
     ...args,
     questions: args.questions.map((question, index) => {
       if (!isRecord(question)) return question;
+      // A call made against Claude Code's own schema (the declaration kept
+      // after a hook changed its description) already has these fields.
       return {
         question: question.question,
-        header: `Question ${index + 1}`,
+        header: typeof question.header === "string" ? question.header : `Question ${index + 1}`,
         options: Array.isArray(question.options)
           ? question.options.map((option) =>
               typeof option === "string" ? { label: option, description: option } : option
             )
           : question.options,
-        multiSelect: question.is_multi_select === true,
+        multiSelect:
+          typeof question.multiSelect === "boolean"
+            ? question.multiSelect
+            : question.is_multi_select === true,
       };
     }),
   };
@@ -200,7 +206,10 @@ const AGY_ARGUMENT_SHAPE: Record<
   write_file: { fromWire: (args) => without(args, "Overwrite", "Append", "ArtifactMetadata") },
   edit_file: {
     toWire: (args) => without(args, "replace_all"),
-    fromWire: (args) => ({ ...without(args, "ArtifactMetadata"), replace_all: true }),
+    fromWire: (args) => ({
+      ...without(args, "ArtifactMetadata"),
+      replace_all: typeof args.replace_all === "boolean" ? args.replace_all : true,
+    }),
   },
   search_web: {
     toWire: (args) => without(args, "allowed_domains", "blocked_domains"),
@@ -209,9 +218,24 @@ const AGY_ARGUMENT_SHAPE: Record<
   ask_question: { toWire: questionsToWire, fromWire: questionsFromWire },
 };
 
-/** A returned call claudish must not translate, because the translation would change what it does. */
-const leftAsSent = (wireName: string, args: Arguments): boolean =>
-  wireName === "write_file" && args.Append === true;
+/**
+ * A returned call claudish must not translate, because the translation would
+ * change what it does. Left as sent, it fails in Claude Code for the missing
+ * `file_path`, and the model reads that error.
+ *
+ * - `write_file` that appends: `Write` replaces the file.
+ * - `write_file` without `Overwrite: true` on a file that exists: `agy`
+ *   refuses it, and `Write` would replace the file. Claude Code runs on this
+ *   machine, so the file is looked up here.
+ * - `read_file` that continues at a byte offset: `Read` has none, and would
+ *   return the start of the range again.
+ */
+function leftAsSent(wireName: string, args: Arguments): boolean {
+  if (wireName === "read_file") return typeof args.ByteOffset === "number" && args.ByteOffset > 0;
+  if (wireName !== "write_file") return false;
+  if (args.Append === true) return true;
+  return args.Overwrite !== true && typeof args.Path === "string" && existsSync(args.Path);
+}
 
 const READ_RANGE_PROPERTIES = {
   StartLine: { type: "integer", description: "The first line to read, counted from 1." },
