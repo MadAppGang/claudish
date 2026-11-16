@@ -16,6 +16,7 @@
 import { log } from "../logger.js";
 import { antigravityFetch } from "../providers/transport/antigravity-fetch.js";
 import { getAgyClientBuild, getAgyClientVersion } from "./antigravity-client-version.js";
+import { antigravityAccountCalls, sendAntigravitySideCalls } from "./antigravity-side-calls.js";
 import {
   currentAntigravityTokenLineage,
   lineageForAntigravityAccessToken,
@@ -185,6 +186,7 @@ export function resetAntigravityUserCache(): void {
   agServedCacheAt = 0;
   agServedCacheVersion = null;
   cachedAgLineage = null;
+  accountCallsSentFor = undefined;
 }
 
 /** Drop every per-account cache when the current token lineage is not the one it was cached under. */
@@ -196,6 +198,27 @@ function syncAccountCaches(): void {
   }
   resetAntigravityUserCache();
   cachedAgLineage = lineage;
+}
+
+/** The token lineage whose account lookups were sent since the caches were last dropped. */
+let accountCallsSentFor: string | null | undefined;
+
+/**
+ * Starts the account lookups the Antigravity CLI makes at a start, once for
+ * each set-up of an account. Not awaited: no answer is read.
+ */
+function startAccountCalls(accessToken: string, projectId: string, lineage: string | null): void {
+  if (accountCallsSentFor === lineage) return;
+  accountCallsSentFor = lineage;
+  void sendAntigravitySideCalls(
+    antigravityAccountCalls({
+      apiBase: apiBase(),
+      defaultHost: antigravityHost() === ANTIGRAVITY_DEFAULT_HOST,
+      userAgent: buildAntigravityUserAgent(),
+      projectId,
+    }),
+    accessToken
+  );
 }
 
 /** The lineage `accessToken` belongs to; the current one for a token not seen recently. */
@@ -282,6 +305,7 @@ export async function setupAntigravityUser(
     log("[Antigravity] Token lineage changed during setup; the result is not cached.");
   }
   log(`[Antigravity] User set up, project: ${projectId}, tier: ${resolvedTier}`);
+  startAccountCalls(accessToken, projectId, lineage);
   return { projectId, tierId: resolvedTier };
 }
 
