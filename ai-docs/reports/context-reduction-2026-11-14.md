@@ -910,6 +910,39 @@ complete scoped test run (bun's "Ran … tests across … files" line in the
 tool result). Without the kills the window would fill slightly sooner; the
 peaks and the compaction counts above are what these trials measured.
 
+### Case a, log-heavy debugging, Claude Code defaults: large Bash output never reaches the model
+
+The task: the parent of 463c439e (Gemini function responses arrive in the
+wrong order after two parallel tool calls), the symptom only, graded by
+463c439e's own test file (control: the parent gives "7 pass, 1 fail", the
+fix "8 pass, 0 fail"). The prompt FORCES long output: the complete output
+of `bun test src/adapters src/handlers` (about 110,000 characters) and
+`bun run build`, "do not pipe them through tail, head or grep".
+
+Under Claude Code 2.1.325's defaults this output never enters the
+context. The compaction arm's trial 1 (`case-a-compaction-t1.json`, with
+the 10-minute Bash timeout) ran the tests to the end ("Ran 1687 tests
+across 126 files. [155.94s]"), and the tool result the model received was
+2,271 characters: `<persisted-output> Output too large (109.8KB). Full
+output saved to: …`. Claude Code's setting `bashOutputMaxChars` reads
+"How many characters of a successful Bash or PowerShell command's output
+Claude receives inline (default 30000; values clamp to 4000-128000).
+Output past this is saved to a file and Claude receives a short preview
+plus the path." The agent then ran `wc` on that file and grepped it; it
+did not read it in full. The largest tool result was a Read of
+`gemini-api-format.ts` (20,797 characters), which this build does not
+compress. Compaction made no call. The agent's fix failed the order test
+("7 pass, 1 fail"); 347 s, $0.3095. An earlier attempt hit Claude Code's
+2-minute default Bash timeout ("Exit code 143") and is not counted.
+
+The finding: with Claude Code's defaults, claudish's tool-output step can
+only act on Bash outputs from its threshold (16,000 characters at
+`minTokens` 4,000) up to 30,000 characters. Longer Bash outputs are
+already cut to a preview by Claude Code, and Read results are skipped by
+design. That is why cases c, d and e each had at most one compression per
+trial. A second run of case a with `bashOutputMaxChars` raised to 128000
+follows below.
+
 ### Case e, research: compaction had almost nothing to compress
 
 The task: a read-only question about claudish answered with six parallel
