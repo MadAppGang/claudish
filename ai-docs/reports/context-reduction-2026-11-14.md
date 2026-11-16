@@ -992,6 +992,46 @@ does reach the model, compaction cuts what later requests re-read and the
 trial costs less on average, but with 3 trials per arm the cost ranges
 overlap and the result is not conclusive.
 
+### Case f, threshold sweep on case a with the raised inline limit
+
+The compaction arm of case a again (same build a6952916, same
+`bashOutputMaxChars` 128000, same FORCED output), with `minTokens` 2000
+(about 8,000 characters) and 8000 (about 32,000 characters). The 4000
+point is case a's compaction arm above.
+
+| `minTokens` | Trial | Grade | Duration | Cost | Main requests | Tool results | Cache read | Haiku calls, in / out | 429s |
+|---|---|---|---|---|---|---|---|---|---|
+| 2000 | 1 | 7/8 | 678 s | $0.2284 | 14 | 30 | 548,269 | 3, 169,896 / 825 | 1 |
+| 2000 | 2 | 7/8 | 453 s | $0.5561 | 15 | 20 | 1,264,230 | 1, 56,830 / 281 | 1 |
+| 2000 | 3 | 8/8 pass | 401 s | $0.2668 | 14 | 28 | 551,284 | 2, 112,411 / 735 | 1 |
+| 8000 | 1 | 8/8 pass | 382 s | $0.2076 | 10 | 28 | 361,727 | 2, 113,286 / 383 | 1 |
+| 8000 | 2 | 8/8 pass | 417 s | $0.1970 | 13 | 26 | 468,279 | 2, 113,206 / 457 | 1 |
+| 8000 | 3 | 7/8 | 420 s | $0.1984 | 11 | 21 | 403,760 | 2, 112,157 / 782 | 1 |
+
+| `minTokens` | Mean cost | Passes |
+|---|---|---|
+| 2000 | $0.3504 | 1 of 3 |
+| 4000 (case a) | $0.3166 | 0 of 3 |
+| 8000 | $0.2010 | 2 of 3 |
+| no compaction (case a baseline) | $0.4444 | 0 of 3 |
+
+Every trial compressed the 110,000-character test outputs (each over all
+three thresholds), 1 to 3 Haiku calls per trial, all HTTP 200. Every test
+run arrived inline; there was no `Exit code 143` and no
+`<persisted-output>`; each trial got one 429 at its start; no other
+madbench run was on the machine.
+
+The 8000 arm has the lowest and the narrowest cost range ($0.1970 to
+$0.2076), below every trial of the baseline. The 2000 arm has one
+expensive trial ($0.5561, 1,264,230 cache-read tokens) and overlaps the
+baseline. The Haiku calls are about the same at all three thresholds,
+because the only outputs over any of them were the test runs. So the
+difference between 2000 and 8000 is not explained by what was
+compressed; inferred, not measured: it is run-to-run variation in how
+the agent worked (requests and re-reads), which 3 trials cannot
+separate from the threshold. The passes (3 of the 9 compaction trials
+against 0 of 3 baseline trials) are too few to read as an effect.
+
 ### Case e, research: compaction had almost nothing to compress
 
 The task: a read-only question about claudish answered with six parallel
