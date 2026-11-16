@@ -850,8 +850,10 @@ claudish's history summary never started (`history_started=0`, no log line
 with "history"), so Claude Code compacted first and the case's stop rule
 ended the run after trial 1. Tool-output compression made 1 Haiku call
 (HTTP 200, 8,335 in / 679 out) although 19 outputs were over 16,000
-characters; 10 of them were Read results, and no Read result was
-compressed.
+characters; 10 of them were Read results, which this build never compresses
+(`compaction.toolOutputs.skipTools` defaults to `["Read"]`, so a Read before
+an Edit keeps its content). In a session that reads whole files, most of
+the large outputs are therefore out of the tool-output step's reach.
 
 Why the history summary did not start is inferred, not measured. A missing
 catalog window is ruled out: the history check with thresholds 0.01 and
