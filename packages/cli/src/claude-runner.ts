@@ -521,7 +521,7 @@ export function settingsCredentialFindings(
   if (customHeadersSignWithKey(env.ANTHROPIC_CUSTOM_HEADERS)) {
     findings.push({ where: "environment", kind: "custom-headers-auth" });
   }
-  for (const layer of claudeSettingsLayers(config, env, deps)) {
+  for (const layer of claudeSettingsLayers(config.claudeArgs ?? [], env, deps)) {
     // A `--settings` file is named by its path, which the user can open and edit.
     const where = layer.file ?? layer.where;
     if (layer.settings === null) {
@@ -698,7 +698,9 @@ function readableClaudeSettingsLayers(
   env: NodeJS.ProcessEnv,
   deps: ChildAuthControlDeps
 ): SettingsLayer[] {
-  return claudeSettingsLayers(config, env, deps).filter((layer) => !layer.droppedByMerge);
+  return claudeSettingsLayers(config.claudeArgs ?? [], env, deps).filter(
+    (layer) => !layer.droppedByMerge
+  );
 }
 
 /**
@@ -706,7 +708,7 @@ function readableClaudeSettingsLayers(
  * value when it cannot be read or parsed, marked `droppedByMerge`.
  */
 function claudeSettingsLayers(
-  config: ClaudishConfig,
+  claudeArgs: readonly string[],
   env: NodeJS.ProcessEnv,
   deps: ChildAuthControlDeps
 ): SettingsLayer[] {
@@ -715,7 +717,7 @@ function claudeSettingsLayers(
   const cwd = deps.cwd ?? process.cwd();
   // A layer `--setting-sources` turns off hands the child nothing, so it is not
   // inspected. Managed settings and every `--settings` value apply whatever it says.
-  const enabled = enabledSettingSources(config.claudeArgs ?? []);
+  const enabled = enabledSettingSources(claudeArgs);
   const on = (source: SettingSource): boolean => enabled === null || enabled.has(source);
   const files: Array<[string, SettingsTier]> = [
     [managedSettingsPath(), "managed"],
@@ -732,7 +734,7 @@ function claudeSettingsLayers(
     const settings = readSettingsSource(file, readFile);
     if (settings) layers.push({ where: file, settings, tier });
   }
-  const occurrences = settingsArgOccurrences(config.claudeArgs ?? []);
+  const occurrences = settingsArgOccurrences(claudeArgs);
   const merged = occurrences.find((o) => o.spelling === "separate");
   occurrences.forEach((occurrence, i) => {
     // `where` never carries the value: an inline `--settings` may hold a secret.
@@ -745,7 +747,8 @@ function claudeSettingsLayers(
       layers.push({ where, settings, tier: "cli", droppedByMerge: true, ...file });
       return;
     }
-    layers.push({ where, settings, tier: "cli", ...file });
+    const mergedMark = occurrence === merged ? { merged: true as const } : {};
+    layers.push({ where, settings, tier: "cli", ...file, ...mergedMark });
   });
   return layers;
 }
@@ -860,6 +863,8 @@ interface SettingsLayer {
   tier: SettingsTier;
   /** The first two-token `--settings` value, unreadable, which the merge splices out. */
   droppedByMerge?: true;
+  /** The first two-token `--settings` value, readable: the one the merge folds into claudish's file. */
+  merged?: true;
   /** A `--settings` value that names a file: its path. Absent for inline JSON, which may hold a secret. */
   file?: string;
 }
@@ -1352,60 +1357,67 @@ function parseSettingsArg(value: string): Record<string, unknown> {
   return JSON.parse(readFileSync(value, "utf-8")) as Record<string, unknown>;
 }
 
-/** Same, but swallows every failure — discovery must never break a launch. */
-function parseSettingsArgSafe(value: string): Record<string, unknown> | null {
-  try {
-    const parsed = parseSettingsArg(value);
-    return parsed && typeof parsed === "object" ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
 /**
- * The settings files Claude Code merges below the CLI-args tier, LOWEST
- * precedence first. Anything a later file defines replaces the earlier value —
- * `statusLine` is a whole-object key, not a deep merge. The user file is the one
- * Claude Code loads for `env`'s `CLAUDE_CONFIG_DIR` ({@link userSettingsFile}).
+ * The values `key` takes in the highest of `tiers` ({@link SETTINGS_TIER_ORDER})
+ * whose readable layers name it, or undefined when no layer does. A key is a
+ * whole value, never deep-merged, so a higher tier replaces a lower one. Two
+ * values come back when two layers of one tier name the key (the main
+ * checkout's and the working directory's `settings.local.json`, or several
+ * `--settings`): their order inside the tier is not measured, so the caller
+ * decides what a disagreement means.
  */
-function userSettingsFileCandidates(cwd: string, env: NodeJS.ProcessEnv): string[] {
-  return [
-    userSettingsFile(env.CLAUDE_CONFIG_DIR, homedir(), cwd),
-    join(cwd, ".claude", "settings.json"),
-    join(cwd, ".claude", "settings.local.json"),
-  ];
+function highestTierValues(
+  layers: readonly SettingsLayer[],
+  key: string,
+  tiers: readonly SettingsTier[]
+): unknown[] | undefined {
+  for (const tier of SETTINGS_TIER_ORDER) {
+    if (!tiers.includes(tier)) continue;
+    const values: unknown[] = [];
+    for (const layer of layers) {
+      if (layer.tier === tier && layer.settings !== null && key in layer.settings) {
+        values.push(layer.settings[key]);
+      }
+    }
+    if (values.length > 0) return values;
+  }
+  return undefined;
 }
 
 /**
  * Find the status-line command the user would have seen had claudish not been
  * in the picture, so it can be CHAINED rather than clobbered.
  *
- * Resolution follows Claude Code's own precedence (later wins): user settings →
- * project settings → project local settings → an explicit `--settings` value.
+ * Reads the settings layers Claude Code loads for this launch
+ * ({@link claudeSettingsLayers}: `--setting-sources` honoured, the user file
+ * under `CLAUDE_CONFIG_DIR`, the main checkout's `settings.local.json`) and takes
+ * the highest of: the `--settings` value claudish merges, local, project, user.
+ * A later `--settings` is forwarded verbatim, so its status line replaces the
+ * chained one in the child anyway; managed settings were never consulted.
  * Only `type: "command"` can be chained — an `agent`-type or absent status line
  * has no stdout for us to append to, so those keep claudish's own line.
  *
- * Returns null (→ claudish's line, unchanged) on anything unexpected: this runs
- * on the launch path and a malformed settings file must never be fatal.
+ * Returns null (→ claudish's line, unchanged) on anything unexpected, including
+ * two layers of one tier that disagree: this runs on the launch path and a
+ * malformed settings file must never be fatal.
  */
 export function discoverUserStatusLineCommand(
   claudeArgs: string[] = [],
   cwd: string = process.cwd(),
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
+  deps: ChildAuthControlDeps = {}
 ): string | null {
-  const sources = userSettingsFileCandidates(cwd, env).filter((file) => existsSync(file));
-
-  const idx = claudeArgs.indexOf("--settings");
-  const settingsArg = idx === -1 ? undefined : claudeArgs[idx + 1];
-  if (settingsArg) sources.push(settingsArg);
-
-  let effective: unknown;
-  for (const source of sources) {
-    const layer = parseSettingsArgSafe(source);
-    if (layer && "statusLine" in layer) effective = layer.statusLine;
+  try {
+    const layers = claudeSettingsLayers(claudeArgs, env, { ...deps, cwd }).filter(
+      (layer) => !layer.droppedByMerge && (layer.tier !== "cli" || layer.merged)
+    );
+    const values = highestTierValues(layers, "statusLine", ["cli", "local", "project", "user"]);
+    if (!values) return null;
+    const commands = values.map(chainableCommandOf);
+    return commands.every((command) => command === commands[0]) ? commands[0] : null;
+  } catch {
+    return null;
   }
-
-  return chainableCommandOf(effective);
 }
 
 /** The chainable command inside a resolved `statusLine` value, or null. */
@@ -2208,15 +2220,16 @@ export interface AdvisorModelArg {
 /**
  * The `advisorModel` the user's own Claude Code settings resolve to, or undefined.
  *
- * Reuses the same source list and the same tolerant parser as
- * `discoverUserStatusLineCommand`, plus the managed-settings file that
- * `managedSettingsForcesClaudeAi` reads — one settings reader, not two.
- *
- * Precedence is Claude Code's, LAST WINS, with the OS *managed* tier last because
- * it is the one tier nothing can override. A tier that sets the key to a
- * non-string or an empty string CLEARS it rather than being skipped, because
- * that is what Claude Code's own reader does:
+ * Reads the same settings layers `childAuthControl` reads
+ * ({@link readableClaudeSettingsLayers}: managed, every `--settings`, local,
+ * project, user, with `--setting-sources` honoured) — one settings reader, not
+ * two — and takes the highest tier that names the key, the OS *managed* tier
+ * first because it is the one tier nothing can override. A tier that sets the
+ * key to a non-string or an empty string CLEARS it rather than being skipped,
+ * because that is what Claude Code's own reader does:
  * `typeof e.advisorModel==="string" && e.advisorModel!=="" ? … : undefined`.
+ * When two layers of that tier disagree, any value they name is returned: the
+ * caller then adds no `--advisor` flag, and the child's own resolution decides.
  *
  * Never throws: this runs on the launch path, and a malformed settings file must
  * not be able to stop a session from starting.
@@ -2224,27 +2237,20 @@ export interface AdvisorModelArg {
 export function discoverUserAdvisorModel(
   claudeArgs: string[] = [],
   cwd: string = process.cwd(),
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
+  deps: ChildAuthControlDeps = {}
 ): string | undefined {
-  const sources = userSettingsFileCandidates(cwd, env).filter((file) => existsSync(file));
-
-  // An explicit --settings value outranks the files but not the managed tier. It is
-  // pushed unfiltered because it may be inline JSON rather than a path.
-  const idx = claudeArgs.indexOf("--settings");
-  const settingsArg = idx === -1 ? undefined : claudeArgs[idx + 1];
-  if (settingsArg) sources.push(settingsArg);
-
-  const managed = managedSettingsPath();
-  if (existsSync(managed)) sources.push(managed);
-
-  let effective: string | undefined;
-  for (const source of sources) {
-    const layer = parseSettingsArgSafe(source);
-    if (!layer || !("advisorModel" in layer)) continue;
-    const value = layer.advisorModel;
-    effective = typeof value === "string" && value !== "" ? value : undefined;
+  try {
+    const layers = claudeSettingsLayers(claudeArgs, env, { ...deps, cwd }).filter(
+      (layer) => !layer.droppedByMerge
+    );
+    const values = highestTierValues(layers, "advisorModel", SETTINGS_TIER_ORDER);
+    return values
+      ?.map((value) => (typeof value === "string" && value !== "" ? value : undefined))
+      .find((value) => value !== undefined);
+  } catch {
+    return undefined;
   }
-  return effective;
 }
 
 /**

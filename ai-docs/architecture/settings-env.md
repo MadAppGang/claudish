@@ -87,7 +87,14 @@ composed path). So
 (`userSettingsFile`), built on `claudeCodeConfigDir` (`auth/claude-code-facts.ts`), the one
 implementation of this rule, which the login file and Keychain service checks use too. The
 status-line and advisor-model readers (`discoverUserStatusLineCommand`,
-`discoverUserAdvisorModel`) read the same user file.
+`discoverUserAdvisorModel`) read the same layers through the same collector
+(`claudeSettingsLayers`), so they follow `--setting-sources` and the main checkout's local file
+below like every other reader, and take the highest tier that names the key (`highestTierValues`).
+The status-line reader skips managed settings and reads only the `--settings` value claudish
+merges (a later one is forwarded and replaces the chained line in the child anyway); two
+disagreeing layers of one tier give no chained command. The advisor-model reader reads every
+tier, managed first; a disagreement inside one tier returns a value, so claudish adds no
+`--advisor` flag and the child decides.
 Project-local means two files:
 `.claude/settings.local.json` at the repository's main checkout (for a linked worktree, the
 checkout owning the common Git directory, never the worktree's own file) and the legacy one in
