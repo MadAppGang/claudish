@@ -6,10 +6,13 @@
  * client sends (`run_command`, `edit_file`), so the backend sees its own tool
  * vocabulary. The rename is reversible and provider-scoped.
  *
- * SCOPE: tool names, and the argument names of the four tools whose arguments
- * have a true equivalent (`run_command`, `read_file`, `write_file`,
- * `edit_file`; `AGY_ARGUMENT_ALIAS`). An argument with no equivalent keeps
- * Claude Code's name, and the tool's description stays Claude Code's.
+ * SCOPE: tool names, and the arguments of the seven tools whose arguments
+ * translate both ways (`run_command`, `read_file`, `write_file`, `edit_file`,
+ * `search_web`, `ask_question`, `send_message`). Those seven also get the
+ * description the `agy` CLI declares, which is how the envelope builder knows
+ * the tool is Claude Code's own and may carry `agy`'s whole declaration
+ * (`providers/antigravity-agy-request.ts`). Any other tool keeps its arguments
+ * and its description.
  *
  * REVERSIBILITY is the invariant. Every name changed on the way out
  * (`aliasToolsForProvider`) MUST be mapped back on the way in (its `restore`
@@ -22,8 +25,13 @@
  * the wire (recorded 2026-11-15; see
  * `ai-docs/architecture/providers/antigravity.md`). The last three are not in
  * that tool set: they are the names of the binary's other tool set, kept for a
- * Claude Code that still declares `Grep`, `Glob` or `LS`.
+ * Claude Code that still declares `Grep`, `Glob` or `LS`. `Agent` and
+ * `Workflow` have no alias: `agy`'s `invoke_subagent` and `run_workflow` take
+ * arguments Claude Code's tools cannot be given.
  */
+
+import { existsSync } from "node:fs";
+import { agyDeclarationTemplate } from "../../../providers/antigravity-agy-request.js";
 
 /** Claude Code built-in → the agy-native name. A fixed, hand-verified set. */
 const AGY_TOOL_ALIAS: ReadonlyArray<readonly [string, string]> = [
@@ -31,11 +39,9 @@ const AGY_TOOL_ALIAS: ReadonlyArray<readonly [string, string]> = [
   ["Read", "read_file"],
   ["Write", "write_file"],
   ["Edit", "edit_file"],
-  ["Agent", "invoke_subagent"],
   ["AskUserQuestion", "ask_question"],
   ["WebSearch", "search_web"],
   ["SendMessage", "send_message"],
-  ["Workflow", "run_workflow"],
   ["Grep", "grep_search"],
   ["Glob", "find_by_name"],
   ["LS", "list_dir"],
@@ -47,10 +53,9 @@ const PROVIDER_ALIASES: Record<string, ReadonlyArray<readonly [string, string]>>
 };
 
 /**
- * Argument names of the four tools whose arguments have a true equivalent,
- * keyed by the agy-native tool name: Claude Code's name, then the name the
- * `agy` CLI 1.5.9 declares (recorded 2026-11-17). An argument not listed keeps
- * its name.
+ * Argument names with a true equivalent, keyed by the agy-native tool name:
+ * Claude Code's name, then the name the `agy` CLI 1.5.9 declares (recorded
+ * 2026-11-17). An argument not listed keeps its name.
  */
 const AGY_ARGUMENT_ALIAS: Record<string, ReadonlyArray<readonly [string, string]>> = {
   run_command: [
@@ -68,6 +73,18 @@ const AGY_ARGUMENT_ALIAS: Record<string, ReadonlyArray<readonly [string, string]
     ["old_string", "Target"],
     ["new_string", "Replacement"],
   ],
+  send_message: [
+    ["to", "Recipient"],
+    ["message", "Message"],
+  ],
+  search_web: [],
+  ask_question: [],
+};
+
+/** The tool descriptions a provider's own client declares, keyed by native name. */
+const PROVIDER_DESCRIPTIONS: Record<string, (native: string) => string | undefined> = {
+  antigravity: (native) =>
+    native in AGY_ARGUMENT_ALIAS ? agyDeclarationTemplate(native)?.description : undefined,
 };
 
 /** Argument tables per provider, keyed by the native tool name. */
@@ -111,6 +128,113 @@ function readRangeFromWire(args: Arguments): Arguments {
     out.limit = Math.max(1, EndLine - (typeof StartLine === "number" ? StartLine : 1) + 1);
   }
   return out;
+}
+
+const without = (args: Arguments, ...names: string[]): Arguments => {
+  const out: Arguments = { ...args };
+  for (const name of names) delete out[name];
+  return out;
+};
+
+/**
+ * `ask_question` takes each option as one string and names multi-select
+ * `is_multi_select`; Claude Code's `AskUserQuestion` takes a label and a
+ * description per option and a short header per question.
+ */
+function questionsToWire(args: Arguments): Arguments {
+  if (!Array.isArray(args.questions)) return args;
+  return {
+    ...args,
+    questions: args.questions.map((question) => {
+      if (!isRecord(question)) return question;
+      const out: Arguments = { question: question.question };
+      if (Array.isArray(question.options)) {
+        out.options = question.options.map((option) => (isRecord(option) ? option.label : option));
+      }
+      if (typeof question.multiSelect === "boolean") out.is_multi_select = question.multiSelect;
+      return out;
+    }),
+  };
+}
+
+function questionsFromWire(args: Arguments): Arguments {
+  if (!Array.isArray(args.questions)) return args;
+  return {
+    ...args,
+    questions: args.questions.map((question, index) => {
+      if (!isRecord(question)) return question;
+      // A call made against Claude Code's own schema (the declaration kept
+      // after a hook changed its description) already has these fields.
+      return {
+        question: question.question,
+        header: typeof question.header === "string" ? question.header : `Question ${index + 1}`,
+        options: Array.isArray(question.options)
+          ? question.options.map((option) =>
+              typeof option === "string" ? { label: option, description: option } : option
+            )
+          : question.options,
+        multiSelect:
+          typeof question.multiSelect === "boolean"
+            ? question.multiSelect
+            : question.is_multi_select === true,
+      };
+    }),
+  };
+}
+
+/**
+ * What a rename of keys does not cover, per agy-native tool. `toWire` runs
+ * after the rename on a call from the history, `fromWire` after it on a call
+ * the model returned.
+ *
+ * `fromWire` drops the arguments Claude Code's tool does not take. `edit_file`
+ * replaces every occurrence of its target, which is `Edit` with `replace_all`.
+ * `search_web`'s `domain` asks the search to prefer a site, and `WebSearch` can
+ * only restrict to one, so it is dropped. A `write_file` that appends is left
+ * as the model sent it: `Write` replaces the file, so the call must fail
+ * (Claude Code refuses it for the missing `file_path`) and not lose the file.
+ */
+const AGY_ARGUMENT_SHAPE: Record<
+  string,
+  { toWire?: (args: Arguments) => Arguments; fromWire?: (args: Arguments) => Arguments }
+> = {
+  run_command: { fromWire: (args) => without(args, "WaitMsBeforeAsync") },
+  read_file: {
+    toWire: readRangeToWire,
+    fromWire: (args) => readRangeFromWire(without(args, "ByteOffset")),
+  },
+  write_file: { fromWire: (args) => without(args, "Overwrite", "Append", "ArtifactMetadata") },
+  edit_file: {
+    toWire: (args) => without(args, "replace_all"),
+    fromWire: (args) => ({
+      ...without(args, "ArtifactMetadata"),
+      replace_all: typeof args.replace_all === "boolean" ? args.replace_all : true,
+    }),
+  },
+  search_web: {
+    toWire: (args) => without(args, "allowed_domains", "blocked_domains"),
+    fromWire: (args) => without(args, "domain"),
+  },
+  ask_question: { toWire: questionsToWire, fromWire: questionsFromWire },
+};
+
+/**
+ * A returned call claudish must not translate, because the translation would
+ * change what it does. Left as sent, it fails in Claude Code for the missing
+ * `file_path`, and the model reads that error.
+ *
+ * - `write_file` that appends: `Write` replaces the file.
+ * - `write_file` without `Overwrite: true` on a file that exists: `agy`
+ *   refuses it, and `Write` would replace the file. Claude Code runs on this
+ *   machine, so the file is looked up here.
+ * - `read_file` that continues at a byte offset: `Read` has none, and would
+ *   return the start of the range again.
+ */
+function leftAsSent(wireName: string, args: Arguments): boolean {
+  if (wireName === "read_file") return typeof args.ByteOffset === "number" && args.ByteOffset > 0;
+  if (wireName !== "write_file") return false;
+  if (args.Append === true) return true;
+  return args.Overwrite !== true && typeof args.Path === "string" && existsSync(args.Path);
 }
 
 const READ_RANGE_PROPERTIES = {
@@ -192,6 +316,7 @@ export function aliasToolsForProvider<T extends Record<string, any>>(
     };
   }
   const argumentTables = PROVIDER_ARGUMENT_ALIASES[providerName] ?? {};
+  const descriptionOf = PROVIDER_DESCRIPTIONS[providerName] ?? (() => undefined);
   const declared = new Set<string>(
     Array.isArray(req.tools) ? req.tools.map((tool: any) => tool?.name) : []
   );
@@ -214,13 +339,13 @@ export function aliasToolsForProvider<T extends Record<string, any>>(
     const names = toWire.get(native);
     if (!names || !isRecord(args)) return args;
     const renamed = renameKeys(args, names);
-    return native === "read_file" ? readRangeToWire(renamed) : renamed;
+    return AGY_ARGUMENT_SHAPE[native]?.toWire?.(renamed) ?? renamed;
   };
   const restoreArguments = (wireName: string, args: unknown): unknown => {
     const names = fromWire.get(wireName);
-    if (!names || !isRecord(args)) return args;
+    if (!names || !isRecord(args) || leftAsSent(wireName, args)) return args;
     const renamed = renameKeys(args, names);
-    return wireName === "read_file" ? readRangeFromWire(renamed) : renamed;
+    return AGY_ARGUMENT_SHAPE[wireName]?.fromWire?.(renamed) ?? renamed;
   };
   const out: Record<string, any> = { ...req };
   if (Array.isArray(req.tools)) {
@@ -228,9 +353,12 @@ export function aliasToolsForProvider<T extends Record<string, any>>(
       const native = typeof tool?.name === "string" ? forward.get(tool.name) : undefined;
       if (native === undefined) return tool;
       const names = toWire.get(native);
-      return names && "input_schema" in tool
-        ? { ...tool, name: native, input_schema: schemaToWire(tool.input_schema, native, names) }
-        : { ...tool, name: native };
+      const renamed =
+        names && "input_schema" in tool
+          ? { ...tool, name: native, input_schema: schemaToWire(tool.input_schema, native, names) }
+          : { ...tool, name: native };
+      const description = descriptionOf(native);
+      return description === undefined ? renamed : { ...renamed, description };
     });
   }
   const choice = req.tool_choice;

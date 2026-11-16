@@ -20,6 +20,13 @@
  */
 
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import {
+  type AgyEnvironment,
+  agyEnvironment,
+  declaresTools,
+  withAgySystem,
+  withAgyTools,
+} from "./antigravity-agy-request.js";
 import { agyContents, agyLocalTime, agyWordedTools } from "./antigravity-content.js";
 
 /** What the backend reports about the model a request is sent to. */
@@ -234,6 +241,8 @@ export interface AntigravityEnvelopeInput {
   sessionId: string;
   /** Epoch milliseconds; a parameter so a test fixes it. */
   now?: number;
+  /** What `agy`'s prompt says about this machine; a parameter so a test fixes it. */
+  environment?: AgyEnvironment;
 }
 
 /**
@@ -269,11 +278,20 @@ export function buildAntigravityEnvelope(input: AntigravityEnvelopeInput): Recor
     wordedTools: agyWordedTools(tools),
   });
   const request: Record<string, unknown> = { contents: toolResultsAsModelEntries(worded) };
-  if (systemInstruction && typeof systemInstruction === "object") {
-    const { role: _role, ...instruction } = systemInstruction as Record<string, unknown>;
+  // A request that declares tools is an agent request, and carries `agy`'s
+  // prompt and declarations ahead of the harness's own.
+  const agent = declaresTools(tools);
+  const environment = agent ? (input.environment ?? agyEnvironment()) : undefined;
+  const system = environment
+    ? withAgySystem(systemInstruction, environment, conversation.cascadeId)
+    : systemInstruction;
+  if (system && typeof system === "object") {
+    const { role: _role, ...instruction } = system as Record<string, unknown>;
     request.systemInstruction = { role: "user", ...instruction };
   }
-  if (tools !== undefined) request.tools = oneToolPerDeclaration(tools);
+  if (tools !== undefined) {
+    request.tools = oneToolPerDeclaration(environment ? withAgyTools(tools, environment) : tools);
+  }
   Object.assign(request, others);
   request.labels = labelsFor(model, meta, conversation, stepIndex);
   // `agy` sends no temperature, and sends the output cap the backend reports
