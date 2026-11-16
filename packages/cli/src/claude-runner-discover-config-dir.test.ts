@@ -62,3 +62,36 @@ describe("discoverUserAdvisorModel under CLAUDE_CONFIG_DIR", () => {
     expect(discoverUserAdvisorModel([], cwd, { CLAUDE_CONFIG_DIR: cfg })).toBe("opus");
   });
 });
+
+describe("settings discovery under env.HOME", () => {
+  // A HOME that is neither process.env.HOME nor os.homedir(), so only env.HOME can name it.
+  const home = join(root, "env-home");
+  mkdirSync(join(home, ".claude"), { recursive: true });
+  writeFileSync(
+    join(home, ".claude", "settings.json"),
+    JSON.stringify({
+      statusLine: { type: "command", command: "env-home-cmd" },
+      advisorModel: "opus",
+    })
+  );
+
+  // REGRESSION: with no home injected, the user settings file was read under os.homedir() instead of env.HOME
+  test("reads the status line from $HOME/.claude/settings.json of the env given", () => {
+    expect(discoverUserStatusLineCommand([], cwd, { HOME: home })).toBe("env-home-cmd");
+  });
+
+  // REGRESSION: with no home injected, the user settings file was read under os.homedir() instead of env.HOME
+  test("reads advisorModel from $HOME/.claude/settings.json of the env given", () => {
+    expect(discoverUserAdvisorModel([], cwd, { HOME: home })).toBe("opus");
+  });
+
+  test("an injected home still wins over env.HOME", () => {
+    const injected = join(root, "injected-home");
+    mkdirSync(join(injected, ".claude"), { recursive: true });
+    writeFileSync(
+      join(injected, ".claude", "settings.json"),
+      JSON.stringify({ advisorModel: "haiku" })
+    );
+    expect(discoverUserAdvisorModel([], cwd, { HOME: home }, { home: injected })).toBe("haiku");
+  });
+});

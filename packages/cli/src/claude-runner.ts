@@ -713,7 +713,9 @@ function claudeSettingsLayers(
   deps: ChildAuthControlDeps
 ): SettingsLayer[] {
   const readFile = deps.readFile ?? ((path: string) => readFileSync(path, "utf-8"));
-  const home = deps.home ?? homedir();
+  // Claude Code finds its home in `HOME` first, so a non-empty `env.HOME` wins
+  // over `homedir()`; an injected home wins over both.
+  const home = deps.home ?? (env.HOME ? env.HOME : homedir());
   const cwd = deps.cwd ?? process.cwd();
   // A layer `--setting-sources` turns off hands the child nothing, so it is not
   // inspected. Managed settings and every `--settings` value apply whatever it says.
