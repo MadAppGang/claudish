@@ -66,6 +66,38 @@ fi
 
 placeholder="sk-ant-api03-placeholder-not-used-proxy-handles-auth-with-openrouter-key-xxxxxxxxxxxxxxxxxxxxx"
 
+# How claudish starts Claude Code, without ps (the sandbox refuses it):
+# claudish runs CLAUDE_PATH first, so CLAUDE_PATH names a shim that writes
+# the flag names of its argv, every --add-dir value and every --allowedTools
+# value to this launch log, then execs the real claude with the same
+# arguments. claudish passes credentials through the environment, never the
+# argv.
+real=$(command -v claude)
+if [ -n "$real" ]; then
+  mkdir -p "$dir/argv-shim"
+  cat >"$dir/argv-shim/claude" <<EOF
+#!/bin/sh
+{
+  flags=""; adddir=""; allowed=""; prev=""
+  for a in "\$@"; do
+    case "\$prev" in
+      --add-dir) adddir="\$adddir [\$a]" ;;
+      --allowedTools|--allowed-tools) allowed="\$allowed [\$a]" ;;
+    esac
+    case "\$a" in --*) flags="\$flags \${a%%=*}" ;; esac
+    prev=\$a
+  done
+  echo "agent-argv: flags:\$flags"
+  echo "agent-argv: add-dir:\${adddir:- none}"
+  echo "agent-argv: allowedTools:\${allowed:- none}"
+} >>"$live/launch.log" 2>/dev/null
+exec "$real" "\$@"
+EOF
+  chmod +x "$dir/argv-shim/claude"
+  export CLAUDE_PATH="$dir/argv-shim/claude"
+  note "launch: CLAUDE_PATH shim records the agent's argv; real claude $real"
+fi
+
 # On a foreign model claudish gives Claude Code its placeholder as
 # ANTHROPIC_API_KEY, and Claude Code asks "Detected a custom API key ... Do you
 # want to use this API key?" before it starts; nothing in the sandbox can
