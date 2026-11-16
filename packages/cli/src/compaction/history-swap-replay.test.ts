@@ -203,12 +203,34 @@ test("a swap replays on the next tool round when the newest human message change
   expect(sent.messages.slice(1)).toEqual(next.messages.slice(6));
   expect(r.calls()).toBe(1);
 
+  // Message 6 was the swap request's newest message, which Claude Code
+  // changes after the response: that is not a tail change.
+  const lines = (await capturedLines()).filter((l) => l.includes("tail changed"));
+  expect(lines).toHaveLength(0);
+});
+
+test("a change to a tail message before the swap request's newest one logs a tail change", async () => {
+  const r = rig();
+  // A summary at boundary 2, then a swap at the human turn of message 6:
+  // [b, end) = messages 2..6.
+  const p = conversation();
+  const early = structuredClone(p);
+  early.messages.splice(3);
+  r.windowAt(early, 0.7);
+  expect(r.h.compact(structuredClone(early), session).precomputeStarted).toBe(true);
+  await r.h.whenIdle();
+  r.windowAt(p, 0.9);
+  expect(r.h.compact(structuredClone(p), session).applied).toBe("swapped");
+
+  const next = toolRound(p, 1);
+  next.messages[5] = { role: "assistant", content: [{ type: "text", text: "Edited turn" }] };
+  expect(r.h.compact(structuredClone(next), session).applied).toBe("replayed");
+
   const lines = (await capturedLines()).filter((l) => l.includes("tail changed"));
   expect(lines).toHaveLength(1);
-  expect(lines[0]).toEndWith(
-    `[compaction] session ${session}: history replayed at 6, tail changed: recorded [${shortHash(before.messages[6])}] current [${shortHash(next.messages[6])}]`
-  );
-  expect(lines[0]).not.toContain("Third request");
+  expect(lines[0]).toContain("current [");
+  expect(lines[0]).toContain(shortHash(next.messages[5]));
+  expect(lines[0]).not.toContain("Edited turn");
 });
 
 test("a swap with an unchanged tail replays and logs no tail change", async () => {

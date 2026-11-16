@@ -196,7 +196,10 @@ one of them is never compressed and never recorded, so it is sent as it is on ev
   way; a changed tail message changes only its own bytes. Thinking is stripped from the CURRENT
   `[b,end)` on every replay; messages after `end` keep theirs (they were produced on the swapped
   history). A rewind into `[b,end)` (fewer than `end` messages) or a changed prefix does not match.
-  When the tail differs from the record, the debug log names it without content:
+  When a message of `[b, end - 1)` differs from the record, the debug log names it without
+  content. Message `end - 1`, the swap request's newest, is not compared: Claude Code changes it
+  after the response (bench case d on `0aed68ec`: all 7 replays after a swap differed only there,
+  with no cache break). A record without per-message hashes compares the whole `[b, end)`:
   `[compaction] session <id>: history replayed at <b>, tail changed: recorded [<12hex>,...] current [<12hex>,...]`.
 - A request with another prefix (Claude Code's own `/compact`, a subagent's transcript) matches no
   swap and is untouched. Several threads per session are possible; records are keyed by prefix

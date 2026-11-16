@@ -615,9 +615,7 @@ export class HistoryCompactor {
   ): HistorySwapRecord | undefined {
     const active = this.matchSwap(sessionId, thread, original, hashes);
     if (!active) return undefined;
-    if (hashes.range(active.boundary, active.end) !== active.tailHash) {
-      logTailChange(sessionId, active, original);
-    }
+    if (tailChanged(active, original, hashes)) logTailChange(sessionId, active, original);
     body.messages = applySwap(original, active);
     result.applied = "replayed";
     result.boundary = active.boundary;
@@ -899,6 +897,27 @@ function logCount(sessionId: string, count: RequestCount, limit: number): void {
   log(
     `[compaction] session ${sessionId}: history count ${count.tokens} of ${limit} tokens (${from})`
   );
+}
+
+/**
+ * True when a message of a replayed swap's `[b, end - 1)` differs from the
+ * recorded one. Message `end - 1` is the swap request's newest message, which
+ * Claude Code changes after the response (its reminder blocks), so it is not
+ * compared. A record without per-message hashes compares the whole `[b, end)`.
+ */
+function tailChanged(
+  swap: HistorySwapRecord,
+  original: readonly unknown[],
+  hashes: MessageHashes
+): boolean {
+  const recorded = swap.tailMessageHashes;
+  if (!Array.isArray(recorded) || recorded.length !== swap.end - swap.boundary) {
+    return hashes.range(swap.boundary, swap.end) !== swap.tailHash;
+  }
+  for (let i = swap.boundary; i < swap.end - 1; i++) {
+    if (messageHash(original[i]) !== recorded[i - swap.boundary]) return true;
+  }
+  return false;
 }
 
 /**
