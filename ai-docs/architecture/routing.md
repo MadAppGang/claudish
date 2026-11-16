@@ -541,6 +541,13 @@ id, an id two entries list resolves to nothing (then `excluded-by-content-use`),
 provider's effort map is never read. Antigravity's automatic choice (`chooseAntigravityServedModel`)
 and its capacity retry (`handleCapacityExhausted`) never pick an opt-in id from the account's list.
 
+A typed opt-in id is sent verbatim even when the account does not list it: Antigravity
+(`chooseAntigravityServedModel`) and Devin (`DevinModelResolver`) return it first, never a listed
+sibling. Nothing else picks one: Devin's resolver chooses and collapses picker rows over the list
+without opt-in uids, Devin's probe pick (`discoverProbeModel`) skips them and answers no model when
+only opt-in uids are listed, and account-listed gathering (`gatherAccountListed`) makes no candidate
+for an opt-in name.
+
 **Suffix-fallback removal trigger:** models-index publishes `contentUse` on every connection
 (backend task M3, `ai-docs/reports/BACKEND_TASKS_meta_muse_code_route-20261016.md`). Readers with
 only a wire id still use the suffix rule. Until then this is the one wire-id name rule claudish

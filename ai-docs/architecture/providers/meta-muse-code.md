@@ -394,6 +394,9 @@ included: `resolveExternalId` never rewrites it to another id. The implicit look
 nothing when two entries list the id. Antigravity's automatic choice and its capacity retry never
 pick an opt-in id.
 
+A typed opt-in id is sent verbatim even when the account does not list it. Devin's resolver, its
+probe pick and account-listed gathering never choose one.
+
 **Remove the suffix fallback when models-index publishes `contentUse` on every connection
 (backend M3).** Until then it is the one wire-id name rule claudish keeps. The trigger is field
 coverage, not Meta: OpenCode Zen's `-contributor-free` ids are covered by the same regex.

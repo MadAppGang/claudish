@@ -585,6 +585,9 @@ function gatherAccountListed(
   excluded: ExcludedCandidate[],
   cachePath: string | undefined
 ): void {
+  // An account-listed candidate's wire id is the requested name, so a
+  // content-use opt-in name would be chosen for the user (`content-use.ts`).
+  if (isOptInWireId(model)) return;
   for (const [provider, list] of lists) {
     const tier = getProviderByName(provider)?.tier;
     if (!tier) continue;
