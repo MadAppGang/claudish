@@ -146,6 +146,32 @@ describe("Antigravity connection modelIdEffort", () => {
     expect(chooseAntigravityServedModel(BASE, account, "low").id).not.toBe(optIn);
   });
 
+  test("an account default never chooses an opt-in id", () => {
+    const optIn = `${BASE}-contributor`;
+    const account = served([HIGH, optIn], optIn);
+
+    expect(chooseAntigravityServedModel(BASE, account, "low").id).not.toBe(optIn);
+  });
+
+  test("a catalog family default never chooses an opt-in id", () => {
+    const optIn = `${BASE}-contributor`;
+    entries = [
+      {
+        ...catalogEntry(optIn, [connection("antigravity", optIn)]),
+        routeVariant: {
+          kind: "preset",
+          baseModelId: BASE,
+          familyId: BASE,
+          provider: "antigravity",
+          isDefault: true,
+        },
+      },
+    ];
+    const account = served([HIGH, optIn], optIn);
+
+    expect(chooseAntigravityServedModel(BASE, account, "low").id).not.toBe(optIn);
+  });
+
   test("rule 1: an explicitly requested opt-in id stays fixed", () => {
     const optIn = `${BASE}-contributor`;
     publish(effortMap({ low: optIn }));

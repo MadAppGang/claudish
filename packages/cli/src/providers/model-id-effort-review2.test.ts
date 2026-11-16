@@ -259,6 +259,21 @@ describe("R1: effort controls follow the id sent on each attempt", () => {
       expect(ag.getActiveModelName() ?? second.model).toBe(LOW);
     });
   }
+
+  test("capacity retry never sends an opt-in served id", async () => {
+    const base = "gemini-4-argon";
+    const high = `${base}-high`;
+    const optIn = `${base}-contributor`;
+    served = { servedIds: [high, optIn], defaultId: high, meta: {} };
+    const { payload, request } = dialectPayload(high, "high");
+    const ag = await transport("cached credential", high);
+    const envelope = ag.transformPayload(payload, request);
+    expect(envelope.model).toBe(high);
+
+    const { sent } = await exhaustPrimary(ag, envelope);
+
+    expect(sent.map((body) => body.model)).toEqual([high]);
+  });
 });
 
 describe("R2: speed suffixes do not override effort maps or family defaults", () => {
