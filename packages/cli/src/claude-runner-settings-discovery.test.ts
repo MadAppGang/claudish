@@ -40,6 +40,9 @@ const lineup: ClaudishConfig["modelLineup"] = {
   picker: { options: [{ model: "or@x", label: "x" }] },
 } as unknown as ClaudishConfig["modelLineup"];
 
+// Claude Code applies the later of two `--settings` values: measured on 2.1.325
+// for an `env` key, in both spellings. The same order for `statusLine` and
+// `advisorModel` is inferred, not measured.
 describe("the user's status line, on a listing launch", () => {
   test("a --settings=<v> after --settings <v> wins, as the merge applies it", () => {
     const args = ["--settings", statusLine("echo first"), `--settings=${statusLine("echo last")}`];

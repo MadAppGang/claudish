@@ -111,6 +111,9 @@ describe("discoverUserAdvisorModel and --setting-sources", () => {
   });
 });
 
+// Claude Code applies the later of two `--settings` values: measured on 2.1.325
+// for an `env` key, in both spellings. The same order for `advisorModel` is
+// inferred, not measured.
 describe("discoverUserAdvisorModel across several --settings", () => {
   const settings = (value: unknown) => JSON.stringify({ advisorModel: value });
 

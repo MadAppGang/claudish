@@ -1049,7 +1049,9 @@ const NON_MANAGED_TIER_RANK: Readonly<Record<Exclude<SettingsTier, "managed">, n
  * every passthrough `--settings`). Claude Code takes `modelPicker` from the
  * highest layer that sets it, with no merge: among non-managed layers the
  * command line beats local, local beats project, project beats user, and a
- * later `--settings` occurrence beats an earlier one. A managed `modelPicker`
+ * later `--settings` occurrence beats an earlier one (measured on Claude Code
+ * 2.1.325 for an `env` key; the same order for `modelPicker` is inferred, not
+ * measured). A managed `modelPicker`
  * beats claudish's own `--settings` value, and `availableModels` in any layer
  * may hide rows; both are named so the launch can say so. Files only, no network.
  */
@@ -1560,8 +1562,10 @@ function parseSettingsArg(value: string): Record<string, unknown> {
  * whole value, never deep-merged, so a higher tier replaces a lower one. Two
  * values come back when two layers of one tier name the key (the main
  * checkout's and the working directory's `settings.local.json`, or several
- * `--settings`): their order inside the tier is not measured, so the caller
- * decides what a disagreement means.
+ * `--settings`), in layer order, so the caller decides what a disagreement
+ * means. Claude Code applies the later of two `--settings` values (measured on
+ * 2.1.325 for an `env` key); the order of the two `settings.local.json` files
+ * is not measured.
  */
 function highestTierValues(
   layers: readonly SettingsLayer[],
@@ -1610,7 +1614,8 @@ export function discoverUserStatusLineCommand(
     const layers = discoverySettingsLayers(claudeArgs, cwd, options).filter(
       (layer) => layer.tier !== "cli" || layer.merged
     );
-    // Merged `--settings` values are applied in argv order, the later one winning.
+    // Merged `--settings` values are applied in argv order, the later one winning
+    // (measured on Claude Code 2.1.325 for an `env` key; inferred for `statusLine`).
     const merged = highestTierValues(layers, "statusLine", ["cli"]);
     if (merged) return chainableCommandOf(merged.at(-1));
     const values = highestTierValues(layers, "statusLine", ["local", "project", "user"]);
@@ -2144,10 +2149,13 @@ export function mergeUserSettingsIfPresent(
 
 /**
  * The merge on a launch with a /model lineup. Claude Code would receive any
- * `--settings` left in the passthrough args after claudish's own, and which of
- * two values it applies is unmeasured, so a user value could replace the
- * lineup's `modelPicker`. So EVERY occurrence, in either spelling, is merged
- * here in argv order (a later occurrence's key replaces an earlier one's), the
+ * `--settings` left in the passthrough args after claudish's own, and of two
+ * values it applies the later one's key (measured on Claude Code 2.1.325 with
+ * an `env` key, in both spellings; the same order for `modelPicker` is
+ * inferred), so a forwarded user value would replace the lineup's
+ * `modelPicker`. So EVERY occurrence, in either spelling, is merged here in
+ * argv order (a later occurrence's key replaces an earlier one's, as Claude
+ * Code does), the
  * claudish keys are applied, `modelPicker` is set last, the one file is
  * written, and every occurrence is spliced out: Claude Code receives exactly one
  * `--settings`, claudish's. An occurrence claudish cannot read refuses the
@@ -2540,7 +2548,9 @@ export interface AdvisorModelArg {
  * `typeof e.advisorModel==="string" && e.advisorModel!=="" ? … : undefined`.
  *
  * Inside the command-line tier the child applies its `--settings` values in
- * argv order, the later one winning: claudish's own file (holding the merged
+ * argv order, the later one winning (measured on Claude Code 2.1.325 for an
+ * `env` key, in both spellings; inferred for `advisorModel`): claudish's own
+ * file (holding the merged
  * values, `options.scope` naming which) comes first, then every forwarded value
  * in the order given. So the value of the last of them that names the key is the one
  * returned, and a later empty value clears an earlier model. When two layers of

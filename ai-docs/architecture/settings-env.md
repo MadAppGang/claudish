@@ -111,6 +111,18 @@ merges (a later one is forwarded and replaces the chained line in the child anyw
 disagreeing layers of one tier give no chained command. The advisor-model reader reads every
 tier, managed first; a disagreement inside one tier returns a value, so claudish adds no
 `--advisor` flag and the child decides.
+Inside the command-line tier both readers take the LATER `--settings` value, because that is
+the one Claude Code applies. Measured on Claude Code 2.1.325, 2026-11-16: two settings files,
+A (`{"env":{"PROBE":"A"}}` plus a SessionStart hook `echo "$PROBE" >> out.txt`) and B (the
+same with `B`), run as `claude -p hi --settings a.json --settings=b.json` and then
+`claude -p hi --settings b.json --settings=a.json`, under `env -i` with an empty temporary
+`HOME` and `CLAUDE_CONFIG_DIR` (no login, so each run stopped at "Not logged in · Please run
+/login" after SessionStart, with no model call). `out.txt` read `B`, then `A`: the later
+value's key wins, in both spellings, and the hook ran once per launch. Only an `env` key was
+measured; that other top-level keys (`advisorModel`, `statusLine`, `modelPicker`) follow the
+same order is inferred, not measured. On a launch with a /model lineup claudish still merges
+every `--settings` occurrence into its one file in that same order and sets `modelPicker`
+last (`mergeEverySettingsArg`), so no forwarded value can replace the lineup's.
 Project-local means two files:
 `.claude/settings.local.json` at the repository's main checkout (for a linked worktree, the
 checkout owning the common Git directory, never the worktree's own file) and the legacy one in
