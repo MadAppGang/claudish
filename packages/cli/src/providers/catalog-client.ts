@@ -298,8 +298,13 @@ function resolveWireId(
     if (resolved) return resolved;
   }
 
+  // A wire id of any connection, its effort-map ids included, names the entry;
+  // the answer is the entry's ordinary base id for this provider.
   for (const entry of entries) {
-    if (allExternalIds(entry).includes(userInput)) {
+    if (
+      allExternalIds(entry).includes(userInput) ||
+      allConnections(entry).some((connection) => effortMapListsWireId(connection, userInput))
+    ) {
       const resolved = externalIdFor(entry, provider);
       if (resolved) return resolved;
     }
