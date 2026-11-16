@@ -576,6 +576,27 @@ describe("provider-only rules with exact effort-map wire ids", () => {
     ]);
   });
 
+  test("resolves an opt-in effort-map id absent from aliases without plan membership", () => {
+    const optIn = `${base}-contributor`;
+    writeAllModelsCache(
+      {
+        catalogGenerationId: "provider-rule-opt-in-reverse-test-data",
+        version: 3,
+        lastUpdated: new Date().toISOString(),
+        entries: [
+          catalogEntry(base, [connection("antigravity", base, effortMap({ low: optIn }))], []),
+        ],
+        models: [],
+        plans: [],
+      },
+      path
+    );
+
+    expect(buildRoutingChain(["antigravity"], optIn, path)).toMatchObject([
+      { provider: "antigravity", modelSpec: `ag@${base}` },
+    ]);
+  });
+
   test("keeps the connection's published spelling for a case-insensitive alias", () => {
     expect(buildRoutingChain(["antigravity"], "Example-Model-Low", path)).toMatchObject([
       { provider: "antigravity", modelSpec: `ag@${low}` },

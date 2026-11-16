@@ -22,6 +22,7 @@ import {
   logResolution,
   refreshCatalog,
   resolveExternalId,
+  resolveImplicitExternalId,
   resolveTargetForCatalog,
 } from "./catalog-client.js";
 import { CATALOG_V3_ACCEPT } from "./catalog-v3.js";
@@ -602,6 +603,24 @@ describe("exact effort-map wire ids", () => {
     _setCatalogEntriesForTest([
       catalogEntry(base, [connection("antigravity", base, effortMap({ low: optIn }))], [optIn]),
     ]);
+    expect(resolveExternalId(optIn, "antigravity")).toBe(optIn);
+  });
+
+  test("resolves an opt-in effort-map id absent from aliases to its base implicitly", () => {
+    const optIn = `${base}-contributor`;
+    _setCatalogEntriesForTest([
+      catalogEntry(base, [connection("antigravity", base, effortMap({ low: optIn }))], []),
+    ]);
+
+    expect(resolveImplicitExternalId(optIn, "antigravity")).toBe(base);
+  });
+
+  test("keeps an explicit opt-in effort-map id absent from aliases verbatim", () => {
+    const optIn = `${base}-contributor`;
+    _setCatalogEntriesForTest([
+      catalogEntry(base, [connection("antigravity", base, effortMap({ low: optIn }))], []),
+    ]);
+
     expect(resolveExternalId(optIn, "antigravity")).toBe(optIn);
   });
 
