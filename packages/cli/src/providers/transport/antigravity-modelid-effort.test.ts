@@ -180,6 +180,14 @@ describe("Antigravity connection modelIdEffort", () => {
     expect(chooseAntigravityServedModel(optIn, account, "low").id).toBe(optIn);
   });
 
+  test("rule 1: an explicitly requested opt-in id stays fixed when only its sibling is listed", () => {
+    const optIn = `${BASE}-contributor`;
+    const sibling = `${BASE}-contributor-high`;
+    const account = served([sibling], sibling);
+
+    expect(chooseAntigravityServedModel(optIn, account, "high").id).toBe(optIn);
+  });
+
   test("rule 4: the next higher level wins even when a lower level is closer", () => {
     const max = `${BASE}-max`;
     publish(effortMap({ max, low: LOW }));
