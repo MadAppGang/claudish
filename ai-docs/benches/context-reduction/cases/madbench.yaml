@@ -27,6 +27,11 @@ params:
   # of the compaction arm. The defaults refuse to start.
   claudish_build: ../config/no-claudish-build
   claudish_config: ../config/no-claudish-config.json
+  # Claude Code's settings for the agent. ../config/inline-max raises
+  # bashOutputMaxChars from its default 30000 to its maximum 128000, so a
+  # Bash output up to 128,000 characters reaches the model inline instead of
+  # as a short preview and a file path. Pass it to both arms of a case.
+  cc_settings: ../config/base
 
 harness:
   type: claude-code
@@ -34,7 +39,7 @@ harness:
   model: "{{model}}"
   use_subscription: required
   config:
-    dirs: ["../config/base"]
+    dirs: ["{{cc_settings}}"]
   args:
     - --permission-mode
     - bypassPermissions
