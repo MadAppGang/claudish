@@ -29,6 +29,10 @@ export const ENV = {
   // Set beside the two above when claudish itself set them, so a process that
   // inherits all three knows the pair is claudish's and not the user's.
   CLAUDISH_SET_HOST_ROUTING_VARS: "CLAUDISH_SET_HOST_ROUTING_VARS",
+  // JSON record (name → value) of the ANTHROPIC_MODEL / ANTHROPIC_SMALL_FAST_MODEL
+  // values claudish set in a child, so a process that inherits them can tell
+  // claudish's values from the user's own.
+  CLAUDISH_SET_MODEL_VARS: "CLAUDISH_SET_MODEL_VARS",
   // Claudish model mapping overrides (highest priority)
   CLAUDISH_MODEL_OPUS: "CLAUDISH_MODEL_OPUS",
   CLAUDISH_MODEL_SONNET: "CLAUDISH_MODEL_SONNET",

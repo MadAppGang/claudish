@@ -86,10 +86,9 @@ function patchedGuard(fixture: ScratchHome, before: string, after: string): stri
   const source = readFileSync(GUARD_SCRIPT, "utf8");
   expect(source.split(before)).toHaveLength(2);
   const path = join(fixture.home, "guard-copy.ts");
-  copyFileSync(
-    join(import.meta.dir, "session-env-vars.ts"),
-    join(fixture.home, "session-env-vars.ts")
-  );
+  for (const leaf of ["session-env-vars.ts", "home-bypass-overrides.ts"]) {
+    copyFileSync(join(import.meta.dir, leaf), join(fixture.home, leaf));
+  }
   writeFileSync(path, source.replace(before, after));
   return path;
 }

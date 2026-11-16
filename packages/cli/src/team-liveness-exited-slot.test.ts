@@ -66,7 +66,13 @@ describe.skipIf(!MAGMUX)("team slot liveness", () => {
     );
     expect(getStatus(sessionPath).models[slowSlot]?.state).toBe("RUNNING");
 
-    await Bun.sleep(1_100);
+    // The slow slot's idle clock starts at its own last transcript write, which a busy
+    // machine can push past the fast slot's completion, so wait on that clock itself.
+    await waitUntil(
+      () =>
+        (teamRunRow(sessionPath)?.slots.find((r) => r.slot === slowSlot)?.idle_seconds ?? 0) >= 1,
+      "the slow slot's idle clock to reach 1 s"
+    );
     expect(getStatus(sessionPath).models[slowSlot]?.state).toBe("RUNNING");
 
     const live = teamLiveMaps(sessionPath);

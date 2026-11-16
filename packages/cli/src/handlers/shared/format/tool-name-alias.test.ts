@@ -29,21 +29,43 @@ const request = () => ({
 });
 
 describe("aliasToolsForProvider: which names change", () => {
-  test("antigravity renames the six built-ins to agy's own names", () => {
-    const names = ["Bash", "Write", "Edit", "Grep", "Glob", "LS"];
+  test("antigravity renames the file and shell built-ins to the names agy sends", () => {
+    const names = ["Bash", "Read", "Write", "Edit"];
     const { request: out } = aliasToolsForProvider({ tools: names.map(tool) }, "antigravity");
     expect(out.tools.map((t: any) => t.name)).toEqual([
       "run_command",
-      "write_to_file",
+      "read_file",
+      "write_file",
       "edit_file",
-      "grep_search",
-      "find_by_name",
-      "list_dir",
     ]);
   });
 
-  test("Read and every other tool keep their names", () => {
-    const names = ["Read", "TodoWrite", "mcp__plugin_x__do"];
+  test("antigravity renames the agent, question, search, message and workflow tools", () => {
+    const names = ["Agent", "AskUserQuestion", "WebSearch", "SendMessage", "Workflow"];
+    const { request: out } = aliasToolsForProvider({ tools: names.map(tool) }, "antigravity");
+    expect(out.tools.map((t: any) => t.name)).toEqual([
+      "invoke_subagent",
+      "ask_question",
+      "search_web",
+      "send_message",
+      "run_workflow",
+    ]);
+  });
+
+  test("antigravity keeps the search and listing names of agy's other tool set", () => {
+    const names = ["Grep", "Glob", "LS"];
+    const { request: out } = aliasToolsForProvider({ tools: names.map(tool) }, "antigravity");
+    expect(out.tools.map((t: any) => t.name)).toEqual(["grep_search", "find_by_name", "list_dir"]);
+  });
+
+  test("a renamed name is restored to the Claude Code name", () => {
+    const names = ["Read", "Write", "Agent"];
+    const { restore } = aliasToolsForProvider({ tools: names.map(tool) }, "antigravity");
+    expect(["read_file", "write_file", "invoke_subagent"].map(restore)).toEqual(names);
+  });
+
+  test("every other tool keeps its name", () => {
+    const names = ["TodoWrite", "Skill", "ToolSearch", "mcp__plugin_x__do"];
     const { request: out } = aliasToolsForProvider({ tools: names.map(tool) }, "antigravity");
     expect(out.tools.map((t: any) => t.name)).toEqual(names);
   });

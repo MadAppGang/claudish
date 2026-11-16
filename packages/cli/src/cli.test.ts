@@ -8,7 +8,7 @@
  * These tests validate behavior described in requirements, not implementation details.
  */
 
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { parseArgs } from "./cli.js";
 
 // ---------------------------------------------------------------------------
@@ -347,5 +347,28 @@ describe("Persistent debug mode", () => {
       expect(config.debug).toBe(true);
       expect(config.logLevel).toBe("minimal");
     });
+  });
+});
+
+describe("a refused lineup --model on stderr", () => {
+  test("is printed through redactSecrets", async () => {
+    const lines: string[] = [];
+    const error = spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+      lines.push(args.map(String).join(" "));
+    });
+    const exit = spyOn(process, "exit").mockImplementation((() => {
+      throw new Error("process.exit");
+    }) as never);
+    try {
+      await expect(
+        parseArgs(["--model", "or@sk-or-v1-ABCDEFGHIJKLMNOPQRSTUVWX+or@y", "--model", "or@"])
+      ).rejects.toThrow("process.exit");
+    } finally {
+      error.mockRestore();
+      exit.mockRestore();
+    }
+    const printed = lines.join("\n");
+    expect(printed).toContain("[claudish] Error:");
+    expect(printed).not.toContain("sk-or-v1-ABCDEFGHIJKLMNOPQRSTUVWX");
   });
 });

@@ -2,6 +2,7 @@
 
 import type { CodeModeSetting } from "./code-mode/policy.js";
 import type { AdvisorPanelGateway } from "./handlers/advisor-route-plan.js";
+import type { ParsedModelFlags } from "./providers/model-parser.js";
 
 // Model ID type - any valid OpenRouter model string
 export type OpenRouterModel = string;
@@ -17,6 +18,22 @@ export type ClaudeLaunch = "subscription" | "api";
 
 /** A Claude Code role a tier flag, variable or profile maps to a model. */
 export type ModelTier = "opus" | "sonnet" | "haiku" | "subagent";
+
+/**
+ * One claudish provider whose models a launch lists in Claude Code's `/model`:
+ * a listing entry (`--model devin@`, `--model 'or@*'`), or the provider of a
+ * full spec on a launch that has one.
+ */
+export interface ProviderListing {
+  /** claudish provider name, resolved from the shortcut after endpoint registration. */
+  provider: string;
+  /** The value as typed (`or@*`), or the full spec that named this provider. */
+  typed: string;
+  /** `all` for `x@*`: every chat model; `recommended` for `x@` (a gateway lists only recommended ones). `*` wins when both were given. */
+  scope: "recommended" | "all";
+  /** Pinned full specs naming this provider, argv order; each is a row when the provider is ready. */
+  pinnedSpecs: string[];
+}
 
 export interface ClaudishConfig {
   model?: OpenRouterModel | string; // Optional - will prompt if not provided
@@ -34,6 +51,49 @@ export interface ClaudishConfig {
    * Absent for a single-spec `--model`, which is the overwhelming majority.
    */
   modelChain?: string[];
+  /**
+   * Every `--model` value of a launch with a listing entry (`--model devin@`,
+   * `--model 'or@*'`), split and classified by `parseArgs`. Absent on every
+   * other launch. Read once, by `decideModelListings`, which resolves the
+   * shortcuts after endpoint registration and sets `modelListings`.
+   */
+  _modelFlags?: ParsedModelFlags;
+  /**
+   * The claudish providers whose models this launch lists in Claude Code's
+   * `/model`, one entry per provider, set by `decideModelListings`. Present
+   * only on a launch with a listing entry; never a `ClaudishProfileConfig`
+   * field.
+   */
+  modelListings?: ProviderListing[];
+  /**
+   * The /model lineup of an interactive launch with listing entries, built
+   * before the proxy starts: the rows (each `model` a full claudish model spec)
+   * and the ONE `modelPicker` value both writers of the `--settings` temp file
+   * carry. Absent on every other launch, and in print mode.
+   */
+  modelLineup?: {
+    rows: ReadonlyArray<{ model: string; label: string; description: string; provider: string }>;
+    /** claudish's rows carry `model`, `label`, `description`; a user's row keeps every field. */
+    picker: {
+      options: Array<{
+        model: string;
+        label: string;
+        description?: string;
+        [field: string]: unknown;
+      }>;
+    };
+    /**
+     * The user's own `modelPicker` rows that are explicit claudish model specs
+     * and not lineup rows: the proxy routes a pick of one as sent, like a row.
+     */
+    userRows?: ReadonlyArray<{ model: string; label: string }>;
+  };
+  /**
+   * The main thread's context window, computed once before the launch report
+   * (`computeMainThreadContextWindow`) and reused by the runner. Set only on a
+   * launch that builds a /model lineup.
+   */
+  mainThreadWindow?: number;
   /**
    * `--model-pinned`: `--model` is a parent's pin (one spec or a chain), routed for
    * a bare name in the parent. Only the proxy reads it, to treat each element as a

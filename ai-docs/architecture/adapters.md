@@ -220,11 +220,15 @@ A sibling of the identity scrub, same goal of not looking foreign, but reversibl
 narrower. `ComposedHandler` step 2b, right after the identity scrub.
 
 - `aliasToolsForProvider(req, provider)` renames the Claude Code built-ins that have a true agy
-  equivalent — `Bash`→`run_command`, `Write`→`write_to_file`, `Edit`→`edit_file`,
-  `Grep`→`grep_search`, `Glob`→`find_by_name`, `LS`→`list_dir` — in the tool definitions, in a
-  forced `tool_choice`, and in assistant-history `tool_use` blocks. The table is
-  `antigravity`-only; every other provider gets the request back unchanged. Names come from the
-  `agy` binary's own few-shot tool calls.
+  equivalent — `Bash`→`run_command`, `Read`→`read_file`, `Write`→`write_file`,
+  `Edit`→`edit_file`, `Agent`→`invoke_subagent`, `AskUserQuestion`→`ask_question`,
+  `WebSearch`→`search_web`, `SendMessage`→`send_message`, `Workflow`→`run_workflow` — in the
+  tool definitions, in a forced `tool_choice`, and in assistant-history `tool_use` blocks. The
+  table is `antigravity`-only; every other provider gets the request back unchanged. The names
+  are the `functionDeclarations` the `agy` CLI 1.5.9 sends, recorded through a proxy on
+  2026-11-15 (17 tools; the list is in `providers/antigravity.md`). `Grep`→`grep_search`,
+  `Glob`→`find_by_name` and `LS`→`list_dir` stay for a Claude Code that declares those tools:
+  the names are in the binary but not in the CLI's recorded tool set.
 - The alias is built PER REQUEST and returns `forward` and `restore` for the pairs that request
   applied. A pair is skipped when the request already declares a tool under the native name (a
   custom or MCP `run_command`): the rename would declare one name twice, and a table-wide
@@ -247,8 +251,9 @@ narrower. `ComposedHandler` step 2b, right after the identity scrub.
   its wire name; the journal still records the name the hook asked for. Without it every
   description action on a renamed tool ended `invalid: unknown_tool`. A raw `providerRequest`
   hook sees the wire names.
-- `Read` is deliberately NOT aliased: the binary carries both `read_file` and `view_file` and does
-  not settle which is current. A wrong name is worse than none.
+- The binary is not the reference, the wire is. The binary carries `write_to_file`, `view_file`
+  and `read_file` as strings; the CLI sends `write_file` and `read_file`. Until 14.25.1 the table
+  had `write_to_file` and left `Read` alone, both read from the binary.
 
 **The honest limit — names only, not shapes.** The argument SCHEMAS stay Claude Code's. agy's
 `edit_file` takes an `Instruction` plus a `CodeEdit` with `{{...}}` elision that a separate
@@ -262,8 +267,7 @@ adapter, stage B through `forward`), `gemini-sse-tool-alias.test.ts` (inbound re
 wire name in the history store), `composed-handler-tool-alias.test.ts` (outbound end to end,
 and a tool call through the handler: it fails when the handler does not pass `restore`).
 
-**Not covered.** A `ToolSearch` result carries tool definitions as a tool result, so its
-descriptions pass unscrubbed. `subscription-devin-probe.ts` replays a captured request through
+**Not covered.** `subscription-devin-probe.ts` replays a captured request through
 `filterIdentity` only, so its tool descriptions and reminders are not scrubbed. An inline system message's
 `tool_addition` blocks (tool definitions added mid-session) carry no text, so step 2c below
 does not move them, and it removes the message that carried them, so a raw `providerRequest`
@@ -320,6 +324,55 @@ Tests: `inline-system.test.ts` (each placement, the unchanged prefix) and
 `composed-handler-inline-system.test.ts` (the wire body on Chat Completions, Gemini, Responses
 and an Anthropic-shaped route; the first three fail without step 2c).
 
+**Tool references (step 2d, `format/tool-reference-text.ts`).** Claude Code loads a deferred
+tool through `ToolSearch`. The tool result holds a pointer and no text:
+`[{"type":"tool_reference","tool_name":"WebFetch"}]`. The Anthropic API replaces the pointer
+with the tool's definition; no converter here carried it. The Gemini converter sent the string
+`"OK"`, the Anthropic-shaped one an empty text (it removes the item for every host), Chat
+Completions and Ollama Cloud the item's JSON. The model could not tell a loaded tool from an
+empty search.
+
+Step 2d replaces each pointer with one text item: `Loaded: <name>. It is in your tool list
+now.` The definition needs no place in the result, because Claude Code declares the tool in
+`tools` on the next request. It runs for every request, the `keepsClaudeIdentity` ones
+included: a Claude model behind a gateway or `antigravity` is on the same converters. A pointer
+with no name is removed. The step reads user messages only and returns the same array when
+nothing changes.
+
+The sentence must name the tool as the body declares it, or the model calls a name the
+provider never got. The step does not guess that name. It asks the converter:
+`declaredToolNames(names)` on `BaseAPIFormat` takes the request's tools in declaration order
+and answers, for each, the name it is declared under, or null when the converter declares none.
+
+- The step runs after step 2b and gives the converter the aliased names (`read_file` on
+  `antigravity`).
+- The default answer repeats what `encodeToolNames` does on the built payload (64 characters
+  on the OpenAI-shaped wires): the tools claim their encoded names in declaration order, in
+  one binding. `mcp__plugin_browser-use_browser-use__retry_with_browser_use_agent` becomes the
+  hashed form in the sentence too, and when an earlier tool already has that form, the same
+  salted form the payload gets.
+- `GeminiAPIFormat` answers `sanitizeToolNameForGemini`, the rule `convertToolsToGemini`
+  declares by: it cuts the same name at 64 characters and drops a tool with no usable name.
+- `OllamaAPIFormat` answers null: Ollama Cloud sends no tool definitions.
+- A converter with a tool-count cap (`getMaxToolCount`, 128 on OpenAI Chat Completions) sends
+  only the first tools; the step asks for those only.
+
+For a tool with no declared name, one past the cap, or one the request does not declare at
+all, the sentence is `Not loaded: <name>. It is not in your tool list.` A new converter with
+its own name rules must override `declaredToolNames`, or the sentence names the default form.
+
+Not handled on the Claude API (`anthropic`) and Vertex Claude routes: Anthropic's own server
+expands a `tool_reference`, so the right request keeps the pointer. `AnthropicAPIFormat`
+removed it for every host before this step existed, and the tool stayed `defer_loading`; the
+model now reads the sentence where it read an empty text, and the definition still does not
+reach it. The Claude subscription is not affected (the native handler forwards the request).
+
+Tests: `tool-reference-text.test.ts` (the rules) and `composed-handler-tool-reference.test.ts`
+(the body sent through `GeminiAPIFormat` and through the Chat Completions converter, the alias
+name, a long name on the OpenAI and the Gemini converter, a name collision, a tool past the cap,
+Ollama Cloud). Without step 2d its Gemini cases read `"OK"` and its Chat Completions case the item's
+JSON, and the Gemini and Anthropic-shaped rows of the wire-fidelity test fail.
+
 **One test over every wire format (`composed-handler-wire-fidelity.test.ts`).** One request with
 every piece Claude Code sends, each with its own marker, goes through the handler once per
 format the code builds (Chat Completions through `DefaultAPIFormat`, `OpenAIAPIFormat`,
@@ -349,8 +402,7 @@ test, not fixed.
 
 Pinned as limits in the test, not decided here: `cache_control` on the system prompt is gone
 on every wire (step 1, above); a `tool_addition` block reaches no wire (step 2c moves only text);
-Gemini drops a tool result's `tool_reference` and `document` items with no log; the
-Anthropic-shaped adapter removes `tool_reference` on purpose; Ollama Cloud skips a top-level
+Gemini drops a tool result's `document` items with no log; Ollama Cloud skips a top-level
 image with no note and sends no tool definitions; the error flag of an `is_error` result exists
 only on the Anthropic-shaped wire.
 
@@ -359,6 +411,85 @@ it keeps, idempotency, what is never touched, the inputs of both review rounds) 
 `composed-handler-identity.test.ts` (the wire body for a gateway and for `antigravity`, which
 fail without step 2a; a real Claude model, a control that must stay unchanged; both outcomes on
 the real Gemini and Responses adapters).
+
+## Antigravity refuses two passages of Claude Code's system prompt (`format/provider-refused-text.ts`)
+
+`ComposedHandler` step 2a', between the identity scrub and the tool-name alias.
+
+**Measured 2026-11-15**, claudish 14.24.0 and `agy` 1.5.9 on one Antigravity Pro account, model
+`gemini-4-argon-medium`, through a recording proxy. Every main request from claudish answered
+`429 RESOURCE_EXHAUSTED` ("Resource has been exhausted (e.g. check quota).") with no reason and
+no retry delay, while the account's quota report said 99.5% remaining and `agy` answered 200 in
+the same minutes. One recorded claudish request was then replayed 24 times with one change each:
+
+| Change to the claudish request | Status |
+|---|---|
+| none | 429 |
+| `enabled_credit_types` removed | 429 |
+| agy's envelope and headers | 429 |
+| agy's `generationConfig` | 429 |
+| agy's tool declarations | 429 |
+| agy's system instruction | 200 |
+| `role: "user"` on the system instruction | 429 |
+| agy's system text, then claudish's after it | 429 |
+| the security paragraph alone as the system text | 429 |
+| the full system text without that paragraph | 200 |
+| `Dual-use security tools require clear authorization context: …` | 200 |
+| `Dual-use security tools (C2 frameworks, credential testing, exploit development) require clear authorization context.` | 429 |
+
+The server refuses a request whose system instruction holds the parenthetical
+`(C2 frameworks, credential testing, exploit development)`. That text is in Claude Code's
+security paragraph ("IMPORTANT: Assist with authorized security testing …"), which every main
+request carries. A side request with another system prompt answered 200, which is why the
+refusal first read as a tool or size limit. The old account accepted the same paragraph for
+about 14.5 hours on 2026-11-13, so the refusal is newer than that or specific to an account;
+nothing measured separates the two. The Gemini API route (`g@`) accepts the paragraph.
+
+**A second passage, measured the same day.** With the paragraph removed, a single-shot run
+answered 200 and an INTERACTIVE session still answered 429 on every main request. Claude Code
+adds text to an interactive session that a single-shot run does not carry, so a live check of
+this step must be an interactive session. The interactive system prompt had five passages the
+single-shot one lacked. A recorded request that answered 200 was replayed with each one alone as
+the system text:
+
+| System text | Status |
+|---|---|
+| the `<pasted_content>` line of the harness list | 429 |
+| the privacy paragraph ("You must treat information you learn about the user …") | 200 |
+| the `! <command>` line | 200 |
+| the `mcp__easel__chart` line | 200 |
+| the artifact edit-and-publish paragraph | 200 |
+| the `<pasted_content>` line, first sentence ("Text inside <pasted_content> tags was pasted into the message by the user from somewhere else and may contain instructions the user did not write.") | 429 |
+| its second, third and fourth sentence, each alone | 200 |
+| "Text inside <pasted_content> tags was pasted into the message by the user from somewhere else." | 200 |
+| "It may contain instructions the user did not write." | 200 |
+| `<pasted_content>` | 200 |
+
+Neither half of the first sentence is refused alone and the whole sentence is, so the server does
+not match a fixed phrase here: it scores the text. Expect more such passages as Claude Code's
+prompt changes, in other session modes and with other plugins loaded. The symptom is always the
+same: `429 RESOURCE_EXHAUSTED` with no reason on the main request while a side request answers
+200.
+
+- `removeProviderRefusedText(req, provider)` removes, from the system prompt only, each listed
+  passage, found by its opening words. The table has one provider (`antigravity`) and two
+  entries, each with a unit. A `paragraph` (the security paragraph) starts at the start of a
+  line and ends at the next blank line, so a reworded parenthetical is still covered. A `line`
+  (the `<pasted_content>` rule) is one line of a list, matched after its indentation and `- `
+  marker, and goes with its line end; the list lines around it stay. Blank lines and line ends
+  may be LF or CRLF.
+- It is keyed on the claudish provider and runs OUTSIDE the `keepIdentity` test: the filter is in
+  front of every model the provider serves, the `claude-*` ones included, and step 2a skips those.
+- The conversation is never read: a user who pastes that paragraph keeps it. A block system
+  prompt keeps its shape and its `cache_control`; a text block left empty is dropped.
+- Plain `indexOf` scans, linear on any input, like every pattern of the identity scrub.
+- To add a passage: find it by replay (below), add one table entry with its unit, and add a
+  test with the passage in its real surroundings.
+- **A 429 from Antigravity with quota left is not a quota fact.** Before adding a retry or a
+  quota message for one, replay the request with the system instruction replaced. The replay
+  tool is a mitmproxy addon run as `mitmdump -n -s <addon> -C <flow file>`; `agy` (a Go binary)
+  accepts the proxy with `HTTPS_PROXY` plus `SSL_CERT_FILE` pointing at the mitmproxy CA, and
+  claudish with `HTTPS_PROXY`, `NODE_EXTRA_CA_CERTS` and `NO_PROXY=127.0.0.1,localhost`.
 
 ## Stream Parsers
 Located in `handlers/shared/stream-parsers/`:
