@@ -1,4 +1,5 @@
 import { credentials } from "../auth/credentials/authority.js";
+import { configLabel } from "../auth/credentials/key-sources.js";
 import type { KeySource, OutrankingSource } from "../auth/credentials/types.js";
 
 /** What a Keychain copy did. Counts and variable NAMES only, never a value. */
@@ -70,7 +71,8 @@ export function outrankedKeyNote(
   const exported = varOf("environment");
   if (exported) where.push(`the ${exported} exported in your shell`);
   const configured = varOf("config");
-  if (configured) where.push(`${configured} in ~/.claudish/config.json apiKeys`);
+  if (configured) where.push(`${configured} in ${configLabel()} apiKeys`);
   if (where.length === 0) return "";
-  return ` This session signs with it, but new launches still use ${where.join(" and ")}, which outranks it: remove that to use the new key.`;
+  const [verb, pronoun] = where.length > 1 ? ["outrank", "them"] : ["outranks", "that"];
+  return ` This session signs with it, but new launches still use ${where.join(" and ")}, which ${verb} it: remove ${pronoun} to use the new key.`;
 }
