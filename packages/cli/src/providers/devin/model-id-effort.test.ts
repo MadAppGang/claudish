@@ -86,6 +86,14 @@ describe("Devin connection modelIdEffort", () => {
     expect(resolveDevinModelUid(LOW, "high", models())).toBe(LOW);
   });
 
+  test("rule 1: an exact opt-in uid stays fixed at conflicting effort", () => {
+    const optIn = `${BASE}-contributor`;
+
+    expect(resolveDevinModelUid(optIn, "high", [...models(), devinModel(optIn, "low")])).toBe(
+      optIn
+    );
+  });
+
   test("rule 2: no effort chooses medium instead of a lower provider family default", () => {
     publish(effortMap({ high: HIGH, medium: MEDIUM, low: LOW }));
     const list = models().map((model) => ({ ...model, isFamilyDefault: model.uid === LOW }));
@@ -115,6 +123,18 @@ describe("Devin connection modelIdEffort", () => {
     const list = [...models(), devinModel(optIn, "low")];
 
     expect(resolveDevinModelUid(BASE, "low", list)).not.toBe(optIn);
+  });
+
+  test("rule 3: direct expansion chooses the low sibling instead of an opt-in map uid", () => {
+    const optIn = `${BASE}-contributor`;
+    publish(effortMap({ low: optIn }));
+    const list = [...models(), devinModel(optIn, "low")];
+    const chosen = new DevinModelResolver().expand(BASE, list.map(devinModelsCatalogEntry), {
+      effort: "low",
+    });
+
+    expect(chosen).toBe(LOW);
+    expect(chosen).not.toBe(optIn);
   });
 
   test("rules 3/10: the map wins over a tempting same-effort name sibling", () => {
