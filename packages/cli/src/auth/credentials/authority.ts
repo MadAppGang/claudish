@@ -335,6 +335,22 @@ export class CredentialAuthority {
   }
 
   /**
+   * Invalidate, as {@link invalidate} does for one name, every provider that
+   * reads its key from one of `names`, and no other. A write that changed only
+   * those variables leaves every other provider's memo and replacement key in
+   * place.
+   */
+  invalidateKeyVars(names: readonly string[]): void {
+    const wanted = new Set(names);
+    const seen = new Set<CredentialProvider>();
+    for (const p of this.registry.values()) {
+      if (seen.has(p)) continue;
+      seen.add(p);
+      if (p.keyEnvVars?.().some((v) => wanted.has(v))) this.invalidate(p.catalogName);
+    }
+  }
+
+  /**
    * Make a key the user just saved sign for `name` at once, in this process,
    * without writing it into `process.env`: the provider's memo is dropped (as
    * `invalidate` does) and the saved key outranks every other store until the

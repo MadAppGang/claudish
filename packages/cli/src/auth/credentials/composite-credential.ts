@@ -104,6 +104,10 @@ export class CompositeCredentialProvider implements CredentialProvider {
     this.fallback.invalidate?.();
   }
 
+  keyEnvVars(): string[] {
+    return [...(this.primary.keyEnvVars?.() ?? []), ...(this.fallback.keyEnvVars?.() ?? [])];
+  }
+
   /**
    * The identity of the half `getRequestAuth` would choose: the primary when it
    * is available, else the fallback. Prefixed by the half, so an OAuth login and

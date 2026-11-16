@@ -1,4 +1,24 @@
+import { credentials } from "../auth/credentials/authority.js";
 import type { KeySource, OutrankingSource } from "../auth/credentials/types.js";
+
+/** What a Keychain copy did. Counts and variable NAMES only, never a value. */
+export interface KeychainCopyOutcome {
+  created: number;
+  replaced: number;
+  /** Variables that could not be stored, by name. */
+  skipped: string[];
+  /** Variables that were stored, by name. */
+  written: string[];
+}
+
+/**
+ * Drop the authority's memo for every provider whose key variable a Keychain
+ * copy just wrote, and only those: a key the user saved for another provider
+ * (`credentials.replaceKey`) keeps signing.
+ */
+export function invalidateAfterKeychainCopy(outcome: Pick<KeychainCopyOutcome, "written">): void {
+  credentials.invalidateKeyVars(outcome.written);
+}
 
 /**
  * The status line for a config save that was refused.

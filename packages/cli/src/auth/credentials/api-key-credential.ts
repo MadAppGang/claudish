@@ -441,6 +441,11 @@ export class ApiKeyCredentialProvider implements CredentialProvider {
     this.replacement = undefined;
   }
 
+  /** The primary variable and its aliases. */
+  keyEnvVars(): string[] {
+    return [this.envVar, ...this.aliases];
+  }
+
   /**
    * Sign with `key`, just saved to `source`, from now until the next
    * `invalidate()`. Held here only: nothing is written into `process.env`.

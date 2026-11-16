@@ -263,6 +263,8 @@ export interface CredentialProvider {
   accountIdentity?(opts?: { allowOpPrompt?: boolean }): Promise<string | undefined>;
   /** Drop any memoized resolution so the next read re-resolves (TUI hydrate-on-add). */
   invalidate?(): void;
+  /** OPTIONAL: the environment variables this provider reads its key from. */
+  keyEnvVars?(): string[];
   /**
    * Sign with a key the user just saved to `source`, until the next
    * `invalidate()`. Held in memory only, never written into `process.env`.

@@ -120,7 +120,13 @@ import { ProvidersContent } from "./components/ProvidersContent.js";
 import { RoutingContent } from "./components/RoutingContent.js";
 import { RoutingDetail } from "./components/RoutingDetail.js";
 import { TabBar } from "./components/TabBar.js";
-import { configKeySavedStatus, configSaveFailure, outrankedKeyNote } from "./config-save.js";
+import {
+  type KeychainCopyOutcome,
+  configKeySavedStatus,
+  configSaveFailure,
+  invalidateAfterKeychainCopy,
+  outrankedKeyNote,
+} from "./config-save.js";
 import { DETAIL_H, FOOTER_H, HEADER_H, TABS_H, getChainProviders } from "./constants.js";
 import { useProfileWizard } from "./hooks/useProfileWizard.js";
 import { useRouteProbe } from "./hooks/useRouteProbe.js";
@@ -219,14 +225,6 @@ async function resolveOpEntrySecrets(
   return secrets;
 }
 
-/** What a keychain copy actually did. Counts and NAMES only — never a value. */
-interface KeychainCopyOutcome {
-  created: number;
-  replaced: number;
-  /** Variables that could not be stored, by name. */
-  skipped: string[];
-}
-
 /**
  * Write a resolved secret map into the keychain.
  *
@@ -240,11 +238,12 @@ function writeSecretsToKeychain(
   secrets: Record<string, string>,
   alreadyStored: ReadonlySet<string>
 ): KeychainCopyOutcome {
-  const outcome: KeychainCopyOutcome = { created: 0, replaced: 0, skipped: [] };
+  const outcome: KeychainCopyOutcome = { created: 0, replaced: 0, skipped: [], written: [] };
   for (const [name, value] of Object.entries(secrets)) {
     if (!value) continue;
     try {
       writeKeychainSecret(name, value);
+      outcome.written.push(name);
       if (alreadyStored.has(name)) outcome.replaced++;
       else outcome.created++;
     } catch {
@@ -1010,7 +1009,7 @@ export function App({ requestLogin }: AppProps = {}) {
           // Every provider whose key just changed has a stale authority memo,
           // and the endpoint list may now include vendors that were gated out
           // for lack of a local credential.
-          credentials.invalidate();
+          invalidateAfterKeychainCopy(outcome);
           invalidateProbeProxyHandlers();
           refreshConfig();
         }

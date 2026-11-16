@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, mock, test } from "bun:test";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -13,6 +13,24 @@ import {
   temp,
 } from "./test-helpers/claude-behaviour.js";
 await isolatedFile(import.meta, async () => {
+  // A stand-in 1Password: off unless a test sets `opMock.key`. 1Password itself
+  // is never asked.
+  const opMock: { key: string | undefined } = { key: undefined };
+  const realOp = await import("./auth/credentials/op-source.js");
+  const realHasOpSources = realOp.hasOpSources;
+  const realResolveOp = realOp.resolveOpKeyForEnvVars;
+  const opStandIn = {
+    ...realOp,
+    hasOpSources: () => (opMock.key !== undefined ? true : realHasOpSources()),
+    resolveOpKeyForEnvVars: async (
+      wanted: Set<string>,
+      opts?: Parameters<typeof realResolveOp>[1]
+    ): Promise<Record<string, string>> => {
+      if (opMock.key === undefined) return realResolveOp(wanted, opts);
+      return wanted.has("ANTHROPIC_API_KEY") ? { ANTHROPIC_API_KEY: opMock.key } : {};
+    },
+  };
+  mock.module("./auth/credentials/op-source.js", () => opStandIn);
   const { credentials } = await import("./auth/credentials/authority.js");
   const { keySourcesSearched } = await import("./auth/credentials/key-sources.js");
   const { ApiKeyCredentialProvider } = await import("./auth/credentials/api-key-credential.js");
@@ -133,11 +151,17 @@ await isolatedFile(import.meta, async () => {
     });
     provider.replaceKey(B, "macOS Keychain");
     expect((await provider.getRequestAuth({ model: MODEL })).headers["x-api-key"]).toBe(B);
-    expect(provider.describeOrigin()).toEqual({ source: "macOS Keychain", masked: "sk-a...B000" });
+    expect(provider.describeOrigin()).toEqual({
+      source: "macOS Keychain",
+      masked: "sk-a...B000",
+      replaced: true,
+    });
     expect(process.env.ANTHROPIC_API_KEY).toBe(A);
     provider.invalidate();
     expect((await provider.getRequestAuth({ model: MODEL })).headers["x-api-key"]).toBe(A);
-    expect(provider.sourcesOutranking(B, "macOS Keychain")).toEqual(["environment"]);
+    expect(provider.sourcesOutranking(B, "macOS Keychain")).toEqual([
+      { source: "environment", envVar: "ANTHROPIC_API_KEY" },
+    ]);
     process.env.ANTHROPIC_API_KEY = B;
     expect(provider.sourcesOutranking(B, "macOS Keychain")).toEqual([]);
     process.env.ANTHROPIC_API_KEY = A;
@@ -151,7 +175,9 @@ await isolatedFile(import.meta, async () => {
       profiles: {},
       apiKeys: { ANTHROPIC_API_KEY: C },
     });
-    expect(provider.sourcesOutranking(B, "macOS Keychain")).toEqual(["config"]);
+    expect(provider.sourcesOutranking(B, "macOS Keychain")).toEqual([
+      { source: "config", envVar: "ANTHROPIC_API_KEY" },
+    ]);
     expect(provider.sourcesOutranking(B, "config")).toEqual([]);
     const notifications: Array<string | undefined> = [];
     const unsubscribe = credentials.onInvalidate((name) => {
@@ -169,6 +195,131 @@ await isolatedFile(import.meta, async () => {
       credentials.invalidate("anthropic");
     }
   }, 30_000);
+
+  // REGRESSION: native-anthropic signed an ANTHROPIC_AUTH_TOKEN as x-api-key and reported itself ready
+  test("native-anthropic never signs ANTHROPIC_AUTH_TOKEN as an API key", async () => {
+    await envKeys(async () => {
+      process.env.ANTHROPIC_AUTH_TOKEN = LOGIN;
+      credentials.invalidate();
+      const auth = await credentials.getRequestAuth("native-anthropic", { model: MODEL });
+      expect(auth.headers["x-api-key"]).toBeFalsy();
+      expect(await credentials.isAvailable("native-anthropic")).toBe(false);
+    });
+  });
+
+  // REGRESSION: native-anthropic wrote a 1Password ANTHROPIC_API_KEY into process.env
+  test("a 1Password ANTHROPIC_API_KEY signs native-anthropic without entering process.env", async () => {
+    const opKey = "sk-ant-test-fake-OP00";
+    await envKeys(async () => {
+      opMock.key = opKey;
+      credentials.invalidate();
+      try {
+        const auth = await credentials.getRequestAuth("native-anthropic", { model: MODEL });
+        expect(auth.headers["x-api-key"]).toBe(opKey);
+        expect(process.env.ANTHROPIC_API_KEY).toBeUndefined();
+      } finally {
+        opMock.key = undefined;
+        credentials.invalidate();
+      }
+    });
+  });
+
+  // REGRESSION: a Keychain copy invalidated every provider and dropped a replacement key it never touched
+  test("invalidating by key variable keeps another provider's replacement key", async () => {
+    const B = "sk-ant-test-fake-B000";
+    await envKeys(async () => {
+      credentials.replaceKey("anthropic", B, "macOS Keychain");
+      try {
+        credentials.invalidateKeyVars(["OPENAI_API_KEY"]);
+        expect(
+          (await credentials.getRequestAuth("anthropic", { model: MODEL })).headers["x-api-key"]
+        ).toBe(B);
+        credentials.invalidateKeyVars(["ANTHROPIC_API_KEY"]);
+        expect(
+          (await credentials.getRequestAuth("anthropic", { model: MODEL })).headers["x-api-key"]
+        ).not.toBe(B);
+      } finally {
+        credentials.invalidate("anthropic");
+      }
+    });
+  });
+
+  // REGRESSION: the TUI's Keychain copy step called the global invalidate and lost the replacement key
+  test("the Keychain copy step invalidates only the providers whose variables it wrote", async () => {
+    const B = "sk-ant-test-fake-B000";
+    const { invalidateAfterKeychainCopy } = await import("./tui/config-save.js");
+    await envKeys(async () => {
+      credentials.replaceKey("anthropic", B, "macOS Keychain");
+      try {
+        invalidateAfterKeychainCopy({
+          created: 1,
+          replaced: 0,
+          skipped: [],
+          written: ["OPENAI_API_KEY"],
+        });
+        expect(
+          (await credentials.getRequestAuth("anthropic", { model: MODEL })).headers["x-api-key"]
+        ).toBe(B);
+      } finally {
+        credentials.invalidate("anthropic");
+      }
+    });
+  });
+
+  // REGRESSION: a shell alias was reported as outranking under the primary variable's name
+  test("an exported alias outranks a saved vault key under its own name", () => {
+    const B = "sk-ant-test-fake-B000";
+    process.env.CLAUDISH_TEST_ALT_KEY = "sk-ant-test-fake-ALT0";
+    try {
+      const provider = new ApiKeyCredentialProvider({
+        catalogName: "alias-outranking-test",
+        envVar: "CLAUDISH_TEST_PRIMARY_KEY",
+        aliases: ["CLAUDISH_TEST_ALT_KEY"],
+        authScheme: "x-api-key",
+      });
+      const outranking = provider.sourcesOutranking(B, "macOS Keychain");
+      expect(outrankedKeyNote("CLAUDISH_TEST_PRIMARY_KEY", outranking)).toContain(
+        "the CLAUDISH_TEST_ALT_KEY exported in your shell"
+      );
+      expect(outranking).toEqual([{ source: "environment", envVar: "CLAUDISH_TEST_ALT_KEY" }]);
+    } finally {
+      delete process.env.CLAUDISH_TEST_ALT_KEY;
+    }
+  });
+
+  // REGRESSION: a vault-hydrated alias counted as a shell export outranking a saved vault key
+  test("a 1Password-hydrated alias does not outrank a saved vault key", () => {
+    const B = "sk-ant-test-fake-B000";
+    process.env.CLAUDISH_TEST_HYDRATED_ALT_KEY = "sk-ant-test-fake-HYD0";
+    try {
+      recordOpHydratedVars(["CLAUDISH_TEST_HYDRATED_ALT_KEY"]);
+      const provider = new ApiKeyCredentialProvider({
+        catalogName: "hydrated-alias-test",
+        envVar: "CLAUDISH_TEST_HYDRATED_PRIMARY_KEY",
+        aliases: ["CLAUDISH_TEST_HYDRATED_ALT_KEY"],
+        authScheme: "x-api-key",
+      });
+      expect(provider.sourcesOutranking(B, "macOS Keychain")).toEqual([]);
+    } finally {
+      delete process.env.CLAUDISH_TEST_HYDRATED_ALT_KEY;
+    }
+  });
+
+  // REGRESSION: replaceKey left describeOrigin undefined until the next resolve
+  test("replaceKey records the saved key's origin at once", () => {
+    const provider = new ApiKeyCredentialProvider({
+      catalogName: "anthropic",
+      envVar: "ANTHROPIC_API_KEY",
+      authScheme: "x-api-key",
+      readAtUse: true,
+    });
+    provider.replaceKey("sk-ant-test-fake-B000", "config");
+    expect(provider.describeOrigin()).toEqual({
+      source: "config",
+      masked: "sk-a...B000",
+      replaced: true,
+    });
+  });
 
   test("B-91 explains shell and config keys outranking saved vault keys", () => {
     expect(outrankedKeyNote("ANTHROPIC_API_KEY", [])).toBe("");
