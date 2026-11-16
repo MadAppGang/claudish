@@ -222,6 +222,12 @@ export function readProcessTable(): ProcessTable {
  * unavailable. Never rejects: Bun throws a spawn failure (EPERM in a sandbox) from
  * `execFile` itself rather than passing it to the callback, so the call is guarded too.
  * With `cancelAfterMs`, a `ps` still running then is SIGKILLed and the read is unavailable.
+ *
+ * The read answers on whichever comes first: `execFile`'s callback, or `PS_EXIT_DRAIN_MS`
+ * after `ps` exits. The callback alone waits for the stdout pipe to close, and a process
+ * spawned at the same moment can inherit the pipe's write end (macOS has no
+ * pipe2(O_CLOEXEC)) and hold it open long after `ps` is gone. The cancel is a timer of
+ * its own, independent of both the exit and the pipe.
  */
 export function readProcessTableAsync(cancelAfterMs?: number): Promise<ProcessTable> {
   const options =
@@ -230,14 +236,64 @@ export function readProcessTableAsync(cancelAfterMs?: number): Promise<ProcessTa
       : { ...PS_OPTIONS, timeout: cancelAfterMs, killSignal: "SIGKILL" as const };
   return new Promise((resolve) => {
     const spawnedAt = Date.now();
+    let settled = false;
+    let child: PsChild | undefined;
+    let cancel: ReturnType<typeof setTimeout> | undefined;
+    const finish = (stdout: string | null): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(cancel);
+      child?.stdout?.destroy?.();
+      resolve(tableOf(stdout, spawnedAt));
+    };
+    if (cancelAfterMs !== undefined) {
+      cancel = setTimeout(() => {
+        try {
+          child?.kill?.("SIGKILL");
+        } catch {
+          // already gone
+        }
+        finish(null);
+      }, cancelAfterMs);
+    }
     try {
-      psSpawn.execFile("ps", PS_ARGS, options, (err, stdout) =>
-        resolve(tableOf(err ? null : String(stdout), spawnedAt))
+      const spawned = psSpawn.execFile("ps", PS_ARGS, options, (err, stdout) =>
+        finish(err ? null : String(stdout))
       );
+      if (settled || !isPsChild(spawned)) return;
+      child = spawned;
+      const chunks: Buffer[] = [];
+      child.stdout?.on("data", (chunk: unknown) => {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), "utf8"));
+      });
+      child.on("exit", (code: number | null) => {
+        // output written just before the exit can still be in flight
+        setTimeout(
+          () => finish(code === 0 ? Buffer.concat(chunks).toString("utf8") : null),
+          PS_EXIT_DRAIN_MS
+        );
+      });
     } catch {
-      resolve(tableOf(null, spawnedAt));
+      finish(null);
     }
   });
+}
+
+/** After `ps` exits, how long its last output may take to arrive. */
+const PS_EXIT_DRAIN_MS = 100;
+
+/** The part of the `ChildProcess` that `execFile` returns which the async read uses. */
+interface PsChild {
+  stdout?: {
+    on(event: "data", listener: (chunk: unknown) => void): unknown;
+    destroy?(): unknown;
+  } | null;
+  on(event: "exit", listener: (code: number | null) => void): unknown;
+  kill?(signal: NodeJS.Signals): unknown;
+}
+
+function isPsChild(value: unknown): value is PsChild {
+  return typeof (value as { on?: unknown } | null | undefined)?.on === "function";
 }
 
 /** `lstart` of one pid; null when it is gone or the table is unavailable. */

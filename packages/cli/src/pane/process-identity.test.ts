@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
   existsSync,
@@ -14,6 +14,7 @@ import {
   type GroupSnapshot,
   type PaneIdentity,
   type PsRow,
+  type PsSpawn,
   WATCHER_FUNCTIONS,
   WATCHER_SCRIPT,
   etimeSeconds,
@@ -474,5 +475,77 @@ describe("the watcher when its owner dies and ps cannot run", () => {
     const r = watcherAfterOwnerDeath(`echo "    1     1 ${leader.lstart} /sbin/launchd"`);
     expect(r.status).toBe(0);
     expect(r.left).toEqual({ ctl: false, turn: false, sock: false, rec: false });
+  });
+});
+
+describe("readProcessTableAsync with a ps whose stdout stays open", () => {
+  const holderFiles: string[] = [];
+
+  afterEach(() => {
+    for (const pidFile of holderFiles.splice(0)) {
+      const holders = existsSync(pidFile) ? readFileSync(pidFile, "utf8").split("\n") : [];
+      for (const line of holders) {
+        const pid = Number(line.trim());
+        try {
+          if (pid > 1) process.kill(pid, "SIGKILL");
+        } catch {
+          // already gone
+        }
+      }
+    }
+  });
+
+  /**
+   * Runs `body` as the `ps` binary through the spawn seam. The script appends to the
+   * file named by `$HOLDERS` the pid of each process it leaves holding its stdout.
+   */
+  async function withStandInPs<T>(body: string, run: () => Promise<T>): Promise<T> {
+    const dir = mkdtempSync(join(scratch, "held-ps-"));
+    const ps = join(dir, "ps");
+    const pidFile = join(dir, "holder.pid");
+    holderFiles.push(pidFile);
+    writeFileSync(ps, `#!/bin/sh\nHOLDERS='${pidFile}'\n${body}\n`, { mode: 0o755 });
+    const real: PsSpawn = setPsSpawnForTest({
+      execFileSync: (file, args, opts) => real.execFileSync(file, args, opts),
+      execFile: (_file, args, opts, cb) => real.execFile(ps, args, opts, cb),
+    });
+    try {
+      return await run();
+    } finally {
+      setPsSpawnForTest(real);
+    }
+  }
+
+  const selfRow = `${process.pid} ${process.ppid} ${process.pid} 00:01 Mon Oct  6 12:34:56 2026 bun`;
+
+  async function within(ms: number, read: Promise<unknown>): Promise<unknown> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const hung = new Promise<"hung">((resolve) => {
+      timer = setTimeout(() => resolve("hung"), ms);
+    });
+    const outcome = await Promise.race([read, hung]);
+    clearTimeout(timer);
+    return outcome;
+  }
+
+  for (const cancelAfterMs of [undefined, 5_000]) {
+    test(`answers once ps exits, without waiting for the pipe to close (cancelAfterMs ${cancelAfterMs})`, async () => {
+      const outcome = await withStandInPs(
+        `sleep 30 &\necho $! >> "$HOLDERS"\necho '${selfRow}'`,
+        () => within(1_500, readProcessTableAsync(cancelAfterMs))
+      );
+      expect(outcome).not.toBe("hung");
+      expect((outcome as PsRow[] | null)?.map((r) => r.pid)).toEqual([process.pid]);
+    });
+  }
+
+  test("a cancel answers unavailable even while a killed ps leaves its pipe held", async () => {
+    const started = performance.now();
+    const outcome = await withStandInPs(
+      `sleep 30 &\necho $! >> "$HOLDERS"\necho '${selfRow}'\nexec sleep 30`,
+      () => within(1_500, readProcessTableAsync(300))
+    );
+    expect(outcome).toBeNull();
+    expect(performance.now() - started).toBeLessThan(1_000);
   });
 });
