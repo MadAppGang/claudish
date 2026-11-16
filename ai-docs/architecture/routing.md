@@ -523,6 +523,15 @@ and shows no drop. Measured on the pinned generation `g-20261016053727894-8a7437
 models): three chains changed, and each lost only `zengo@<id>-contributor` (`gemini-4-argon`,
 `muse-spark-1.3`, `muse-spark-1.2`).
 
+Two readers that hold only a wire id apply the suffix rule themselves. A provider-only routing
+entry (no `@`, the fallback hop included) is `excluded-by-content-use` when the wire id it ends on
+is an opt-in id that no ordinary mapped connection of that provider publishes exactly: an unknown
+name kept as typed, a name with a `/` passed through, or a gateway's list answer
+(`isUnvouchedOptInWireId`). Its explanation names the explicit spec that sends the id. The
+transport's effort choice (`chooseModelIdForEffort`) never returns an opt-in id from an effort map,
+for a level or for `off`; the provider's own resolution answers instead. An opt-in effort-map id
+reached implicitly resolves to the connection's base id (`resolveImplicitExternalId`).
+
 **Suffix-fallback removal trigger:** models-index publishes `contentUse` on every connection
 (backend task M3, `ai-docs/reports/BACKEND_TASKS_meta_muse_code_route-20261016.md`). Readers with
 only a wire id still use the suffix rule. Until then this is the one wire-id name rule claudish

@@ -806,6 +806,33 @@ export function catalogMapsOnlyOptIn(provider: string, model: string, cachePath?
   return !(entry.aggregators ?? []).some(mapsHere) && (entry.optInConnections ?? []).some(mapsHere);
 }
 
+/**
+ * Would sending `wireId` to `provider` opt the request's content in, with no
+ * ordinary connection to vouch for it?
+ *
+ * For the wire id a provider-only routing entry ended on. True when the id has
+ * the opt-in shape (`isOptInWireId`) and no ordinary mapped connection of the
+ * provider (`aggregators`) publishes it exactly. A `contentUse: "standard"`
+ * connection whose id ends in `-contributor` is ordinary, so its id is false.
+ * Without a catalog the shape alone decides: nothing vouches for the id.
+ */
+export function isUnvouchedOptInWireId(
+  provider: string,
+  wireId: string,
+  cachePath?: string
+): boolean {
+  if (!isOptInWireId(wireId)) return false;
+  const entries = cachePath ? readAllModelsCache(cachePath)?.entries : getCatalogEntries();
+  return !(entries ?? []).some((entry) =>
+    (entry.aggregators ?? []).some(
+      (connection) =>
+        connection.routeStatus === "mapped" &&
+        catalogRouteMatchesProvider(connection.route, provider) &&
+        connection.externalModelId === wireId
+    )
+  );
+}
+
 /** Who decides which models a route serves. `unknown` denies nothing. */
 export type RouteOwnership = "backend-owned" | "account-selected" | "unknown";
 
