@@ -64,27 +64,37 @@ or `catalog-unreadable` (`userRuleRefusal`).
 ### RB-4
 
 A rule or fallback entry without `@` gets its wire id, in order: plan membership
-(`resolveSubscriptionRouting` `serves`); else `resolveExternalId`; else, ONLY with a bundled origin
-and a gateway-bound provider, an exact id from that gateway's models list, or the entry is excluded
-`gateway-id-unknown`; in every other case the name passes through unchanged. A bare name whose
+(`resolveSubscriptionRouting` `serves`); else `resolveImplicitExternalId`, which keeps a name an
+ordinary mapped connection of this provider publishes exactly (its `externalModelId`, or an
+effort-map id that does not opt content in), then resolves a name this provider's own mapped
+connections list in an effort map to the base id of the one entry that lists it (two entries with
+different base ids give no answer; another provider's effort map is never read), and only then
+runs the model-id, alias, reverse and suffix lookups of `resolveExternalId`; else, ONLY with a
+bundled origin and a gateway-bound provider, an exact id from that gateway's models list, or the
+entry is excluded `gateway-id-unknown`; in every other case the name passes through unchanged. An
+entry whose final wire id is a content-use opt-in id that no ordinary mapped connection of that
+provider publishes exactly is excluded `excluded-by-content-use`, never passed through
+(`isUnvouchedOptInWireId`); the same id typed as `provider@<id>` is sent. A bare name whose
 candidates are all excluded before the credential filter, one of them `gateway-id-unknown`, is
 no-route `gateway-id-unknown`, never `rule-empty` or `catalog-empty`.
 
-- **Scope:** `providers/routing-rules.ts` (`resolveRoutingEntries`), `providers/catalog-client.ts` (`resolveExternalId`).
-- **Check:** S1, S1b, S1c, S3, S3b, S11d.
+- **Scope:** `providers/routing-rules.ts` (`resolveRoutingEntries`), `providers/catalog-client.ts` (`resolveImplicitExternalId`, `resolveExternalId`), `providers/route-candidates.ts` (`isUnvouchedOptInWireId`).
+- **Check:** S1, S1b, S1c, S3, S3b, S11d, `providers/routing-rules.test.ts` (the provider-only effort-map and content-use opt-in cases), `providers/catalog-client.test.ts` (exact effort-map wire ids, content-use opt-in wire id resolution), `providers/routing-rules.muse-code.test.ts`.
 
 ## Gathering and ordering candidates
 
 ### RB-5
 
 In `route-candidates.ts`, candidates come only from mapped catalog connections bound to a claudish
-provider (wire id = `externalIdFor`, never a moving pointer or opt-in id), vendor claims, and
-account-listed rows. Candidate gathering applies no name pattern. Not covered: model-spec parsing
-(`model-parser.ts`, `nativeModelPatterns` attribution) and `normalizeGlmSlug`, which rewrite the
-name before routing.
+provider (wire id = `externalIdFor`, except that a requested name equal to an id in that
+connection's effort map keeps that exact id, `implicitEffortWireId`; never a moving pointer or
+opt-in id), vendor claims, and account-listed rows; neither a vendor claim nor an account-listed
+row makes a candidate for a content-use opt-in name. Candidate gathering applies no name pattern.
+Not covered: model-spec parsing (`model-parser.ts`, `nativeModelPatterns` attribution) and
+`normalizeGlmSlug`, which rewrite the name before routing.
 
-- **Scope:** `providers/route-candidates.ts`.
-- **Check:** `providers/route-candidates.test.ts`, S7.
+- **Scope:** `providers/route-candidates.ts`, `providers/model-id-effort.ts` (`implicitEffortWireId`).
+- **Check:** `providers/route-candidates.test.ts` (exact effort-map wire ids in default candidate gathering, the opt-in vendor-claim and account-listed cases), S7.
 
 ### RB-6
 
