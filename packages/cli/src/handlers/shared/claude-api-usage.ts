@@ -10,6 +10,11 @@ export interface AnthropicUsage {
   output_tokens?: number;
   cache_read_input_tokens?: number;
   cache_creation_input_tokens?: number;
+  /** The cache write split by TTL, when the response reports it. */
+  cache_creation?: {
+    ephemeral_5m_input_tokens?: number;
+    ephemeral_1h_input_tokens?: number;
+  };
 }
 
 /** One forwarded `/v1/messages` request, after its response ended. */
@@ -57,5 +62,8 @@ export function mergeSseUsage(line: string, usage: AnthropicUsage): void {
     usage.cache_read_input_tokens = u.cache_read_input_tokens || usage.cache_read_input_tokens;
     usage.cache_creation_input_tokens =
       u.cache_creation_input_tokens || usage.cache_creation_input_tokens;
+    if (u.cache_creation && typeof u.cache_creation === "object") {
+      usage.cache_creation = { ...u.cache_creation };
+    }
   }
 }
