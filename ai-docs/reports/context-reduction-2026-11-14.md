@@ -719,6 +719,47 @@ The fourth answer:
 By the compaction branch's mapping, the request that answered it sent the
 swapped history, so on this build the answer came from the summary.
 
+### claudish-compaction rerun on build a6952916: 3/3 pass
+
+The main task again, `claudish-compaction` only, on build source a6952916,
+sha256 `37ee19cf445407b97658276f995bfcec289217a2841eca21dcc583be721c6447`,
+with the config of the trials above. One madbench call per trial. Before each
+call, a check read the host login's remaining lifetime and started the trial
+only with 90 minutes or more left. The first attempt at trials 2 and 3 failed
+on `Failed to authenticate: OAuth session expired and could not be refreshed`
+and is in no row: madbench gives the sandbox the host access token with no
+refresh token, and checks its lifetime only at preflight.
+
+| Trial | Hidden tests | Duration | Cost | Cache hit rate | Haiku calls | Answers | Tokens in / out | Outputs sent compressed |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 114/114 | 26.0 min | $1.5499 | 95.7% | 2 | 2 HTTP 200 | 15,696 / 1,543 | 15 sends |
+| 2 | 114/114 | 35.9 min | $1.5503 | 96.5% | 1 | none logged | 0 / 0 | 0 (4 sends `sent=original`) |
+| 3 | 114/114 | 36.3 min | $1.6590 | 96.3% | 3 | 3 HTTP 200 | 23,301 / 3,896 | 22 sends |
+| Mean | 3/3 | 32.7 min | $1.5864 | 96.2% | | | | |
+
+The key checks passed in all 3 trials: `ANTHROPIC_API_KEY entries in the
+launcher environment: 0`, `AGENT_ENV_KEY_UNSET CLAUDISH_CONFIG_present=0`, and
+every call `model: claude-haiku-5-5, auth: x-api-key`. No trial ran a history
+summary (`history_started=0`) or read a recovery file.
+
+**Trial 2's call has no answer line.** The log has one `[compaction] Calling
+API` line and no `HTTP` answer, and the one large output went out unchanged.
+The build writes one of four lines when a call gets no answer (`no answer
+within N ms`, `request failed: …`, `HTTP N but the body could not be read`,
+`cancelled at shutdown`). The evidence script did not grep them, and the
+sandbox with the log was removed, so which one it was is unknown. The
+evidence script prints them now (`call_failures:`).
+
+**Cache breaks.** Counted by `tools/cases-readout/cache-readout.ts` on the
+main thread: a request that read less from the cache than the previous
+request read and wrote. This rerun: 13, 7 and 8. The same readout on earlier
+trials gives `claudish-baseline` 15, 10 and 12, and `claudish-compaction` on
+build 04cbb471 9, 9, 7 and 10. Every variant has them, so they come from
+Claude Code's own prefix changes, not from compaction (inferred; trial 2, for
+example, has 10 `tools_changed` events). This is a different count from the
+"cache breaks after it" column above, which looks only at the requests after
+a compressed output.
+
 ## Explanations (inference, not verified)
 
 - **Why the gateway costs more.** Shortened tool output leaves the agent
