@@ -365,6 +365,25 @@ for (const arg of process.argv.slice(2)) {
   const ccVersion = launchText.match(/launch: claude version (.*)/)?.[1] ?? "not recorded";
   const hookLine = launchText.match(/agent-env: hook .*/)?.[0] ?? "no hook line";
   console.log(`claude_code=${ccVersion} | ${hookLine}`);
+  // long-session-xl's bun shim writes to the launch log of the session's own
+  // launch, which can be another folder than the one holding the claudish log
+  // (the first launch, `claude plugin`, makes ./logs and the session reuses it).
+  // Every launch of one trial records the same sandbox cwd, so all launch logs
+  // with this cwd are read.
+  const cwd = launchText.match(/^launch: cwd (.*)$/m)?.[1];
+  if (cwd) {
+    const outDir = logPath.split("/").slice(0, -3).join("/");
+    let trialLaunches = "";
+    for (const f of new Bun.Glob("*launch-*/launch.log").scanSync({ cwd: outDir, absolute: true })) {
+      const t = await Bun.file(f).text();
+      if (t.includes(`launch: cwd ${cwd}\n`)) trialLaunches += t;
+    }
+    const active = /^bun-shim: active/m.test(trialLaunches);
+    const refused = (trialLaunches.match(/^bun-shim: refused bare bun test/gm) ?? []).length;
+    if (active || refused || r.scenario_id === "long-session-xl") {
+      console.log(`bun_shim=${active ? "active" : "NOT ACTIVE"} bare bun test refused: ${refused}`);
+    }
+  }
   if (Object.keys(hops).length || fallbacks.length) {
     const oa = reqs.filter((q) => q.host !== undefined && q.input !== undefined);
     const cached = oa.filter((q) => q.cachedReported).length;
