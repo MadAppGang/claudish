@@ -26,7 +26,7 @@
 // pricing.ts. Per trial the readout also prints the requests above a model's
 // band edge and what they cost.
 
-import { bandOf, priceOf, requestCost, type Usage } from "./pricing";
+import { bandOf, EDGE_RULES, type EdgeRule, priceOf, requestCost, type Usage } from "./pricing";
 
 const M = 1_000_000;
 
@@ -277,10 +277,10 @@ function usageOf(r: Req): Usage | undefined {
   return { input: r.input, w5m: r.w5m ?? (r.creation ?? 0) - w1h, w1h, read: r.read, output: r.output };
 }
 
-function reqCost(r: Req): number {
+function reqCost(r: Req, rule: EdgeRule = "all-input"): number {
   const p = priceOf(r.model);
   const u = usageOf(r);
-  return p && u ? requestCost(p, u) : 0;
+  return p && u ? requestCost(p, u, rule) : 0;
 }
 
 /** Whether a request was priced at its model's upper band. */
@@ -332,6 +332,13 @@ for (const arg of process.argv.slice(2)) {
       `above_edge(${edge}) requests=${upper.length}/${banded.length} (${((100 * upper.length) / banded.length).toFixed(1)}%) ` +
         `cost=${fmt(upper.reduce((s, q) => s + reqCost(q), 0))} of ${fmt(banded.reduce((s, q) => s + reqCost(q), 0))}`,
     );
+    // The whole trial recounted under each edge rule; madbench's cost names the one billed.
+    const byRule = EDGE_RULES.map((rule) => {
+      const total = reqs.reduce((s, q) => s + reqCost(q, rule), 0) + haikuTotal;
+      const n = banded.filter((q) => bandOf(priceOf(q.model)!, usageOf(q)!, rule).upper).length;
+      return `${rule}=${fmt(total)} (upper ${n}, diff ${fmt(total - madbench)})`;
+    });
+    console.log(`edge_rule_recount madbench=${fmt(madbench)} ${byRule.join(" ")}`);
   }
   console.log(
     `cc_compactions=${compactions.length} ${compactions.map((c) => `[${c.ts} pre=${c.pre} post=${c.post}]`).join(" ")}`,

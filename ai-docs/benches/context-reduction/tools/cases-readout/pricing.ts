@@ -50,20 +50,36 @@ export function priceOf(model: string): Price | undefined {
 /** The token counts of one request, as its usage reports them. */
 export type Usage = { input: number; w5m?: number; w1h?: number; read?: number; output?: number };
 
+/**
+ * Which tokens the band edge is measured on: all-input (fresh + cache writes +
+ * cache reads, the default), no-cache-reads (fresh + cache writes), or
+ * fresh-input (uncached input only). The readouts print the other two beside
+ * the default so a trial's billed cost can show which one the provider uses.
+ */
+export type EdgeRule = "all-input" | "no-cache-reads" | "fresh-input";
+export const EDGE_RULES: EdgeRule[] = ["all-input", "no-cache-reads", "fresh-input"];
+
 /** The total input the band edge is measured on. */
-export function totalInput(u: Usage): number {
-  return u.input + (u.w5m ?? 0) + (u.w1h ?? 0) + (u.read ?? 0);
+export function totalInput(u: Usage, rule: EdgeRule = "all-input"): number {
+  const writes = (u.w5m ?? 0) + (u.w1h ?? 0);
+  if (rule === "fresh-input") return u.input;
+  if (rule === "no-cache-reads") return u.input + writes;
+  return u.input + writes + (u.read ?? 0);
 }
 
 /** The band a request is priced at, and whether it is the upper one. */
-export function bandOf(p: Price, u: Usage): { band: Band; upper: boolean } {
-  if (p.above && totalInput(u) > p.above.edge) return { band: p.above, upper: true };
+export function bandOf(
+  p: Price,
+  u: Usage,
+  rule: EdgeRule = "all-input"
+): { band: Band; upper: boolean } {
+  if (p.above && totalInput(u, rule) > p.above.edge) return { band: p.above, upper: true };
   return { band: p, upper: false };
 }
 
 /** The cost of one request in USD. */
-export function requestCost(p: Price, u: Usage): number {
-  const { band } = bandOf(p, u);
+export function requestCost(p: Price, u: Usage, rule: EdgeRule = "all-input"): number {
+  const { band } = bandOf(p, u, rule);
   return (
     (u.input * band.input +
       (u.w5m ?? 0) * band.input * p.w5m +

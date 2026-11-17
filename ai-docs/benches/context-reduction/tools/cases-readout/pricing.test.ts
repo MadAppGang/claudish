@@ -49,6 +49,30 @@ describe("Haiku 5.5 bands", () => {
   });
 });
 
+describe("the edge rule", () => {
+  // 10,000 fresh + 30,000 written (5 min) + 80,000 read = 120,000 in all.
+  const u = { input: 10_000, w5m: 30_000, read: 80_000, output: 1_000 };
+
+  test("all-input (the default) counts cache writes and reads: upper band", () => {
+    expect(totalInput(u)).toBe(120_000);
+    expect(totalInput(u, "all-input")).toBe(120_000);
+    // 10,000 x 0.50 + 30,000 x 0.50 x 1.25 + 80,000 x 0.05 + 1,000 x 2.50 = 30,250 per 1M
+    expect(requestCost(haiku, u)).toBeCloseTo(0.03025, 10);
+  });
+
+  test("no-cache-reads counts fresh input and cache writes: lower band", () => {
+    expect(totalInput(u, "no-cache-reads")).toBe(40_000);
+    expect(bandOf(haiku, u, "no-cache-reads").upper).toBe(false);
+    // 10,000 x 0.10 + 30,000 x 0.10 x 1.25 + 80,000 x 0.01 + 1,000 x 0.50 = 6,050 per 1M
+    expect(requestCost(haiku, u, "no-cache-reads")).toBeCloseTo(0.00605, 10);
+  });
+
+  test("fresh-input counts only uncached input", () => {
+    expect(totalInput(u, "fresh-input")).toBe(10_000);
+    expect(bandOf(haiku, { input: 100_001, read: 5 }, "fresh-input").upper).toBe(true);
+  });
+});
+
 describe("a model with no upper band", () => {
   test("Sonnet 5.5 at 300,000 input tokens keeps its one price", () => {
     expect(bandOf(sonnet, { input: 300_000 }).upper).toBe(false);
