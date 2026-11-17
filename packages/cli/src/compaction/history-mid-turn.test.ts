@@ -9,7 +9,11 @@ import {
 } from "../recovery/test-helpers/capture-log.js";
 import { localTokenEstimate } from "../token-estimate.js";
 import { CompactionClient } from "./haiku-client.js";
-import { HISTORY_SUMMARY_MARKER, HistoryCompactor } from "./history.js";
+import {
+  HISTORY_PINNED_PROMPT_MARKER,
+  HISTORY_SUMMARY_MARKER,
+  HistoryCompactor,
+} from "./history.js";
 import { CompactionStore } from "./store.js";
 
 // Installed per file and restored: bun runs every test file in one process.
@@ -140,7 +144,15 @@ test("a long turn that crosses applyAt swaps at a complete tool round, with no h
   expect(passB.boundary).toBe(9);
 
   const sent = b.messages;
-  expect(sent[0]).toEqual({ role: "user", content: `${HISTORY_SUMMARY_MARKER}\n${SUMMARY}` });
+  // The turn's own prompt (message 0) is inside [0, 9), so it is kept verbatim.
+  expect(sent[0]).toEqual({
+    role: "user",
+    content: [
+      { type: "text", text: `${HISTORY_SUMMARY_MARKER}\n${SUMMARY}` },
+      { type: "text", text: HISTORY_PINNED_PROMPT_MARKER },
+      { type: "text", text: "Refactor nativeRouteFor everywhere" },
+    ],
+  });
   expect(sent[1]?.role).toBe("assistant");
   expect(pairingIntact(sent)).toBe(true);
   expect(JSON.stringify(sent)).not.toContain("THOUGHT_");

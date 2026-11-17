@@ -67,6 +67,13 @@ import { type TopicDecider, type TopicResult, decideTopicAction } from "./topic.
 /** The first line of the summary message; the summary follows on the next line. */
 export const HISTORY_SUMMARY_MARKER = "[claudish: summary of the earlier conversation]";
 
+/**
+ * The text block that follows the summary when a swap inside a turn keeps
+ * that turn's user prompt; the prompt's own blocks follow it.
+ */
+export const HISTORY_PINNED_PROMPT_MARKER =
+  "[claudish: the user's request for this turn, verbatim]";
+
 /** `max_tokens` of one summary call. */
 export const HISTORY_SUMMARY_MAX_TOKENS = 8192;
 
@@ -519,10 +526,85 @@ export function summaryRequestText(rendered: string, previousSummary?: string): 
   ].join("\n");
 }
 
+/**
+ * The human turn start a swap at `boundary` keeps verbatim, or undefined.
+ * A boundary inside a turn (message `boundary` is not a human turn start)
+ * pins the start of that turn, so its user prompt survives the swap as
+ * written; a boundary at a human turn start keeps that prompt as message
+ * `boundary` and pins nothing.
+ */
+export function pinnedPromptIndex(
+  messages: readonly unknown[],
+  boundary: number
+): number | undefined {
+  if (boundary < 1 || boundary >= messages.length) return undefined;
+  if (isHumanTurnStart(messages[boundary])) return undefined;
+  const start = lastHumanTurnStart(messages.slice(0, boundary));
+  return start >= 0 ? start : undefined;
+}
+
+/** The blocks of a pinned prompt as sent: its content without cache markers. */
+function pinnedPromptBlocks(message: unknown): Block[] {
+  const content = (message as Block).content;
+  if (typeof content === "string") return [{ type: "text", text: content }];
+  return (withoutCacheMarkers(content) as Block[]).filter((b) => b?.type !== "tool_result");
+}
+
+/**
+ * The user message that replaces messages `[0, b)`: the summary, and, when
+ * `pinned` names a human turn start below `b`, that turn's prompt verbatim
+ * after `HISTORY_PINNED_PROMPT_MARKER`. Cache markers are dropped from the
+ * copy, so the bytes are the same on every request whatever message Claude
+ * Code marks.
+ */
+export function summaryMessage(
+  summary: string,
+  original: readonly unknown[],
+  boundary: number,
+  pinned: number | undefined
+): { role: "user"; content: string | Block[] } {
+  const text = summaryMessageText(summary);
+  if (
+    pinned === undefined ||
+    !Number.isInteger(pinned) ||
+    pinned < 0 ||
+    pinned >= boundary ||
+    !isHumanTurnStart(original[pinned])
+  ) {
+    return { role: "user", content: text };
+  }
+  return {
+    role: "user",
+    content: [
+      { type: "text", text },
+      { type: "text", text: HISTORY_PINNED_PROMPT_MARKER },
+      ...pinnedPromptBlocks(original[pinned]),
+    ],
+  };
+}
+
+/**
+ * The hold decision for a swap that pins a prompt yet leaves the request at
+ * or above Claude Code's compaction point: the swap would cost a cache write
+ * and Claude Code would still compact. Undefined when the swap can bring the
+ * request under that point, or pins nothing.
+ */
+export function pinnedPromptTooLarge(
+  pinned: number | undefined,
+  afterSwapTokens: number,
+  ccCompactAt: number
+): SwapDecision | undefined {
+  if (pinned === undefined || afterSwapTokens < ccCompactAt) return undefined;
+  return {
+    swap: false,
+    reason: `the current turn's prompt and newest rounds are ${afterSwapTokens} tokens, at or above Claude Code's compaction point ${Math.round(ccCompactAt)}`,
+  };
+}
+
 /** The messages a swap sends in place of `original`. */
 export function applySwap(original: readonly unknown[], swap: HistorySwapRecord): unknown[] {
   return [
-    { role: "user", content: summaryMessageText(swap.summary) },
+    summaryMessage(swap.summary, original, swap.boundary, swap.pinned),
     ...original.slice(swap.boundary, swap.end).map(stripThinking),
     ...original.slice(swap.end),
   ];
@@ -900,9 +982,10 @@ export class HistoryCompactor {
       sessionId,
       charsOf(original.slice(ready.boundary).map(stripThinking))
     );
+    const pinned = pinnedPromptIndex(original, ready.boundary);
     const summaryTokens = counter.tokensOfChars(
       sessionId,
-      charsOf({ role: "user", content: summaryMessageText(ready.summary) })
+      charsOf(summaryMessage(ready.summary, original, ready.boundary, pinned))
     );
     const prefixTokens = counter.tokensOfChars(
       sessionId,
@@ -914,24 +997,27 @@ export class HistoryCompactor {
     const haikuCostUsd = (
       this.deps.haikuCostOf ?? ((s) => summaryHaikuCost(s, this.deps.client.model))
     )(ready);
-    const decision = decideHistorySwap({
-      policy,
-      count: count.tokens,
-      limit,
-      precomputeAt: this.deps.settings.precomputeAt,
-      applyAt: this.deps.settings.applyAt,
-      ccCompactAt: CLAUDE_CODE_COMPACT_AT * limit,
-      tailTokens,
-      summaryTokens,
-      removedTokens,
-      ...(ratios ? { ratios } : {}),
-      haikuCostUsd,
-      ...(observed.gapMs !== undefined ? { gapMs: observed.gapMs } : {}),
-      cacheTtlMs: cacheTtlMs(observed.writeSplit),
-      ...(observed.growthPerRequest !== undefined
-        ? { growthPerRequest: observed.growthPerRequest }
-        : {}),
-    });
+    const ccCompactAt = CLAUDE_CODE_COMPACT_AT * limit;
+    const decision =
+      pinnedPromptTooLarge(pinned, tailTokens + summaryTokens, ccCompactAt) ??
+      decideHistorySwap({
+        policy,
+        count: count.tokens,
+        limit,
+        precomputeAt: this.deps.settings.precomputeAt,
+        applyAt: this.deps.settings.applyAt,
+        ccCompactAt,
+        tailTokens,
+        summaryTokens,
+        removedTokens,
+        ...(ratios ? { ratios } : {}),
+        haikuCostUsd,
+        ...(observed.gapMs !== undefined ? { gapMs: observed.gapMs } : {}),
+        cacheTtlMs: cacheTtlMs(observed.writeSplit),
+        ...(observed.growthPerRequest !== undefined
+          ? { growthPerRequest: observed.growthPerRequest }
+          : {}),
+      });
     const show = (n: number | undefined) =>
       n === undefined ? "unknown" : Number.isFinite(n) ? n.toFixed(1) : "infinite";
     log(
@@ -963,6 +1049,8 @@ export class HistoryCompactor {
       summary: ready.summary,
       decidedAt: new Date().toISOString(),
     };
+    const pinned = pinnedPromptIndex(original, ready.boundary);
+    if (pinned !== undefined) swap.pinned = pinned;
     let stored: CompactionRecord;
     try {
       stored = this.deps.store.put(

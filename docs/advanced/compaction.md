@@ -216,8 +216,13 @@ JSON length / 4. The debug log shows the count it used:
 
   followed by the turns the summary does not cover, with their reasoning blocks removed. Every
   later request of the session sends the same summary and the same turns.
-- A conversation that does not match the one the summary was made for (a subagent, or after
-  Claude Code's own `/compact`) is left unchanged.
+- When the summary is sent inside a long turn, the same message also carries that turn's request
+  exactly as you wrote it, after the line `[claudish: the user's request for this turn, verbatim]`.
+  Your instructions are never summarised. If that request is so large that the conversation would
+  still be near Claude Code's own compaction point, claudish does not send a summary.
+- A conversation that does not match the one the summary was made for (a subagent) is left
+  unchanged. Claude Code's own compaction request (`/compact`, or its automatic compaction) gets
+  the summary already in use, and claudish starts nothing new on it.
 - A summary that fails is not retried for the same point. Nothing waits for it.
 
 **Claude Code's auto-compact stays on.** It is the safety net for the case where no summary is ready

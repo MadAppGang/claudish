@@ -171,6 +171,14 @@ export interface HistorySwapRecord {
   boundary: number;
   /** One past the last message the swap saw (the message count at swap time). */
   end: number;
+  /**
+   * Index, below `boundary`, of the human turn start whose content the
+   * summary message carries verbatim: set when the boundary falls inside that
+   * turn, so its user prompt is not left to the summary. Absent on a swap at a
+   * human turn start (the prompt is message `boundary` itself) and on records
+   * written before it existed, which replay the summary alone.
+   */
+  pinned?: number;
   /** The summary text the swap sends. */
   summary: string;
   decidedAt: string;

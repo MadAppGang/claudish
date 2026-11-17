@@ -196,6 +196,21 @@ one of them is never compressed and never recorded, so it is sent as it is on ev
   `[user "[claudish: summary of the earlier conversation]\n<summary>"]` + messages `[b, end)`
   without thinking + messages after `end` unchanged. Recorded as a `history-swap` with
   `(prefixHash over [0,b), tailHash over [b,end), one hash per message of [b,end), b, end)`.
+- **A swap inside a turn keeps that turn's user prompt verbatim** (`pinnedPromptIndex`,
+  `summaryMessage`). Inside a turn `b` is past the turn's human message, so `[0, b)` held the
+  user's own prompt and only the summary carried it. Bench XL Haiku early t1 lost its turn-1 spec
+  this way (boundary 104, messages 0..103); the summary kept only a headline, and the agent then
+  accepted a wrong review finding and deleted correct code (inferred, not proven, that the lost
+  text decided it). Now the summary message is blocks: the summary text,
+  `[claudish: the user's request for this turn, verbatim]`, then the prompt's own blocks (text,
+  image, document) with cache markers dropped, so the bytes are equal on every request whatever
+  message Claude Code marks. The record keeps `pinned` (that message's index); the prefix hash
+  covers it, so a changed prompt matches no swap. A record without `pinned` (written before) replays
+  the summary alone. The decision's `S` is this whole message. A swap whose pinned prompt and kept
+  rounds stay at or above Claude Code's compaction point is held, with the reason
+  `the current turn's prompt and newest rounds are <N> tokens, at or above Claude Code's compaction point <M>`:
+  the prompt is never cut or summarised, and Claude Code's own compaction stays the fallback. A
+  swap at a human turn start keeps the plain string form (its prompt is message `b`).
   Hashes are taken over canonical JSON (sorted keys, `cache_control` markers removed) of the
   messages as the tool-output pass left them.
 - **Replay** on every later request of the same thread whose prefix `[0,b)` hashes to
