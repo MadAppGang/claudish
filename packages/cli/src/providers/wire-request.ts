@@ -553,13 +553,16 @@ export function recoverBorrowedWireFields(
   if (borrowed.length === 0 || !errorText) return null;
   // A field is named only as a whole identifier: `max_tokens` in "Unknown
   // parameter: 'max_tokens'", never `x` inside "exceeded".
-  const named = borrowed.filter((path) =>
-    pointerTokens(path).some((token) =>
-      new RegExp(
-        `(^|[^A-Za-z0-9_])${token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}($|[^A-Za-z0-9_])`
-      ).test(errorText)
-    )
-  );
+  const names = (token: string) =>
+    new RegExp(
+      `(^|[^A-Za-z0-9_])${token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}($|[^A-Za-z0-9_])`
+    ).test(errorText);
+  // The field's own name decides first: an error that quotes a path names the
+  // parents of every borrowed field under it, and only the leaf says which one
+  // was refused.
+  const byLeaf = borrowed.filter((path) => names(pointerTokens(path).at(-1) ?? ""));
+  const named =
+    byLeaf.length > 0 ? byLeaf : borrowed.filter((path) => pointerTokens(path).some(names));
   const generic =
     /unknown|unrecognized|unsupported|not supported|not allowed|not permitted|extra (inputs|fields)|invalid (param|field|argument)/i.test(
       errorText

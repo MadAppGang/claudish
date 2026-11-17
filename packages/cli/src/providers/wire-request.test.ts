@@ -591,3 +591,24 @@ test("a Gemini request with reasoning turned off asks for no thought summaries",
   expect(body.generationConfig).toMatchObject({ thinkingConfig: { thinkingBudget: 0 } });
   expect(result.borrowed).toEqual([]);
 });
+
+test("a 400 that quotes the path of includeThoughts keeps a borrowed reasoning level", () => {
+  const body: Record<string, unknown> = {
+    generationConfig: {
+      maxOutputTokens: 32000,
+      thinkingConfig: { thinkingLevel: "HIGH", includeThoughts: true },
+    },
+  };
+  const recovered = recoverBorrowedWireFields(
+    body,
+    [
+      "/generationConfig/thinkingConfig/thinkingLevel",
+      "/generationConfig/thinkingConfig/includeThoughts",
+    ],
+    "Unknown field includeThoughts at generationConfig.thinkingConfig"
+  );
+  expect(recovered?.payload.generationConfig).toEqual({
+    maxOutputTokens: 32000,
+    thinkingConfig: { thinkingLevel: "HIGH" },
+  });
+});
