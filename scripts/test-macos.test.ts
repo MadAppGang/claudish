@@ -10,17 +10,22 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { discover, groupOf } from "../packages/cli/scripts/ci-tests.ts";
 import {
+  GATE_RUNS,
+  GATE_SLICE_COUNT,
   HERMETIC_RUNS,
   NO_ENV_FILE,
   bunPinOf,
   bunVersionOf,
   compareVersions,
   launchArgv,
+  parseGateArgs,
   parseMagmuxPin,
   planSteps,
   runSteps,
   runsPackageScript,
+  sliceConcurrency,
   startStep,
   stepEnv,
   verifySha256,
@@ -35,13 +40,155 @@ const WORKFLOW = readFileSync(
   "utf8"
 );
 
-const STEPS = planSteps({
+const PLAN_INPUT = {
   root: "/repo",
   hermetic: { version: "1.3.10", exe: "/b/1.3.10/bun" },
   blind: { version: "1.4.0", exe: "/b/1.4.0/bun" },
   release: { version: "latest", exe: "/b/latest/bun" },
   scriptTests: ["./scripts/a.test.ts"],
-}).flatMap((g) => g.steps);
+};
+const STEPS = planSteps({ ...PLAN_INPUT, tier: "full" }).flatMap((g) => g.steps);
+const ESSENTIAL = planSteps({ ...PLAN_INPUT, tier: "essential" });
+
+describe("tiers", () => {
+  const hermeticArgs = (steps: { args: string[] }[]) =>
+    steps.find((s) => s.args.includes("scripts/ci-tests.ts"))?.args ?? [];
+
+  test("the default gate runs the essential tier of the hermetic groups", () => {
+    const args = hermeticArgs(ESSENTIAL.flatMap((g) => g.steps));
+    expect(args.slice(args.indexOf("--tier"), args.indexOf("--tier") + 2)).toEqual([
+      "--tier",
+      "essential",
+    ]);
+    expect(args.indexOf("--tier")).toBeLessThan(args.indexOf("--"));
+  });
+
+  test("--full runs the full tier of the hermetic groups", () => {
+    const args = hermeticArgs(STEPS);
+    expect(args.slice(args.indexOf("--tier"), args.indexOf("--tier") + 2)).toEqual([
+      "--tier",
+      "full",
+    ]);
+  });
+
+  test("both tiers run every group ci-tests.ts knows, idle included", () => {
+    const groups = new Set(discover().map(groupOf));
+    expect([...groups].sort()).toEqual(["idle", "pane", "rest"]);
+    for (const plan of [STEPS, ESSENTIAL.flatMap((g) => g.steps)]) {
+      const args = hermeticArgs(plan);
+      const runs = args[args.indexOf("--run") + 1] ?? "";
+      const planned = new Set(runs.split(",").map((spec) => spec.split("@")[0]));
+      expect([...planned].sort()).toEqual([...groups].sort());
+    }
+  });
+
+  test("the gate slices idle in 3, pane in 6 and rest in 8, each slice once", () => {
+    const slicesOf = (group: string, n: number) =>
+      Array.from({ length: n }, (_, i) => `${group}@${i + 1}/${n}`);
+    expect(GATE_RUNS.split(",")).toEqual([
+      ...slicesOf("idle", 3),
+      ...slicesOf("pane", 6),
+      ...slicesOf("rest", 8),
+    ]);
+    for (const plan of [STEPS, ESSENTIAL.flatMap((g) => g.steps)]) {
+      const args = hermeticArgs(plan);
+      expect(args[args.indexOf("--run") + 1]).toBe(GATE_RUNS);
+    }
+  });
+
+  test("each slice's --max-concurrency keeps the total near twice the core count", () => {
+    expect(GATE_SLICE_COUNT).toBe(17);
+    const concurrencyOf = (cores: number, tier: "essential" | "full") => {
+      const plan = planSteps({ ...PLAN_INPUT, tier, cores }).flatMap((g) => g.steps);
+      return hermeticArgs(plan).filter((a) => a.startsWith("--max-concurrency"));
+    };
+    for (const tier of ["essential", "full"] as const) {
+      expect(concurrencyOf(18, tier)).toEqual(["--max-concurrency=2"]);
+      expect(concurrencyOf(4, tier)).toEqual(["--max-concurrency=1"]);
+      expect(concurrencyOf(64, tier)).toEqual(["--max-concurrency=7"]);
+    }
+    expect(sliceConcurrency(1, 17)).toBe(1);
+    expect(sliceConcurrency(18, 17)).toBe(2);
+    expect(sliceConcurrency(64, 17)).toBe(7);
+  });
+
+  test("the gate's idle slices are test.yml's idle shards", () => {
+    const job = WORKFLOW.slice(WORKFLOW.indexOf("\n  idle:\n"));
+    const shards = job
+      .match(/slice: \[([\d, ]+)\]/)?.[1]
+      ?.split(",")
+      .map((s) => Number(s));
+    const count = job.match(/--run idle@\$\{\{ matrix\.slice \}\}\/(\d+)/)?.[1];
+    expect(shards).toBeDefined();
+    expect(count).toBeDefined();
+    const idle = GATE_RUNS.split(",").filter((spec) => spec.startsWith("idle"));
+    expect(idle).toEqual((shards ?? []).map((i) => `idle@${i}/${count}`));
+  });
+
+  test("the blind hook tests and S1 hook loading are weekly; the rest runs in both tiers", () => {
+    const names = ESSENTIAL.flatMap((g) => g.steps.map((s) => s.name));
+    expect(names).toEqual([
+      "build:cli",
+      `hermetic ${GATE_RUNS}`,
+      "macos-bridge tests",
+      "script tests",
+      "Antigravity HTTP client tests",
+    ]);
+    expect(STEPS.map((s) => s.name)).toEqual([
+      ...names.slice(0, 4),
+      "blind hook tests",
+      names[4],
+      "S1 hook loading",
+    ]);
+  });
+
+  test("the essential gate plans no step under the release Bun, so it fetches none", () => {
+    expect(ESSENTIAL.map((g) => g.bun.version)).toEqual(["1.3.10", "1.4.0"]);
+  });
+
+  test("parseGateArgs reads --dry-run and --full, and refuses anything else", () => {
+    expect(parseGateArgs([])).toEqual({ dryRun: false, tier: "essential" });
+    expect(parseGateArgs(["--full", "--dry-run"])).toEqual({ dryRun: true, tier: "full" });
+    expect(() => parseGateArgs(["--ful"])).toThrow(/--ful/);
+  });
+
+  test("parseGateArgs reads --part k/n and refuses a bad part or --part with --full", () => {
+    expect(parseGateArgs(["--part", "3/7"])).toEqual({
+      dryRun: false,
+      tier: "weekly",
+      part: { k: 3, n: 7 },
+    });
+    for (const bad of [[], ["0/7"], ["8/7"], ["3"], ["a/7"], ["--dry-run"]]) {
+      expect(() => parseGateArgs(["--part", ...bad])).toThrow(/--part/);
+    }
+    expect(() => parseGateArgs(["--part", "1/7", "--full"])).toThrow(/--full/);
+  });
+});
+
+describe("a nightly part", () => {
+  const partSteps = (k: number) =>
+    planSteps({ ...PLAN_INPUT, tier: "weekly", part: { k, n: 7 }, cores: 18 }).flatMap(
+      (g) => g.steps
+    );
+
+  test("runs the k-th of n slices of every group on the weekly tier, after the build", () => {
+    const steps = partSteps(3);
+    expect(steps.map((s) => s.name)).toEqual(["build:cli", "hermetic idle@3/7,pane@3/7,rest@3/7"]);
+    const args = steps[1]?.args ?? [];
+    expect(args[args.indexOf("--run") + 1]).toBe("idle@3/7,pane@3/7,rest@3/7");
+    expect(args[args.indexOf("--tier") + 1]).toBe("weekly");
+    expect(args).toContain(`--max-concurrency=${sliceConcurrency(18, 3)}`);
+  });
+
+  test("the last part also runs the blind hook tests and S1 hook loading", () => {
+    expect(partSteps(7).map((s) => s.name)).toEqual([
+      "build:cli",
+      "hermetic idle@7/7,pane@7/7,rest@7/7",
+      "blind hook tests",
+      "S1 hook loading",
+    ]);
+  });
+});
 
 describe("the release Bun", () => {
   const RELEASE = readFileSync(
@@ -372,6 +519,16 @@ describe("--dry-run", () => {
         expect(out).toContain("would fetch bun@");
         expect(out).toMatch(/would download magmux v\d+\.\d+\.\d+ \(magmux_darwin_(arm64|amd64)/);
         expect(out).toContain("scripts/ci-tests.ts");
+        expect(out).toContain("--tier essential");
+        expect(out).not.toContain("src/hooks/blind");
+
+        const full = Bun.spawnSync(
+          [process.execPath, join(import.meta.dir, "test-macos.ts"), "--full", "--dry-run"],
+          { cwd: dir, env: { PATH: "/nonexistent", HOME: dir, TMPDIR: dir } }
+        );
+        expect(full.exitCode).toBe(0);
+        expect(full.stdout.toString()).toContain("--tier full");
+        expect(full.stdout.toString()).toContain("src/hooks/blind");
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }

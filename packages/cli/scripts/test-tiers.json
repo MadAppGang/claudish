@@ -1,0 +1,158 @@
+{
+  "$comment": "Which hermetic test files run on every pull request and in `bun run test:macos` (the essential tier), and which only in the weekly tier (the Linux weekly run and the Mac's nightly parts). A file in a slow category is essential only when it is listed below (at most 3 per category; a new file there is weekly until it is listed). A file in pinned is essential whatever its time. Any other file is essential unless ci-test-times.json measures it at heavySeconds or more. A file in macOnly runs only on darwin. ci-tests.ts reads this file; ai-docs/architecture/testing.md explains how to promote a file.",
+  "heavySeconds": 2,
+  "pinned": [
+    {
+      "file": "src/auth/credential-file.test.ts",
+      "guards": "an unreadable credential file never signs a process out, and a refresh writes back only by compare-and-set on the refresh-token lineage, so it cannot undo a newer login"
+    },
+    {
+      "file": "src/auth/grok-oauth.reload.test.ts",
+      "guards": "a long-lived process follows the Grok credential file: a new login is picked up, a torn or unreadable read keeps the held token"
+    },
+    {
+      "file": "src/auth/kimi-oauth.reload.test.ts",
+      "guards": "a long-lived process follows the Kimi credential file: a new login is picked up, a torn or unreadable read keeps the held token"
+    },
+    {
+      "file": "src/providers/devin/devin-credentials.reload.test.ts",
+      "guards": "the cached Devin credential follows a replaced file, and an unreadable file never clears it"
+    },
+    {
+      "file": "src/handlers/composed-handler-accounts-2a.test.ts",
+      "guards": "once a request signed OAuth, its requireOAuth latch stays set for every later sign, so a subscription request never signs with a metered key"
+    },
+    {
+      "file": "src/handlers/v14-merge-fixes.test.ts",
+      "guards": "a transient credential or connection failure is classified, never advanced to a metered hop"
+    }
+  ],
+  "macOnly": [
+    {
+      "file": "src/subscription-probe-command.test.ts",
+      "guards": "reads the shared Antigravity token store, which is macOS-only: on Linux the probe answers credential_missing (exit 3)"
+    },
+    {
+      "file": "src/auth/antigravity-user.account-switch.test.ts",
+      "guards": "reads the shared Antigravity token store, which is macOS-only"
+    },
+    {
+      "file": "src/auth/antigravity-client-version-regression.test.ts",
+      "guards": "reads the shared Antigravity token store, which is macOS-only"
+    },
+    {
+      "file": "src/model-selector-antigravity-order.test.ts",
+      "guards": "production Antigravity discovery reads the shared token store, which is macOS-only"
+    }
+  ],
+  "slow": [
+    {
+      "category": "pane",
+      "prefix": "src/pane/",
+      "essential": [
+        {
+          "file": "src/pane/pane-child-real-claudish.integration.test.ts",
+          "guards": "a real pane session starts, answers and settles COMPLETED through this tree's claudish; CLAUDISH_PANE_CHILD is kept in the child; a nested --team is refused with exit 64; nothing outlives the reap"
+        },
+        {
+          "file": "src/pane/view-socket.test.ts",
+          "guards": "the two-socket check publishes a view socket only when control's capabilities.viewSocket is the derived magmux-<id>.view path and a dial answers readOnly:true: a missing or mismatched path, a writable socket (readOnly:false), a refused request or a failed dial is unverified"
+        },
+        {
+          "file": "src/pane/pane-launch.black-box.test.ts",
+          "guards": "HERDR_* and the five HC_* identities are stripped from the pane and replay environments while the nesting marker stays; contract v1 capability order"
+        }
+      ]
+    },
+    {
+      "category": "mcp-session",
+      "prefix": "src/mcp-session/",
+      "essential": [
+        {
+          "file": "src/mcp-session/host-pid.contract.test.ts",
+          "guards": "the real MCP server, started directly, through a launcher pair and through the npm launcher (bin/claudish.cjs → dist), records hostPid/launcherPid/mcpPid in spawn.json, with no pane left behind"
+        },
+        {
+          "file": "src/mcp-session/session-create-options.test.ts",
+          "guards": "SessionManager starts real pane sessions: a caller session id, the artifact directory, and the child's own CLAUDISH_TOKEN_FILE and upstream-error log reach the child"
+        },
+        {
+          "file": "src/mcp-session/home-dir.test.ts",
+          "guards": "session records and Claude Code's config directory follow a runtime HOME, so claudish never writes the account home while the monitor reads a sandbox"
+        }
+      ]
+    },
+    {
+      "category": "mcp-blackbox",
+      "prefix": "src/mcp-blackbox/",
+      "essential": [
+        {
+          "file": "src/mcp-blackbox/tool-surface.blackbox.test.ts",
+          "guards": "the exact 20-tool surface, and the 4-tool nested mode that keeps create_session out of a session"
+        },
+        {
+          "file": "src/mcp-blackbox/channel-sessions.blackbox.test.ts",
+          "guards": "create_session, send_input, get_output, cancel_session and list_sessions end to end through the real MCP server and real panes, with no orphan"
+        },
+        {
+          "file": "src/mcp-blackbox/run-prompt.blackbox.test.ts",
+          "guards": "run_prompt on a Claude model through the real MCP server: the one print child the server starts gets its exact argv, a stripped auth/session/pane environment and an empty cwd, and its errors reach the caller"
+        }
+      ]
+    },
+    {
+      "category": "team",
+      "prefix": "src/team",
+      "essential": [
+        {
+          "file": "src/team-output-classification.test.ts",
+          "guards": "a settled slot is judged by its answer, not its exit code: api_error, prompt_not_read, refused, empty_output and shape_mismatch in precedence order"
+        },
+        {
+          "file": "src/team-multibyte-answer.test.ts",
+          "guards": "a team run on real panes settles and its answer, read from the transcript, reaches response-<id>.md byte-exact"
+        },
+        {
+          "file": "src/team-start-failure.test.ts",
+          "guards": "a run that fails to start stops every pane already started, a SIGTERM-ignoring slot included, so nothing keeps billing"
+        }
+      ]
+    },
+    {
+      "category": "recovery-contract",
+      "prefix": "src/recovery-contract/",
+      "essential": [
+        {
+          "file": "src/recovery-contract/recovery-chain-blackbox.test.ts",
+          "guards": "a connection failure never advances the routing chain, so an outage cannot move a subscription user onto a metered hop"
+        },
+        {
+          "file": "src/recovery-contract/recovery-exhaustion-blackbox.test.ts",
+          "guards": "an exhausted network fault answers 400 connection_error, never an auth or rate-limit status, even after an earlier hop's 401"
+        },
+        {
+          "file": "src/recovery-contract/recovery-completes-blackbox.test.ts",
+          "guards": "a request that recovers mid-ladder completes with its body and credential intact, so a retry never turns an outage into a 401"
+        }
+      ]
+    },
+    {
+      "category": "hooks",
+      "prefix": "src/hooks/",
+      "essential": [
+        {
+          "file": "src/hooks/seam.test.ts",
+          "guards": "the response seam: intercept and buffer modes, fail-open, client cancel, the observe tap and the non-streaming branch"
+        },
+        {
+          "file": "src/hooks/mcp-isolation.test.ts",
+          "guards": "with hooks loaded, nothing but JSON-RPC reaches the MCP server's stdout"
+        },
+        {
+          "file": "src/hooks/engine.test.ts",
+          "guards": "the hook chain: closed actions, the circuit breaker, journal fan-out and pending notes"
+        }
+      ]
+    }
+  ]
+}

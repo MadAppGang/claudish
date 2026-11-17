@@ -57,11 +57,34 @@ the GitHub Release as a prerelease, which is the only variant.
 
 `release.yml`, triggered by `push` of a tag matching `v*`. It runs **no tests**.
 `test.yml` triggers on `pull_request`, `push` to `main` and `workflow_dispatch`;
-`pull_request` and `push` run only its Linux jobs. The macOS suites (pane and rest,
+`pull_request` and `push` run only its Linux jobs, the essential tier of the `idle` and
+`rest` groups among them. The macOS suites (pane and rest,
 macos-bridge, the blind hook tests, the macOS rows of hooks-loading) run only on a
 dispatch (`gh workflow run Tests --ref <branch>`) and in `bun run test:macos`, which
-must be green on a Mac before the tag (`CLAUDE.md`, Releasing). The tag is therefore
+must be green on a Mac before the tag (`CLAUDE.md`, Releasing). The blind hook
+tests and the hook loading (S1) tests run locally under `bun run test:macos --full` and in
+the last nightly part (`--part 7/7`); the default `bun run test:macos` skips them. In CI, the Linux `hooks-loading` job runs
+the S1 tests on every pull request and push. The tag is therefore
 the gate: everything must be green before the tag leaves the machine.
+
+**Tiers.** Pull requests and `bun run test:macos` run the ESSENTIAL tier
+(`packages/cli/scripts/test-tiers.json`: the files listed for each slow category, at most
+three, whatever their time; the `pinned` files, whatever their time; and, outside the slow
+categories, no other file measured at 2 s or more); a dispatch of `test.yml` and
+`bun run test:macos --full` run
+the FULL tier. The WEEKLY tier (full minus essential) runs on the owner's Mac in 7
+nightly parts, one a night at 03:00 local: `scripts/weekly-macos-tests.ts` under launchd
+runs `bun run test:macos --part <k>/7` on origin's main, k being the part with no result or
+the oldest result, and writes
+`~/Library/Logs/claudish-weekly-tests/part<k>.json`. A red part also writes
+`RED-<UTC date>-part<k>.json` (date, part, commit, failing tests, log path) and shows a
+notification naming it; triage reads and deletes the marker. `weekly-tests.yml` runs the
+Linux full tier every Sunday (11:00 UTC; a failed run opens or updates the issue "Weekly
+full test run failed"). The release gate is `bun run test:macos` on the release commit
+plus `bun scripts/weekly-macos-tests.ts --check` (every part green within 7 days). A green
+essential gate says nothing about a weekly file changed since its part last ran: for such
+a change, run that part by hand (`--part <k>`) or `bun run test:macos --full`.
+`ai-docs/architecture/testing.md` § Test tiers has the list and how to promote a file.
 
 **The version bump is the PR's last commit, and it gets its own green run.** Once the
 PR's CI is green, commit the bump (`CLAUDE.md`, Releasing) and push it, wait for that
@@ -127,8 +150,9 @@ green while shipping nothing, so a green conclusion is not evidence of a publish
 The darwin binaries are built on `ubuntu-latest` and checked by
 `scripts/check-darwin-binary.sh` (Mach-O arch, the embedded OpenTUI library of the
 target), which fails the build. There is no `codesign` step: Bun ad-hoc signs the
-binary. No step runs a darwin binary before it ships; `bun run test:macos` runs the
-hook loading tests on a Mac under the same Bun (`latest`).
+binary. No step runs a darwin binary before it ships; `bun run test:macos --full` and
+the last nightly part (`--part 7/7`) run the hook loading tests on a Mac under the same
+Bun (`latest`). The default `bun run test:macos` does not run them.
 
 **Reading a red `Tests` run** — shapes observed on PR #351, where the junit
 summary and the log grep disagreed with the job's conclusion:
@@ -219,7 +243,7 @@ download, and the pane suites run against the same pin in `bun run test:macos` a
 magmux panes, so the magmux that ships must be the one that was tested, and a new
 magmux release must not change what an existing claudish tag ships. A missing asset
 or checksum mismatch BLOCKS the release before anything publishes. Bump the pin
-deliberately (tag and all four sums together) after `bun run test:macos` passes on it.
+deliberately (tag and all four sums together) after `bun run test:macos --full` passes on it.
 
 SETTLED 2026-09-15 — the two `displayWidth` tests in
 `packages/cli/src/tui/viz/color.test.ts`. They were NOT flaky and must NOT be

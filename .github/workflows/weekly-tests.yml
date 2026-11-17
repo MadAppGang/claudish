@@ -1,0 +1,152 @@
+name: Weekly full tests
+
+# The FULL tier of every test a Linux runner can run, once a week.
+#
+# Pull requests run the essential tier (packages/cli/scripts/test-tiers.json, ci-tests.ts
+# `--tier essential`): at most three listed files per slow category, whatever their time, the
+# pinned files, and, outside the slow categories, no other file measured at the data file's
+# heavySeconds or more. Everything else runs here, at night, so a weekly test that broke is found
+# within a week rather than at the next release. The macOS suites (pane, the macOS-only rest
+# files, the blind hook tests) run on the owner's Mac, one weekly-tier part a night
+# (scripts/weekly-macos-tests.ts).
+#
+# The jobs are test.yml's Linux jobs with `--tier full`, under the same pinned Bun and the same
+# hermetic environment (no API key secrets: see test.yml's header). scripts/test-tier-workflows
+# .test.ts fails when the two drift apart.
+#
+# THE SIGNAL: a failed scheduled run mails the repository owner (GitHub's own notification for a
+# scheduled workflow). The report-failure job also opens one issue titled "Weekly full test run
+# failed", or comments on it when it is already open, with the run's URL. Close the issue once
+# the run is green again.
+
+on:
+  schedule:
+    # Sunday 03:00 US Pacific, at standard time (PST, UTC-8). Cron runs in UTC, so under
+    # daylight time (PDT) this is 04:00 local.
+    - cron: "0 11 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: weekly-tests-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  scripts:
+    name: script and release-file tests
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      CLAUDISH_SKIP_LIVE_E2E: "1"
+      CLAUDISH_DISABLE_CATALOG_WARM: "1"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.10"
+      - run: bun install --frozen-lockfile
+      - name: Script tests
+        run: bun test ./scripts/*.test.ts
+        timeout-minutes: 5
+      - name: Release file tests
+        working-directory: packages/cli
+        run: bun test src/release-files.test.ts
+        timeout-minutes: 5
+
+  idle:
+    name: hermetic · idle ${{ matrix.slice }}/3 · full
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        slice: [1, 2, 3]
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      CLAUDISH_SKIP_LIVE_E2E: "1"
+      CLAUDISH_DISABLE_CATALOG_WARM: "1"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.10"
+      - run: bun install --frozen-lockfile
+      - name: Tests
+        working-directory: packages/cli
+        run: bun scripts/ci-tests.ts --run idle@${{ matrix.slice }}/3 --tier full -- --reporter=junit '--reporter-outfile=junit-{label}.xml'
+        timeout-minutes: 15
+      # The full tier's junit is what refreshes ci-test-times.json (`--update-times`).
+      - uses: actions/upload-artifact@v5
+        if: always()
+        with:
+          name: junit-weekly-idle-${{ matrix.slice }}
+          path: packages/cli/junit-*.xml
+
+  rest:
+    name: hermetic · rest ${{ matrix.slice }}/4 · full
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        slice: [1, 2, 3, 4]
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      CLAUDISH_SKIP_LIVE_E2E: "1"
+      CLAUDISH_DISABLE_CATALOG_WARM: "1"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.10"
+      - run: bun install --frozen-lockfile
+      - name: Tests
+        working-directory: packages/cli
+        run: bun scripts/ci-tests.ts --run rest@${{ matrix.slice }}/4 --tier full -- --reporter=junit '--reporter-outfile=junit-{label}.xml'
+        timeout-minutes: 20
+      - uses: actions/upload-artifact@v5
+        if: always()
+        with:
+          name: junit-weekly-rest-${{ matrix.slice }}
+          path: packages/cli/junit-*.xml
+
+  hooks-loading:
+    name: hook module loading · ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ["ubuntu-latest", "ubuntu-24.04-arm"]
+    runs-on: ${{ matrix.os }}
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: S1 hook loading (source, dist bundle, compiled binary)
+        run: bun test packages/cli/src/hooks/s1-probe/
+        timeout-minutes: 5
+
+  report-failure:
+    name: open or update the failure issue
+    needs: [scripts, idle, rest, hooks-loading]
+    if: failure() && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      TITLE: Weekly full test run failed
+    steps:
+      - name: Open or update the issue
+        run: |
+          url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          body="The weekly full test run failed on ${GITHUB_SHA}: ${url}"
+          number="$(gh issue list --state open --search "in:title \"${TITLE}\"" --json number,title --jq '.[] | select(.title == env.TITLE) | .number' | head -n 1)"
+          if [ -n "${number}" ]; then
+            gh issue comment "${number}" --body "${body}"
+          else
+            gh issue create --title "${TITLE}" --body "${body}"
+          fi

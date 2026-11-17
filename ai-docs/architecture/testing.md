@@ -23,6 +23,133 @@ slow files in its own log. The exit code is `bun test`'s. A file given as `bun r
 still runs alone. CI does not use this script; its jobs write their own junit through
 `ci-tests.ts --run`.
 
+## Test tiers: essential on every run, everything once a week
+
+Every pull request and the pre-tag gate (`bun run test:macos`) run the **essential** tier. The
+**full** tier (every file) runs on Linux every Sunday (`weekly-tests.yml`) and on a manual dispatch
+of `test.yml`. The **weekly** tier (full minus essential) runs on the owner's Mac, one of 7 parts a
+night. `bun run test` and `test:safe` stay a plain `bun test` of every file.
+
+**The data file is `packages/cli/scripts/test-tiers.json`.** `ci-tests.ts` derives the tier of
+every file it discovers from it and from `ci-test-times.json`:
+
+- A file in a **slow category** is essential only when the data file lists it. The slow
+  categories are `src/pane/`, `src/mcp-session/`, `src/mcp-blackbox/`, `src/team*` (files directly
+  in `src/` whose names start with `team`; a prefix without a trailing `/` means that),
+  `src/recovery-contract/` and `src/hooks/` (`hooks/session/` and `hooks/s1-probe/` included).
+  Each lists at most **3** files. A new file there is weekly until someone lists it.
+  **One exception:** test.yml's `hooks-loading` job runs `bun test packages/cli/src/hooks/s1-probe/`
+  on every pull request and push (its Linux rows; the macOS rows on dispatch), outside the tiers.
+  An unlisted S1 file is weekly in `ci-tests.ts` and in `bun run test:macos`, yet runs on every
+  pull request there.
+- **`src/hooks/blind/` is not in `ci-tests.ts` at all**: its discovery excludes that directory,
+  which runs under its own Bun in its own gates, `bun run test:macos --full` and test.yml's
+  `blind-hooks` job (on dispatch). A blind file therefore has no tier and cannot be listed in
+  `test-tiers.json`: `validateTiers` reports it as not a test file.
+- **A pinned file** (`pinned` in `test-tiers.json`, outside every slow category) is essential
+  whatever its time. The list holds the tests of the CLAUDE.md "fails SILENTLY" invariants that
+  the 2 s rule would move to weekly: the credential-file reload tests (credential-file,
+  grok-oauth.reload, kimi-oauth.reload, devin-credentials.reload), the `requireOAuth` latch
+  (`composed-handler-accounts-2a`, 46 s) and the metered-hop guard (`v14-merge-fixes`). A file
+  inside a slow category is refused there: its category's essential list decides it.
+- **Any other file** is essential unless `ci-test-times.json` measures it at `heavySeconds`
+  (**2 s**) or more. A file the table has not measured is essential. The threshold sits in a gap
+  of the measured data (2.2 s, then 1.8 s): at 2 s it moves 18 files, 104 of the 133 measured
+  seconds outside the slow categories, among them `recovery/magmux-ui.test.ts` (23.7 s),
+  `mcp-shutdown.e2e.test.ts` (15.9 s) and `handlers/stream-head-unreachable.test.ts` (12 s).
+- **A macOS-only file** (`macOnly` in `test-tiers.json`) takes its tier by the rules above, and
+  `ci-tests.ts` drops it from every tier when it runs off darwin (`forPlatform`). The list holds
+  the four Antigravity files that exercise the shared Antigravity token store, which refuses on
+  Linux by design; the first Linux `rest` run failed 57 tests in exactly those files. On a Mac
+  nothing is dropped.
+
+On the timing table of 2026-11-17, on darwin, the essential tier is 634 files (idle 4, pane 16,
+rest 614), the full tier 809 and the weekly tier 175; on Linux the four macOS-only files leave
+610 essential rest files. The table times only some of them: 335 essential files have no entry, and the
+planner (`--plan`, `--list` and the slicing of `--run`) weighs each such file 1 s. Its seconds
+are weights that balance slices, not a wall-time estimate: `--list` shows the essential `rest` at
+363 s, 333 of them those 1 s weights.
+
+A local essential run (`bun run test:macos`, 2026-11-17, commit bfb5720f, load about 45 on an
+18-core Mac, before the gate sliced `rest`) measured: the hermetic step 432 s wall; `rest`, 634
+files and 8,707 tests in one process, 432 s; each pane slice 15–76 s; `idle` 66 s.
+
+**Each essential file guards one failure class**, chosen by reading the files, and preferring the
+silent invariants in `CLAUDE.md`. The data file carries a `guards` line for each:
+
+| Category | Essential files | What breaks silently without them |
+|---|---|---|
+| pane | `pane-child-real-claudish.integration`, `view-socket`, `pane-launch.black-box` | a session that never settles or leaks a process; `CLAUDISH_PANE_CHILD` scrubbed (nested `create_session` returns); a view socket published with a missing or mismatched path or one that answers `readOnly: false`; `HERDR_*`/`HC_*` inherited |
+| mcp-session | `host-pid.contract`, `session-create-options`, `home-dir` | the npm launcher path and spawn.json pids; a slot's token file or error log lost; records written into the account home |
+| mcp-blackbox | `tool-surface`, `channel-sessions`, `run-prompt` | the 20-tool and nested 4-tool surfaces; the session tools end to end; `run_prompt`'s print child |
+| team | `team-output-classification`, `team-multibyte-answer`, `team-start-failure` | an exit 0 read as an answer; an answer lost between transcript and response file; a failed start that keeps billing |
+| recovery-contract | `recovery-chain`, `recovery-exhaustion`, `recovery-completes` | an outage that advances to a metered hop, or answers 401/429, or a retry that drops the credential |
+| hooks | `seam`, `mcp-isolation`, `engine` | the response seam, MCP stdout corrupted by a hook, the hook chain |
+
+**Promote a test to essential** by adding `{ "file", "guards" }` to its category in
+`test-tiers.json`; when the category already lists three, replace the one whose failure class the
+new file covers better. Write `guards` as the failure the file catches. A file outside the slow
+categories needs no entry: it becomes essential once it measures under the threshold. Check with
+`bun scripts/ci-tests.ts --plan pane@6 --tier essential` (and `--list`, which shows both tiers per
+group). `ci-tests.test.ts` fails when the data file has no `slow` array, a category without a
+non-empty string `category` or `prefix`, a prefix that matches no test file (a misspelt prefix
+would leave its whole directory essential), a file that does not exist, a file
+outside its category, the same file twice, more than three files in one category, the same
+category twice, or a prefix twice or one sharing files with another category's prefix (a file
+takes the first category it matches, so a second block would be ignored), and
+`--plan`, `--run` and `--list` refuse such a file.
+
+**Refreshing `ci-test-times.json` can move a file between tiers**, because it also decides what is
+heavy. Refresh it from a full-tier junit (`weekly-tests.yml` uploads one per idle and rest
+slice; the Mac's nightly parts upload none, so pane times come from a dispatched `test.yml`), and read
+`--list` before and after.
+
+**Where the tiers run:**
+
+| Run | Tier | Where its result shows |
+|---|---|---|
+| `test.yml` on pull_request and push | essential (Linux idle slices, Linux rest slices) | the PR checks |
+| `test.yml` on workflow_dispatch | full (Linux idle and rest slices, and the macOS runners) | the run |
+| `bun run test:macos` | essential: `ci-tests.ts --tier essential` over every group (idle, pane, rest), sliced, plus macos-bridge, `scripts/*.test.ts` and the Antigravity client tests | its summary |
+| `bun run test:macos --full` | full: `ci-tests.ts --tier full` over every group, sliced, and adds the blind hook tests and S1 hook loading | its summary |
+| `weekly-tests.yml`, Sunday 11:00 UTC (03:00 PST) | full: the scripts, the idle and rest slices (the same slices as test.yml's Linux jobs; a test keeps the two in step) and the Linux S1 rows | GitHub mails the owner on a failed scheduled run; the run opens (or comments on) one issue titled "Weekly full test run failed" with its URL |
+| `scripts/weekly-macos-tests.ts` under launchd, every day 03:00 local | `test:macos --part <k>/7` on origin's main: the k-th of 7 slices of every group on the weekly tier (full minus essential); part 7 adds the blind hook tests and S1 hook loading | `~/Library/Logs/claudish-weekly-tests/<UTC date>-part<k>.log` and `part<k>.json`; a red part writes `RED-<UTC date>-part<k>.json` and a notification naming it |
+| `bun scripts/weekly-macos-tests.ts --check` | none: reads the `part<k>.json` files | exit 0 only when all 7 parts are green within 7 days (the release gate's nightly half) |
+
+Both local gates run the idle group too, although `test.yml` runs it on Linux: without it a weekly
+`src/recovery-contract/` file would run in no gate a release owner starts. The gate cuts each
+group into slices, one concurrent `bun test` process each (`GATE_SLICES` in
+`scripts/test-macos.ts`): idle in 3 (test.yml's idle shards), pane in 6 (test.yml's `hermetic`
+runners) and rest in 8, 17 processes on an 18-core Mac. In the local run above, `rest` as one
+process was the whole 432 s of the hermetic step, against at most 76 s for a pane slice; in 8
+slices each is near 54 s. test.yml's macOS runners still run `rest` whole.
+Each slice gets `--max-concurrency=max(1, floor(cores * 2 / slices))` (`sliceConcurrency`, cores
+from `os.availableParallelism()`), so the 17 slices together run about twice the core count of
+tests at once: 2 per slice on an 18-core Mac. With a fixed 8 per slice (up to 136 concurrent tests
+on 18 cores) an essential run failed five time-bound tests (two 5000 ms timeouts, a 10 s timeout,
+a timing-ratio test and a sandbox resource limit) that all passed with 7 processes of 8.
+
+The macOS weekly run works in a clone of its own, `~/Library/Caches/claudish-weekly-tests/repo`:
+cloned once, then fetched and hard-reset to `origin/main` inside that clone only, so no checkout
+or worktree is touched. `bun scripts/install-weekly-macos-tests.ts` writes and loads the agent
+(`~/Library/LaunchAgents/com.madappgang.claudish.weekly-macos-tests.plist`), and `--uninstall`
+removes it. The agent runs the clone's copy of the script, so the installer refuses until main
+carries it; like the weekly run, it updates an existing clone to `origin/main` first, so an install
+refused before the merge succeeds when run again after it. A Mac asleep at 03:00 runs the job when it wakes. A clone directory with no `.git` (a clone killed partway) is renamed to `repo.broken-<ms>` beside it, kept for inspection and never deleted, and the repository is cloned again; remove old `repo.broken-*` directories by hand. A cache directory whose real path is outside the home (a symlink out of it) makes the run red and the install refuse, before anything is renamed or cloned. A second red run of one part on one day keeps the first RED marker and writes `RED-<UTC date>-part<k>-2.json`, then `-3`, and on. Before its first command a run writes `part<k>.json` as red with `"finished": false` and replaces it when it ends, so a run killed partway (SIGTERM, a reboot) leaves a red part that `--check` reports as "did not finish", never the previous green. The clone itself must also resolve inside the home: a `repo` symlink to a checkout elsewhere makes the run red before any `git reset` or `git clean`.
+
+The part a run takes is `nextPart`: the lowest part with no result, else the part whose result is
+oldest. It reads the `part<k>.json` files, never the clock. An earlier rule took the UTC day
+number modulo 7, and launchd fires at 03:00 LOCAL time: at UTC+11, UTC midnight is 11:00 local, so
+a Mac that slept through 03:00 and woke after 11:00 ran the next day's part, and the next night's
+03:00 run, still on that UTC day, ran it again. With `nextPart`, any 7 runs run every part once,
+and a night the Mac was off only delays the rotation by one run. The parts come from ci-tests.ts's
+time-balanced `slices`, so a change to `ci-test-times.json` or to the file list can move a file
+between parts; the part that took it then runs it within the next 7 runs. Each part runs its three groups as three concurrent processes at
+`sliceConcurrency(cores, 3)`, much lighter than the gate's 17. The measured weekly tier
+(2026-11-17) is about 226-301 s of pane, 41-63 s of rest and up to 67 s of idle per part.
+Bootstrapping the gate (no part results yet) means running the 7 parts by hand, one after
+another: about 35-45 minutes. Never run two parts, or a part and the gate, at once.
+
 ## Three shared resources a test must never reach, and why prevention beats restore
 
 `scripts/guard-real-config.ts` — the thing `bun run test:safe` runs the suite
@@ -468,9 +595,10 @@ what proves the reap; a green suite without it would hide a REPL left billing.
 `magmux not installed — not checked` (the gated-diagnostic rule above). CI installs the release
 pinned in `.github/magmux.env` (`.github/actions/install-magmux`, sha-256 checked) in `test.yml`'s
 macOS jobs, which run only on manual dispatch (`gh workflow run Tests --ref <branch>`); pull
-requests run no pane suite. Before a release tag they run on a Mac with `bun run test:macos`
-(`scripts/test-macos.ts`), which fails rather than skips when it finds no magmux, because a pane
-suite that skipped everything is green on nothing.
+requests run no pane suite. Before a release tag their essential files run on a Mac with
+`bun run test:macos` (`scripts/test-macos.ts`; `--full` and the weekly macOS run take every pane
+file, see "Test tiers" above), which fails rather than skips when it finds no magmux, because a
+pane suite that skipped everything is green on nothing.
 
 **Time is a seam, and a budget measures a code path, not wall-clock under contention.**
 `PaneSessionOptions.timings` scales the quiet windows, the degraded-mode entry and the resend delay

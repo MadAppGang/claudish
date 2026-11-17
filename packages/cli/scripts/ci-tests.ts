@@ -3,10 +3,21 @@
  * runner for them.
  *
  *   bun scripts/ci-tests.ts --list
- *   bun scripts/ci-tests.ts --plan pane@6
- *   bun scripts/ci-tests.ts --run pane@1/6,pane@2/6,rest [-- <bun test args>]
+ *   bun scripts/ci-tests.ts --plan pane@6 [--tier essential|weekly|full]
+ *   bun scripts/ci-tests.ts --run pane@1/6,pane@2/6,rest [--tier essential|weekly|full] [-- <bun test args>]
  *   bun scripts/ci-tests.ts --update-times <junit.xml>…
  *   bun scripts/ci-tests.ts --local <junit.xml> [-- <bun test args>]
+ *
+ * Three tiers. `full` is every file. `essential` (the default of `--plan` and `--run`) is what a
+ * pull request and `bun run test:macos` run: test-tiers.json names at most three files for each
+ * slow category, and every other file of a slow category is weekly; a `pinned` file is essential;
+ * any other file outside the slow categories is essential unless ci-test-times.json measures it
+ * at the data file's `heavySeconds` or more. `weekly` is `full` minus `essential`: the Mac's
+ * nightly parts use it, and the Linux weekly run uses `full`. Off darwin, every tier drops the
+ * data file's `macOnly` files. A data file with no `slow` array, a category
+ * without a non-empty `category` or `prefix`, a prefix that matches no test file, a missing file,
+ * a file twice, more than three files for one category, a category twice, or a prefix twice or
+ * sharing files with another, stops `--plan` and `--run`.
  *
  * `--local` is the package's `test` script: a plain `bun test` that also writes a junit report
  * and prints the slowest files from it, so a slow local run names its slow files.
@@ -31,6 +42,7 @@ import { join, resolve as resolvePath } from "node:path";
 
 const CLI = join(import.meta.dir, "..");
 const TIMES = join(import.meta.dir, "ci-test-times.json");
+const TIERS = join(import.meta.dir, "test-tiers.json");
 
 /** Bun's own test-file name rule. */
 const TEST_FILE = /(\.test|_test_|\.spec|_spec_)[^/]*\.[cm]?[jt]sx?$/;
@@ -83,6 +95,266 @@ function byGroup(files: string[]): Map<string, string[]> {
   ]);
   for (const f of files) out.get(groupOf(f))?.push(f);
   return out;
+}
+
+/** `weekly` is `full` minus `essential`: the files the nightly parts run. */
+export const TIER_NAMES = ["essential", "weekly", "full"] as const;
+export type Tier = (typeof TIER_NAMES)[number];
+export const MAX_ESSENTIAL_PER_CATEGORY = 3;
+
+/** test-tiers.json. */
+export interface TierData {
+  /** A file outside the slow categories measured at this many seconds or more is weekly. */
+  heavySeconds: number;
+  slow: SlowCategory[];
+  /** Files outside the slow categories that stay essential whatever their measured time. */
+  pinned?: TierEntry[];
+  /** Files that test macOS-only code paths: left out when the run is not on macOS. */
+  macOnly?: TierEntry[];
+}
+
+export interface TierEntry {
+  file: string;
+  /** What a regression in this file would break, in one sentence. */
+  guards: string;
+}
+
+export interface SlowCategory {
+  category: string;
+  /**
+   * `src/pane/` takes every file under that directory; a prefix that does not end in `/`
+   * (`src/team`) takes only the files directly in its directory whose names start with it.
+   */
+  prefix: string;
+  essential: TierEntry[];
+}
+
+export function loadTiers(path: string = TIERS): TierData {
+  return JSON.parse(readFileSync(path, "utf8")) as TierData;
+}
+
+function inPrefix(file: string, prefix: string): boolean {
+  if (!file.startsWith(prefix)) return false;
+  return prefix.endsWith("/") || !file.slice(prefix.length).includes("/");
+}
+
+/** The slow category a file belongs to, or undefined for every other file. */
+export function slowCategoryOf(file: string, data: TierData): string | undefined {
+  return data.slow.find((c) => inPrefix(file, c.prefix))?.category;
+}
+
+/** `essential` or `weekly`: whether a file runs on every pull request or only in the full run. */
+export function tierOf(
+  file: string,
+  data: TierData,
+  times: Record<string, number>
+): "essential" | "weekly" {
+  const category = data.slow.find((c) => inPrefix(file, c.prefix));
+  if (category) return category.essential.some((e) => e.file === file) ? "essential" : "weekly";
+  if (data.pinned?.some((e) => e.file === file)) return "essential";
+  const measured = times[file];
+  return measured !== undefined && measured >= data.heavySeconds ? "weekly" : "essential";
+}
+
+/** The files of `files` a tier runs, in their own order. */
+export function filesInTier(
+  files: string[],
+  tier: Tier,
+  data: TierData,
+  times: Record<string, number>
+): string[] {
+  if (tier === "full") return files;
+  return files.filter((f) => tierOf(f, data, times) === tier);
+}
+
+/** The files of `files` that run on `platform`: off macOS, the `macOnly` files are left out. */
+export function forPlatform(files: string[], data: TierData, platform: string): string[] {
+  if (platform === "darwin" || !data.macOnly?.length) return files;
+  const mac = new Set(data.macOnly.map((e) => e.file));
+  return files.filter((f) => !mac.has(f));
+}
+
+/** Every reason the data file cannot be used; empty when it can. */
+export function validateTiers(data: TierData, known: string[]): string[] {
+  const errors: string[] = [];
+  const exists = new Set(known);
+  if (typeof data !== "object" || data === null || Array.isArray(data)) {
+    return [`the tiers file must be a JSON object, not ${JSON.stringify(data)}`];
+  }
+  if (
+    typeof data.heavySeconds !== "number" ||
+    !Number.isFinite(data.heavySeconds) ||
+    !(data.heavySeconds > 0)
+  ) {
+    errors.push(`heavySeconds must be a positive number of seconds, not ${data.heavySeconds}`);
+  }
+  // A malformed list or category would crash the checks below (and tierOf), so stop at the shape.
+  if (!Array.isArray(data.slow)) {
+    errors.push(`slow must be an array of categories, not ${JSON.stringify(data.slow)}`);
+    return errors;
+  }
+  const shape = data.slow.flatMap(shapeErrors);
+  if (shape.length > 0) return [...errors, ...shape];
+  errors.push(...categorySetErrors(data.slow));
+  errors.push(...pinnedErrors(data, exists));
+  errors.push(...macOnlyErrors(data, exists));
+  const seen = new Set<string>();
+  for (const c of data.slow) {
+    // A misspelt prefix takes no file, so the directory it meant stays essential in full.
+    if (!known.some((f) => inPrefix(f, c.prefix))) {
+      errors.push(`prefix ${c.prefix} (category ${c.category}) matches no test file`);
+    }
+    errors.push(...categoryErrors(c, data, exists, seen));
+  }
+  return errors;
+}
+
+function shapeErrors(c: SlowCategory, i: number): string[] {
+  const errors: string[] = [];
+  for (const key of ["category", "prefix"] as const) {
+    const value: unknown = c?.[key];
+    if (typeof value !== "string" || value.length === 0) {
+      errors.push(`slow[${i}] needs a non-empty string "${key}"`);
+    }
+  }
+  if (!Array.isArray(c?.essential)) {
+    errors.push(`slow[${i}] needs an "essential" array`);
+    return errors;
+  }
+  const name = typeof c.category === "string" && c.category ? c.category : `slow[${i}]`;
+  c.essential.forEach((entry: unknown, j) => errors.push(...essentialEntryErrors(entry, name, j)));
+  return errors;
+}
+
+/** A pinned file must exist, sit outside every slow category, and be listed once with guards text. */
+function pinnedErrors(data: TierData, exists: Set<string>): string[] {
+  if (data.pinned === undefined) return [];
+  if (!Array.isArray(data.pinned)) {
+    return [`pinned must be an array of entries, not ${JSON.stringify(data.pinned)}`];
+  }
+  const shape = data.pinned.flatMap((entry: unknown, j) => entryErrors(entry, `pinned[${j}]`));
+  if (shape.length > 0) return shape;
+  const errors: string[] = [];
+  const seen = new Set<string>();
+  for (const { file, guards } of data.pinned) {
+    if (!exists.has(file)) errors.push(`pinned ${file} is not a test file`);
+    const category = slowCategoryOf(file, data);
+    if (category !== undefined) {
+      errors.push(
+        `pinned ${file} is in slow category ${category}; list it in that category's essential files`
+      );
+    }
+    if (seen.has(file)) errors.push(`pinned ${file} is listed twice`);
+    seen.add(file);
+    if (!guards.trim()) errors.push(`pinned ${file} has no guards text`);
+  }
+  return errors;
+}
+
+/** A macOnly file must exist and be listed once, with the reason it cannot run elsewhere. */
+function macOnlyErrors(data: TierData, exists: Set<string>): string[] {
+  if (data.macOnly === undefined) return [];
+  if (!Array.isArray(data.macOnly)) {
+    return [`macOnly must be an array of entries, not ${JSON.stringify(data.macOnly)}`];
+  }
+  const shape = data.macOnly.flatMap((entry: unknown, j) => entryErrors(entry, `macOnly[${j}]`));
+  if (shape.length > 0) return shape;
+  const errors: string[] = [];
+  const seen = new Set<string>();
+  for (const { file, guards } of data.macOnly) {
+    if (!exists.has(file)) errors.push(`macOnly ${file} is not a test file`);
+    if (seen.has(file)) errors.push(`macOnly ${file} is listed twice`);
+    seen.add(file);
+    if (!guards.trim()) errors.push(`macOnly ${file} has no guards text`);
+  }
+  return errors;
+}
+
+function essentialEntryErrors(entry: unknown, category: string, j: number): string[] {
+  return entryErrors(entry, `category ${category} essential[${j}]`);
+}
+
+function entryErrors(entry: unknown, where: string): string[] {
+  if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+    return [`${where} must be an object with non-empty strings "file" and "guards"`];
+  }
+  const errors: string[] = [];
+  for (const key of ["file", "guards"] as const) {
+    const value: unknown = (entry as Record<string, unknown>)[key];
+    if (typeof value !== "string" || value.length === 0) {
+      errors.push(`${where} needs a non-empty string "${key}"`);
+    }
+  }
+  return errors;
+}
+
+/** True when some file path is taken by both prefixes (`inPrefix` of each). */
+export function prefixesOverlap(a: string, b: string): boolean {
+  const [short, long] = a.length <= b.length ? [a, b] : [b, a];
+  if (!long.startsWith(short)) return false;
+  // A bare prefix takes only files directly in its directory: a longer prefix that reaches
+  // into a subdirectory shares no file with it.
+  return short.endsWith("/") || !long.slice(short.length).includes("/");
+}
+
+/**
+ * A file takes the FIRST category whose prefix it matches, so a second category with the same
+ * name or a prefix that shares files with an earlier one would be ignored, its essential files
+ * left weekly while every per-category check passes.
+ */
+function categorySetErrors(slow: SlowCategory[]): string[] {
+  const errors: string[] = [];
+  const names = new Set<string>();
+  const prefixes = new Set<string>();
+  slow.forEach((c, i) => {
+    if (names.has(c.category)) errors.push(`category ${c.category} is named twice`);
+    names.add(c.category);
+    if (prefixes.has(c.prefix)) {
+      errors.push(`prefix ${c.prefix} is named twice`);
+    } else {
+      for (const earlier of slow.slice(0, i)) {
+        if (earlier.prefix !== c.prefix && prefixesOverlap(earlier.prefix, c.prefix)) {
+          errors.push(
+            `prefix ${c.prefix} (category ${c.category}) overlaps prefix ${earlier.prefix} (category ${earlier.category})`
+          );
+        }
+      }
+    }
+    prefixes.add(c.prefix);
+  });
+  return errors;
+}
+
+function categoryErrors(
+  c: SlowCategory,
+  data: TierData,
+  exists: Set<string>,
+  seen: Set<string>
+): string[] {
+  const errors: string[] = [];
+  if (c.essential.length > MAX_ESSENTIAL_PER_CATEGORY) {
+    errors.push(
+      `category ${c.category} lists ${c.essential.length} essential files; at most ${MAX_ESSENTIAL_PER_CATEGORY}`
+    );
+  }
+  for (const { file, guards } of c.essential) {
+    if (!exists.has(file)) errors.push(`${file} (category ${c.category}) is not a test file`);
+    if (slowCategoryOf(file, data) !== c.category) {
+      errors.push(`${file} is not in category ${c.category} (prefix ${c.prefix})`);
+    }
+    if (seen.has(file)) errors.push(`${file} is listed twice`);
+    seen.add(file);
+    if (!guards?.trim()) errors.push(`${file} has no guards text`);
+  }
+  return errors;
+}
+
+/** The tier data, refused with every error at once when it names something it cannot. */
+function checkedTiers(): TierData {
+  const data = loadTiers();
+  const errors = validateTiers(data, discover());
+  if (errors.length > 0) throw new Error(`${TIERS}:\n  ${errors.join("\n  ")}`);
+  return data;
 }
 
 function readTimes(): Record<string, number> {
@@ -254,25 +526,54 @@ async function run(
 }
 
 const USAGE =
-  "usage: ci-tests.ts --list | --plan <group>@<n> | --run <group|group@i/n>[,…] [-- <bun test args>] | --update-times <junit.xml>… | --local <junit.xml> [-- <bun test args>]";
+  "usage: ci-tests.ts --list | --plan <group>@<n> [--tier essential|weekly|full] | --run <group|group@i/n>[,…] [--tier essential|weekly|full] [-- <bun test args>] | --update-times <junit.xml>… | --local <junit.xml> [-- <bun test args>]";
+
+/** `--tier <name>` taken out of our own arguments; `essential` when absent. */
+function takeTier(own: string[]): { tier: Tier; rest: string[] } {
+  const at = own.indexOf("--tier");
+  if (at === -1) return { tier: "essential", rest: own };
+  const name = own[at + 1] ?? "";
+  if (!(TIER_NAMES as readonly string[]).includes(name)) {
+    console.error(`[ci-tests] unknown tier "${name}"; tiers: ${TIER_NAMES.join(", ")}`);
+    process.exit(2);
+  }
+  return { tier: name as Tier, rest: [...own.slice(0, at), ...own.slice(at + 2)] };
+}
 
 if (import.meta.main) {
   const argv = process.argv.slice(2);
   const dash = argv.indexOf("--");
-  const own = dash === -1 ? argv : argv.slice(0, dash);
+  const { tier, rest: own } = takeTier(dash === -1 ? argv : argv.slice(0, dash));
   const bunArgs = dash === -1 ? [] : argv.slice(dash + 1);
-  const groups = byGroup(discover());
+  const all = byGroup(discover());
   const times = readTimes();
   const [command, value] = own;
+  const tiered = () => {
+    const data = checkedTiers();
+    return new Map(
+      [...all].map(
+        ([g, fs]) =>
+          [g, forPlatform(filesInTier(fs, tier, data, times), data, process.platform)] as const
+      )
+    );
+  };
+  const weigh = (fs: string[]) => fs.reduce((s, f) => s + (times[f] ?? UNMEASURED_SECONDS), 0);
 
   if (command === "--list") {
-    for (const [name, files] of groups) {
-      const secs = files.reduce((s, f) => s + (times[f] ?? UNMEASURED_SECONDS), 0);
-      console.log(`${name}\t${files.length} files\t${secs.toFixed(0)} s measured`);
+    const data = checkedTiers();
+    for (const [name, files] of all) {
+      const essential = filesInTier(files, "essential", data, times);
+      console.log(
+        `${name}\tfull ${files.length} files, ${weigh(files).toFixed(0)} s\tessential ${essential.length} files, ${weigh(essential).toFixed(0)} s`
+      );
     }
   } else if (command === "--plan" && value) {
     const [name, n] = value.split("@");
-    for (const [i, s] of slices(groups.get(name ?? "") ?? [], Number(n), times).entries())
+    const files = tiered().get(name ?? "") ?? [];
+    console.log(
+      `[ci-tests] tier ${tier}: ${name} ${files.length} of ${(all.get(name ?? "") ?? []).length} files`
+    );
+    for (const [i, s] of slices(files, Number(n), times).entries())
       console.log(`${name}@${i + 1}/${n}\t${s.files.length} files\t${s.seconds.toFixed(0)} s`);
   } else if (command === "--update-times" && own.length > 1) {
     const next = { ...times };
@@ -291,10 +592,23 @@ if (import.meta.main) {
     process.exit(await local(value, [...own.slice(2), ...bunArgs]));
   } else if (command === "--run" && value) {
     const wanted = value.split(",").filter(Boolean);
+    const groups = tiered();
     const runs = wanted.map((spec) => resolve(spec, groups, times));
-    for (const r of runs) if (r.files.length === 0) throw new Error(`${r.label} has no test files`);
+    for (const spec of wanted) {
+      const name = spec.split("@")[0] ?? "";
+      if ((groups.get(name) ?? []).length === 0) {
+        throw new Error(`${name} has no test files in the ${tier} tier`);
+      }
+    }
+    console.log(`[ci-tests] tier ${tier}`);
+    // A slice of a group the tier has thinned can be empty; the group's files are all in the
+    // other slices, so it has nothing to run and nothing to fail.
     const codes = await Promise.all(
-      runs.map((r) => run(r.label, r.files, bunArgs, runs.length > 1))
+      runs.map((r) => {
+        if (r.files.length > 0) return run(r.label, r.files, bunArgs, runs.length > 1);
+        console.log(`[ci-tests] ${r.label}: no files in the ${tier} tier`);
+        return Promise.resolve(0);
+      })
     );
     process.exit(codes.some((c) => c !== 0) ? 1 : 0);
   } else {
