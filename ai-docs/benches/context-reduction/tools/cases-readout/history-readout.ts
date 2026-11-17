@@ -22,39 +22,17 @@
 //
 // Per variant (run_name): mean, range and pass count.
 //
-// Prices are USD per 1M tokens (Anthropic list prices). Cache writes: 1.25x
-// input for the 5-minute TTL, 2x for the 1-hour TTL. Haiku 5.5 is $0.10 / $0.50
-// up to 100K input tokens and $0.50 / $2.50 beyond.
+// Prices and the per-request band rule (Haiku 5.5's 100K edge) are in
+// pricing.ts. Per trial the readout also prints the requests above a model's
+// band edge and what they cost.
 
-export {};
+import { bandOf, priceOf, requestCost, type Usage } from "./pricing";
 
-// w5m and w1h are the cache-write multipliers of the input price.
-type Price = { input: number; output: number; read: number; w5m: number; w1h: number };
-const PRICES: Record<string, Price> = {
-  "claude-fable-5-2": { input: 8, output: 40, read: 0.2, w5m: 1.25, w1h: 2 },
-  "claude-opus-5-5": { input: 4, output: 20, read: 0.2, w5m: 1.25, w1h: 2 },
-  "claude-sonnet-5-5": { input: 2, output: 10, read: 0.1, w5m: 1.25, w1h: 2 },
-  "claude-haiku-5-5": { input: 0.1, output: 0.5, read: 0.01, w5m: 1.25, w1h: 2 },
-  // GLM-4.7 on Z.ai's own API (the glm@ route). The cloud models catalog
-  // publishes no price for that connection ("unavailable"); these are the
-  // rates aggregator sites quote for Z.ai, which charges no cache write.
-  "glm-4.7": { input: 0.6, output: 2.2, read: 0.11, w5m: 1, w1h: 1 },
-  // GLM-5-Turbo on the same route. Z.ai's pricing page lists no GLM-5-Turbo
-  // row and the catalog's z-ai/direct-api connection is "unavailable"; these
-  // are the catalog's openrouter/gateway connection prices (generation
-  // g-20261116161706980-7c7c9818), whose upstream is Z.ai.
-  "glm-5-turbo": { input: 1.2, output: 4, read: 0.24, w5m: 1, w1h: 1 },
-};
 const M = 1_000_000;
 
-function priceOf(model: string): Price | undefined {
-  // An explicit model spec (glm@glm-5-turbo) is priced as its model.
-  const bare = model.replace(/^[a-z0-9-]+@/, "");
-  return PRICES[bare] ?? PRICES[bare.replace(/\[.*\]$/, "")];
-}
-
+/** A compaction-model call: uncached input and output, at its own band. */
 function haikuCost(inTok: number, outTok: number): number {
-  return inTok > 100_000 ? (inTok * 0.5 + outTok * 2.5) / M : (inTok * 0.1 + outTok * 0.5) / M;
+  return requestCost(priceOf("claude-haiku-5-5")!, { input: inTok, output: outTok });
 }
 
 interface Req {
@@ -242,15 +220,24 @@ function compactionsOf(report: unknown): Compaction[] {
   return [...seen.values()].sort((a, b) => a.start - b.start);
 }
 
+/** A request's usage in pricing.ts's terms, or undefined with no usage. */
+function usageOf(r: Req): Usage | undefined {
+  if (r.input === undefined) return undefined;
+  const w1h = r.w1h ?? 0;
+  return { input: r.input, w5m: r.w5m ?? (r.creation ?? 0) - w1h, w1h, read: r.read, output: r.output };
+}
+
 function reqCost(r: Req): number {
   const p = priceOf(r.model);
-  if (!p || r.input === undefined) return 0;
-  const creation = r.creation ?? 0;
-  const w1h = r.w1h ?? 0;
-  const w5m = r.w5m ?? creation - w1h;
-  return (
-    (r.input * p.input + w5m * p.input * p.w5m + w1h * p.input * p.w1h + (r.read ?? 0) * p.read + (r.output ?? 0) * p.output) / M
-  );
+  const u = usageOf(r);
+  return p && u ? requestCost(p, u) : 0;
+}
+
+/** Whether a request was priced at its model's upper band. */
+function isUpper(r: Req): boolean {
+  const p = priceOf(r.model);
+  const u = usageOf(r);
+  return !!(p?.above && u && bandOf(p, u).upper);
 }
 
 const fmt = (n: number) => `$${n.toFixed(4)}`;
@@ -287,6 +274,15 @@ for (const arg of process.argv.slice(2)) {
     `cost madbench=${fmt(madbench)} recomputed=${fmt(mainCost + haikuTotal)} (requests ${fmt(mainCost)} + haiku ${fmt(haikuTotal)}) ` +
       `requests=${reqs.length} without_usage=${noUsage}${unpriced.length ? ` UNPRICED=${unpriced.join("/")}` : ""}`,
   );
+  const banded = reqs.filter((q) => priceOf(q.model)?.above && usageOf(q));
+  if (banded.length > 0) {
+    const upper = banded.filter(isUpper);
+    const edge = priceOf(banded[0]!.model)!.above!.edge;
+    console.log(
+      `above_edge(${edge}) requests=${upper.length}/${banded.length} (${((100 * upper.length) / banded.length).toFixed(1)}%) ` +
+        `cost=${fmt(upper.reduce((s, q) => s + reqCost(q), 0))} of ${fmt(banded.reduce((s, q) => s + reqCost(q), 0))}`,
+    );
+  }
   console.log(
     `cc_compactions=${compactions.length} ${compactions.map((c) => `[${c.ts} pre=${c.pre} post=${c.post}]`).join(" ")}`,
   );
@@ -340,8 +336,11 @@ for (const arg of process.argv.slice(2)) {
       console.log("    no priced usage on the swap request");
       return;
     }
-    const read = p.read / M;
-    const write = (p.input * ((swReq.w1h ?? 0) > 0 ? p.w1h : p.w5m)) / M;
+    // The band the swap request itself was priced at (Haiku's upper band
+    // above 100K); a model with one price has one band.
+    const { band } = bandOf(p, usageOf(swReq)!);
+    const read = band.read / M;
+    const write = (band.input * ((swReq.w1h ?? 0) > 0 ? p.w1h : p.w5m)) / M;
     const L = num(decision?.kv.L);
     const S = num(decision?.kv.S);
     const R = num(decision?.kv.R);
