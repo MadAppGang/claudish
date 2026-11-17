@@ -212,11 +212,14 @@ negative case: if you are about to type one of those words, stop and use the lef
   (`pane/`, `mcp-session/`, `mcp-blackbox/`, `team*`, `recovery-contract/`, `hooks/`); every
   other file of those is weekly, and any other file measured at `heavySeconds` (2 s) or more is
   weekly unless `pinned` lists it (the silent-invariant guards). Pull requests run the essential
-  tier of `idle` and `rest` on Linux; `pane` runs on a PR nowhere. The full tier runs weekly: `weekly-tests.yml`
-  (Linux, Sunday 11:00 UTC; a failure opens the issue "Weekly full test run failed") and
-  `scripts/weekly-macos-tests.ts` under launchd on the owner's Mac (Sunday 03:00; log in
-  `~/Library/Logs/claudish-weekly-tests/`, a notification on failure), installed with
-  `bun scripts/install-weekly-macos-tests.ts` (`--uninstall`). Promoting a test: `testing.md`.
+  tier of `idle` and `rest` on Linux (`macOnly` files are skipped there); `pane` runs on a PR
+  nowhere. The weekly tier (every file the essential tier leaves out) runs on the owner's Mac in
+  7 nightly parts, one a night at 03:00: `scripts/weekly-macos-tests.ts` (`test:macos --part
+  <k>/7`) under launchd, installed with `bun scripts/install-weekly-macos-tests.ts`
+  (`--uninstall`). Each part writes `~/Library/Logs/claudish-weekly-tests/part<k>.json`; a red
+  part also writes `RED-<date>-part<k>.json` (date, part, commit, failing tests, log) for triage
+  and a notification. `weekly-tests.yml` runs the Linux full tier on Sunday 11:00 UTC. Promoting
+  a test: `testing.md`.
 - `bun run typecheck`, `bun run lint`, `bun run format`
 - `claudish --probe <model>` shows the adapter composition; `--debug` writes a log to `logs/`.
 - Model syntax is `provider@model[:concurrency]` (`google@gemini-2.0-flash`, `ollama@llama3.2:3`); a bare name routes by a matching user routing rule, else by the chain gathered from the cloud models catalog and the accounts' dynamic models catalogs. Prefix meanings: `routing.md`.
@@ -268,10 +271,14 @@ measurement). The thesaurus applies. No narrative or rhetorical framing.
 generates `CHANGELOG.md` with `git cliff`, and publishes over OIDC. It runs NO test suite, so
 the tag is the gate: everything must be green before it leaves the machine.
 
-**Run `bun run test:macos` on the Mac before the tag.** Pull requests no longer run the macOS
-suites; CI runs them only on manual dispatch (`gh workflow run Tests --ref <branch>`). The gate
-runs the essential tier; the rest runs in the weekly full runs (`--full` runs it on demand). A red
-run stops the tag even when the cause is machine load: rerun once the Mac is quiet.
+**The release gate has two halves, both green before the tag:** `bun run test:macos` (the
+essential tier) on the release commit, and `bun scripts/weekly-macos-tests.ts --check`: every
+one of the 7 nightly parts green within the last 7 days. Pull requests do not run the macOS
+suites; CI runs them only on manual dispatch (`gh workflow run Tests --ref <branch>`). A part
+missing, red or older than 7 days is run by hand (`bun scripts/weekly-macos-tests.ts --part
+<k>`), one part at a time and never beside another heavy run: two concurrent runs on this Mac
+fail pane tests on 5 s timeouts. A red run stops the tag even when the cause is machine load:
+rerun once the Mac is quiet.
 
 **Commit the version bump LAST**: once the PR's CI is green, re-check `git ls-remote --tags
 origin`, commit the bump and push it, wait for THAT commit's PR CI to finish green, then merge

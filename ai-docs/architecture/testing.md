@@ -105,7 +105,8 @@ heavy. Refresh it from a full-tier junit (the weekly runs upload theirs), and re
 | `bun run test:macos` | essential: `ci-tests.ts --tier essential` over every group (idle, pane, rest), sliced, plus macos-bridge, `scripts/*.test.ts` and the Antigravity client tests | its summary |
 | `bun run test:macos --full` | full: `ci-tests.ts --tier full` over every group, sliced, and adds the blind hook tests and S1 hook loading | its summary |
 | `weekly-tests.yml`, Sunday 11:00 UTC (03:00 PST) | full, every Linux-capable test | GitHub mails the owner on a failed scheduled run; the run opens (or comments on) one issue titled "Weekly full test run failed" with its URL |
-| `scripts/weekly-macos-tests.ts` under launchd, Sunday 03:00 local | `test:macos --full` on origin's main | `~/Library/Logs/claudish-weekly-tests/<UTC date>.log`; a macOS notification names the log on failure |
+| `scripts/weekly-macos-tests.ts` under launchd, every day 03:00 local | `test:macos --part <k>/7` on origin's main: the k-th of 7 slices of every group on the weekly tier (full minus essential); part 7 adds the blind hook tests and S1 hook loading | `~/Library/Logs/claudish-weekly-tests/<UTC date>-part<k>.log` and `part<k>.json`; a red part writes `RED-<UTC date>-part<k>.json` and a notification naming it |
+| `bun scripts/weekly-macos-tests.ts --check` | none: reads the `part<k>.json` files | exit 0 only when all 7 parts are green within 7 days (the release gate's nightly half) |
 
 Both local gates run the idle group too, although `test.yml` runs it on Linux: without it a weekly
 `src/recovery-contract/` file would run in no gate a release owner starts. The gate cuts each
@@ -126,7 +127,16 @@ or worktree is touched. `bun scripts/install-weekly-macos-tests.ts` writes and l
 (`~/Library/LaunchAgents/com.madappgang.claudish.weekly-macos-tests.plist`), and `--uninstall`
 removes it. The agent runs the clone's copy of the script, so the installer refuses until main
 carries it; like the weekly run, it updates an existing clone to `origin/main` first, so an install
-refused before the merge succeeds when run again after it. A Mac asleep at 03:00 runs the job when it wakes; a Mac that is off skips that week.
+refused before the merge succeeds when run again after it. A Mac asleep at 03:00 runs the job when it wakes; a Mac that is off skips that night's part, which then waits a week unless it is run by hand.
+
+The part a night runs is `partOfDate`: the UTC day number modulo 7, so 7 consecutive nights run
+parts 1 to 7 once each. The parts come from ci-tests.ts's time-balanced `slices`, so a change to
+`ci-test-times.json` or to the file list can move a file between parts; the part that took it
+then runs it within the week. Each part runs its three groups as three concurrent processes at
+`sliceConcurrency(cores, 3)`, much lighter than the gate's 17. The measured weekly tier
+(2026-11-17) is about 226-301 s of pane, 41-63 s of rest and up to 67 s of idle per part.
+Bootstrapping the gate (no part results yet) means running the 7 parts by hand, one after
+another: about 35-45 minutes. Never run two parts, or a part and the gate, at once.
 
 ## Three shared resources a test must never reach, and why prevention beats restore
 

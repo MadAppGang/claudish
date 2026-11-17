@@ -71,13 +71,17 @@ the gate: everything must be green before the tag leaves the machine.
 (`packages/cli/scripts/test-tiers.json`: the files listed for each slow category, at most
 three, whatever their time; and, outside the slow categories, no file measured at 2 s or
 more); a dispatch of `test.yml` and `bun run test:macos --full` run
-the FULL tier. The full tier also runs every Sunday: `weekly-tests.yml` on Linux (11:00
-UTC; a failed run mails the owner and opens or updates the issue "Weekly full test run
-failed") and `scripts/weekly-macos-tests.ts` under launchd on the owner's Mac (03:00
-local; the log is `~/Library/Logs/claudish-weekly-tests/<UTC date>.log`, and a failure
-shows a notification naming it). A green essential gate says nothing about a weekly file
-changed since the last weekly run: for such a change, run `bun run test:macos --full`,
-which runs every group, the idle group (`src/recovery-contract/`) included.
+the FULL tier. The WEEKLY tier (full minus essential) runs on the owner's Mac in 7
+nightly parts, one a night at 03:00 local: `scripts/weekly-macos-tests.ts` under launchd
+runs `bun run test:macos --part <k>/7` on origin's main and writes
+`~/Library/Logs/claudish-weekly-tests/part<k>.json`. A red part also writes
+`RED-<UTC date>-part<k>.json` (date, part, commit, failing tests, log path) and shows a
+notification naming it; triage reads and deletes the marker. `weekly-tests.yml` runs the
+Linux full tier every Sunday (11:00 UTC; a failed run opens or updates the issue "Weekly
+full test run failed"). The release gate is `bun run test:macos` on the release commit
+plus `bun scripts/weekly-macos-tests.ts --check` (every part green within 7 days). A green
+essential gate says nothing about a weekly file changed since its part last ran: for such
+a change, run that part by hand (`--part <k>`) or `bun run test:macos --full`.
 `ai-docs/architecture/testing.md` § Test tiers has the list and how to promote a file.
 
 **The version bump is the PR's last commit, and it gets its own green run.** Once the
