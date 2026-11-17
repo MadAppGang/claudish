@@ -17,6 +17,7 @@ import {
   bunVersionOf,
   compareVersions,
   launchArgv,
+  parseGateArgs,
   parseMagmuxPin,
   planSteps,
   runSteps,
@@ -35,13 +36,64 @@ const WORKFLOW = readFileSync(
   "utf8"
 );
 
-const STEPS = planSteps({
+const PLAN_INPUT = {
   root: "/repo",
   hermetic: { version: "1.3.10", exe: "/b/1.3.10/bun" },
   blind: { version: "1.4.0", exe: "/b/1.4.0/bun" },
   release: { version: "latest", exe: "/b/latest/bun" },
   scriptTests: ["./scripts/a.test.ts"],
-}).flatMap((g) => g.steps);
+};
+const STEPS = planSteps({ ...PLAN_INPUT, tier: "full" }).flatMap((g) => g.steps);
+const ESSENTIAL = planSteps({ ...PLAN_INPUT, tier: "essential" });
+
+describe("tiers", () => {
+  const hermeticArgs = (steps: { args: string[] }[]) =>
+    steps.find((s) => s.args.includes("scripts/ci-tests.ts"))?.args ?? [];
+
+  test("the default gate runs the essential tier of the hermetic groups", () => {
+    const args = hermeticArgs(ESSENTIAL.flatMap((g) => g.steps));
+    expect(args.slice(args.indexOf("--tier"), args.indexOf("--tier") + 2)).toEqual([
+      "--tier",
+      "essential",
+    ]);
+    expect(args.indexOf("--tier")).toBeLessThan(args.indexOf("--"));
+  });
+
+  test("--full runs the full tier of the hermetic groups", () => {
+    const args = hermeticArgs(STEPS);
+    expect(args.slice(args.indexOf("--tier"), args.indexOf("--tier") + 2)).toEqual([
+      "--tier",
+      "full",
+    ]);
+  });
+
+  test("the blind hook tests and S1 hook loading are weekly; the rest runs in both tiers", () => {
+    const names = ESSENTIAL.flatMap((g) => g.steps.map((s) => s.name));
+    expect(names).toEqual([
+      "build:cli",
+      `hermetic ${HERMETIC_RUNS}`,
+      "macos-bridge tests",
+      "script tests",
+      "Antigravity HTTP client tests",
+    ]);
+    expect(STEPS.map((s) => s.name)).toEqual([
+      ...names.slice(0, 4),
+      "blind hook tests",
+      names[4],
+      "S1 hook loading",
+    ]);
+  });
+
+  test("the essential gate plans no step under the release Bun, so it fetches none", () => {
+    expect(ESSENTIAL.map((g) => g.bun.version)).toEqual(["1.3.10", "1.4.0"]);
+  });
+
+  test("parseGateArgs reads --dry-run and --full, and refuses anything else", () => {
+    expect(parseGateArgs([])).toEqual({ dryRun: false, tier: "essential" });
+    expect(parseGateArgs(["--full", "--dry-run"])).toEqual({ dryRun: true, tier: "full" });
+    expect(() => parseGateArgs(["--ful"])).toThrow(/--ful/);
+  });
+});
 
 describe("the release Bun", () => {
   const RELEASE = readFileSync(
@@ -372,6 +424,16 @@ describe("--dry-run", () => {
         expect(out).toContain("would fetch bun@");
         expect(out).toMatch(/would download magmux v\d+\.\d+\.\d+ \(magmux_darwin_(arm64|amd64)/);
         expect(out).toContain("scripts/ci-tests.ts");
+        expect(out).toContain("--tier essential");
+        expect(out).not.toContain("src/hooks/blind");
+
+        const full = Bun.spawnSync(
+          [process.execPath, join(import.meta.dir, "test-macos.ts"), "--full", "--dry-run"],
+          { cwd: dir, env: { PATH: "/nonexistent", HOME: dir, TMPDIR: dir } }
+        );
+        expect(full.exitCode).toBe(0);
+        expect(full.stdout.toString()).toContain("--tier full");
+        expect(full.stdout.toString()).toContain("src/hooks/blind");
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }

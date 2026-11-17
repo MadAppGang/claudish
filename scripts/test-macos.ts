@@ -2,15 +2,21 @@
 /**
  * The macOS test gate, run on a Mac before a release tag:
  *
- *   bun run test:macos             # run every step, then print a summary
+ *   bun run test:macos             # the essential tier, then print a summary
+ *   bun run test:macos --full      # every test: what test.yml's dispatched macOS jobs run
  *   bun run test:macos --dry-run   # print what a run would fetch and run; fetch and run nothing
  *
- * It runs what test.yml's dispatched macOS jobs run, which no pull request runs any more:
+ * The default is the essential tier (packages/cli/scripts/test-tiers.json): steps 0-2 with
+ * `--tier essential`, and step 3's Antigravity HTTP client tests. The blind hook tests and the S1
+ * hook loading tests are hook files outside the hooks category's essential list, so only `--full`
+ * runs them, as the weekly macOS run does (scripts/weekly-macos-tests.ts). `--full` runs what
+ * test.yml's dispatched macOS jobs run, which no pull request runs:
  *
  *  0. `bun run build:cli`, so the tests that start packages/cli/dist test this commit (a failed
  *     build stops the gate);
- *  1. the hermetic pane and rest groups (`ci-tests.ts --run pane@1/6,…,pane@6/6,rest`, the three
- *     `hermetic` runners' slices in one call), under the Bun the `hermetic` job pins;
+ *  1. the hermetic pane and rest groups (`ci-tests.ts --run pane@1/6,…,pane@6/6,rest --tier
+ *     full`, the three `hermetic` runners' slices in one call), under the Bun the `hermetic` job
+ *     pins;
  *  2. the macos-bridge tests and `scripts/*.test.ts`, under the same Bun;
  *  3. the blind hook tests and the Antigravity HTTP client tests, under the Bun the
  *     `blind-hooks` job pins (two blind tests fail on 1.3.10 because of bugs in Bun's test
@@ -39,8 +45,8 @@
  * finds it. The Mac's own magmux is never used or changed. Anything it cannot read or verify
  * stops the gate.
  *
- * Expect a long run: the pane slices run as seven concurrent processes. A red run on a loaded
- * machine is still red: rerun once the Mac is quiet.
+ * Expect a long `--full` run: the pane slices run as seven concurrent processes. A red run on a
+ * loaded machine is still red: rerun once the Mac is quiet.
  */
 import { spawn, spawnSync } from "node:child_process";
 import {
@@ -65,6 +71,23 @@ const PANE_LAUNCH = join(CLI, "src", "pane", "pane-launch.ts");
 
 /** The suites of test.yml's three `hermetic` runners. */
 export const HERMETIC_RUNS = "pane@1/6,pane@2/6,pane@3/6,pane@4/6,pane@5/6,pane@6/6,rest";
+
+/** ci-tests.ts's tiers: `essential` by default, `full` with `--full`. */
+export type GateTier = "essential" | "full";
+
+/** The gate's own flags. Anything else is refused, so a misspelt `--full` never runs less. */
+export function parseGateArgs(argv: string[]): { dryRun: boolean; tier: GateTier } {
+  const unknown = argv.filter((a) => a !== "--dry-run" && a !== "--full");
+  if (unknown.length > 0) {
+    throw new Error(
+      `unknown argument ${unknown.join(" ")}; usage: test:macos [--full] [--dry-run]`
+    );
+  }
+  return {
+    dryRun: argv.includes("--dry-run"),
+    tier: argv.includes("--full") ? "full" : "essential",
+  };
+}
 
 /** The first `bun-version:` of one job in a workflow (`latest`, `1.3.10`), or undefined. */
 export function bunVersionOf(workflow: string, job: string): string | undefined {
@@ -133,8 +156,9 @@ export interface StepGroup {
 }
 
 /**
- * Every step, grouped by the Bun it runs under. Pure, so `--dry-run` prints the steps a run
- * runs, with placeholders for the executables it has not fetched.
+ * Every step of one tier, grouped by the Bun it runs under; a Bun with no step in the tier is
+ * left out, so it is never fetched. Pure, so `--dry-run` prints the steps a run runs, with
+ * placeholders for the executables it has not fetched.
  */
 export function planSteps(p: {
   root: string;
@@ -142,9 +166,11 @@ export function planSteps(p: {
   blind: PlannedBun;
   release: PlannedBun;
   scriptTests: string[];
+  tier: GateTier;
 }): StepGroup[] {
   const cli = join(p.root, "packages", "cli");
-  return [
+  const full = p.tier === "full";
+  const groups: StepGroup[] = [
     {
       bun: p.hermetic,
       steps: [
@@ -166,6 +192,8 @@ export function planSteps(p: {
             "scripts/ci-tests.ts",
             "--run",
             HERMETIC_RUNS,
+            "--tier",
+            p.tier,
             "--",
             NO_ENV_FILE,
             "--max-concurrency=8",
@@ -187,11 +215,15 @@ export function planSteps(p: {
     {
       bun: p.blind,
       steps: [
-        {
-          name: "blind hook tests",
-          cwd: cli,
-          args: [p.blind.exe, NO_ENV_FILE, "test", "src/hooks/blind"],
-        },
+        ...(full
+          ? [
+              {
+                name: "blind hook tests",
+                cwd: cli,
+                args: [p.blind.exe, NO_ENV_FILE, "test", "src/hooks/blind"],
+              },
+            ]
+          : []),
         {
           name: "Antigravity HTTP client tests",
           cwd: cli,
@@ -206,17 +238,20 @@ export function planSteps(p: {
     },
     {
       bun: p.release,
-      steps: [
-        {
-          // test.yml's hooks-loading macOS rows: a user hook module loads from a dist bundle
-          // and a compiled binary built by the Bun release.yml builds with.
-          name: "S1 hook loading",
-          cwd: p.root,
-          args: [p.release.exe, NO_ENV_FILE, "test", "packages/cli/src/hooks/s1-probe/"],
-        },
-      ],
+      steps: full
+        ? [
+            {
+              // test.yml's hooks-loading macOS rows: a user hook module loads from a dist bundle
+              // and a compiled binary built by the Bun release.yml builds with.
+              name: "S1 hook loading",
+              cwd: p.root,
+              args: [p.release.exe, NO_ENV_FILE, "test", "packages/cli/src/hooks/s1-probe/"],
+            },
+          ]
+        : [],
     },
   ];
+  return groups.filter((g) => g.steps.length > 0);
 }
 
 function fail(message: string): never {
@@ -485,7 +520,13 @@ export async function runSteps<S extends { name: string; stopOnFailure?: boolean
 }
 
 if (import.meta.main) {
-  const dryRun = process.argv.includes("--dry-run");
+  let args: { dryRun: boolean; tier: GateTier };
+  try {
+    args = parseGateArgs(process.argv.slice(2));
+  } catch (err) {
+    fail((err as Error).message);
+  }
+  const { dryRun, tier } = args;
   if (process.platform !== "darwin") fail(`runs on macOS only, not ${process.platform}`);
 
   const workflow = readFileSync(WORKFLOW, "utf8");
@@ -497,10 +538,20 @@ if (import.meta.main) {
   // The Bun the release binaries are built with (`latest`), as test.yml's hooks-loading uses.
   const releaseBunVersion = bunVersionOf(readFileSync(RELEASE_WORKFLOW, "utf8"), "build");
   if (!releaseBunVersion) fail(`no bun-version in the build job of ${RELEASE_WORKFLOW}`);
-  const versions = [...new Set([hermeticPin, blindPin, releaseBunVersion])];
   const scriptTests = [...new Bun.Glob("scripts/*.test.ts").scanSync({ cwd: ROOT })]
     .sort()
     .map((f) => `./${f}`);
+  const planFor = (exeOf: (version: string) => string) =>
+    planSteps({
+      root: ROOT,
+      hermetic: { version: hermeticPin, exe: exeOf(hermeticPin) },
+      blind: { version: blindPin, exe: exeOf(blindPin) },
+      release: { version: releaseBunVersion, exe: exeOf(releaseBunVersion) },
+      scriptTests,
+      tier,
+    });
+  // Only the Buns this tier runs a step under are fetched.
+  const versions = [...new Set(planFor(() => "").map((g) => g.bun.version))];
   const magmuxPin = magmuxPinOfThisMac();
 
   if (dryRun) {
@@ -510,14 +561,8 @@ if (import.meta.main) {
     console.log(
       `[test:macos] would download magmux ${magmuxPin.tag} (${magmuxPin.asset}, sha256 ${magmuxPin.sha256}) with gh into a new temp directory, first on PATH`
     );
-    const placeholder = (version: string) => ({ version, exe: `<bun@${version}>` });
-    const plan = planSteps({
-      root: ROOT,
-      hermetic: placeholder(hermeticPin),
-      blind: placeholder(blindPin),
-      release: placeholder(releaseBunVersion),
-      scriptTests,
-    });
+    console.log(`[test:macos] tier ${tier}`);
+    const plan = planFor((version) => `<bun@${version}>`);
     for (const { steps } of plan)
       for (const s of steps) {
         const env = runsPackageScript(s) ? `BUN_OPTIONS=${NO_ENV_FILE} ` : "";
@@ -545,16 +590,10 @@ if (import.meta.main) {
 
   const magmuxDir = installPinnedMagmux(magmuxPin, runDir);
   const buns = new Map(versions.map((v) => [v, pinnedBun(v, runDir)] as const));
-  const planned = (version: string) => ({ version, exe: buns.get(version)?.exe ?? "" });
-  const groups = planSteps({
-    root: ROOT,
-    hermetic: planned(hermeticPin),
-    blind: planned(blindPin),
-    release: planned(releaseBunVersion),
-    scriptTests,
-  });
+  const groups = planFor((version) => buns.get(version)?.exe ?? "");
   const binDirOf = new Map([...buns].map(([v, bun]) => [v, bun.dir] as const));
 
+  console.log(`[test:macos] tier ${tier}`);
   console.log(`[test:macos] magmux ${magmuxPin.tag}: ${join(magmuxDir, "magmux")}`);
   for (const [version, bun] of buns)
     console.log(`[test:macos] bun@${version}: Bun ${bun.resolved}, ${bun.exe}`);
