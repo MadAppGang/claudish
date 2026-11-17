@@ -72,30 +72,41 @@ placeholder="sk-ant-api03-placeholder-not-used-proxy-handles-auth-with-openroute
 # value to this launch log, then execs the real claude with the same
 # arguments. claudish passes credentials through the environment, never the
 # argv.
+#
+# The shim is written with printf, never a here-document: sh writes a
+# here-document to a temporary file and reads it back, and madbench's sandbox
+# denies reads outside its allow-list, so `cat <<EOF` there writes an EMPTY
+# shim, and claudish's spawn of it fails with ENOEXEC. It lives in the launch
+# folder (the ~/.bench-out mount), and it is used only if it was written: a
+# shim that failed costs the argv record, never the trial.
 real=$(command -v claude)
 if [ -n "$real" ]; then
-  mkdir -p "$dir/argv-shim"
-  cat >"$dir/argv-shim/claude" <<EOF
-#!/bin/sh
-{
-  flags=""; adddir=""; allowed=""; prev=""
-  for a in "\$@"; do
-    case "\$prev" in
-      --add-dir) adddir="\$adddir [\$a]" ;;
-      --allowedTools|--allowed-tools) allowed="\$allowed [\$a]" ;;
-    esac
-    case "\$a" in --*) flags="\$flags \${a%%=*}" ;; esac
-    prev=\$a
-  done
-  echo "agent-argv: flags:\$flags"
-  echo "agent-argv: add-dir:\${adddir:- none}"
-  echo "agent-argv: allowedTools:\${allowed:- none}"
-} >>"$live/launch.log" 2>/dev/null
-exec "$real" "\$@"
-EOF
-  chmod +x "$dir/argv-shim/claude"
-  export CLAUDE_PATH="$dir/argv-shim/claude"
-  note "launch: CLAUDE_PATH shim records the agent's argv; real claude $real"
+  shim="$live/argv-shim/claude"
+  mkdir -p "$live/argv-shim"
+  {
+    printf '%s\n' '#!/bin/sh' '{' \
+      '  flags=""; adddir=""; allowed=""; prev=""' \
+      '  for a in "$@"; do' \
+      '    case "$prev" in' \
+      '      --add-dir) adddir="$adddir [$a]" ;;' \
+      '      --allowedTools|--allowed-tools) allowed="$allowed [$a]" ;;' \
+      '    esac' \
+      '    case "$a" in --*) flags="$flags ${a%%=*}" ;; esac' \
+      '    prev=$a' \
+      '  done' \
+      '  echo "agent-argv: flags:$flags"' \
+      '  echo "agent-argv: add-dir:${adddir:- none}"' \
+      '  echo "agent-argv: allowedTools:${allowed:- none}"'
+    printf "} >>'%s' 2>/dev/null\n" "$live/launch.log"
+    printf "exec '%s' \"\$@\"\n" "$real"
+  } >"$shim" 2>/dev/null
+  if [ "$(head -c 2 "$shim" 2>/dev/null)" = "#!" ] && sh -n "$shim" 2>/dev/null; then
+    chmod +x "$shim"
+    export CLAUDE_PATH="$shim"
+    note "launch: CLAUDE_PATH shim records the agent's argv; real claude $real"
+  else
+    note "launch: argv shim not written ($({ wc -c <"$shim"; } 2>/dev/null || echo no) bytes); CLAUDE_PATH left unset, argv not recorded"
+  fi
 fi
 
 # On a foreign model claudish gives Claude Code its placeholder as
