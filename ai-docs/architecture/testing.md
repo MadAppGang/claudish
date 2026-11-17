@@ -37,6 +37,10 @@ every file it discovers from it and from `ci-test-times.json`:
   in `src/` whose names start with `team`; a prefix without a trailing `/` means that),
   `src/recovery-contract/` and `src/hooks/` (`hooks/session/` and `hooks/s1-probe/` included).
   Each lists at most **3** files. A new file there is weekly until someone lists it.
+  **One exception:** test.yml's `hooks-loading` job runs `bun test packages/cli/src/hooks/s1-probe/`
+  on every pull request and push (its Linux rows; the macOS rows on dispatch), outside the tiers.
+  An unlisted S1 file is weekly in `ci-tests.ts` and in `bun run test:macos`, yet runs on every
+  pull request there.
 - **`src/hooks/blind/` is not in `ci-tests.ts` at all**: its discovery excludes that directory,
   which runs under its own Bun in its own gates, `bun run test:macos --full` and test.yml's
   `blind-hooks` job (on dispatch). A blind file therefore has no tier and cannot be listed in
