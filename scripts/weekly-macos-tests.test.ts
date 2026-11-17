@@ -84,6 +84,11 @@ describe("failingTests", () => {
     ].join("\n");
     expect(failingTests(log)).toEqual(["suite > one", "suite > two"]);
   });
+
+  test("reads failures behind the [group-kofn] label ci-tests.ts puts on concurrent output", () => {
+    const log = "[pane-3of7] (fail) pane > a slot settles [5000.00ms]\n[rest-3of7] (pass) x";
+    expect(failingTests(log)).toEqual(["pane > a slot settles"]);
+  });
 });
 
 describe("checkGate", () => {
@@ -112,6 +117,50 @@ describe("checkGate", () => {
     expect(text).toMatch(/part 1\/7.*RED/);
     expect(text).toMatch(/part 2\/7.*no run/);
     expect(text).toMatch(/part 3\/7.*older than 7 days/);
+  });
+
+  test("fails on a result dated in the future", () => {
+    const results = all();
+    results[3] = green(4, -30);
+    const verdict = checkGate(results, now);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.lines.join("\n")).toMatch(/part 4\/7.*in the future/);
+  });
+
+  test("fails on a result from a different part count", () => {
+    const results = all().map((r) => ({ ...r, n: 8 }));
+    expect(checkGate(results, now).ok).toBe(false);
+  });
+});
+
+describe("readPartResults", () => {
+  const write = (dir: string, name: string, value: unknown) =>
+    writeFileSync(join(dir, name), JSON.stringify(value));
+  const result = (part: number, pass: boolean): PartResult => ({
+    part,
+    n: 7,
+    date: "2026-11-23T03:00:00.000Z",
+    commit: "abc",
+    pass,
+    log: "/l",
+  });
+
+  test("reads only part<k>.json whose part field is k; part01.json cannot stand in for part1", () => {
+    const dir = tempHome();
+    write(dir, "part1.json", result(1, false));
+    write(dir, "part01.json", result(1, true));
+    write(dir, "part2.json", result(3, true));
+    expect(readPartResults(dir).map((r) => [r.part, r.pass])).toEqual([[1, false]]);
+  });
+
+  test("skips a record missing n, commit or log, or with a wrong type", () => {
+    const dir = tempHome();
+    const { n: _n, ...noN } = result(1, true);
+    write(dir, "part1.json", noN);
+    write(dir, "part2.json", { ...result(2, true), log: 7 });
+    write(dir, "part3.json", { ...result(3, true), commit: 5 });
+    write(dir, "part4.json", result(4, true));
+    expect(readPartResults(dir).map((r) => r.part)).toEqual([4]);
   });
 });
 
@@ -259,6 +308,49 @@ describe("runWeekly", () => {
     expect(r.ran.map((c) => c.name)).toEqual(["clone"]);
     expect(r.notified).toHaveLength(1);
     expect(existsSync(join(logs(home), "RED-2026-11-22-part3.json"))).toBe(true);
+  });
+
+  test("a command that throws counts as red: result, marker and notification, never the old green", async () => {
+    const home = tempHome();
+    await run(home, recorder());
+    const r = recorder();
+    const throwing = {
+      ...r,
+      exec: (cmd: Command, fd: number) => {
+        if (cmd.name === testStep) throw new Error("exec crashed");
+        return r.exec(cmd, fd);
+      },
+    };
+    expect(await run(home, throwing)).toBe(1);
+    expect(JSON.parse(readFileSync(join(logs(home), "part3.json"), "utf8")).pass).toBe(false);
+    expect(existsSync(join(logs(home), "RED-2026-11-22-part3.json"))).toBe(true);
+    expect(r.notified).toHaveLength(1);
+    expect(readFileSync(join(logs(home), "2026-11-22-part3.log"), "utf8")).toContain(
+      "exec crashed"
+    );
+  });
+
+  test("an unreadable log still writes the RED marker and notifies", async () => {
+    const home = tempHome();
+    const r = recorder(testStep);
+    const logPath = join(logs(home), "2026-11-22-part3.log");
+    const unreadable = {
+      ...r,
+      exec: (cmd: Command, fd: number) => {
+        const code = r.exec(cmd, fd);
+        if (cmd.name === testStep) chmodSync(logPath, 0o000);
+        return code;
+      },
+    };
+    try {
+      expect(await run(home, unreadable)).toBe(1);
+    } finally {
+      chmodSync(logPath, 0o644);
+    }
+    const marker = JSON.parse(readFileSync(join(logs(home), "RED-2026-11-22-part3.json"), "utf8"));
+    expect(marker.failing).toEqual([]);
+    expect(marker.logError).toContain("EACCES");
+    expect(r.notified).toHaveLength(1);
   });
 
   test("readPartResults reads every part<k>.json the runs wrote", async () => {

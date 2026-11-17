@@ -157,12 +157,16 @@ export function notificationArgv(text: string): string[] {
   ];
 }
 
-/** Each failing test of a Bun log, once, from its `(fail) <name> [<ms>]` lines. */
+/**
+ * Each failing test of a Bun log, once, from its `(fail) <name> [<ms>]` lines. ci-tests.ts puts
+ * a `[<group>-<k>of<n>] ` label in front of each line of a group run beside others.
+ */
 export function failingTests(log: string): string[] {
-  const names = log
-    .split(/\r?\n/)
-    .filter((line) => line.startsWith("(fail) "))
-    .map((line) => line.slice("(fail) ".length).replace(/\s*\[[\d.]+m?s\]\s*$/, ""));
+  const names: string[] = [];
+  for (const line of log.split(/\r?\n/)) {
+    const m = /^(?:\[[^\]]+\] )?\(fail\) (.*)$/.exec(line);
+    if (m) names.push((m[1] as string).replace(/\s*\[[\d.]+m?s\]\s*$/, ""));
+  }
   return [...new Set(names)];
 }
 
@@ -178,17 +182,32 @@ export interface PartResult {
   log: string;
 }
 
-/** Every `part<k>.json` in the log directory; unreadable or malformed files are skipped. */
+function isPartResult(r: unknown, part: number): r is PartResult {
+  if (typeof r !== "object" || r === null) return false;
+  const x = r as Record<string, unknown>;
+  return (
+    x.part === part &&
+    Number.isInteger(x.n) &&
+    typeof x.date === "string" &&
+    (typeof x.commit === "string" || x.commit === null) &&
+    typeof x.pass === "boolean" &&
+    typeof x.log === "string"
+  );
+}
+
+/**
+ * Every `part<k>.json` in the log directory, the name spelt as `runWeekly` writes it and its
+ * `part` field equal to k. Unreadable, malformed or misnamed files are skipped.
+ */
 export function readPartResults(logDir: string): PartResult[] {
   if (!existsSync(logDir)) return [];
   const results: PartResult[] = [];
   for (const name of readdirSync(logDir).sort()) {
-    if (!/^part\d+\.json$/.test(name)) continue;
+    const m = /^part([1-9]\d*)\.json$/.exec(name);
+    if (!m) continue;
     try {
-      const r = JSON.parse(readFileSync(join(logDir, name), "utf8")) as PartResult;
-      if (Number.isInteger(r.part) && typeof r.pass === "boolean" && typeof r.date === "string") {
-        results.push(r);
-      }
+      const r: unknown = JSON.parse(readFileSync(join(logDir, name), "utf8"));
+      if (isPartResult(r, Number(m[1]))) results.push(r);
     } catch {
       // A torn or foreign file proves nothing; the part reads as having no run.
     }
@@ -208,7 +227,7 @@ export function checkGate(
   const lines: string[] = [];
   let ok = true;
   for (let k = 1; k <= n; k++) {
-    const r = results.find((x) => x.part === k);
+    const r = results.find((x) => x.part === k && x.n === n);
     const label = `part ${k}/${n}`;
     if (!r) {
       ok = false;
@@ -220,6 +239,9 @@ export function checkGate(
     if (!r.pass) {
       ok = false;
       lines.push(`${label}: RED ${where}`);
+    } else if (age < 0) {
+      ok = false;
+      lines.push(`${label}: green but dated in the future, ${where}`);
     } else if (!(age <= GATE_DAYS * DAY_MS)) {
       ok = false;
       lines.push(`${label}: green but older than ${GATE_DAYS} days, ${where}`);
@@ -255,6 +277,45 @@ function gitHead(repoDir: string): string | null {
   return r.status === 0 ? r.stdout.trim() || null : null;
 }
 
+const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+/**
+ * Runs the steps in order and stops at the first failure. A step that exits non-zero and a
+ * step whose runner throws both fail the run; neither ends it before its result is written.
+ */
+function runSteps(
+  commands: Command[],
+  exec: (cmd: Command) => number,
+  say: (line: string) => void
+): boolean {
+  for (const cmd of commands) {
+    say(`▶ ${cmd.name}: ${cmd.argv.join(" ")} (${cmd.cwd})`);
+    let code: number;
+    try {
+      code = exec(cmd);
+    } catch (e) {
+      say(`FAIL ${cmd.name} threw: ${errorText(e)}`);
+      return false;
+    }
+    if (code !== 0) {
+      say(`FAIL ${cmd.name} (exit ${code})`);
+      return false;
+    }
+    say(`PASS ${cmd.name}`);
+  }
+  say("PASS: every step");
+  return true;
+}
+
+/** The failing tests named in the log; a log that cannot be read gives none and its error. */
+function readFailing(logPath: string): { failing: string[]; logError?: string } {
+  try {
+    return { failing: failingTests(readFileSync(logPath, "utf8")) };
+  } catch (e) {
+    return { failing: [], logError: errorText(e) };
+  }
+}
+
 /** One nightly part. Returns the exit code: 0 when every step passed. */
 export async function runWeekly(opts: {
   home: string;
@@ -287,18 +348,7 @@ export async function runWeekly(opts: {
       part,
     });
     say(`start ${opts.now.toISOString()} part ${part}/${NIGHTLY_PARTS} in ${paths.repoDir}`);
-    pass = true;
-    for (const cmd of commands) {
-      say(`▶ ${cmd.name}: ${cmd.argv.join(" ")} (${cmd.cwd})`);
-      const code = exec(cmd, fd, opts.home);
-      if (code !== 0) {
-        say(`FAIL ${cmd.name} (exit ${code})`);
-        pass = false;
-        break;
-      }
-      say(`PASS ${cmd.name}`);
-    }
-    if (pass) say("PASS: every step");
+    pass = runSteps(commands, (cmd) => exec(cmd, fd, opts.home), say);
   } finally {
     closeSync(fd);
   }
@@ -318,7 +368,7 @@ export async function runWeekly(opts: {
     date: result.date,
     part: `${part}/${NIGHTLY_PARTS}`,
     commit,
-    failing: failingTests(readFileSync(logPath, "utf8")),
+    ...readFailing(logPath),
     report: logPath,
   };
   writeFileSync(marker, `${JSON.stringify(red, null, 2)}\n`);
