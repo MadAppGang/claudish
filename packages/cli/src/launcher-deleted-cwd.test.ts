@@ -48,17 +48,36 @@ const RUNTIMES: [string, string | null][] = [
 ];
 
 let goneCount = 0;
-function runFromDeletedCwd(runtime: string, args: string[], env: Record<string, string> = ENV) {
+/** Runs `argv` through `/bin/sh` after it has entered a fresh directory and removed it. */
+function spawnInDeletedCwd(argv: string[], env: Record<string, string>) {
   const gone = join(root, `gone-${goneCount++}`);
   mkdirSync(gone);
   const script = 'cd "$1" && rmdir "$1" && shift && exec "$@"';
-  const proc = Bun.spawnSync(["/bin/sh", "-c", script, "sh", gone, runtime, launcher, ...args], {
+  const proc = Bun.spawnSync(["/bin/sh", "-c", script, "sh", gone, ...argv], {
     cwd: root,
     env,
     stdin: "ignore",
+    timeout: 10_000,
   });
-  return { code: proc.exitCode, stdout: proc.stdout.toString(), stderr: proc.stderr.toString() };
+  return {
+    code: proc.exitCode,
+    signal: proc.signalCode ?? null,
+    stdout: proc.stdout.toString(),
+    stderr: proc.stderr.toString(),
+  };
 }
+
+function runFromDeletedCwd(runtime: string, args: string[], env: Record<string, string> = ENV) {
+  return spawnInDeletedCwd([runtime, launcher, ...args], env);
+}
+
+/**
+ * Some Bun releases refuse to start at all in a deleted working directory: the runtime
+ * prints this line and exits 1 before any script code runs, so the launcher never sees
+ * the arguments. Others start and leave the case to the launcher.
+ */
+const BUN_STARTUP_REFUSAL = "The current working directory was deleted";
+const bunStartsInDeletedCwd = spawnInDeletedCwd([process.execPath, "-e", "0"], ENV).code === 0;
 
 const CWD_FREE: string[][] = [["--version"], ["--help"], ["-h"], ["update"]];
 const REFUSED: string[][] = [
@@ -89,38 +108,66 @@ type ChildReport = { cwd: string; argv: string[]; shared: string | null; dropped
 describe.skipIf(process.platform === "win32")("launcher from a deleted working directory", () => {
   for (const [name, runtime] of RUNTIMES) {
     describe.skipIf(runtime === null)(`under ${name}`, () => {
-      test.each(CWD_FREE.map((args) => [args]))(
-        "%p starts the child in HOME with argv unchanged",
-        (args) => {
-          const r = runFromDeletedCwd(runtime as string, args);
-          expect(r.stderr).not.toContain("uv_cwd");
-          expect(r.code).toBe(0);
-          const out = JSON.parse(r.stdout) as ChildReport;
-          expect(realpathSync(out.cwd)).toBe(realpathSync(home));
-          expect(out.argv).toEqual(args);
-        }
-      );
+      if (name === "bun" && !bunStartsInDeletedCwd) {
+        test.each([...CWD_FREE, ...REFUSED].map((args) => [args]))(
+          "%p is refused by Bun's own startup with one line before the launcher runs",
+          (args) => {
+            const r = runFromDeletedCwd(runtime as string, args);
+            expect(r.signal).toBeNull();
+            expect(r.code).toBe(1);
+            expect(r.stdout).toBe("");
+            expect(r.stderr).toContain(BUN_STARTUP_REFUSAL);
+            expect(r.stderr.trimEnd().split("\n")).toHaveLength(1);
+          }
+        );
 
-      test.each(REFUSED.map((args) => [args]))("%p is refused with one line", (args) => {
-        const r = runFromDeletedCwd(runtime as string, args);
-        expect(r.stderr).not.toContain("uv_cwd");
-        expect(r.stderr).toBe(`${REFUSAL}\n`);
-        expect(r.stdout).toBe("");
-        expect(r.code).toBe(1);
-      });
-
-      test.skipIf(name !== "bun")(
-        "a Bun started without --no-env-file keeps the shell's values over HOME's .env",
-        () => {
+        test("a HOME with a .env does not change Bun's own startup refusal", () => {
           const r = runFromDeletedCwd(runtime as string, ["--version"], DOTENV_ENV);
-          expect(r.stderr).toBe("");
-          expect(r.code).toBe(0);
-          const out = JSON.parse(r.stdout) as ChildReport;
-          expect(realpathSync(out.cwd)).toBe(realpathSync(dotenvHome));
-          expect(out.shared).toBe("from-shell");
-          expect(out.dropped).toBeNull();
-        }
-      );
+          expect(r.signal).toBeNull();
+          expect(r.code).toBe(1);
+          expect(r.stdout).toBe("");
+          expect(r.stderr).toContain(BUN_STARTUP_REFUSAL);
+        });
+      } else {
+        test.each(CWD_FREE.map((args) => [args]))(
+          "%p starts the child in HOME with argv unchanged",
+          (args) => {
+            const r = runFromDeletedCwd(runtime as string, args);
+            expect(r.signal).toBeNull();
+            expect(r.stderr).not.toContain("uv_cwd");
+            expect(r.code).toBe(0);
+            const out = JSON.parse(r.stdout) as ChildReport;
+            expect(realpathSync(out.cwd)).toBe(realpathSync(home));
+            expect(out.argv).toEqual(args);
+          }
+        );
+
+        test.each(REFUSED.map((args) => [args]))(
+          "%p is refused by the launcher with one line",
+          (args) => {
+            const r = runFromDeletedCwd(runtime as string, args);
+            expect(r.signal).toBeNull();
+            expect(r.stderr).not.toContain("uv_cwd");
+            expect(r.stderr).toBe(`${REFUSAL}\n`);
+            expect(r.stdout).toBe("");
+            expect(r.code).toBe(1);
+          }
+        );
+
+        test.skipIf(name !== "bun")(
+          "a Bun started without --no-env-file keeps the shell's values over HOME's .env",
+          () => {
+            const r = runFromDeletedCwd(runtime as string, ["--version"], DOTENV_ENV);
+            expect(r.signal).toBeNull();
+            expect(r.stderr).toBe("");
+            expect(r.code).toBe(0);
+            const out = JSON.parse(r.stdout) as ChildReport;
+            expect(realpathSync(out.cwd)).toBe(realpathSync(dotenvHome));
+            expect(out.shared).toBe("from-shell");
+            expect(out.dropped).toBeNull();
+          }
+        );
+      }
 
       test("from an existing directory the child keeps that directory", () => {
         const here = mkdtempSync(join(root, "here-"));
@@ -128,7 +175,9 @@ describe.skipIf(process.platform === "win32")("launcher from a deleted working d
           cwd: here,
           env: ENV,
           stdin: "ignore",
+          timeout: 10_000,
         });
+        expect(proc.signalCode ?? null).toBeNull();
         expect(proc.exitCode).toBe(0);
         const out = JSON.parse(proc.stdout.toString()) as { cwd: string };
         expect(realpathSync(out.cwd)).toBe(realpathSync(here));
