@@ -5,6 +5,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { bunPinOf } from "./test-macos.ts";
 
 const WORKFLOWS = join(import.meta.dir, "..", ".github", "workflows");
 const read = (name: string) => readFileSync(join(WORKFLOWS, name), "utf8");
@@ -40,5 +41,64 @@ describe("test.yml", () => {
     const runs = ciTestsRuns(block);
     expect(runs).toHaveLength(1);
     expect(runs[0]).toContain("--tier full");
+  });
+});
+
+describe("weekly-tests.yml", () => {
+  const text = read("weekly-tests.yml");
+  // biome-ignore lint/suspicious/noExplicitAny: a parsed workflow is untyped YAML
+  const wf = Bun.YAML.parse(text) as any;
+  const testYml = read("test.yml");
+  const runsOf = (job: string): string[] =>
+    (wf.jobs[job].steps as { run?: string }[]).flatMap((s) => (s.run ? [s.run] : []));
+
+  test("runs every Sunday at 03:00 US Pacific (11:00 UTC) and on a manual dispatch", () => {
+    expect(wf.on.schedule).toEqual([{ cron: "0 11 * * 0" }]);
+    expect("workflow_dispatch" in wf.on).toBe(true);
+  });
+
+  test("runs the full tier of the idle slices, with the Bun test.yml pins", () => {
+    const runs = ciTestsRuns(jobBlock(text, "idle"));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toContain("--run idle@${{ matrix.slice }}/3 --tier full");
+    expect(wf.jobs.idle.strategy.matrix.slice).toEqual([1, 2, 3]);
+    expect(bunPinOf(text, "idle")).toBe(bunPinOf(testYml, "idle") as string);
+    expect(bunPinOf(text, "scripts")).toBe(bunPinOf(testYml, "scripts") as string);
+  });
+
+  test("runs the script and release-file tests and the Linux hook loading rows", () => {
+    expect(runsOf("scripts")).toEqual([
+      "bun install --frozen-lockfile",
+      "bun test ./scripts/*.test.ts",
+      "bun test src/release-files.test.ts",
+    ]);
+    expect(wf.jobs["hooks-loading"].strategy.matrix.os).toEqual([
+      "ubuntu-latest",
+      "ubuntu-24.04-arm",
+    ]);
+    expect(runsOf("hooks-loading")).toEqual(["bun test packages/cli/src/hooks/s1-probe/"]);
+  });
+
+  test("every test job runs with the hermetic environment test.yml sets", () => {
+    for (const job of ["scripts", "idle"]) {
+      expect(wf.jobs[job].env.CLAUDISH_SKIP_LIVE_E2E).toBe("1");
+      expect(wf.jobs[job].env.CLAUDISH_DISABLE_CATALOG_WARM).toBe("1");
+    }
+  });
+
+  test("a failed run on main opens or updates one issue, with issues: write and nothing else", () => {
+    expect(wf.permissions).toEqual({ contents: "read" });
+    const report = wf.jobs["report-failure"];
+    expect(report.permissions).toEqual({ issues: "write" });
+    expect(report.needs).toEqual(["scripts", "idle", "hooks-loading"]);
+    expect(report.if).toContain("failure()");
+    expect(report.if).toContain("refs/heads/main");
+    expect(report.env.GH_TOKEN).toBe("${{ secrets.GITHUB_TOKEN }}");
+    expect(report.env.TITLE).toBe("Weekly full test run failed");
+    const script = runsOf("report-failure").join("\n");
+    expect(script).toContain("gh issue list");
+    expect(script).toContain("gh issue comment");
+    expect(script).toContain("gh issue create");
+    expect(script).toContain("actions/runs/${GITHUB_RUN_ID}");
   });
 });
