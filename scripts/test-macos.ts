@@ -15,9 +15,9 @@
  *
  *  0. `bun run build:cli`, so the tests that start packages/cli/dist test this commit (a failed
  *     build stops the gate);
- *  1. every hermetic group (`ci-tests.ts --run idle,pane@1/6,…,pane@6/6,rest --tier <tier>`:
- *     test.yml's idle group and its three `hermetic` runners' slices, in one call), under the Bun
- *     the `hermetic` job pins;
+ *  1. every hermetic group, sliced (`ci-tests.ts --run idle@1/3,…,pane@1/6,…,rest@1/8,…
+ *     --tier <tier>`, `GATE_RUNS`: test.yml's idle shards and pane slices, and `rest` in 8, in
+ *     one call), under the Bun the `hermetic` job pins;
  *  2. the macos-bridge tests and `scripts/*.test.ts`, under the same Bun;
  *  3. the blind hook tests and the Antigravity HTTP client tests, under the Bun the
  *     `blind-hooks` job pins (two blind tests fail on 1.3.10 because of bugs in Bun's test
@@ -46,7 +46,7 @@
  * finds it. The Mac's own magmux is never used or changed. Anything it cannot read or verify
  * stops the gate.
  *
- * Expect a long `--full` run: the pane slices run as seven concurrent processes. A red run on a
+ * Expect a long `--full` run: the hermetic slices run as 17 concurrent processes. A red run on a
  * loaded machine is still red: rerun once the Mac is quiet.
  */
 import { spawn, spawnSync } from "node:child_process";
@@ -74,12 +74,26 @@ const PANE_LAUNCH = join(CLI, "src", "pane", "pane-launch.ts");
 export const HERMETIC_RUNS = "pane@1/6,pane@2/6,pane@3/6,pane@4/6,pane@5/6,pane@6/6,rest";
 
 /**
- * What the gate runs in both tiers: every ci-tests.ts group. `idle` runs on test.yml's Linux
- * runners and not on its macOS ones, so without it here a weekly recovery-contract file would
- * run in no gate a release owner starts. It is one more concurrent process, shorter than `rest`
- * in both tiers, so it adds no wall time.
+ * How many slices the gate cuts each ci-tests.ts group into; every slice is one concurrent
+ * `bun test` process.
+ *
+ * - `idle` runs on test.yml's Linux runners and not on its macOS ones, so without it here a
+ *   weekly recovery-contract file would run in no gate a release owner starts. 3 slices, as
+ *   test.yml's idle shards.
+ * - `pane`: 6 slices, as test.yml's `hermetic` runners.
+ * - `rest`: 8 slices. A local essential run (2026-11-17, load about 45 on an 18-core Mac) took
+ *   432 s for `rest` as one process, against 15-76 s for each pane slice; 8 slices put each near
+ *   54 s, under the longest pane slice, and 3 + 6 + 8 = 17 processes still fit 18 cores.
+ *
+ * The gate keeps its own list: test.yml's macOS runners keep running `rest` whole
+ * (`HERMETIC_RUNS`).
  */
-export const GATE_RUNS = `idle,${HERMETIC_RUNS}`;
+export const GATE_SLICES = { idle: 3, pane: 6, rest: 8 } as const;
+
+/** The gate's `--run` list in both tiers: every slice of every group. */
+export const GATE_RUNS = Object.entries(GATE_SLICES)
+  .flatMap(([group, n]) => Array.from({ length: n }, (_, i) => `${group}@${i + 1}/${n}`))
+  .join(",");
 
 /** ci-tests.ts's tiers: `essential` by default, `full` with `--full`. */
 export type GateTier = "essential" | "full";

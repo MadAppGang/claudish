@@ -80,6 +80,33 @@ describe("tiers", () => {
     }
   });
 
+  test("the gate slices idle in 3, pane in 6 and rest in 8, each slice once", () => {
+    const slicesOf = (group: string, n: number) =>
+      Array.from({ length: n }, (_, i) => `${group}@${i + 1}/${n}`);
+    expect(GATE_RUNS.split(",")).toEqual([
+      ...slicesOf("idle", 3),
+      ...slicesOf("pane", 6),
+      ...slicesOf("rest", 8),
+    ]);
+    for (const plan of [STEPS, ESSENTIAL.flatMap((g) => g.steps)]) {
+      const args = hermeticArgs(plan);
+      expect(args[args.indexOf("--run") + 1]).toBe(GATE_RUNS);
+    }
+  });
+
+  test("the gate's idle slices are test.yml's idle shards", () => {
+    const job = WORKFLOW.slice(WORKFLOW.indexOf("\n  idle:\n"));
+    const shards = job
+      .match(/slice: \[([\d, ]+)\]/)?.[1]
+      ?.split(",")
+      .map((s) => Number(s));
+    const count = job.match(/--run idle@\$\{\{ matrix\.slice \}\}\/(\d+)/)?.[1];
+    expect(shards).toBeDefined();
+    expect(count).toBeDefined();
+    const idle = GATE_RUNS.split(",").filter((spec) => spec.startsWith("idle"));
+    expect(idle).toEqual((shards ?? []).map((i) => `idle@${i}/${count}`));
+  });
+
   test("the blind hook tests and S1 hook loading are weekly; the rest runs in both tiers", () => {
     const names = ESSENTIAL.flatMap((g) => g.steps.map((s) => s.name));
     expect(names).toEqual([
