@@ -6,6 +6,7 @@ import {
   HERMETIC_RUNS,
   NO_ENV_FILE,
   bunPinOf,
+  bunVersionOf,
   compareVersions,
   launchArgv,
   planSteps,
@@ -26,8 +27,38 @@ const STEPS = planSteps({
   root: "/repo",
   hermetic: { version: "1.3.10", exe: "/b/1.3.10/bun" },
   blind: { version: "1.4.0", exe: "/b/1.4.0/bun" },
+  release: { version: "latest", exe: "/b/latest/bun" },
   scriptTests: ["./scripts/a.test.ts"],
 }).flatMap((g) => g.steps);
+
+describe("the release Bun", () => {
+  const RELEASE = readFileSync(
+    join(import.meta.dir, "..", ".github", "workflows", "release.yml"),
+    "utf8"
+  );
+
+  test("bunVersionOf reads an unquoted version such as latest", () => {
+    expect(bunVersionOf("jobs:\n  a:\n    with:\n      bun-version: latest\n", "a")).toBe("latest");
+    expect(bunVersionOf('jobs:\n  a:\n    with:\n      bun-version: "1.2.3"\n', "a")).toBe("1.2.3");
+  });
+
+  test("test.yml's hooks-loading runs the Bun release.yml builds the binaries with", () => {
+    const release = bunVersionOf(RELEASE, "build");
+    expect(release).toBeDefined();
+    expect(bunVersionOf(WORKFLOW, "hooks-loading")).toBe(release as string);
+  });
+
+  test("the s1 hook loading tests run under the release Bun, from the repo root", () => {
+    const s1 = STEPS.find((s) => s.args.includes("packages/cli/src/hooks/s1-probe/"));
+    expect(s1?.cwd).toBe("/repo");
+    expect(s1?.args).toEqual([
+      "/b/latest/bun",
+      NO_ENV_FILE,
+      "test",
+      "packages/cli/src/hooks/s1-probe/",
+    ]);
+  });
+});
 
 describe("the build", () => {
   test("build:cli runs first, under the hermetic Bun, and a failed build stops the gate", () => {

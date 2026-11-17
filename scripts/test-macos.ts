@@ -14,7 +14,9 @@
  *  2. the macos-bridge tests and `scripts/*.test.ts`, under the same Bun;
  *  3. the blind hook tests and the Antigravity HTTP client tests, under the Bun the
  *     `blind-hooks` job pins (two blind tests fail on 1.3.10 because of bugs in Bun's test
- *     client).
+ *     client);
+ *  4. the S1 hook loading tests (`packages/cli/src/hooks/s1-probe/`, test.yml's hooks-loading
+ *     macOS rows) under the Bun release.yml builds the binaries with (`latest`).
  *
  * The Bun versions are READ from test.yml, never copied here: a gate on a different Bun than CI
  * proves something else (pane suites passed on 1.4.0 and failed 118 tests on 1.3.10). Each pinned
@@ -46,24 +48,31 @@ import { findMagmuxCandidates } from "../packages/cli/src/launcher/magmux-binary
 const ROOT = join(import.meta.dir, "..");
 const CLI = join(ROOT, "packages", "cli");
 const WORKFLOW = join(ROOT, ".github", "workflows", "test.yml");
+const RELEASE_WORKFLOW = join(ROOT, ".github", "workflows", "release.yml");
 const MAGMUX_ENV = join(ROOT, ".github", "magmux.env");
 const PANE_LAUNCH = join(CLI, "src", "pane", "pane-launch.ts");
 
 /** The suites of test.yml's three `hermetic` runners. */
 export const HERMETIC_RUNS = "pane@1/6,pane@2/6,pane@3/6,pane@4/6,pane@5/6,pane@6/6,rest";
 
-/** The `bun-version: "x.y.z"` of one job in test.yml, or undefined. */
-export function bunPinOf(workflow: string, job: string): string | undefined {
+/** The first `bun-version:` of one job in a workflow (`latest`, `1.3.10`), or undefined. */
+export function bunVersionOf(workflow: string, job: string): string | undefined {
   const lines = workflow.split(/\r?\n/);
   const start = lines.findIndex((line) => line === `  ${job}:`);
   if (start === -1) return undefined;
   for (const line of lines.slice(start + 1)) {
     // The next key at the jobs' indent ends the job; a comment at that indent does not.
     if (/^ {2}[^\s#]/.test(line)) break;
-    const pin = line.match(/^\s*bun-version:\s*"(\d+\.\d+\.\d+)"\s*$/);
-    if (pin) return pin[1];
+    const version = line.match(/^\s*bun-version:\s*("?)([^"\s#]+)\1\s*(#.*)?$/);
+    if (version) return version[2];
   }
   return undefined;
+}
+
+/** The exact `bun-version: "x.y.z"` one job in test.yml pins, or undefined. */
+export function bunPinOf(workflow: string, job: string): string | undefined {
+  const version = bunVersionOf(workflow, job);
+  return version && /^\d+\.\d+\.\d+$/.test(version) ? version : undefined;
 }
 
 /** -1, 0 or 1 as `a` is older than, equal to or newer than `b` (dotted numbers). */
@@ -119,6 +128,7 @@ export function planSteps(p: {
   root: string;
   hermetic: PlannedBun;
   blind: PlannedBun;
+  release: PlannedBun;
   scriptTests: string[];
 }): StepGroup[] {
   const cli = join(p.root, "packages", "cli");
@@ -182,6 +192,18 @@ export function planSteps(p: {
         },
       ],
     },
+    {
+      bun: p.release,
+      steps: [
+        {
+          // test.yml's hooks-loading macOS rows: a user hook module loads from a dist bundle
+          // and a compiled binary built by the Bun release.yml builds with.
+          name: "S1 hook loading",
+          cwd: p.root,
+          args: [p.release.exe, NO_ENV_FILE, "test", "packages/cli/src/hooks/s1-probe/"],
+        },
+      ],
+    },
   ];
 }
 
@@ -194,24 +216,30 @@ function fail(message: string): never {
  * The executable of `bun@<version>`, fetched by bunx, linked as `bun` into `bun-<version>` under
  * this run's own directory.
  */
-function pinnedBun(version: string, runDir: string): { exe: string; dir: string } {
+function pinnedBun(
+  version: string,
+  runDir: string
+): { exe: string; dir: string; resolved: string } {
   const r = spawnSync(
     "bunx",
-    [`bun@${version}`, NO_ENV_FILE, "-e", "console.log(process.execPath)"],
+    [`bun@${version}`, NO_ENV_FILE, "-e", 'console.log(Bun.version + "\\t" + process.execPath)'],
     {
       cwd: runDir,
       encoding: "utf8",
       env: { ...process.env },
     }
   );
-  const exe = r.stdout?.trim().split("\n").pop() ?? "";
+  const [resolved = "", exe = ""] = (r.stdout?.trim().split("\n").pop() ?? "").split("\t");
   if (r.status !== 0 || !existsSync(exe)) {
     fail(`could not get Bun ${version} with bunx:\n${r.stderr ?? ""}`);
+  }
+  if (/^\d+\.\d+\.\d+$/.test(version) && resolved !== version) {
+    fail(`bunx bun@${version} ran Bun ${resolved}`);
   }
   const dir = join(runDir, `bun-${version}`);
   mkdirSync(dir);
   symlinkSync(exe, join(dir, "bun"));
-  return { exe, dir };
+  return { exe, dir, resolved };
 }
 
 function magmuxVersion(path: string): string | undefined {
@@ -346,13 +374,17 @@ if (import.meta.main) {
   if (!hermeticPin || !blindPin) {
     fail(`no bun-version pin for the hermetic or blind-hooks job in ${WORKFLOW}`);
   }
+  // The Bun the release binaries are built with (`latest`), as test.yml's hooks-loading uses.
+  const releaseBunVersion = bunVersionOf(readFileSync(RELEASE_WORKFLOW, "utf8"), "build");
+  if (!releaseBunVersion) fail(`no bun-version in the build job of ${RELEASE_WORKFLOW}`);
+  const versions = [...new Set([hermeticPin, blindPin, releaseBunVersion])];
   const scriptTests = [...new Bun.Glob("scripts/*.test.ts").scanSync({ cwd: ROOT })]
     .sort()
     .map((f) => `./${f}`);
 
   if (dryRun) {
     // Fetches nothing: the executables are placeholders for what a run would fetch.
-    for (const version of [hermeticPin, blindPin])
+    for (const version of versions)
       console.log(`[test:macos] would fetch bun@${version} with bunx into a new temp directory`);
     console.log("[test:macos] would check magmux on the pane suites' lookup path");
     const placeholder = (version: string) => ({ version, exe: `<bun@${version}>` });
@@ -360,6 +392,7 @@ if (import.meta.main) {
       root: ROOT,
       hermetic: placeholder(hermeticPin),
       blind: placeholder(blindPin),
+      release: placeholder(releaseBunVersion),
       scriptTests,
     });
     for (const { steps } of plan)
@@ -385,22 +418,20 @@ if (import.meta.main) {
   }
 
   const magmux = checkMagmux();
-  const hermeticBun = pinnedBun(hermeticPin, runDir);
-  const blindBun = pinnedBun(blindPin, runDir);
+  const buns = new Map(versions.map((v) => [v, pinnedBun(v, runDir)] as const));
+  const planned = (version: string) => ({ version, exe: buns.get(version)?.exe ?? "" });
   const groups = planSteps({
     root: ROOT,
-    hermetic: { version: hermeticPin, exe: hermeticBun.exe },
-    blind: { version: blindPin, exe: blindBun.exe },
+    hermetic: planned(hermeticPin),
+    blind: planned(blindPin),
+    release: planned(releaseBunVersion),
     scriptTests,
   });
-  const binDirOf = new Map([
-    [hermeticPin, hermeticBun.dir],
-    [blindPin, blindBun.dir],
-  ]);
+  const binDirOf = new Map([...buns].map(([v, bun]) => [v, bun.dir] as const));
 
   console.log(`[test:macos] magmux: ${magmux}`);
-  console.log(`[test:macos] bun ${hermeticPin}: ${hermeticBun.exe}`);
-  console.log(`[test:macos] bun ${blindPin}: ${blindBun.exe}`);
+  for (const [version, bun] of buns)
+    console.log(`[test:macos] bun@${version}: Bun ${bun.resolved}, ${bun.exe}`);
 
   const steps = groups.flatMap(({ bun, steps }) => steps.map((step) => ({ ...step, bun })));
   const results = await runSteps(steps, async (step) => {
