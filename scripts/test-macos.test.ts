@@ -10,7 +10,9 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { discover, groupOf } from "../packages/cli/scripts/ci-tests.ts";
 import {
+  GATE_RUNS,
   HERMETIC_RUNS,
   NO_ENV_FILE,
   bunPinOf,
@@ -67,11 +69,22 @@ describe("tiers", () => {
     ]);
   });
 
+  test("both tiers run every group ci-tests.ts knows, idle included", () => {
+    const groups = new Set(discover().map(groupOf));
+    expect([...groups].sort()).toEqual(["idle", "pane", "rest"]);
+    for (const plan of [STEPS, ESSENTIAL.flatMap((g) => g.steps)]) {
+      const args = hermeticArgs(plan);
+      const runs = args[args.indexOf("--run") + 1] ?? "";
+      const planned = new Set(runs.split(",").map((spec) => spec.split("@")[0]));
+      expect([...planned].sort()).toEqual([...groups].sort());
+    }
+  });
+
   test("the blind hook tests and S1 hook loading are weekly; the rest runs in both tiers", () => {
     const names = ESSENTIAL.flatMap((g) => g.steps.map((s) => s.name));
     expect(names).toEqual([
       "build:cli",
-      `hermetic ${HERMETIC_RUNS}`,
+      `hermetic ${GATE_RUNS}`,
       "macos-bridge tests",
       "script tests",
       "Antigravity HTTP client tests",

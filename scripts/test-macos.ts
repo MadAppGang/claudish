@@ -3,20 +3,21 @@
  * The macOS test gate, run on a Mac before a release tag:
  *
  *   bun run test:macos             # the essential tier, then print a summary
- *   bun run test:macos --full      # every test: what test.yml's dispatched macOS jobs run
+ *   bun run test:macos --full      # every test: test.yml's dispatched jobs, idle included
  *   bun run test:macos --dry-run   # print what a run would fetch and run; fetch and run nothing
  *
  * The default is the essential tier (packages/cli/scripts/test-tiers.json): steps 0-2 with
  * `--tier essential`, and step 3's Antigravity HTTP client tests. The blind hook tests and the S1
  * hook loading tests are hook files outside the hooks category's essential list, so only `--full`
  * runs them, as the weekly macOS run does (scripts/weekly-macos-tests.ts). `--full` runs what
- * test.yml's dispatched macOS jobs run, which no pull request runs:
+ * test.yml's dispatched macOS jobs run, which no pull request runs, and the idle group its Linux
+ * jobs run:
  *
  *  0. `bun run build:cli`, so the tests that start packages/cli/dist test this commit (a failed
  *     build stops the gate);
- *  1. the hermetic pane and rest groups (`ci-tests.ts --run pane@1/6,…,pane@6/6,rest --tier
- *     full`, the three `hermetic` runners' slices in one call), under the Bun the `hermetic` job
- *     pins;
+ *  1. every hermetic group (`ci-tests.ts --run idle,pane@1/6,…,pane@6/6,rest --tier <tier>`:
+ *     test.yml's idle group and its three `hermetic` runners' slices, in one call), under the Bun
+ *     the `hermetic` job pins;
  *  2. the macos-bridge tests and `scripts/*.test.ts`, under the same Bun;
  *  3. the blind hook tests and the Antigravity HTTP client tests, under the Bun the
  *     `blind-hooks` job pins (two blind tests fail on 1.3.10 because of bugs in Bun's test
@@ -71,6 +72,14 @@ const PANE_LAUNCH = join(CLI, "src", "pane", "pane-launch.ts");
 
 /** The suites of test.yml's three `hermetic` runners. */
 export const HERMETIC_RUNS = "pane@1/6,pane@2/6,pane@3/6,pane@4/6,pane@5/6,pane@6/6,rest";
+
+/**
+ * What the gate runs in both tiers: every ci-tests.ts group. `idle` runs on test.yml's Linux
+ * runners and not on its macOS ones, so without it here a weekly recovery-contract file would
+ * run in no gate a release owner starts. It is one more concurrent process, shorter than `rest`
+ * in both tiers, so it adds no wall time.
+ */
+export const GATE_RUNS = `idle,${HERMETIC_RUNS}`;
 
 /** ci-tests.ts's tiers: `essential` by default, `full` with `--full`. */
 export type GateTier = "essential" | "full";
@@ -184,14 +193,14 @@ export function planSteps(p: {
           stopOnFailure: true,
         },
         {
-          name: `hermetic ${HERMETIC_RUNS}`,
+          name: `hermetic ${GATE_RUNS}`,
           cwd: cli,
           args: [
             p.hermetic.exe,
             NO_ENV_FILE,
             "scripts/ci-tests.ts",
             "--run",
-            HERMETIC_RUNS,
+            GATE_RUNS,
             "--tier",
             p.tier,
             "--",

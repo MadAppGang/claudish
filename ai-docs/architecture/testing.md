@@ -79,8 +79,13 @@ heavy. Refresh it from a full-tier junit (the weekly runs upload theirs), and re
 |---|---|---|
 | `test.yml` on pull_request and push | essential (Linux idle slices) | the PR checks |
 | `test.yml` on workflow_dispatch | full (idle slices and the macOS runners) | the run |
-| `bun run test:macos` | essential: `ci-tests.ts --tier essential`, macos-bridge, `scripts/*.test.ts`, the Antigravity client tests | its summary |
-| `bun run test:macos --full` | full: adds the blind hook tests and S1 hook loading | its summary |
+| `bun run test:macos` | essential: `ci-tests.ts --tier essential` over every group (idle, pane, rest), macos-bridge, `scripts/*.test.ts`, the Antigravity client tests | its summary |
+| `bun run test:macos --full` | full: `ci-tests.ts --tier full` over every group, and adds the blind hook tests and S1 hook loading | its summary |
+
+Both local gates run the idle group too, although `test.yml` runs it on Linux: without it a weekly
+`src/recovery-contract/` file would run in no gate a release owner starts. Idle is one more
+concurrent process, shorter than `rest` in both tiers (essential 66 s against 363 s, full 324 s
+against 449 s, measured seconds), so it adds no wall time, and each gate covers its whole tier.
 | `weekly-tests.yml`, Sunday 11:00 UTC (03:00 PST) | full, every Linux-capable test | GitHub mails the owner on a failed scheduled run; the run opens (or comments on) one issue titled "Weekly full test run failed" with its URL |
 | `scripts/weekly-macos-tests.ts` under launchd, Sunday 03:00 local | `test:macos --full` on origin's main | `~/Library/Logs/claudish-weekly-tests/<UTC date>.log`; a macOS notification names the log on failure |
 

@@ -71,7 +71,8 @@ UTC; a failed run mails the owner and opens or updates the issue "Weekly full te
 failed") and `scripts/weekly-macos-tests.ts` under launchd on the owner's Mac (03:00
 local; the log is `~/Library/Logs/claudish-weekly-tests/<UTC date>.log`, and a failure
 shows a notification naming it). A green essential gate says nothing about a weekly file
-changed since the last weekly run: for such a change, run `bun run test:macos --full`.
+changed since the last weekly run: for such a change, run `bun run test:macos --full`,
+which runs every group, the idle group (`src/recovery-contract/`) included.
 `ai-docs/architecture/testing.md` § Test tiers has the list and how to promote a file.
 
 **The version bump is the PR's last commit, and it gets its own green run.** Once the
