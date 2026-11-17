@@ -2,6 +2,17 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.28.1] - 2026-11-17
+
+### Bug Fixes
+
+- retry magmux --version when an exit 0 child sends no exit event *(pane)* ([`dfd9eb0`](https://github.com/MadAppGang/claudish/commit/dfd9eb02635aa4f6677ae9fdba898bf9896acf97))
+
+### Documentation
+
+- stamp the playbook as verified on the 14.28.0 release *(release)* ([`46f2bab`](https://github.com/MadAppGang/claudish/commit/46f2babca5f4bb30c1e8f5e0424981bef89d6c4e))
+- update CHANGELOG.md for v14.28.0([`5cc2ebc`](https://github.com/MadAppGang/claudish/commit/5cc2ebc882e9f39732c3010777e6d3e30507ed3e))
+
 ## [14.28.0] - 2026-11-17
 
 ### Bug Fixes
