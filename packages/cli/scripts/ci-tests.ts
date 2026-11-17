@@ -159,21 +159,30 @@ export function validateTiers(data: TierData, known: string[]): string[] {
     errors.push(`heavySeconds must be a positive number of seconds, not ${data.heavySeconds}`);
   }
   const seen = new Set<string>();
-  for (const c of data.slow ?? []) {
-    if (c.essential.length > MAX_ESSENTIAL_PER_CATEGORY) {
-      errors.push(
-        `category ${c.category} lists ${c.essential.length} essential files; at most ${MAX_ESSENTIAL_PER_CATEGORY}`
-      );
+  for (const c of data.slow ?? []) errors.push(...categoryErrors(c, data, exists, seen));
+  return errors;
+}
+
+function categoryErrors(
+  c: SlowCategory,
+  data: TierData,
+  exists: Set<string>,
+  seen: Set<string>
+): string[] {
+  const errors: string[] = [];
+  if (c.essential.length > MAX_ESSENTIAL_PER_CATEGORY) {
+    errors.push(
+      `category ${c.category} lists ${c.essential.length} essential files; at most ${MAX_ESSENTIAL_PER_CATEGORY}`
+    );
+  }
+  for (const { file, guards } of c.essential) {
+    if (!exists.has(file)) errors.push(`${file} (category ${c.category}) is not a test file`);
+    if (slowCategoryOf(file, data) !== c.category) {
+      errors.push(`${file} is not in category ${c.category} (prefix ${c.prefix})`);
     }
-    for (const { file, guards } of c.essential) {
-      if (!exists.has(file)) errors.push(`${file} (category ${c.category}) is not a test file`);
-      if (slowCategoryOf(file, data) !== c.category) {
-        errors.push(`${file} is not in category ${c.category} (prefix ${c.prefix})`);
-      }
-      if (seen.has(file)) errors.push(`${file} is listed twice`);
-      seen.add(file);
-      if (!guards?.trim()) errors.push(`${file} has no guards text`);
-    }
+    if (seen.has(file)) errors.push(`${file} is listed twice`);
+    seen.add(file);
+    if (!guards?.trim()) errors.push(`${file} has no guards text`);
   }
   return errors;
 }
