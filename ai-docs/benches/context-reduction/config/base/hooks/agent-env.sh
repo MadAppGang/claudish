@@ -24,5 +24,12 @@
   [ -n "${CLAUDISH_CONFIG+set}" ] && config=1
   source=$(cat | grep -o '"source" *: *"[a-z]*"' | grep -o '[a-z]*"$' | tr -d '"')
   echo "agent-env: hook pid $PPID source=${source:-unknown} $label CLAUDISH_CONFIG_present=$config" >>"$launch/launch.log"
+  # The MAGMUX_* variables the agent's shells inherit, so a log shows whether a
+  # command the agent runs can reach madbench's own magmux socket. A path value
+  # is written as is; any other value only as its length.
+  mux=$(env | grep '^MAGMUX' | while IFS='=' read -r k v; do
+    case "$v" in (/*) printf ' %s=%s' "$k" "$v" ;; (*) printf ' %s=<%s chars>' "$k" "${#v}" ;; esac
+  done)
+  echo "agent-env: magmux vars:${mux:- none}" >>"$launch/launch.log"
 } >/dev/null 2>&1
 exit 0
