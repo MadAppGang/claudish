@@ -3,11 +3,12 @@ name: Weekly full tests
 # The FULL tier of every test a Linux runner can run, once a week.
 #
 # Pull requests run the essential tier (packages/cli/scripts/test-tiers.json, ci-tests.ts
-# `--tier essential`): at most three listed files per slow category, whatever their time, and,
-# outside the slow categories only, no file measured at the data file's heavySeconds or more.
-# Everything else runs here, at night, so a weekly test that broke is found within a week rather
-# than at the next release. The macOS suites (pane, rest, the blind
-# hook tests) run in the same tier on the owner's Mac (scripts/weekly-macos-tests.ts).
+# `--tier essential`): at most three listed files per slow category, whatever their time, the
+# pinned files, and, outside the slow categories, no other file measured at the data file's
+# heavySeconds or more. Everything else runs here, at night, so a weekly test that broke is found
+# within a week rather than at the next release. The macOS suites (pane, the macOS-only rest
+# files, the blind hook tests) run on the owner's Mac, one weekly-tier part a night
+# (scripts/weekly-macos-tests.ts).
 #
 # The jobs are test.yml's Linux jobs with `--tier full`, under the same pinned Bun and the same
 # hermetic environment (no API key secrets: see test.yml's header). scripts/test-tier-workflows
@@ -82,6 +83,33 @@ jobs:
           name: junit-weekly-idle-${{ matrix.slice }}
           path: packages/cli/junit-*.xml
 
+  rest:
+    name: hermetic · rest ${{ matrix.slice }}/4 · full
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        slice: [1, 2, 3, 4]
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      CLAUDISH_SKIP_LIVE_E2E: "1"
+      CLAUDISH_DISABLE_CATALOG_WARM: "1"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.10"
+      - run: bun install --frozen-lockfile
+      - name: Tests
+        working-directory: packages/cli
+        run: bun scripts/ci-tests.ts --run rest@${{ matrix.slice }}/4 --tier full -- --reporter=junit '--reporter-outfile=junit-{label}.xml'
+        timeout-minutes: 20
+      - uses: actions/upload-artifact@v5
+        if: always()
+        with:
+          name: junit-weekly-rest-${{ matrix.slice }}
+          path: packages/cli/junit-*.xml
+
   hooks-loading:
     name: hook module loading · ${{ matrix.os }}
     strategy:
@@ -102,7 +130,7 @@ jobs:
 
   report-failure:
     name: open or update the failure issue
-    needs: [scripts, idle, hooks-loading]
+    needs: [scripts, idle, rest, hooks-loading]
     if: failure() && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:

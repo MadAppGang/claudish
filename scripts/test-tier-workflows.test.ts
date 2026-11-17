@@ -92,6 +92,29 @@ describe("weekly-tests.yml", () => {
     expect(runsOf("hooks-loading")).toEqual(["bun test packages/cli/src/hooks/s1-probe/"]);
   });
 
+  test("every Linux ci-tests.ts job of test.yml runs here in the full tier, same slices and Bun", () => {
+    // biome-ignore lint/suspicious/noExplicitAny: a parsed workflow is untyped YAML
+    const prJobs = (Bun.YAML.parse(testYml) as any).jobs as Record<string, any>;
+    const linuxTiered = Object.keys(prJobs).filter(
+      (job) =>
+        String(prJobs[job]["runs-on"]).startsWith("ubuntu") &&
+        ciTestsRuns(jobBlock(testYml, job)).length > 0
+    );
+    expect(linuxTiered).toEqual(["idle", "rest"]);
+    for (const job of linuxTiered) {
+      expect(wf.jobs[job]).toBeDefined();
+      const runs = ciTestsRuns(jobBlock(text, job));
+      expect(runs).toHaveLength(1);
+      const slices = prJobs[job].strategy.matrix.slice as number[];
+      expect(runs[0]).toContain(`--run ${job}@\${{ matrix.slice }}/${slices.length} --tier full`);
+      expect(wf.jobs[job].strategy.matrix.slice).toEqual(slices);
+      expect(bunPinOf(text, job)).toBe(bunPinOf(testYml, job) as string);
+      expect(wf.jobs[job].env.CLAUDISH_SKIP_LIVE_E2E).toBe("1");
+      expect(wf.jobs[job].env.CLAUDISH_DISABLE_CATALOG_WARM).toBe("1");
+      expect(wf.jobs["report-failure"].needs).toContain(job);
+    }
+  });
+
   test("every test job runs with the hermetic environment test.yml sets", () => {
     for (const job of ["scripts", "idle"]) {
       expect(wf.jobs[job].env.CLAUDISH_SKIP_LIVE_E2E).toBe("1");
@@ -103,7 +126,7 @@ describe("weekly-tests.yml", () => {
     expect(wf.permissions).toEqual({ contents: "read" });
     const report = wf.jobs["report-failure"];
     expect(report.permissions).toEqual({ issues: "write" });
-    expect(report.needs).toEqual(["scripts", "idle", "hooks-loading"]);
+    expect(report.needs).toEqual(["scripts", "idle", "rest", "hooks-loading"]);
     expect(report.if).toContain("failure()");
     expect(report.if).toContain("refs/heads/main");
     expect(report.env.GH_TOKEN).toBe("${{ secrets.GITHUB_TOKEN }}");
