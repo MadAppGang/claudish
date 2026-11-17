@@ -237,6 +237,20 @@ export function parseModelSpec(modelSpec: string): ParsedModel {
   return parseModelSpecWithoutMarkers(modelSpec);
 }
 
+/**
+ * Split a `:N` request cap off `model` when `provider` is local. Anywhere else a
+ * trailing `:<digits>` belongs to the model id (an Ollama Cloud wire id such as
+ * `deepseek-v4-pro:0813`), and the launch refuses a `:N` no provider honours.
+ */
+function splitLocalConcurrency(
+  provider: string,
+  model: string
+): { model: string; concurrency?: number } {
+  const match = LOCAL_PROVIDERS.has(provider) ? model.match(/^(.+):(\d+)$/) : null;
+  if (!match) return { model };
+  return { model: match[1] as string, concurrency: Number.parseInt(match[2] as string, 10) };
+}
+
 function parseModelSpecWithoutMarkers(modelSpec: string): ParsedModel {
   const original = modelSpec;
 
@@ -263,22 +277,13 @@ function parseModelSpecWithoutMarkers(modelSpec: string): ParsedModel {
   const atMatch = modelSpec.match(/^([^@]+)@(.+)$/);
   if (atMatch) {
     const providerPart = atMatch[1].toLowerCase();
-    let modelPart = atMatch[2];
-    let concurrency: number | undefined;
-
-    // Check for concurrency suffix on local providers
-    const concurrencyMatch = modelPart.match(/^(.+):(\d+)$/);
-    if (concurrencyMatch) {
-      modelPart = concurrencyMatch[1];
-      concurrency = Number.parseInt(concurrencyMatch[2], 10);
-    }
-
     // Resolve provider shortcut
     const provider = PROVIDER_SHORTCUTS[providerPart] || providerPart;
+    const { model, concurrency } = splitLocalConcurrency(provider, atMatch[2]);
 
     return {
       provider,
-      model: modelPart,
+      model,
       original,
       concurrency,
       isLegacySyntax: false,
@@ -290,18 +295,10 @@ function parseModelSpecWithoutMarkers(modelSpec: string): ParsedModel {
   const lowerSpec = modelSpec.toLowerCase();
   for (const { prefix, provider, stripPrefix } of LEGACY_PREFIX_PATTERNS) {
     if (lowerSpec.startsWith(prefix)) {
-      const model = stripPrefix ? modelSpec.slice(prefix.length) : modelSpec;
-
-      // Check for concurrency suffix on local providers
-      let concurrency: number | undefined;
-      let modelName = model;
-      if (LOCAL_PROVIDERS.has(provider)) {
-        const concurrencyMatch = model.match(/^(.+):(\d+)$/);
-        if (concurrencyMatch) {
-          modelName = concurrencyMatch[1];
-          concurrency = Number.parseInt(concurrencyMatch[2], 10);
-        }
-      }
+      const { model: modelName, concurrency } = splitLocalConcurrency(
+        provider,
+        stripPrefix ? modelSpec.slice(prefix.length) : modelSpec
+      );
 
       return {
         provider,
