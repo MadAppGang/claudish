@@ -22,7 +22,7 @@ import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { existsSync, mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
 import { type Socket, connect } from "node:net";
-import { tmpdir } from "node:os";
+import { platform, tmpdir } from "node:os";
 import { join } from "node:path";
 import { findMagmuxBinaryOrNull } from "./launcher/magmux-binary.js";
 
