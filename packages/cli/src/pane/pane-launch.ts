@@ -424,9 +424,9 @@ export function buildClaudishPaneArgv(
     "--quiet",
     "--session-id",
     sessionUuid,
-    // The child Reads its turn files there and does nothing else in it.
-    "--allowedTools",
-    ...readAllowRules(turnDir),
+    // The child Reads its turn files there and does nothing else in it. One flag
+    // per rule: claudish takes one value per flag, and a second value is a prompt.
+    ...readAllowRules(turnDir).flatMap((rule) => ["--allowedTools", rule]),
     ...callerFlags,
   ];
 }

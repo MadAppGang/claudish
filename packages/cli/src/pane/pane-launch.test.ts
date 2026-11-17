@@ -103,10 +103,16 @@ describe("launcher and shim", () => {
   });
 
   test("argv is -i --model X -y --quiet --session-id U, a Read rule on the turn folder, then the caller flags", () => {
-    // /tmp is a symlink on macOS, so the turn folder has two spellings.
-    const turnDir = mkdtempSync(join(tmpdir(), "launch-"));
-    dirs.push(turnDir);
+    // A folder under a symlink has two spellings, so two rules, as /tmp has on macOS.
+    const real = mkdtempSync(join(tmpdir(), "real-"));
+    dirs.push(real);
+    mkdirSync(join(real, "target"));
+    symlinkSync(join(real, "target"), join(real, "link"));
+    const turnDir = join(real, "link");
+    const rules = readAllowRules(turnDir);
+    expect(rules).toHaveLength(2);
     const argv = buildClaudishPaneArgv("m", "u", turnDir, ["--agent", "x"]);
+    // claudish takes one value per flag, so each rule has its own --allowedTools.
     expect(argv).toEqual([
       "-i",
       "--model",
@@ -116,7 +122,9 @@ describe("launcher and shim", () => {
       "--session-id",
       "u",
       "--allowedTools",
-      ...readAllowRules(turnDir),
+      rules[0] as string,
+      "--allowedTools",
+      rules[1] as string,
       "--agent",
       "x",
     ]);
