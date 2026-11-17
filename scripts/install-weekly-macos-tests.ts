@@ -35,6 +35,7 @@ import {
   REPO_URL,
   type WeeklyArgs,
   cloneCommands,
+  cloneReady,
   parseWeeklyArgs,
   resolveHome,
   weeklyPaths,
@@ -108,8 +109,13 @@ export function agentPath(bun: string): string {
     .join(":");
 }
 
-function execInherit(cmd: Command): number {
-  const r = spawnSync(cmd.argv[0] as string, cmd.argv.slice(1), { cwd: cmd.cwd, stdio: "inherit" });
+/** Runs one command on this terminal, with the install's home as HOME, as the nightly run does. */
+function execInherit(cmd: Command, home: string): number {
+  const r = spawnSync(cmd.argv[0] as string, cmd.argv.slice(1), {
+    cwd: cmd.cwd,
+    stdio: "inherit",
+    env: { ...process.env, HOME: home },
+  });
   return r.status ?? 1;
 }
 
@@ -122,13 +128,13 @@ export function install(p: {
   repoUrl: string;
   exec?: (cmd: Command) => number;
 }): InstallResult {
-  const exec = p.exec ?? execInherit;
+  const exec = p.exec ?? ((cmd: Command) => execInherit(cmd, p.home));
   const paths = weeklyPaths(p.home);
   mkdirSync(paths.cacheDir, { recursive: true });
   mkdirSync(paths.logDir, { recursive: true });
   // An existing clone is brought to origin's main first: a run refused before the merge left a
   // clone without the weekly script, and only an update can give it one.
-  const cloned = existsSync(join(paths.repoDir, ".git"));
+  const cloned = cloneReady(paths);
   for (const cmd of cloneCommands({ paths, repoUrl: p.repoUrl, cloned })) {
     if (exec(cmd) !== 0) {
       return {
@@ -158,7 +164,7 @@ export function install(p: {
 }
 
 export function uninstall(p: { home: string; uid: number; exec?: (cmd: Command) => number }): void {
-  const exec = p.exec ?? execInherit;
+  const exec = p.exec ?? ((cmd: Command) => execInherit(cmd, p.home));
   exec({ name: "bootout", cwd: p.home, argv: ["launchctl", "bootout", `gui/${p.uid}/${LABEL}`] });
   rmSync(plistPathFor(p.home), { force: true });
 }

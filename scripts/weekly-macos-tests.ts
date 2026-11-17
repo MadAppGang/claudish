@@ -12,9 +12,10 @@
  * command runs with it as HOME.
  *
  * The weekly tier (every hermetic file the essential tier leaves out) is cut into
- * `NIGHTLY_PARTS` parts; each night runs one (`bun run test:macos --part <k>/7`), the part chosen
- * by the UTC date (`partOfDate`), so every test runs once a week. `--part <k>` runs part k now:
- * the bootstrap runs the seven parts by hand, one after another, never two at once.
+ * `NIGHTLY_PARTS` parts; each night runs one (`bun run test:macos --part <k>/7`): the part with
+ * no result, else the one whose result is oldest (`nextPart`), so any 7 runs run every part once,
+ * whatever time the Mac wakes. `--part <k>` runs part k now: the bootstrap runs the seven parts by
+ * hand, one after another, never two at once.
  *
  * It works in a clone of its own, `<home>/Library/Caches/claudish-weekly-tests/repo`: cloned on
  * the first run, then `git fetch origin main` and `git reset --hard origin/main` inside that clone
@@ -36,10 +37,12 @@ import { spawnSync } from "node:child_process";
 import {
   closeSync,
   existsSync,
+  fstatSync,
   mkdirSync,
   openSync,
   readFileSync,
   readdirSync,
+  rmSync,
   writeFileSync,
   writeSync,
 } from "node:fs";
@@ -79,9 +82,26 @@ export function logPathFor(logDir: string, now: Date, part: number): string {
   return join(logDir, `${utcDate(now)}-part${part}.log`);
 }
 
-/** The part a night runs: consecutive UTC days take parts 1..n in turn. */
-export function partOfDate(now: Date, n: number = NIGHTLY_PARTS): number {
-  return (Math.floor(now.getTime() / DAY_MS) % n) + 1;
+/**
+ * The part a run takes: the lowest part with no result of this part count, else the part whose
+ * result is oldest (a tie takes the lowest part). It reads the results, never the clock, so a Mac
+ * that sleeps through a night, wakes late or changes time zone still runs every part once in any
+ * 7 runs. A red part is not run again sooner: its RED marker goes to triage.
+ */
+export function nextPart(results: PartResult[], n: number = NIGHTLY_PARTS): number {
+  let oldest = 1;
+  let oldestTime = Number.POSITIVE_INFINITY;
+  for (let k = 1; k <= n; k++) {
+    const r = results.find((x) => x.part === k && x.n === n);
+    if (!r) return k;
+    const t = Date.parse(r.date);
+    const time = Number.isNaN(t) ? Number.NEGATIVE_INFINITY : t;
+    if (time < oldestTime) {
+      oldest = k;
+      oldestTime = time;
+    }
+  }
+  return oldest;
 }
 
 export interface Command {
@@ -115,6 +135,17 @@ export function cloneCommands(p: {
           argv: ["git", "clone", "--branch", "main", p.repoUrl, repo],
         },
       ];
+}
+
+/**
+ * Whether the dedicated clone exists. A clone directory with no `.git`, left by a clone that was
+ * killed, is removed first: `git clone` refuses a non-empty directory, so it would fail every
+ * later run. Only the dedicated clone under the cache directory is ever removed.
+ */
+export function cloneReady(paths: WeeklyPaths): boolean {
+  if (existsSync(join(paths.repoDir, ".git"))) return true;
+  rmSync(paths.repoDir, { recursive: true, force: true });
+  return false;
 }
 
 /** The clone (first run only), its update to origin's main, the install and one part. */
@@ -271,9 +302,13 @@ function notifyMac(argv: string[]): void {
 }
 
 /** The clone's HEAD, or null when there is no clone or git fails. */
-function gitHead(repoDir: string): string | null {
+function gitHead(repoDir: string, home: string): string | null {
   if (!existsSync(join(repoDir, ".git"))) return null;
-  const r = spawnSync("git", ["rev-parse", "HEAD"], { cwd: repoDir, encoding: "utf8" });
+  const r = spawnSync("git", ["rev-parse", "HEAD"], {
+    cwd: repoDir,
+    encoding: "utf8",
+    env: { ...process.env, HOME: home },
+  });
   return r.status === 0 ? r.stdout.trim() || null : null;
 }
 
@@ -307,10 +342,14 @@ function runSteps(
   return true;
 }
 
-/** The failing tests named in the log; a log that cannot be read gives none and its error. */
-function readFailing(logPath: string): { failing: string[]; logError?: string } {
+/**
+ * The failing tests named in the log from byte `from` on, the bytes this run wrote: the log of
+ * one part and day is appended to by every run of it that day. A log that cannot be read gives
+ * none and its error.
+ */
+function readFailing(logPath: string, from: number): { failing: string[]; logError?: string } {
   try {
-    return { failing: failingTests(readFileSync(logPath, "utf8")) };
+    return { failing: failingTests(readFileSync(logPath).subarray(from).toString("utf8")) };
   } catch (e) {
     return { failing: [], logError: errorText(e) };
   }
@@ -329,17 +368,18 @@ export async function runWeekly(opts: {
 }): Promise<number> {
   const exec = opts.exec ?? execToLog;
   const notify = opts.notify ?? notifyMac;
-  const revParse = opts.revParse ?? gitHead;
-  const part = opts.part ?? partOfDate(opts.now);
+  const revParse = opts.revParse ?? ((dir: string) => gitHead(dir, opts.home));
+  const part = opts.part ?? nextPart(readPartResults(weeklyPaths(opts.home).logDir));
   const paths = weeklyPaths(opts.home);
   mkdirSync(paths.cacheDir, { recursive: true });
   mkdirSync(paths.logDir, { recursive: true });
   const logPath = logPathFor(paths.logDir, opts.now, part);
   const fd = openSync(logPath, "a");
+  const logStart = fstatSync(fd).size;
   const say = (line: string) => writeSync(fd, `[nightly] ${line}\n`);
   let pass = false;
   try {
-    const cloned = existsSync(join(paths.repoDir, ".git"));
+    const cloned = cloneReady(paths);
     const commands = weeklyCommands({
       paths,
       repoUrl: opts.repoUrl,
@@ -368,7 +408,7 @@ export async function runWeekly(opts: {
     date: result.date,
     part: `${part}/${NIGHTLY_PARTS}`,
     commit,
-    ...readFailing(logPath),
+    ...readFailing(logPath, logStart),
     report: logPath,
   };
   writeFileSync(marker, `${JSON.stringify(red, null, 2)}\n`);
@@ -408,6 +448,9 @@ export function parseWeeklyArgs(argv: string[], o: { uninstall: boolean }): Week
       throw new Error(`unknown argument ${arg}; usage: ${usage}`);
     }
     i += taken;
+  }
+  if (out.check && out.part !== undefined) {
+    throw new Error("--check and --part cannot be used together: --check reads every part");
   }
   return out;
 }
@@ -492,7 +535,7 @@ if (import.meta.main) {
     );
     process.exit(verdict.ok ? 0 : 1);
   }
-  const part = args.part ?? partOfDate(now);
+  const part = args.part ?? nextPart(readPartResults(logDir));
   const code = await runWeekly({
     home,
     now,

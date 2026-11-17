@@ -27,9 +27,9 @@ import {
   execToLog,
   failingTests,
   logPathFor,
+  nextPart,
   notificationArgv,
   parseWeeklyArgs,
-  partOfDate,
   readPartResults,
   resolveHome,
   runWeekly,
@@ -63,13 +63,61 @@ describe("weeklyPaths and logPathFor", () => {
   });
 });
 
-describe("partOfDate", () => {
-  test("seven consecutive UTC days take parts 1 to 7 once each, then repeat", () => {
-    const day = (i: number) => new Date(Date.UTC(2026, 10, 16 + i, 2));
-    const week = Array.from({ length: 7 }, (_, i) => partOfDate(day(i)));
-    expect([...week].sort()).toEqual([1, 2, 3, 4, 5, 6, 7]);
-    expect(partOfDate(day(7))).toBe(week[0] as number);
+describe("nextPart", () => {
+  const result = (part: number, date: string, n = 7): PartResult => ({
+    part,
+    n,
+    date,
+    commit: "abc",
+    pass: true,
+    log: "/l",
+  });
+
+  test("with no results, part 1 runs first", () => {
+    expect(nextPart([])).toBe(1);
     expect(NIGHTLY_PARTS).toBe(7);
+  });
+
+  test("a part with no result runs before any part that has one", () => {
+    const results = [1, 3, 4, 5, 6, 7].map((k) => result(k, "2026-11-01T00:00:00Z"));
+    expect(nextPart(results)).toBe(2);
+  });
+
+  test("a result from another part count does not count as a run", () => {
+    const results = [1, 2, 3, 4, 5, 6, 7].map((k) => result(k, `2026-11-1${k}T00:00:00Z`));
+    results[4] = result(5, "2026-11-19T00:00:00Z", 8);
+    expect(nextPart(results)).toBe(5);
+  });
+
+  test("when every part has a result, the oldest runs; a tie takes the lowest part", () => {
+    const results = [1, 2, 3, 4, 5, 6, 7].map((k) => result(k, `2026-11-1${k}T00:00:00Z`));
+    results[3] = result(4, "2026-11-01T00:00:00Z");
+    expect(nextPart(results)).toBe(4);
+    const tied = [1, 2, 3, 4, 5, 6, 7].map((k) => result(k, "2026-11-10T00:00:00Z"));
+    expect(nextPart(tied)).toBe(1);
+  });
+
+  test("any 7 runs in a row run every part once, whatever the wall clock does", () => {
+    // Runs at irregular times: two on one UTC day, a skipped day, a clock set back.
+    const times = [
+      "2026-11-16T16:00:00Z",
+      "2026-11-17T00:15:00Z",
+      "2026-11-17T16:00:00Z",
+      "2026-11-19T16:00:00Z",
+      "2026-11-19T15:00:00Z",
+      "2026-11-20T16:00:00Z",
+      "2026-11-21T16:00:00Z",
+    ];
+    const results: PartResult[] = [];
+    const ran: number[] = [];
+    for (const t of times) {
+      const k = nextPart(results);
+      ran.push(k);
+      const i = results.findIndex((r) => r.part === k);
+      if (i >= 0) results.splice(i, 1);
+      results.push(result(k, t));
+    }
+    expect([...ran].sort()).toEqual([1, 2, 3, 4, 5, 6, 7]);
   });
 });
 
@@ -261,6 +309,48 @@ describe("runWeekly", () => {
       log: logPath,
     });
     expect(readdirSync(logs(home)).filter((f) => f.startsWith("RED-"))).toEqual([]);
+  });
+
+  test("with no part given, the run takes the part nextPart picks from the part results", async () => {
+    const home = tempHome();
+    mkdirSync(logs(home), { recursive: true });
+    for (const k of [1, 2, 4, 5, 6, 7]) {
+      const r: PartResult = {
+        part: k,
+        n: 7,
+        date: "2026-11-21T03:00:00.000Z",
+        commit: "abc",
+        pass: true,
+        log: "/l",
+      };
+      writeFileSync(join(logs(home), `part${k}.json`), JSON.stringify(r));
+    }
+    const r = recorder();
+    await runWeekly({ home, now, repoUrl: REPO_URL, bun: "/bin/bun", ...r });
+    expect(r.ran.at(-1)?.argv.slice(-3)).toEqual(["test:macos", "--part", "3/7"]);
+  });
+
+  test("a clone directory with no .git, left by a killed clone, is removed and cloned again", async () => {
+    const home = tempHome();
+    const { repoDir } = weeklyPaths(home);
+    mkdirSync(repoDir, { recursive: true });
+    writeFileSync(join(repoDir, "half-written"), "x");
+    const r = recorder();
+    await run(home, r);
+    expect(r.ran[0]?.name).toBe("clone");
+    expect(existsSync(join(repoDir, "half-written"))).toBe(false);
+  });
+
+  test("the RED marker names only this run's failures, not an earlier run's on the same day", async () => {
+    const home = tempHome();
+    mkdirSync(logs(home), { recursive: true });
+    writeFileSync(
+      join(logs(home), "2026-11-22-part3.log"),
+      "(fail) an earlier run's failure [1.00ms]\n"
+    );
+    await run(home, recorder(testStep));
+    const marker = JSON.parse(readFileSync(join(logs(home), "RED-2026-11-22-part3.json"), "utf8"));
+    expect(marker.failing).toEqual(["pane > a slot settles"]);
   });
 
   test("an existing clone is updated, not cloned again", async () => {
@@ -543,6 +633,9 @@ describe("arguments and home", () => {
   test("the nightly run takes --part <k> and --check; the installer takes neither", () => {
     expect(parseWeeklyArgs(["--part", "5"], { uninstall: false })).toEqual({ part: 5 });
     expect(parseWeeklyArgs(["--check"], { uninstall: false })).toEqual({ check: true });
+    expect(() => parseWeeklyArgs(["--part", "3", "--check"], { uninstall: false })).toThrow(
+      "--check and --part"
+    );
     for (const bad of ["0", "8", "x", "2/7"]) {
       expect(() => parseWeeklyArgs(["--part", bad], { uninstall: false })).toThrow("--part");
     }
