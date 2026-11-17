@@ -38,11 +38,13 @@ import {
   closeSync,
   existsSync,
   fstatSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
+  readSync,
   readdirSync,
-  rmSync,
+  renameSync,
   writeFileSync,
   writeSync,
 } from "node:fs";
@@ -84,18 +86,21 @@ export function logPathFor(logDir: string, now: Date, part: number): string {
 
 /**
  * The part a run takes: the lowest part with no result of this part count, else the part whose
- * result is oldest (a tie takes the lowest part). It reads the results, never the clock, so a Mac
- * that sleeps through a night, wakes late or changes time zone still runs every part once in any
- * 7 runs. A red part is not run again sooner: its RED marker goes to triage.
+ * result is oldest (a tie takes the lowest part). It orders the results by their dates, not by
+ * the day the run falls on, so a Mac that sleeps through a night, wakes late or changes time zone
+ * still runs every part once in any 7 runs. A date after `now` or one that does not parse counts
+ * as oldest: after the clock is set back, the parts that ran while it was ahead are run again
+ * first instead of waiting for the clock to catch up. A red part is not run again sooner: its
+ * RED marker goes to triage.
  */
-export function nextPart(results: PartResult[], n: number = NIGHTLY_PARTS): number {
+export function nextPart(results: PartResult[], now: Date, n: number = NIGHTLY_PARTS): number {
   let oldest = 1;
   let oldestTime = Number.POSITIVE_INFINITY;
   for (let k = 1; k <= n; k++) {
     const r = results.find((x) => x.part === k && x.n === n);
     if (!r) return k;
     const t = Date.parse(r.date);
-    const time = Number.isNaN(t) ? Number.NEGATIVE_INFINITY : t;
+    const time = Number.isNaN(t) || t > now.getTime() ? Number.NEGATIVE_INFINITY : t;
     if (time < oldestTime) {
       oldest = k;
       oldestTime = time;
@@ -139,12 +144,20 @@ export function cloneCommands(p: {
 
 /**
  * Whether the dedicated clone exists. A clone directory with no `.git`, left by a clone that was
- * killed, is removed first: `git clone` refuses a non-empty directory, so it would fail every
- * later run. Only the dedicated clone under the cache directory is ever removed.
+ * killed, is renamed to `repo.broken-<ms>` beside it: `git clone` refuses a non-empty directory,
+ * so it would fail every later run. A rename deletes nothing, whatever the path resolves to, so
+ * a symlinked cache directory cannot turn this into a deletion elsewhere. A throw here is a red
+ * run (`runWeekly`) or a refused install.
  */
-export function cloneReady(paths: WeeklyPaths): boolean {
+export function cloneReady(paths: WeeklyPaths, nowMs: number = Date.now()): boolean {
   if (existsSync(join(paths.repoDir, ".git"))) return true;
-  rmSync(paths.repoDir, { recursive: true, force: true });
+  let present = true;
+  try {
+    lstatSync(paths.repoDir);
+  } catch {
+    present = false;
+  }
+  if (present) renameSync(paths.repoDir, `${paths.repoDir}.broken-${nowMs}`);
   return false;
 }
 
@@ -343,15 +356,62 @@ function runSteps(
 }
 
 /**
- * The failing tests named in the log from byte `from` on, the bytes this run wrote: the log of
- * one part and day is appended to by every run of it that day. A log that cannot be read gives
- * none and its error.
+ * The failing tests this run wrote: the bytes of the open log from `from` on. The log of one part
+ * and day is appended to by every run of it that day, so `from` is its size when this run opened
+ * it. It reads through `fd`, the file this run wrote to, so a log renamed or replaced meanwhile
+ * changes nothing. A log that shrank below `from` is read from its start, and `logError` says so.
+ * A read that fails gives no names and its error.
  */
-function readFailing(logPath: string, from: number): { failing: string[]; logError?: string } {
+function readFailing(fd: number, from: number): { failing: string[]; logError?: string } {
   try {
-    return { failing: failingTests(readFileSync(logPath).subarray(from).toString("utf8")) };
+    const size = fstatSync(fd).size;
+    const start = size < from ? 0 : from;
+    const buf = Buffer.alloc(size - start);
+    let got = 0;
+    while (got < buf.length) {
+      const n = readSync(fd, buf, got, buf.length - got, start + got);
+      if (n === 0) break;
+      got += n;
+    }
+    const failing = failingTests(buf.subarray(0, got).toString("utf8"));
+    if (start === from) return { failing };
+    return { failing, logError: `the log shrank during the run (${from} → ${size} bytes)` };
   } catch (e) {
     return { failing: [], logError: errorText(e) };
+  }
+}
+
+/**
+ * Prepares the clone and runs the part's steps. Anything that throws, the preparation included,
+ * is a red run, so the result, the RED marker and the notification are still written.
+ */
+function runPart(p: {
+  paths: WeeklyPaths;
+  part: number;
+  opts: { now: Date; repoUrl: string; bun: string };
+  say: (line: string) => void;
+  exec: (cmd: Command) => number;
+}): boolean {
+  try {
+    const cloned = cloneReady(p.paths, p.opts.now.getTime());
+    const commands = weeklyCommands({
+      paths: p.paths,
+      repoUrl: p.opts.repoUrl,
+      cloned,
+      bun: p.opts.bun,
+      part: p.part,
+    });
+    p.say(
+      `start ${p.opts.now.toISOString()} part ${p.part}/${NIGHTLY_PARTS} in ${p.paths.repoDir}`
+    );
+    return runSteps(commands, p.exec, p.say);
+  } catch (e) {
+    try {
+      p.say(`FAIL preparing the run: ${errorText(e)}`);
+    } catch {
+      // The log itself failed; the result and the marker still record the red run.
+    }
+    return false;
   }
 }
 
@@ -369,26 +429,20 @@ export async function runWeekly(opts: {
   const exec = opts.exec ?? execToLog;
   const notify = opts.notify ?? notifyMac;
   const revParse = opts.revParse ?? ((dir: string) => gitHead(dir, opts.home));
-  const part = opts.part ?? nextPart(readPartResults(weeklyPaths(opts.home).logDir));
+  const part = opts.part ?? nextPart(readPartResults(weeklyPaths(opts.home).logDir), opts.now);
   const paths = weeklyPaths(opts.home);
   mkdirSync(paths.cacheDir, { recursive: true });
   mkdirSync(paths.logDir, { recursive: true });
   const logPath = logPathFor(paths.logDir, opts.now, part);
-  const fd = openSync(logPath, "a");
+  // a+: appended to like any log, and read back through this descriptor for the RED marker.
+  const fd = openSync(logPath, "a+");
   const logStart = fstatSync(fd).size;
   const say = (line: string) => writeSync(fd, `[nightly] ${line}\n`);
   let pass = false;
+  let failed: { failing: string[]; logError?: string } = { failing: [] };
   try {
-    const cloned = cloneReady(paths);
-    const commands = weeklyCommands({
-      paths,
-      repoUrl: opts.repoUrl,
-      cloned,
-      bun: opts.bun,
-      part,
-    });
-    say(`start ${opts.now.toISOString()} part ${part}/${NIGHTLY_PARTS} in ${paths.repoDir}`);
-    pass = runSteps(commands, (cmd) => exec(cmd, fd, opts.home), say);
+    pass = runPart({ paths, part, opts, say, exec: (cmd) => exec(cmd, fd, opts.home) });
+    if (!pass) failed = readFailing(fd, logStart);
   } finally {
     closeSync(fd);
   }
@@ -408,7 +462,7 @@ export async function runWeekly(opts: {
     date: result.date,
     part: `${part}/${NIGHTLY_PARTS}`,
     commit,
-    ...readFailing(logPath, logStart),
+    ...failed,
     report: logPath,
   };
   writeFileSync(marker, `${JSON.stringify(red, null, 2)}\n`);
@@ -535,7 +589,7 @@ if (import.meta.main) {
     );
     process.exit(verdict.ok ? 0 : 1);
   }
-  const part = args.part ?? nextPart(readPartResults(logDir));
+  const part = args.part ?? nextPart(readPartResults(logDir), now);
   const code = await runWeekly({
     home,
     now,

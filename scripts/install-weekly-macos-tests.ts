@@ -21,7 +21,8 @@
  * main's own version of it.
  *
  * A Mac asleep at 03:00 runs the job when it next wakes (launchd's StartCalendarInterval); a
- * Mac that is off skips that night, and its part waits a week unless it is run by hand
+ * Mac that is off skips that night, which delays the rotation by one run: each run takes the
+ * part with no result or the oldest result (`nextPart`). A part can also be run by hand
  * (`bun scripts/weekly-macos-tests.ts --part <k>`).
  *
  * Uninstall unloads the agent and removes the plist. The clone and the logs stay: remove

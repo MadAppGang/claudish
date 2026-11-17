@@ -24,6 +24,28 @@ function ciTestsRuns(block: string): string[] {
   return block.split("\n").filter((line) => line.includes("scripts/ci-tests.ts --run"));
 }
 
+/**
+ * The jobs of a workflow that run `ci-tests.ts --run` on a Linux runner. A `runs-on` of
+ * `${{ matrix.<key> }}` is resolved through the job's matrix: the job counts when any value is
+ * an Ubuntu runner.
+ */
+function linuxTieredJobs(workflow: string): string[] {
+  // biome-ignore lint/suspicious/noExplicitAny: a parsed workflow is untyped YAML
+  const jobs = (Bun.YAML.parse(workflow) as any).jobs as Record<string, any>;
+  const runners = (job: string): string[] => {
+    const runsOn = String(jobs[job]["runs-on"]);
+    const key = /^\$\{\{\s*matrix\.([\w-]+)\s*\}\}$/.exec(runsOn)?.[1];
+    if (!key) return [runsOn];
+    const values = jobs[job].strategy?.matrix?.[key];
+    return Array.isArray(values) ? values.map(String) : [runsOn];
+  };
+  return Object.keys(jobs).filter(
+    (job) =>
+      runners(job).some((r) => r.startsWith("ubuntu")) &&
+      ciTestsRuns(jobBlock(workflow, job)).length > 0
+  );
+}
+
 describe("test.yml", () => {
   const yml = read("test.yml");
 
@@ -92,14 +114,36 @@ describe("weekly-tests.yml", () => {
     expect(runsOf("hooks-loading")).toEqual(["bun test packages/cli/src/hooks/s1-probe/"]);
   });
 
+  test("Linux tiered jobs are found whether runs-on names the runner or a matrix key", () => {
+    const yml = [
+      "jobs:",
+      "  plain:",
+      "    runs-on: ubuntu-latest",
+      "    steps:",
+      "      - run: bun scripts/ci-tests.ts --run idle@1/3 --tier essential",
+      "  matrixed:",
+      "    runs-on: ${{ matrix.os }}",
+      "    strategy:",
+      "      matrix:",
+      "        os: [ubuntu-latest, ubuntu-24.04-arm]",
+      "    steps:",
+      "      - run: bun scripts/ci-tests.ts --run rest@1/4 --tier essential",
+      "  mac:",
+      "    runs-on: macos-15",
+      "    steps:",
+      "      - run: bun scripts/ci-tests.ts --run pane@1/6 --tier full",
+      "  untiered:",
+      "    runs-on: ubuntu-latest",
+      "    steps:",
+      "      - run: bun test ./scripts/*.test.ts",
+    ].join("\n");
+    expect(linuxTieredJobs(yml)).toEqual(["plain", "matrixed"]);
+  });
+
   test("every Linux ci-tests.ts job of test.yml runs here in the full tier, same slices and Bun", () => {
     // biome-ignore lint/suspicious/noExplicitAny: a parsed workflow is untyped YAML
     const prJobs = (Bun.YAML.parse(testYml) as any).jobs as Record<string, any>;
-    const linuxTiered = Object.keys(prJobs).filter(
-      (job) =>
-        String(prJobs[job]["runs-on"]).startsWith("ubuntu") &&
-        ciTestsRuns(jobBlock(testYml, job)).length > 0
-    );
+    const linuxTiered = linuxTieredJobs(testYml);
     expect(linuxTiered).toEqual(["idle", "rest"]);
     for (const job of linuxTiered) {
       expect(wf.jobs[job]).toBeDefined();

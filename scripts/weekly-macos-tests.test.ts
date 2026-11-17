@@ -7,12 +7,15 @@ import {
   chmodSync,
   closeSync,
   existsSync,
+  ftruncateSync,
   mkdirSync,
   mkdtempSync,
   openSync,
   readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -64,6 +67,7 @@ describe("weeklyPaths and logPathFor", () => {
 });
 
 describe("nextPart", () => {
+  const NOW = new Date("2026-11-30T00:00:00Z");
   const result = (part: number, date: string, n = 7): PartResult => ({
     part,
     n,
@@ -74,27 +78,27 @@ describe("nextPart", () => {
   });
 
   test("with no results, part 1 runs first", () => {
-    expect(nextPart([])).toBe(1);
+    expect(nextPart([], NOW)).toBe(1);
     expect(NIGHTLY_PARTS).toBe(7);
   });
 
   test("a part with no result runs before any part that has one", () => {
     const results = [1, 3, 4, 5, 6, 7].map((k) => result(k, "2026-11-01T00:00:00Z"));
-    expect(nextPart(results)).toBe(2);
+    expect(nextPart(results, NOW)).toBe(2);
   });
 
   test("a result from another part count does not count as a run", () => {
     const results = [1, 2, 3, 4, 5, 6, 7].map((k) => result(k, `2026-11-1${k}T00:00:00Z`));
     results[4] = result(5, "2026-11-19T00:00:00Z", 8);
-    expect(nextPart(results)).toBe(5);
+    expect(nextPart(results, NOW)).toBe(5);
   });
 
   test("when every part has a result, the oldest runs; a tie takes the lowest part", () => {
     const results = [1, 2, 3, 4, 5, 6, 7].map((k) => result(k, `2026-11-1${k}T00:00:00Z`));
     results[3] = result(4, "2026-11-01T00:00:00Z");
-    expect(nextPart(results)).toBe(4);
+    expect(nextPart(results, NOW)).toBe(4);
     const tied = [1, 2, 3, 4, 5, 6, 7].map((k) => result(k, "2026-11-10T00:00:00Z"));
-    expect(nextPart(tied)).toBe(1);
+    expect(nextPart(tied, NOW)).toBe(1);
   });
 
   test("any 7 runs in a row run every part once, whatever the wall clock does", () => {
@@ -111,11 +115,28 @@ describe("nextPart", () => {
     const results: PartResult[] = [];
     const ran: number[] = [];
     for (const t of times) {
-      const k = nextPart(results);
+      const k = nextPart(results, new Date(t));
       ran.push(k);
       const i = results.findIndex((r) => r.part === k);
       if (i >= 0) results.splice(i, 1);
       results.push(result(k, t));
+    }
+    expect([...ran].sort()).toEqual([1, 2, 3, 4, 5, 6, 7]);
+  });
+
+  test("after the clock is set back, results dated in the future count as oldest", () => {
+    // Every part last ran while the clock was a month ahead.
+    const results = [1, 2, 3, 4, 5, 6, 7].map((k) => result(k, `2026-12-2${k}T03:00:00Z`));
+    const ran: number[] = [];
+    for (let night = 0; night < 7; night++) {
+      const t = new Date(Date.UTC(2026, 10, 30 + night, 3)).toISOString();
+      const k = nextPart(results, new Date(t));
+      ran.push(k);
+      results.splice(
+        results.findIndex((r) => r.part === k),
+        1,
+        result(k, t)
+      );
     }
     expect([...ran].sort()).toEqual([1, 2, 3, 4, 5, 6, 7]);
   });
@@ -330,15 +351,88 @@ describe("runWeekly", () => {
     expect(r.ran.at(-1)?.argv.slice(-3)).toEqual(["test:macos", "--part", "3/7"]);
   });
 
-  test("a clone directory with no .git, left by a killed clone, is removed and cloned again", async () => {
+  test("a clone directory with no .git, left by a killed clone, is moved aside and cloned again", async () => {
     const home = tempHome();
-    const { repoDir } = weeklyPaths(home);
+    const { repoDir, cacheDir } = weeklyPaths(home);
     mkdirSync(repoDir, { recursive: true });
     writeFileSync(join(repoDir, "half-written"), "x");
     const r = recorder();
     await run(home, r);
     expect(r.ran[0]?.name).toBe("clone");
-    expect(existsSync(join(repoDir, "half-written"))).toBe(false);
+    expect(existsSync(repoDir)).toBe(false);
+    const aside = readdirSync(cacheDir).filter((f) => f.startsWith("repo.broken-"));
+    expect(aside).toHaveLength(1);
+    expect(readFileSync(join(cacheDir, aside[0] as string, "half-written"), "utf8")).toBe("x");
+  });
+
+  test("moving a broken clone aside deletes nothing, even through a symlinked cache directory", async () => {
+    const home = tempHome();
+    const outside = tempHome();
+    mkdirSync(join(outside, "repo"), { recursive: true });
+    writeFileSync(join(outside, "repo", "keep"), "k");
+    const { cacheDir } = weeklyPaths(home);
+    mkdirSync(join(cacheDir, ".."), { recursive: true });
+    symlinkSync(outside, cacheDir);
+    await run(home, recorder());
+    const aside = readdirSync(outside).filter((f) => f.startsWith("repo.broken-"));
+    expect(aside).toHaveLength(1);
+    expect(readFileSync(join(outside, aside[0] as string, "keep"), "utf8")).toBe("k");
+  });
+
+  test("a preparation step that throws before any command still counts as red", async () => {
+    const home = tempHome();
+    await run(home, recorder());
+    const { repoDir, cacheDir } = weeklyPaths(home);
+    rmSync(join(repoDir, ".git"), { recursive: true, force: true });
+    mkdirSync(repoDir, { recursive: true });
+    chmodSync(cacheDir, 0o555);
+    const r = recorder();
+    try {
+      expect(await run(home, r)).toBe(1);
+    } finally {
+      chmodSync(cacheDir, 0o755);
+    }
+    expect(r.ran).toEqual([]);
+    expect(JSON.parse(readFileSync(join(logs(home), "part3.json"), "utf8")).pass).toBe(false);
+    expect(existsSync(join(logs(home), "RED-2026-11-22-part3.json"))).toBe(true);
+    expect(r.notified).toHaveLength(1);
+  });
+
+  test("a log truncated during the run is read from its start, and the marker says so", async () => {
+    const home = tempHome();
+    mkdirSync(logs(home), { recursive: true });
+    writeFileSync(join(logs(home), "2026-11-22-part3.log"), `${"x".repeat(8192)}\n`);
+    const r = recorder(testStep);
+    const truncating = {
+      ...r,
+      exec: (cmd: Command, fd: number) => {
+        if (cmd.name === testStep) ftruncateSync(fd, 0);
+        return r.exec(cmd, fd);
+      },
+    };
+    await run(home, truncating);
+    const marker = JSON.parse(readFileSync(join(logs(home), "RED-2026-11-22-part3.json"), "utf8"));
+    expect(marker.failing).toEqual(["pane > a slot settles"]);
+    expect(marker.logError).toContain("shrank");
+  });
+
+  test("a log replaced during the run still yields this run's failures", async () => {
+    const home = tempHome();
+    const logPath = join(logs(home), "2026-11-22-part3.log");
+    const r = recorder(testStep);
+    const replacing = {
+      ...r,
+      exec: (cmd: Command, fd: number) => {
+        if (cmd.name === testStep) {
+          renameSync(logPath, `${logPath}.old`);
+          writeFileSync(logPath, "(fail) someone else's failure [1.00ms]\n");
+        }
+        return r.exec(cmd, fd);
+      },
+    };
+    await run(home, replacing);
+    const marker = JSON.parse(readFileSync(join(logs(home), "RED-2026-11-22-part3.json"), "utf8"));
+    expect(marker.failing).toEqual(["pane > a slot settles"]);
   });
 
   test("the RED marker names only this run's failures, not an earlier run's on the same day", async () => {
@@ -420,7 +514,7 @@ describe("runWeekly", () => {
     );
   });
 
-  test("an unreadable log still writes the RED marker and notifies", async () => {
+  test("a log whose path turns unreadable mid-run is still read through the run's descriptor", async () => {
     const home = tempHome();
     const r = recorder(testStep);
     const logPath = join(logs(home), "2026-11-22-part3.log");
@@ -438,8 +532,8 @@ describe("runWeekly", () => {
       chmodSync(logPath, 0o644);
     }
     const marker = JSON.parse(readFileSync(join(logs(home), "RED-2026-11-22-part3.json"), "utf8"));
-    expect(marker.failing).toEqual([]);
-    expect(marker.logError).toContain("EACCES");
+    expect(marker.failing).toEqual(["pane > a slot settles"]);
+    expect(marker.logError).toBeUndefined();
     expect(r.notified).toHaveLength(1);
   });
 
