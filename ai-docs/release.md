@@ -62,8 +62,8 @@ the GitHub Release as a prerelease, which is the only variant.
 macos-bridge, the blind hook tests, the macOS rows of hooks-loading) run only on a
 dispatch (`gh workflow run Tests --ref <branch>`) and in `bun run test:macos`, which
 must be green on a Mac before the tag (`CLAUDE.md`, Releasing). The blind hook
-tests and the hook loading (S1) tests run locally only under `bun run test:macos --full`;
-the default `bun run test:macos` skips them. In CI, the Linux `hooks-loading` job runs
+tests and the hook loading (S1) tests run locally under `bun run test:macos --full` and in
+the last nightly part (`--part 7/7`); the default `bun run test:macos` skips them. In CI, the Linux `hooks-loading` job runs
 the S1 tests on every pull request and push. The tag is therefore
 the gate: everything must be green before the tag leaves the machine.
 
