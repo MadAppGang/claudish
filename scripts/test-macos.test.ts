@@ -9,9 +9,11 @@ import {
   bunVersionOf,
   compareVersions,
   launchArgv,
+  parseMagmuxPin,
   planSteps,
   runSteps,
   startStep,
+  verifySha256,
 } from "./test-macos.ts";
 
 function tempDir(): string {
@@ -229,6 +231,63 @@ describe("signals", () => {
   });
 });
 
+describe("the pinned magmux", () => {
+  const ROOT = join(import.meta.dir, "..");
+  const MAGMUX_ENV = readFileSync(join(ROOT, ".github", "magmux.env"), "utf8");
+  const PANE_LAUNCH = readFileSync(
+    join(ROOT, "packages", "cli", "src", "pane", "pane-launch.ts"),
+    "utf8"
+  );
+
+  test("reads the tag, the version, this arch's asset and its pinned sum", () => {
+    const pin = parseMagmuxPin(MAGMUX_ENV, PANE_LAUNCH, "arm64");
+    const tag = MAGMUX_ENV.match(/^MAGMUX_TAG=(\S+)$/m)?.[1] as string;
+    expect(pin.tag).toBe(tag);
+    expect(pin.version).toBe(tag.replace(/^v/, ""));
+    expect(pin.asset).toBe("magmux_darwin_arm64.tar.gz");
+    expect(pin.sha256).toBe(MAGMUX_ENV.match(/^MAGMUX_SHA256_darwin_arm64=(\S+)$/m)?.[1] as string);
+    expect(parseMagmuxPin(MAGMUX_ENV, PANE_LAUNCH, "amd64").asset).toBe(
+      "magmux_darwin_amd64.tar.gz"
+    );
+  });
+
+  const env = (tag: string, sum = "a".repeat(64)) =>
+    `MAGMUX_TAG=${tag}\nMAGMUX_SHA256_darwin_arm64=${sum}\n`;
+  const min = (v: string) => `export const MIN_MAGMUX_VERSION = "${v}";\n`;
+
+  test("fails closed on a value it cannot read, or a pin panes cannot use", () => {
+    expect(() => parseMagmuxPin(env("v0.19.0"), "no constant here", "arm64")).toThrow(
+      /MIN_MAGMUX_VERSION/
+    );
+    expect(() =>
+      parseMagmuxPin(`MAGMUX_SHA256_darwin_arm64=${"a".repeat(64)}\n`, min("0.19.0"), "arm64")
+    ).toThrow(/MAGMUX_TAG/);
+    expect(() => parseMagmuxPin(env("latest"), min("0.19.0"), "arm64")).toThrow(/MAGMUX_TAG/);
+    expect(() => parseMagmuxPin(env("v0.19.0"), min("0.19.0"), "amd64")).toThrow(
+      /MAGMUX_SHA256_darwin_amd64/
+    );
+    expect(() => parseMagmuxPin(env("v0.19.0", "short"), min("0.19.0"), "arm64")).toThrow(
+      /MAGMUX_SHA256_darwin_arm64/
+    );
+    expect(() => parseMagmuxPin(env("v0.18.0"), min("0.19.0"), "arm64")).toThrow(/older than/);
+    expect(() => parseMagmuxPin(env("v3.4.2"), min("0.19.0"), "arm64")).toThrow(/0\.x/);
+    expect(parseMagmuxPin(env("v0.19.0"), min("0.19.0"), "arm64").version).toBe("0.19.0");
+  });
+
+  test("verifySha256 accepts the pinned sum and rejects any other", () => {
+    const dir = tempDir();
+    try {
+      const file = join(dir, "asset");
+      writeFileSync(file, "magmux");
+      const sum = new Bun.CryptoHasher("sha256").update("magmux").digest("hex");
+      expect(() => verifySha256(file, sum)).not.toThrow();
+      expect(() => verifySha256(file, "0".repeat(64))).toThrow(/sha256/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("--dry-run", () => {
   test.skipIf(process.platform !== "darwin")(
     "prints the plan with no bunx on PATH, so it fetches nothing",
@@ -243,6 +302,7 @@ describe("--dry-run", () => {
         expect(r.stderr.toString()).toBe("");
         expect(r.exitCode).toBe(0);
         expect(out).toContain("would fetch bun@");
+        expect(out).toMatch(/would download magmux v\d+\.\d+\.\d+ \(magmux_darwin_(arm64|amd64)/);
         expect(out).toContain("scripts/ci-tests.ts");
       } finally {
         rmSync(dir, { recursive: true, force: true });

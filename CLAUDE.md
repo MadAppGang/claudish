@@ -203,9 +203,10 @@ negative case: if you are about to type one of those words, stop and use the lef
 - `bun run test:macos` — the macOS gate (`scripts/test-macos.ts`): the suites test.yml runs on macOS
   only on manual dispatch (pane and rest, macos-bridge, `scripts/*.test.ts`, the blind hook tests,
   `antigravity-fetch.test.ts`, and hooks-loading's `src/hooks/s1-probe/` under release.yml's Bun
-  `latest`), each under the Bun its job pins, fetched with `bunx`, after `build:cli`. The Mac needs magmux on PATH (`brew install
-  MadAppGang/tap/magmux`; at least `MIN_MAGMUX_VERSION`, and a version other than
-  `.github/magmux.env`'s is warned about) and network for `bunx`. `--dry-run` prints the steps.
+  `latest`), each under the Bun its job pins, fetched with `bunx`, after `build:cli`. The pane
+  suites run against `.github/magmux.env`'s magmux, downloaded with `gh` (signed in), checked
+  against the pinned sum and version, first on PATH; the Mac's own magmux is never used. Needs
+  network. `--dry-run` prints what it would fetch and run, and fetches nothing.
 - `bun run typecheck`, `bun run lint`, `bun run format`
 - `claudish --probe <model>` shows the adapter composition; `--debug` writes a log to `logs/`.
 - Model syntax is `provider@model[:concurrency]` (`google@gemini-2.0-flash`, `ollama@llama3.2:3`); a bare name routes by a matching user routing rule, else by the chain gathered from the cloud models catalog and the accounts' dynamic models catalogs. Prefix meanings: `routing.md`.

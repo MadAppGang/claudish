@@ -31,16 +31,25 @@
  * put a removed key back. Each step is a process group of its own: SIGINT, SIGTERM or SIGHUP to the gate goes to that
  * group, and the gate stops once the step has exited.
  *
- * The Mac needs magmux on the lookup path the pane suites use (`findMagmuxCandidates`): without
- * it they skip as "not checked" and the gate would be green on nothing, so this fails instead.
- * CI installs the version pinned in .github/magmux.env; a different local version is reported,
- * because that is not the magmux the release ships.
+ * The pane suites run against the magmux the release ships: the gate downloads the release
+ * pinned in .github/magmux.env with `gh` (signed in), checks the pinned SHA-256 and the version,
+ * and puts it first on every step's PATH, where the pane suites' lookup (`findMagmuxCandidates`)
+ * finds it. The Mac's own magmux is never used or changed. Anything it cannot read or verify
+ * stops the gate.
  *
  * Expect a long run: the pane slices run as seven concurrent processes. A red run on a loaded
  * machine is still red: rerun once the Mac is quiet.
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+} from "node:fs";
 import { constants as osConstants, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { findMagmuxCandidates } from "../packages/cli/src/launcher/magmux-binary.ts";
@@ -242,41 +251,129 @@ function pinnedBun(
   return { exe, dir, resolved };
 }
 
-function magmuxVersion(path: string): string | undefined {
-  const r = spawnSync(path, ["--version"], { encoding: "utf8", env: { ...process.env } });
-  return r.stdout?.match(/(\d+\.\d+\.\d+)/)?.[1];
+/** The magmux release .github/magmux.env pins, for one darwin arch. */
+export interface MagmuxPin {
+  tag: string;
+  version: string;
+  asset: string;
+  sha256: string;
 }
 
-function checkMagmux(): string {
-  const magmux = findMagmuxCandidates()[0];
-  if (!magmux) {
+/**
+ * The pinned magmux, read the way release.yml reads it, failing closed: a value that cannot be
+ * read, a release off the 0.x line or one below `MIN_MAGMUX_VERSION` throws, never passes.
+ */
+export function parseMagmuxPin(
+  magmuxEnv: string,
+  paneLaunch: string,
+  arch: "arm64" | "amd64"
+): MagmuxPin {
+  const min = paneLaunch.match(/^export const MIN_MAGMUX_VERSION = "(\d+\.\d+\.\d+)";$/m)?.[1];
+  if (!min) throw new Error('no MIN_MAGMUX_VERSION = "x.y.z" in pane-launch.ts');
+  const tag = magmuxEnv.match(/^MAGMUX_TAG=(v\d+\.\d+\.\d+)$/m)?.[1];
+  if (!tag) throw new Error("no MAGMUX_TAG=v<x.y.z> in .github/magmux.env");
+  const key = `MAGMUX_SHA256_darwin_${arch}`;
+  const sha256 = magmuxEnv.match(new RegExp(`^${key}=([0-9a-f]{64})$`, "m"))?.[1];
+  if (!sha256) throw new Error(`no 64-hex-digit ${key} in .github/magmux.env`);
+  const version = tag.slice(1);
+  if (!/^0\./.test(version)) throw new Error(`pinned magmux ${tag} is not a 0.x release`);
+  if (compareVersions(version, min) < 0) {
+    throw new Error(`pinned magmux ${tag} is older than MIN_MAGMUX_VERSION ${min}`);
+  }
+  return { tag, version, asset: `magmux_darwin_${arch}.tar.gz`, sha256 };
+}
+
+/** Throws unless `file`'s SHA-256 is `want`: the PINNED sum, never the release's checksums.txt. */
+export function verifySha256(file: string, want: string): void {
+  const have = new Bun.CryptoHasher("sha256").update(readFileSync(file)).digest("hex");
+  if (have !== want) {
+    throw new Error(`sha256 of ${file} is ${have}; .github/magmux.env pins ${want}`);
+  }
+}
+
+export function magmuxPinOfThisMac(): MagmuxPin {
+  const arch = process.arch === "arm64" ? "arm64" : process.arch === "x64" ? "amd64" : undefined;
+  if (!arch) fail(`no magmux darwin asset for arch ${process.arch}`);
+  try {
+    return parseMagmuxPin(
+      readFileSync(MAGMUX_ENV, "utf8"),
+      readFileSync(PANE_LAUNCH, "utf8"),
+      arch
+    );
+  } catch (err) {
+    fail((err as Error).message);
+  }
+}
+
+/**
+ * Installs the pinned magmux into `magmux/` under this run's directory, as
+ * .github/actions/install-magmux does on a runner: `gh release download` of the pinned tag's
+ * asset, the pinned SHA-256, untar, and `--version` must print the pinned version. The
+ * directory goes first on every step's PATH. The Mac's own magmux (Homebrew) is never used
+ * or changed. Needs `gh` signed in.
+ */
+export function installPinnedMagmux(pin: MagmuxPin, runDir: string): string {
+  const download = join(runDir, "magmux-download");
+  const binDir = join(runDir, "magmux");
+  mkdirSync(download);
+  mkdirSync(binDir);
+  const gh = spawnSync(
+    "gh",
+    [
+      "release",
+      "download",
+      pin.tag,
+      "--repo",
+      "MadAppGang/magmux",
+      "--pattern",
+      pin.asset,
+      "--dir",
+      download,
+    ],
+    { cwd: runDir, encoding: "utf8", env: { ...process.env } }
+  );
+  if (gh.status !== 0) {
     fail(
-      "magmux not found: the pane suites would skip as not checked. Install it:\n" +
-        "  brew install MadAppGang/tap/magmux"
+      `gh release download ${pin.tag} ${pin.asset} from MadAppGang/magmux failed (is gh signed in? gh auth login):\n${gh.stderr ?? gh.error?.message ?? ""}`
     );
   }
-  const have = magmuxVersion(magmux);
-  const min = readFileSync(PANE_LAUNCH, "utf8").match(
-    /^export const MIN_MAGMUX_VERSION = "(.*)";$/m
-  )?.[1];
-  const pin = readFileSync(MAGMUX_ENV, "utf8")
-    .match(/^MAGMUX_TAG=v?(\S+)$/m)?.[1]
-    ?.trim();
-  if (!have) fail(`${magmux} --version printed no version`);
-  if (min && compareVersions(have, min) < 0) {
-    fail(`${magmux} is magmux ${have}; the pane suites need >= ${min}`);
+  const archive = join(download, pin.asset);
+  try {
+    verifySha256(archive, pin.sha256);
+  } catch (err) {
+    fail((err as Error).message);
   }
-  if (pin && have !== pin) {
-    console.warn(
-      `[test:macos] WARNING: ${magmux} is magmux ${have}; CI and the release use ${pin} (.github/magmux.env)`
+  const tar = spawnSync("tar", ["xzf", archive, "-C", binDir], {
+    encoding: "utf8",
+    env: { ...process.env },
+  });
+  const exe = join(binDir, "magmux");
+  if (tar.status !== 0 || !existsSync(exe)) {
+    fail(`could not unpack magmux from ${archive}:\n${tar.stderr ?? ""}`);
+  }
+  chmodSync(exe, 0o755);
+  const version = spawnSync(exe, ["--version"], { encoding: "utf8", env: { ...process.env } });
+  const have = version.stdout?.match(/(\d+\.\d+\.\d+)/)?.[1];
+  if (version.status !== 0 || have !== pin.version) {
+    fail(
+      `${exe} --version printed ${JSON.stringify(version.stdout?.trim() ?? "")}, not ${pin.tag}`
     );
   }
-  return `${magmux} (${have})`;
+  // The pane suites take the first candidate (bundled, npm package, then PATH); with the pinned
+  // directory first on PATH that must be it, or they would test another magmux.
+  const savedPath = process.env.PATH;
+  process.env.PATH = `${binDir}:${savedPath ?? ""}`;
+  const first = findMagmuxCandidates()[0];
+  process.env.PATH = savedPath;
+  if (first !== exe) {
+    fail(`the pane suites would use ${first}, not the pinned ${exe}: remove ${first}`);
+  }
+  return binDir;
 }
 
-function stepEnv(binDir: string): Record<string, string> {
+function stepEnv(binDir: string, magmuxDir: string): Record<string, string> {
   const env: Record<string, string> = {
-    PATH: `${binDir}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+    PATH: `${binDir}:${magmuxDir}:${process.env.PATH ?? "/usr/bin:/bin"}`,
     TMPDIR: process.env.TMPDIR ?? "/tmp",
     USER: process.env.USER ?? "test",
     LOGNAME: process.env.LOGNAME ?? process.env.USER ?? "test",
@@ -381,12 +478,15 @@ if (import.meta.main) {
   const scriptTests = [...new Bun.Glob("scripts/*.test.ts").scanSync({ cwd: ROOT })]
     .sort()
     .map((f) => `./${f}`);
+  const magmuxPin = magmuxPinOfThisMac();
 
   if (dryRun) {
     // Fetches nothing: the executables are placeholders for what a run would fetch.
     for (const version of versions)
       console.log(`[test:macos] would fetch bun@${version} with bunx into a new temp directory`);
-    console.log("[test:macos] would check magmux on the pane suites' lookup path");
+    console.log(
+      `[test:macos] would download magmux ${magmuxPin.tag} (${magmuxPin.asset}, sha256 ${magmuxPin.sha256}) with gh into a new temp directory, first on PATH`
+    );
     const placeholder = (version: string) => ({ version, exe: `<bun@${version}>` });
     const plan = planSteps({
       root: ROOT,
@@ -417,7 +517,7 @@ if (import.meta.main) {
     });
   }
 
-  const magmux = checkMagmux();
+  const magmuxDir = installPinnedMagmux(magmuxPin, runDir);
   const buns = new Map(versions.map((v) => [v, pinnedBun(v, runDir)] as const));
   const planned = (version: string) => ({ version, exe: buns.get(version)?.exe ?? "" });
   const groups = planSteps({
@@ -429,7 +529,7 @@ if (import.meta.main) {
   });
   const binDirOf = new Map([...buns].map(([v, bun]) => [v, bun.dir] as const));
 
-  console.log(`[test:macos] magmux: ${magmux}`);
+  console.log(`[test:macos] magmux ${magmuxPin.tag}: ${join(magmuxDir, "magmux")}`);
   for (const [version, bun] of buns)
     console.log(`[test:macos] bun@${version}: Bun ${bun.resolved}, ${bun.exe}`);
 
@@ -439,7 +539,7 @@ if (import.meta.main) {
     const started = performance.now();
     running = startStep(launchArgv(step), {
       cwd: step.cwd,
-      env: stepEnv(binDirOf.get(step.bun.version) ?? ""),
+      env: stepEnv(binDirOf.get(step.bun.version) ?? "", magmuxDir),
     });
     const result = await running.exited;
     running = null;
