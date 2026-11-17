@@ -1,5 +1,5 @@
 #!/bin/sh
-# The claudish-compaction evidence, then the arm's policy and every history
+# The claudish-compaction evidence, then the variant's policy and every history
 # decision line (numbers and reasons only; no message text is in them).
 #
 #   evidence.sh <policy>

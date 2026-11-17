@@ -1,8 +1,8 @@
 #!/bin/sh
 # Starts the claudish build in ~/.bench-compaction/build WITHOUT compaction,
-# for the baseline arm of cases/. The arguments are those of
+# for the baseline variant of cases/. The arguments are those of
 # claudish-compaction minus --compaction: --quiet -y --debug-claudish. So the
-# two arms run the same build and differ only in compaction.
+# two variants run the same build and differ only in compaction.
 #
 # The same checks as claudish-compaction, written to the same launch log:
 #   - the launcher's own environment must hold no ANTHROPIC_API_KEY;

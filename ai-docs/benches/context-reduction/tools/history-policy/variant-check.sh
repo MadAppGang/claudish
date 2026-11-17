@@ -1,8 +1,8 @@
 #!/bin/sh
-# The VariantCheck of a history-policy arm. Passes only when the
+# The VariantCheck of a history-policy variant. Passes only when the
 # claudish-compaction check passes AND claudish logged at least one
 # "[compaction] history decision <policy>:" line, every one of them naming
-# this arm's policy.
+# this variant's policy.
 #
 #   variant-check.sh <policy>
 policy=$1

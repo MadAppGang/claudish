@@ -4,10 +4,10 @@
 # reads from the environment, and a reachability test of that address from
 # inside the sandbox.
 #
-# The test never stops the trial: every arm runs this prep, and only the
-# topic+embed arm needs Ollama. The result goes to
+# The test never stops the trial: every variant runs this prep, and only the
+# topic+embed variant needs Ollama. The result goes to
 # ~/.bench-compaction/ollama-status ("reachable <model>" or "unreachable
-# <reason>"), which that arm's variant check reads.
+# <reason>"), which that variant's variant check reads.
 set -eu
 bun install --frozen-lockfile
 mkdir -p "$HOME/.bench-compaction"

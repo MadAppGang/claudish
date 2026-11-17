@@ -1,5 +1,5 @@
 #!/bin/sh
-# The key and route check of the baseline arm of cases/. Passes only when:
+# The key and route check of the baseline variant of cases/. Passes only when:
 #   1. the launcher's environment held no ANTHROPIC_API_KEY (count 0);
 #   2. Claude Code's environment held no ANTHROPIC_API_KEY other than
 #      claudish's placeholder, and no CLAUDISH_CONFIG, as the SessionStart

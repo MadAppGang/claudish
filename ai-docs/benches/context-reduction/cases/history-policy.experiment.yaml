@@ -1,12 +1,12 @@
 description: "history policies: claudish's history compaction under four swap policies, against no compaction"
 bench: ./madbench.yaml
 
-# Every arm runs the build named by --param claudish_build, on the
-# long-session Scenarios with --param case_prep=long-session. The policy arms
+# Every variant runs the build named by --param claudish_build, on the
+# long-session Scenarios with --param case_prep=long-session. The policy variants
 # read compaction.history.policy from the config that --param
-# claudish_config names; each arm's start.sh refuses a config for another
-# policy, so a config passed to the wrong arm stops the trial before spend.
-# The model is --param model (default claude-sonnet-5-5). One arm per
+# claudish_config names; each variant's start.sh refuses a config for another
+# policy, so a config passed to the wrong variant stops the trial before spend.
+# The model is --param model (default claude-sonnet-5-5). One variant per
 # madbench call, one trial per call:
 #
 #   madbench cases/history-policy.experiment.yaml --variant history-cost \
@@ -14,7 +14,7 @@ bench: ./madbench.yaml
 #     --param claudish_build=/absolute/path/to/a/compiled/claudish \
 #     --param claudish_config=/absolute/path/to/a/0600/config/with/policy/cost
 #
-# The baseline arm takes no claudish_config.
+# The baseline variant takes no claudish_config.
 guard_changes:
   allow:
     - harness/binary
@@ -43,8 +43,8 @@ variants:
       binary: ../bin/claudish-compaction
       tool: policy-cost
   # swap when a decider labels the new human turn a change of topic. The
-  # decider (haiku or embed) comes from the claudish_config file, so the two
-  # topic arms are this one variant with two config files.
+  # decider (haiku or embed) comes from the claudish_config file, so topic
+  # and topic+embed run as this one variant with two config files.
   - name: history-topic
     params:
       binary: ../bin/claudish-compaction

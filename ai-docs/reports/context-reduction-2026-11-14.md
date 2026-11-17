@@ -763,21 +763,21 @@ a compressed output.
 ## Compaction cases: the same build with and without --compaction
 
 `cases/madbench.yaml` with `cases/compaction-cases.experiment.yaml`. Both
-arms run build a6952916 (sha256 `37ee19cf…6447`, checked in every launch
+variants run build a6952916 (sha256 `37ee19cf…6447`, checked in every launch
 log); `cases-baseline` starts it with `--quiet -y --debug-claudish`,
 `cases-compaction` adds `--compaction` and the key config. One madbench call
 per trial, behind the login-lifetime check. Costs are madbench's `cost`
 metric; Haiku is in tokens only. Hit rate and breaks come from
 `tools/cases-readout/cache-readout.ts`.
 
-### Case c, refactor: both arms 6/6, compaction cost 43% more
+### Case c, refactor: both variants 6/6, compaction cost 43% more
 
 The task: rename `nativeRouteFor` to `claudeSubscriptionRoute` and move it to
 `packages/cli/src/providers/claude-subscription-route.ts`. Grader: 5 parts
 (old name gone, new module exports it, nothing left in `native-route.ts`,
 typecheck, 118 tests).
 
-| Arm | Trial | Grade | Duration | Cost | Hit rate | Main requests | Breaks | Haiku in / out |
+| Variant | Trial | Grade | Duration | Cost | Hit rate | Main requests | Breaks | Haiku in / out |
 |---|---|---|---|---|---|---|---|---|
 | `cases-baseline` | 1 | 5/5, 118 pass | 117 s | $0.2034 | 86.4% | 8 | 0 | |
 | `cases-baseline` | 2 | 5/5, 118 pass | 72 s | $0.1644 | 85.4% | 7 | 0 | |
@@ -795,10 +795,10 @@ launcher environment: 0`, `AGENT_ENV_KEY_UNSET CLAUDISH_CONFIG_present=0`).
 Each compaction trial made 1 Haiku call, HTTP 200, with no failed call, and
 read no recovery file.
 
-Every trial in both arms started with one Bash call that greps
+Every trial in both variants started with one Bash call that greps
 `nativeRouteFor` and prints all of `native-route.ts`: 17,088 to 17,176
 characters, the only output over the size limit. That is the file the task
-changes. Compaction compressed it. The compaction arm then made more tool
+changes. Compaction compressed it. The compaction variant then made more tool
 calls (17 to 22 tool results against 10): in trial 1 it printed lines of
 `native-route.ts` again and grepped its imports again before it wrote the
 new module. Inferred: the summary dropped details of the file the agent was
@@ -807,19 +807,19 @@ than the compression saved. This is the same kind of loss as the known
 defect "a Read before an Edit is compressed", through Bash `cat` instead of
 Read.
 
-Verdict for case c: compaction did not help a short refactor. Both arms
-solved it every time; the compaction arm cost more in all 3 trials.
+Verdict for case c: compaction did not help a short refactor. Both variants
+solved it every time; the compaction variant cost more in all 3 trials.
 
 ### Case c rerun on build 4e4858c3: the file-print fix removes the extra cost
 
 Build 4e4858c3 (sha256 `0dc6c377…2c82`, checked before the run and in
 every launch log) leaves a Bash output that prints a file uncompressed.
-Both arms ran on it, 3 trials each, with the Bench at d2876a13, whose
+Both variants ran on it, 3 trials each, with the Bench at d2876a13, whose
 sandbox gives Bash calls a 10-minute default timeout
 (`BASH_DEFAULT_TIMEOUT_MS=600000`; Claude Code's own default is 2
 minutes).
 
-| Arm | Trial | Grade | Duration | Cost | Hit rate | Main requests | Tool results | Haiku calls |
+| Variant | Trial | Grade | Duration | Cost | Hit rate | Main requests | Tool results | Haiku calls |
 |---|---|---|---|---|---|---|---|---|
 | `cases-compaction` | 1 | 5/5, 118 pass | 67 s | $0.1129 | 87.4% | 8 | 10 | 0 |
 | `cases-compaction` | 2 | 5/5, 118 pass | 66 s | $0.1880 | 89.3% | 10 | 14 | 0 |
@@ -842,9 +842,9 @@ toolu_01PVjgXtcwzbsbsiknBJUeoA not compressed`. No trial made a Haiku call.
 | Baseline tool results | 10 | 9 to 13 |
 | Compaction main requests | 11 to 15 | 8 to 10 |
 
-The cost ranges of the two arms now overlap ($0.1129 to $0.1880 against
+The cost ranges of the two variants now overlap ($0.1129 to $0.1880 against
 $0.1191 to $0.1834). With the file print kept whole, the agent no longer
-reads the file again, and the compaction arm costs the same as the
+reads the file again, and the compaction variant costs the same as the
 baseline. It also saves nothing: the file print was the only output over
 the threshold, so compaction had nothing else to act on.
 
@@ -853,7 +853,7 @@ the threshold, so compaction had nothing else to act on.
 Case d is the case that answers "does compaction help a real long session":
 the `--context-window` task of `../madbench.yaml` word for word (graded by
 its 114 hidden tests), then three follow-ups, with
-`CLAUDE_CODE_AUTO_COMPACT_WINDOW=200000` in both arms. Cases c and e, and
+`CLAUDE_CODE_AUTO_COMPACT_WINDOW=200000` in both variants. Cases c and e, and
 the 16,000-character tool-output threshold they test, are secondary.
 
 Condition: the follow-ups FORCE long outputs. They tell the agent to read
@@ -869,7 +869,7 @@ polled it with `sleep 295`, and that run was stopped (reports
 `case-d-stopped-compaction-t{1,2}.json`, no metrics). Claude Code passes
 30,000 characters of a Bash output inline and saves the rest to a file.
 
-| Arm | Trial | Grade | Duration | Cost | Hit rate | Main requests | Breaks | Peak context | Claude Code compactions |
+| Variant | Trial | Grade | Duration | Cost | Hit rate | Main requests | Breaks | Peak context | Claude Code compactions |
 |---|---|---|---|---|---|---|---|---|---|
 | `cases-baseline` | 1 | 114 pass | 2610 s | $3.3695 | 97.1% | 82 | 11 | 162,813 | 2 |
 | `cases-baseline` | 2 | 113 pass, 1 fail | 1104 s | $3.3415 | 97.2% | 82 | 12 | 169,760 | 2 |
@@ -915,8 +915,8 @@ peaks and the compaction counts above are what these trials measured.
 Build 0aed68ec (sha256 `dd5a05ab…6aee`, checked in every launch log)
 counts the history from the upstream's real usage plus an estimate of what
 was appended since, and can swap inside a turn after a complete tool round.
-The compaction arm uses `applyAt` 0.75 (`compaction-config-d075.json`,
-otherwise the same 13 keys as before). Both arms ran on this build with
+The compaction variant uses `applyAt` 0.75 (`compaction-config-d075.json`,
+otherwise the same 13 keys as before). Both variants ran on this build with
 the Bench at d2876a13 (`BASH_DEFAULT_TIMEOUT_MS=600000`), 3 trials each.
 The forced-output condition above applies. The follow-up "Read
 `packages/cli/src/cli.ts` and `packages/cli/src/claude-runner.ts` in full,
@@ -924,7 +924,7 @@ every line, without subagents" FORCES long input as well: about 110,000 to
 140,000 tokens of Read results, which compaction never compresses
 (`skipTools` `["Read"]`).
 
-| Arm | Trial | Grade | Duration | Cost | Hit rate | Main requests | Breaks | Peak input | Claude Code compactions | claudish swaps | Haiku calls, in / out |
+| Variant | Trial | Grade | Duration | Cost | Hit rate | Main requests | Breaks | Peak input | Claude Code compactions | claudish swaps | Haiku calls, in / out |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | `cases-baseline` | 1 | pass, all checks | 2463 s | $3.0989 | 98.9% | 89 | 14 | 180,338 | 2 | | |
 | `cases-baseline` | 2 | pass, all checks | 1893 s | $3.9125 | 97.4% | 109 | 13 | 173,623 | 2 | | |
@@ -1008,7 +1008,7 @@ of `bun test src/adapters src/handlers` (about 110,000 characters) and
 `bun run build`, "do not pipe them through tail, head or grep".
 
 Under Claude Code 2.1.325's defaults this output never enters the
-context. The compaction arm's trial 1 (`case-a-compaction-t1.json`, with
+context. The compaction variant's trial 1 (`case-a-compaction-t1.json`, with
 the 10-minute Bash timeout) ran the tests to the end ("Ran 1687 tests
 across 126 files. [155.94s]"), and the tool result the model received was
 2,271 characters: `<persisted-output> Output too large (109.8KB). Full
@@ -1034,13 +1034,13 @@ follows below.
 ### Case a with Claude Code's inline limit raised from its default: compaction 29% cheaper, ranges overlap
 
 Condition: Claude Code inline limit raised from its default.
-`--param cc_settings=../config/inline-max` gives both arms
+`--param cc_settings=../config/inline-max` gives both variants
 `{"bashOutputMaxChars": 128000}`, so a Bash output up to 128,000
 characters reaches the model inline. This is not Claude Code's default
 behaviour, and the prompt still FORCES complete output. Build a6952916,
 Bench at 9aae38c4, 10-minute Bash timeout.
 
-| Arm | Trial | Grade | Duration | Cost | Hit rate | Main requests | Tool results | Cache read | Haiku in / out | 429s |
+| Variant | Trial | Grade | Duration | Cost | Hit rate | Main requests | Tool results | Cache read | Haiku in / out | 429s |
 |---|---|---|---|---|---|---|---|---|---|---|
 | `cases-compaction` | 1 | 7/8 | 360 s | $0.3066 | 90.0% | 12 | 22 | 426,084 | 112,340 / 779 (2 calls) | 1 |
 | `cases-compaction` | 2 | 7/8 | 402 s | $0.4245 | 77.9% | 10 | 18 | 358,913 | 56,368 / 129 (1) | 1 |
@@ -1069,23 +1069,23 @@ baseline t2 is not counted: madbench reported "turn 1 reached the agent as
 be graded" (`case-a128-baseline-t2-pasted-error.json`), and that trial was
 rerun.
 
-The grade cannot separate the arms: every trial fails the same hidden
+The grade cannot separate the variants: every trial fails the same hidden
 test, "responses follow the order of their calls, not the order they
 arrived in", which is the defect itself. The control with 463c439e's fix
 passes it, so the check is right; no agent found the real fix in either
-arm.
+variant.
 
 Verdict for case a with the raised limit: when a 110,000-character output
 does reach the model, compaction cuts what later requests re-read and the
-trial costs less on average, but with 3 trials per arm the cost ranges
+trial costs less on average, but with 3 trials per variant the cost ranges
 overlap and the result is not conclusive.
 
 ### Case f, threshold sweep on case a with the raised inline limit
 
-The compaction arm of case a again (same build a6952916, same
+The compaction variant of case a again (same build a6952916, same
 `bashOutputMaxChars` 128000, same FORCED output), with `minTokens` 2000
 (about 8,000 characters) and 8000 (about 32,000 characters). The 4000
-point is case a's compaction arm above.
+point is case a's compaction variant above.
 
 | `minTokens` | Trial | Grade | Duration | Cost | Main requests | Tool results | Cache read | Haiku calls, in / out | 429s |
 |---|---|---|---|---|---|---|---|---|---|
@@ -1109,8 +1109,8 @@ run arrived inline; there was no `Exit code 143` and no
 `<persisted-output>`; each trial got one 429 at its start; no other
 madbench run was on the machine.
 
-The 8000 arm has the lowest and the narrowest cost range ($0.1970 to
-$0.2076), below every trial of the baseline. The 2000 arm has one
+The 8000 variant has the lowest and the narrowest cost range ($0.1970 to
+$0.2076), below every trial of the baseline. The 2000 variant has one
 expensive trial ($0.5561, 1,264,230 cache-read tokens) and overlaps the
 baseline. The Haiku calls are about the same at all three thresholds,
 because the only outputs over any of them were the test runs. So the
@@ -1124,11 +1124,11 @@ against 0 of 3 baseline trials) are too few to read as an effect.
 
 The task: a read-only question about claudish answered with six parallel
 `Explore` subagents. No output in the baseline reached 16,000 characters
-(largest 6,724 to 8,432), so arm A (default, `minTokens` 4,000, about
-16,000 characters) was run beside arm B (`minTokens` 2,000, about 8,000
+(largest 6,724 to 8,432), so variant A (default, `minTokens` 4,000, about
+16,000 characters) was run beside variant B (`minTokens` 2,000, about 8,000
 characters).
 
-| Arm | Trial | Grade | Duration | Cost | Hit rate | Main requests | Breaks | Haiku in / out |
+| Variant | Trial | Grade | Duration | Cost | Hit rate | Main requests | Breaks | Haiku in / out |
 |---|---|---|---|---|---|---|---|---|
 | `cases-baseline` | 1 | 12/12 | 75 s | $0.6094 | 83.6% | 56 | 32 | |
 | `cases-baseline` | 2 | 12/12 | 55 s | $0.4730 | 83.9% | 43 | 27 | |

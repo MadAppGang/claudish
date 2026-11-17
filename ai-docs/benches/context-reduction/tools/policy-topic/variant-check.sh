@@ -1,9 +1,9 @@
 #!/bin/sh
-# The topic arm of the history-policy experiment. Passes only when the
+# The topic variant of the history-policy experiment. Passes only when the
 # history-policy check passes for policy "topic" AND, when the run's config
 # names the embed decider, the prep found Ollama reachable from inside the
-# sandbox. Without Ollama the embed decider holds every time, and the arm
-# would run as a plain threshold arm with nothing to say so.
+# sandbox. Without Ollama the embed decider holds every time, and the variant
+# would run as a plain threshold variant with nothing to say so.
 #
 # Reads the decider's name from ~/.claudish/config.json; prints no value of
 # that file except the decider name.

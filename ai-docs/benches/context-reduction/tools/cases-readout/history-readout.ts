@@ -18,9 +18,9 @@
 // calls since the previous swap, Rm is claudish's history count on the swap
 // request minus the tokens that request actually sent, and Cm is the cache
 // creation of the swap request. Both are model replays, not a counterfactual:
-// the saving a policy really made is its arm's cost against the baseline arm.
+// the saving a policy really made is its variant's cost against the baseline variant.
 //
-// Per arm (run_name): mean, range and pass count.
+// Per variant (run_name): mean, range and pass count.
 //
 // Prices are USD per 1M tokens (Anthropic list prices). Cache writes: 1.25x
 // input for the 5-minute TTL, 2x for the 1-hour TTL. Haiku 5.5 is $0.10 / $0.50
@@ -256,8 +256,8 @@ function reqCost(r: Req): number {
 const fmt = (n: number) => `$${n.toFixed(4)}`;
 const num = (s: string | undefined) => (s === undefined ? NaN : Number(s));
 
-type ArmRow = { arm: string; pass: boolean; cost: number; recomputed: number };
-const arms: ArmRow[] = [];
+type VariantRow = { variant: string; pass: boolean; cost: number; recomputed: number };
+const variants: VariantRow[] = [];
 
 for (const arg of process.argv.slice(2)) {
   const [reportPath, logPath] = arg.split("=");
@@ -281,8 +281,8 @@ for (const arg of process.argv.slice(2)) {
   const scores = Object.entries(r.named_scores ?? {})
     .map(([k, v]) => `${k}:${v}`)
     .join(",");
-  const arm = r.run_name ?? "-";
-  console.log(`== ${reportPath.split("/").pop()} ${arm} ${r.scenario_id} status=${r.status} scores=${scores}`);
+  const variant = r.run_name ?? "-";
+  console.log(`== ${reportPath.split("/").pop()} ${variant} ${r.scenario_id} status=${r.status} scores=${scores}`);
   console.log(
     `cost madbench=${fmt(madbench)} recomputed=${fmt(mainCost + haikuTotal)} (requests ${fmt(mainCost)} + haiku ${fmt(haikuTotal)}) ` +
       `requests=${reqs.length} without_usage=${noUsage}${unpriced.length ? ` UNPRICED=${unpriced.join("/")}` : ""}`,
@@ -318,7 +318,7 @@ for (const arg of process.argv.slice(2)) {
         (spanS > 0 && waitS > spanS / 2 ? " RATE-LIMIT-DOMINATED" : ""),
     );
   }
-  arms.push({ arm, pass: r.status === "pass", cost: madbench, recomputed: mainCost + haikuTotal });
+  variants.push({ variant, pass: r.status === "pass", cost: madbench, recomputed: mainCost + haikuTotal });
 
   let prevSwapTs = "";
   swaps.forEach((sw, i) => {
@@ -362,13 +362,13 @@ for (const arg of process.argv.slice(2)) {
   });
 }
 
-const byArm = new Map<string, ArmRow[]>();
-for (const a of arms) byArm.set(a.arm, [...(byArm.get(a.arm) ?? []), a]);
-if (byArm.size) console.log("== arms");
-for (const [arm, rows] of byArm) {
+const byVariant = new Map<string, VariantRow[]>();
+for (const a of variants) byVariant.set(a.variant, [...(byVariant.get(a.variant) ?? []), a]);
+if (byVariant.size) console.log("== variants");
+for (const [variant, rows] of byVariant) {
   const stat = (k: "cost" | "recomputed") => {
     const v = rows.map((x) => x[k]);
     return `${fmt(v.reduce((s, x) => s + x, 0) / v.length)} [${fmt(Math.min(...v))} .. ${fmt(Math.max(...v))}]`;
   };
-  console.log(`${arm}: n=${rows.length} pass=${rows.filter((x) => x.pass).length}/${rows.length} madbench=${stat("cost")} recomputed=${stat("recomputed")}`);
+  console.log(`${variant}: n=${rows.length} pass=${rows.filter((x) => x.pass).length}/${rows.length} madbench=${stat("cost")} recomputed=${stat("recomputed")}`);
 }

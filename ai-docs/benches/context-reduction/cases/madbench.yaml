@@ -1,7 +1,7 @@
 description: "compaction cases: claudish with and without --compaction, on one build, across task shapes"
 
 # One Scenario per case. ./compaction-cases.experiment.yaml holds the two
-# arms. Run each arm as its own madbench call with --variant and --scenario,
+# variants. Run each variant as its own madbench call with --variant and --scenario,
 # and pass the case's preparation with --param case_prep=<name>:
 #
 #   madbench cases/compaction-cases.experiment.yaml --variant cases-baseline \
@@ -13,24 +13,24 @@ description: "compaction cases: claudish with and without --compaction, on one b
 #     --param claudish_build=/absolute/path/to/a/compiled/claudish \
 #     --param claudish_config=/absolute/path/to/a/0600/config
 #
-# Only the compaction call names a claudish_config, so the baseline arm never
+# Only the compaction call names a claudish_config, so the baseline variant never
 # gets a file with a key; its start.sh refuses one.
 
 params:
   model: claude-sonnet-5-5
-  # The launcher in ../bin and the folder in ../tools of the arm.
+  # The launcher in ../bin and the folder in ../tools of the variant.
   binary: ../bin/claudish-build-plain
   tool: cases-baseline
   # A script in ../tools/cases-prep run in the workspace before the agent.
   case_prep: none
-  # The claudish build both arms run (a compiled executable) and the config
-  # of the compaction arm. The defaults refuse to start.
+  # The claudish build both variants run (a compiled executable) and the config
+  # of the compaction variant. The defaults refuse to start.
   claudish_build: ../config/no-claudish-build
   claudish_config: ../config/no-claudish-config.json
   # Claude Code's settings for the agent. ../config/inline-max raises
   # bashOutputMaxChars from its default 30000 to its maximum 128000, so a
   # Bash output up to 128,000 characters reaches the model inline instead of
-  # as a short preview and a file path. Pass it to both arms of a case.
+  # as a short preview and a file path. Pass it to both variants of a case.
   cc_settings: ../config/base
 
 harness:
