@@ -28,7 +28,19 @@ if (!workDir) {
   emit(false, 0, "the envelope names no work_dir", {});
 }
 
-const gradeScript = join(dirname(import.meta.dir), "grade-xl.sh");
+// The workspace is saved before grading, so it can be graded again later:
+// madbench removes it after the run, and the hidden tests flake under host
+// load (the LocalTransport tests of lmstudio-machine-selection.test.ts). The
+// copy leaves out node_modules (a regrade reinstalls from the lockfile) and
+// lands in ../out/xl-workspaces, which git ignores. The load average at grade
+// time goes into the evidence.
+const benchDir = dirname(import.meta.dir);
+const savedTo = join(benchDir, "out", "xl-workspaces", `${new Date().toISOString().replace(/[:.]/g, "-")}-${workDir.split("/").filter(Boolean).at(-2) ?? "work"}`);
+const save = spawnSync("rsync", ["-a", "--exclude", "node_modules", `${workDir}/`, `${savedTo}/`], { encoding: "utf8", timeout: 300_000 });
+const saved = save.status === 0 ? savedTo : `NOT SAVED: rsync exit ${save.status} ${(save.stderr ?? "").slice(0, 200)}`;
+const loadAvg = spawnSync("sysctl", ["-n", "vm.loadavg"], { encoding: "utf8" }).stdout?.trim() ?? "unknown";
+
+const gradeScript = join(benchDir, "grade-xl.sh");
 const run = spawnSync("sh", [gradeScript, workDir], { encoding: "utf8", timeout: 540_000 });
 const output = `${run.stdout ?? ""}${run.stderr ?? ""}`;
 
@@ -49,6 +61,8 @@ emit(pass, score, `hidden tests: ${passed} pass, ${failed} fail, exit ${exit}`, 
   failed,
   exit,
   total: TOTAL_TESTS,
+  load_avg_at_grade: loadAvg,
+  workspace_saved_to: saved,
   tail: keptTail(output),
 });
 
