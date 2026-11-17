@@ -135,7 +135,12 @@ export function install(p: {
   mkdirSync(paths.logDir, { recursive: true });
   // An existing clone is brought to origin's main first: a run refused before the merge left a
   // clone without the weekly script, and only an update can give it one.
-  const cloned = cloneReady(paths);
+  let cloned: boolean;
+  try {
+    cloned = cloneReady(paths, p.home);
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
   for (const cmd of cloneCommands({ paths, repoUrl: p.repoUrl, cloned })) {
     if (exec(cmd) !== 0) {
       return {

@@ -44,12 +44,13 @@ import {
   readFileSync,
   readSync,
   readdirSync,
+  realpathSync,
   renameSync,
   writeFileSync,
   writeSync,
 } from "node:fs";
 import { homedir, userInfo } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, sep } from "node:path";
 
 export const REPO_URL = "https://github.com/MadAppGang/claudish.git";
 const TITLE = "claudish nightly tests";
@@ -145,11 +146,16 @@ export function cloneCommands(p: {
 /**
  * Whether the dedicated clone exists. A clone directory with no `.git`, left by a clone that was
  * killed, is renamed to `repo.broken-<ms>` beside it: `git clone` refuses a non-empty directory,
- * so it would fail every later run. A rename deletes nothing, whatever the path resolves to, so
- * a symlinked cache directory cannot turn this into a deletion elsewhere. A throw here is a red
- * run (`runWeekly`) or a refused install.
+ * so it would fail every later run. A rename deletes nothing. A cache directory whose real path
+ * is outside the home's real path (a symlink out of it) throws before anything is renamed or
+ * cloned. A throw here is a red run (`runWeekly`) or a refused install.
  */
-export function cloneReady(paths: WeeklyPaths, nowMs: number = Date.now()): boolean {
+export function cloneReady(paths: WeeklyPaths, home: string, nowMs: number = Date.now()): boolean {
+  const realHome = realpathSync(home);
+  const realCache = realpathSync(paths.cacheDir);
+  if (realCache !== realHome && !realCache.startsWith(`${realHome}${sep}`)) {
+    throw new Error(`${paths.cacheDir} resolves to ${realCache}, outside the home ${realHome}`);
+  }
   if (existsSync(join(paths.repoDir, ".git"))) return true;
   let present = true;
   try {
@@ -388,12 +394,13 @@ function readFailing(fd: number, from: number): { failing: string[]; logError?: 
 function runPart(p: {
   paths: WeeklyPaths;
   part: number;
-  opts: { now: Date; repoUrl: string; bun: string };
+  opts: { home: string; now: Date; repoUrl: string; bun: string };
   say: (line: string) => void;
   exec: (cmd: Command) => number;
 }): boolean {
   try {
-    const cloned = cloneReady(p.paths, p.opts.now.getTime());
+    mkdirSync(p.paths.cacheDir, { recursive: true });
+    const cloned = cloneReady(p.paths, p.opts.home, p.opts.now.getTime());
     const commands = weeklyCommands({
       paths: p.paths,
       repoUrl: p.opts.repoUrl,
@@ -415,6 +422,25 @@ function runPart(p: {
   }
 }
 
+/**
+ * Writes a red run's marker and returns its path: `RED-<UTC date>-part<k>.json`, or, when an
+ * earlier red run of that part and day already wrote one triage has not deleted,
+ * `RED-<UTC date>-part<k>-2.json`, `-3`, and on. Each file is created exclusively, so no red run
+ * ever replaces another's record.
+ */
+function writeRedMarker(logDir: string, now: Date, part: number, body: string): string {
+  const base = `RED-${utcDate(now)}-part${part}`;
+  for (let i = 1; ; i++) {
+    const path = join(logDir, i === 1 ? `${base}.json` : `${base}-${i}.json`);
+    try {
+      writeFileSync(path, body, { flag: "wx" });
+      return path;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+    }
+  }
+}
+
 /** One nightly part. Returns the exit code: 0 when every step passed. */
 export async function runWeekly(opts: {
   home: string;
@@ -431,20 +457,26 @@ export async function runWeekly(opts: {
   const revParse = opts.revParse ?? ((dir: string) => gitHead(dir, opts.home));
   const part = opts.part ?? nextPart(readPartResults(weeklyPaths(opts.home).logDir), opts.now);
   const paths = weeklyPaths(opts.home);
-  mkdirSync(paths.cacheDir, { recursive: true });
+  // Without the log directory no result can be written at all, so this one may throw.
   mkdirSync(paths.logDir, { recursive: true });
   const logPath = logPathFor(paths.logDir, opts.now, part);
-  // a+: appended to like any log, and read back through this descriptor for the RED marker.
-  const fd = openSync(logPath, "a+");
-  const logStart = fstatSync(fd).size;
-  const say = (line: string) => writeSync(fd, `[nightly] ${line}\n`);
   let pass = false;
   let failed: { failing: string[]; logError?: string } = { failing: [] };
+  let fd: number | undefined;
   try {
-    pass = runPart({ paths, part, opts, say, exec: (cmd) => exec(cmd, fd, opts.home) });
-    if (!pass) failed = readFailing(fd, logStart);
+    // a+: appended to like any log, and read back through this descriptor for the RED marker.
+    fd = openSync(logPath, "a+");
+    const logFd = fd;
+    const logStart = fstatSync(logFd).size;
+    const say = (line: string) => writeSync(logFd, `[nightly] ${line}\n`);
+    pass = runPart({ paths, part, opts, say, exec: (cmd) => exec(cmd, logFd, opts.home) });
+    if (!pass) failed = readFailing(logFd, logStart);
+  } catch (e) {
+    // The log could not be opened or read: the run is red and the marker says why.
+    pass = false;
+    failed = { failing: [], logError: errorText(e) };
   } finally {
-    closeSync(fd);
+    if (fd !== undefined) closeSync(fd);
   }
   const commit = revParse(paths.repoDir);
   const result: PartResult = {
@@ -457,7 +489,6 @@ export async function runWeekly(opts: {
   };
   writeFileSync(join(paths.logDir, `part${part}.json`), `${JSON.stringify(result, null, 2)}\n`);
   if (pass) return 0;
-  const marker = join(paths.logDir, `RED-${utcDate(opts.now)}-part${part}.json`);
   const red = {
     date: result.date,
     part: `${part}/${NIGHTLY_PARTS}`,
@@ -465,7 +496,7 @@ export async function runWeekly(opts: {
     ...failed,
     report: logPath,
   };
-  writeFileSync(marker, `${JSON.stringify(red, null, 2)}\n`);
+  const marker = writeRedMarker(paths.logDir, opts.now, part, `${JSON.stringify(red, null, 2)}\n`);
   notify(
     notificationArgv(
       `Nightly claudish tests part ${part}/${NIGHTLY_PARTS} failed. Marker: ${marker}`

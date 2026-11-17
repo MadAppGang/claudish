@@ -365,7 +365,7 @@ describe("runWeekly", () => {
     expect(readFileSync(join(cacheDir, aside[0] as string, "half-written"), "utf8")).toBe("x");
   });
 
-  test("moving a broken clone aside deletes nothing, even through a symlinked cache directory", async () => {
+  test("a cache directory that resolves outside the home is a red run that touches nothing there", async () => {
     const home = tempHome();
     const outside = tempHome();
     mkdirSync(join(outside, "repo"), { recursive: true });
@@ -373,10 +373,45 @@ describe("runWeekly", () => {
     const { cacheDir } = weeklyPaths(home);
     mkdirSync(join(cacheDir, ".."), { recursive: true });
     symlinkSync(outside, cacheDir);
+    const r = recorder();
+    expect(await run(home, r)).toBe(1);
+    expect(r.ran).toEqual([]);
+    expect(readdirSync(outside)).toEqual(["repo"]);
+    expect(readFileSync(join(outside, "repo", "keep"), "utf8")).toBe("k");
+    expect(existsSync(join(logs(home), "RED-2026-11-22-part3.json"))).toBe(true);
+    expect(readFileSync(join(logs(home), "2026-11-22-part3.log"), "utf8")).toContain(
+      "outside the home"
+    );
+  });
+
+  test("a second red run of a part on one day keeps the first RED marker and writes its own", async () => {
+    const home = tempHome();
+    const first = recorder(testStep);
+    await run(home, { ...first, revParse: () => "first-commit" });
+    const second = recorder("install");
+    await run(home, { ...second, revParse: () => "second-commit" });
+    const one = JSON.parse(readFileSync(join(logs(home), "RED-2026-11-22-part3.json"), "utf8"));
+    const two = JSON.parse(readFileSync(join(logs(home), "RED-2026-11-22-part3-2.json"), "utf8"));
+    expect(one.commit).toBe("first-commit");
+    expect(one.failing).toEqual(["pane > a slot settles"]);
+    expect(two.commit).toBe("second-commit");
+    expect(second.notified[0]?.join(" ")).toContain(
+      join(logs(home), "RED-2026-11-22-part3-2.json")
+    );
+  });
+
+  test("a log that cannot be opened is a red run with a marker and a notification", async () => {
+    const home = tempHome();
     await run(home, recorder());
-    const aside = readdirSync(outside).filter((f) => f.startsWith("repo.broken-"));
-    expect(aside).toHaveLength(1);
-    expect(readFileSync(join(outside, aside[0] as string, "keep"), "utf8")).toBe("k");
+    rmSync(join(logs(home), "2026-11-22-part3.log"));
+    mkdirSync(join(logs(home), "2026-11-22-part3.log"));
+    const r = recorder();
+    expect(await run(home, r)).toBe(1);
+    expect(r.ran).toEqual([]);
+    expect(JSON.parse(readFileSync(join(logs(home), "part3.json"), "utf8")).pass).toBe(false);
+    const marker = JSON.parse(readFileSync(join(logs(home), "RED-2026-11-22-part3.json"), "utf8"));
+    expect(marker.logError).toContain("EISDIR");
+    expect(r.notified).toHaveLength(1);
   });
 
   test("a preparation step that throws before any command still counts as red", async () => {
@@ -626,6 +661,20 @@ describe("install and uninstall", () => {
       ["launchctl", "bootstrap", "gui/501", plistPathFor(home)],
     ]);
     expect(existsSync(weeklyPaths(home).logDir)).toBe(true);
+  });
+
+  test("refuses a cache directory that resolves outside the home, and runs nothing", () => {
+    const home = tempHome();
+    const outside = tempHome();
+    const { cacheDir } = weeklyPaths(home);
+    mkdirSync(join(cacheDir, ".."), { recursive: true });
+    symlinkSync(outside, cacheDir);
+    const l = launchctl();
+    const result = install({ home, uid: 501, bun: "/bin/bun", repoUrl: REPO_URL, exec: l.exec });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("outside the home");
+    expect(l.ran).toEqual([]);
+    expect(existsSync(plistPathFor(home))).toBe(false);
   });
 
   test("refuses when origin's main has no weekly script yet, and loads nothing", () => {
