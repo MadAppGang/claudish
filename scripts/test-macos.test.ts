@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -12,7 +20,9 @@ import {
   parseMagmuxPin,
   planSteps,
   runSteps,
+  runsPackageScript,
   startStep,
+  stepEnv,
   verifySha256,
 } from "./test-macos.ts";
 
@@ -132,6 +142,64 @@ describe("no step loads a .env file", () => {
       });
       expect((await run.exited).code).toBe(0);
       expect(readFileSync(out, "utf8")).toBe("absent");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a step that runs a package script turns env-file loading off in every Bun below it", () => {
+    const build = STEPS.find((s) => s.name === "build:cli") as (typeof STEPS)[number];
+    expect(runsPackageScript(build)).toBe(true);
+    expect(stepEnv(build, "/b", "/m").BUN_OPTIONS).toBe(NO_ENV_FILE);
+    // Test steps start `bun test` (or ci-tests.ts) directly; their tests own their children's env.
+    for (const step of STEPS.filter((s) => s !== build)) {
+      expect(runsPackageScript(step)).toBe(false);
+      expect(stepEnv(step, "/b", "/m").BUN_OPTIONS).toBeUndefined();
+    }
+  });
+
+  test("a .env does not reach a Bun that a package script starts, two levels down", async () => {
+    const dir = tempDir();
+    try {
+      // The build step's shape: `bun run build:cli` → `cd packages/cli && bun run build` →
+      // `bun run <file>`, each nested Bun found on PATH.
+      const sub = join(dir, "sub");
+      const bin = join(dir, "bin");
+      mkdirSync(sub);
+      mkdirSync(bin);
+      symlinkSync(process.execPath, join(bin, "bun"));
+      for (const d of [dir, sub]) {
+        writeFileSync(join(d, ".env"), "TEST_MACOS_SYNTHETIC_KEY=sk-synthetic\n");
+        writeFileSync(join(d, ".env.local"), "TEST_MACOS_SYNTHETIC_LOCAL=sk-synthetic\n");
+      }
+      const out = join(dir, "seen.txt");
+      writeFileSync(
+        join(dir, "print.ts"),
+        `require("fs").writeFileSync(${JSON.stringify(out)}, ` +
+          "`${process.env.TEST_MACOS_SYNTHETIC_KEY ?? 'absent'} " +
+          "${process.env.TEST_MACOS_SYNTHETIC_LOCAL ?? 'absent'}`);\n"
+      );
+      writeFileSync(
+        join(dir, "package.json"),
+        JSON.stringify({
+          private: true,
+          scripts: { outer: "bun run inner", inner: "cd sub && bun run ../print.ts" },
+        })
+      );
+      const wrapper = join(dir, "wrapper.ts");
+      writeFileSync(
+        wrapper,
+        'const argv = process.argv.slice(process.argv[2] === "--" ? 3 : 2);\n' +
+          "const r = Bun.spawnSync(argv, { env: process.env, stdout: 'inherit' });\n" +
+          "process.exit(r.exitCode ?? 1);\n"
+      );
+      const step = { name: "probe", cwd: dir, args: ["bun", NO_ENV_FILE, "run", "outer"] };
+      const run = startStep(launchArgv(step, wrapper), {
+        cwd: dir,
+        env: { ...stepEnv(step, bin, bin), HOME: dir },
+      });
+      expect((await run.exited).code).toBe(0);
+      expect(readFileSync(out, "utf8")).toBe("absent absent");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

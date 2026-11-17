@@ -27,8 +27,10 @@
  * Every step runs under scripts/guard-real-config.ts, as `test:safe` does (a throwaway HOME, no
  * Keychain, no 1Password), with an environment built by allowlist: no provider key from the
  * developer's shell reaches it, so the credential-gated live tests skip as they do on a runner.
- * Every Bun the gate starts runs with `--no-env-file`, so a `.env` in a step's directory cannot
- * put a removed key back. Each step is a process group of its own: SIGINT, SIGTERM or SIGHUP to the gate goes to that
+ * Every Bun the gate starts runs with `--no-env-file`, and every Bun a package script starts
+ * below it inherits `BUN_OPTIONS=--no-env-file`, so a `.env` in a step's directory cannot put a
+ * removed key back.
+ * Each step is a process group of its own: SIGINT, SIGTERM or SIGHUP to the gate goes to that
  * group, and the gate stops once the step has exited.
  *
  * The pane suites run against the magmux the release ships: the gate downloads the release
@@ -99,7 +101,8 @@ export function compareVersions(a: string, b: string): number {
  * On every Bun the gate starts. Bun loads `.env` (and `.env.local`, `.env.<NODE_ENV>`) from its
  * working directory by default, which would put a key the allowlisted environment removed back
  * into a step. The flag reaches only the Bun it is given to: a `bun run <script>` starts a second
- * Bun that loads them again, so test steps start `bun test` directly.
+ * Bun that loads them again, so test steps start `bun test` directly, and a step that runs a
+ * package script also gets `BUN_OPTIONS=--no-env-file` (`stepEnv`).
  */
 export const NO_ENV_FILE = "--no-env-file";
 
@@ -148,7 +151,7 @@ export function planSteps(p: {
         {
           // Tests that start dist/ (host-pid.contract.test.ts runs `node bin/claudish.cjs`)
           // build it only when it is missing, so a Mac's dist/ from an older commit would be
-          // what they test. The build reads no credential, so its nested Buns may load .env.
+          // what they test.
           name: "build:cli",
           cwd: p.root,
           args: [p.hermetic.exe, NO_ENV_FILE, "run", "build:cli"],
@@ -371,7 +374,26 @@ export function installPinnedMagmux(pin: MagmuxPin, runDir: string): string {
   return binDir;
 }
 
-function stepEnv(binDir: string, magmuxDir: string): Record<string, string> {
+/** True when the step's Bun runs a package script (`bun --no-env-file run build:cli`). */
+export function runsPackageScript(step: Pick<Step, "args">): boolean {
+  return step.args.slice(1).find((arg) => !arg.startsWith("-")) === "run";
+}
+
+/**
+ * The environment a step starts with, built by allowlist.
+ *
+ * A package script's Buns (`bun run build:cli` → `bun run build` → `bun build`) get no
+ * `--no-env-file` from the step's argv, so such a step also gets `BUN_OPTIONS=--no-env-file`:
+ * Bun prepends it to its own argv, and every Bun below inherits it. A test step does not: it
+ * starts `bun test` directly, and its tests decide their children's environment. One of them
+ * (meta-muse-code.test.ts T2) asserts that a child Bun loads the `.env` the test wrote, which
+ * an inherited `BUN_OPTIONS` would turn red here and leave green on CI.
+ */
+export function stepEnv(
+  step: Pick<Step, "args">,
+  binDir: string,
+  magmuxDir: string
+): Record<string, string> {
   const env: Record<string, string> = {
     PATH: `${binDir}:${magmuxDir}:${process.env.PATH ?? "/usr/bin:/bin"}`,
     TMPDIR: process.env.TMPDIR ?? "/tmp",
@@ -384,6 +406,7 @@ function stepEnv(binDir: string, magmuxDir: string): Record<string, string> {
     CLAUDISH_SKIP_LIVE_E2E: "1",
     CLAUDISH_DISABLE_CATALOG_WARM: "1",
   };
+  if (runsPackageScript(step)) env.BUN_OPTIONS = NO_ENV_FILE;
   return env;
 }
 
@@ -496,7 +519,10 @@ if (import.meta.main) {
       scriptTests,
     });
     for (const { steps } of plan)
-      for (const s of steps) console.log(`[test:macos] would run (${s.cwd}): ${s.args.join(" ")}`);
+      for (const s of steps) {
+        const env = runsPackageScript(s) ? `BUN_OPTIONS=${NO_ENV_FILE} ` : "";
+        console.log(`[test:macos] would run (${s.cwd}): ${env}${s.args.join(" ")}`);
+      }
     process.exit(0);
   }
 
@@ -539,7 +565,7 @@ if (import.meta.main) {
     const started = performance.now();
     running = startStep(launchArgv(step), {
       cwd: step.cwd,
-      env: stepEnv(binDirOf.get(step.bun.version) ?? "", magmuxDir),
+      env: stepEnv(step, binDirOf.get(step.bun.version) ?? "", magmuxDir),
     });
     const result = await running.exited;
     running = null;
