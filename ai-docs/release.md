@@ -48,16 +48,20 @@ the GitHub Release as a prerelease, which is the only variant.
    "successfully" and then fails to find the binary at runtime.
 3. **External prerequisite, every release** — the build downloads magmux from
    `MadAppGang/magmux`, a different repository, at the tag pinned in
-   `.github/magmux.env` (with a checksum per platform; `test.yml` installs the same
-   pin). The pin, not that repo's latest release, decides what ships. If the pinned
+   `.github/magmux.env` (with a checksum per platform; `bun run test:macos` and the
+   dispatched macOS jobs of `test.yml` install the same pin). The pin, not that repo's latest release, decides what ships. If the pinned
    release lacks a platform asset or a checksum does not match, the build fails
    before anything publishes. Preflight lists the PINNED tag's assets.
 
 ## CI/CD
 
-`release.yml`, triggered by `push` of a tag matching `v*`. It runs **no tests** —
-`test.yml` triggers only on `pull_request` and `push` to `main`. The tag is
-therefore the gate: everything must be green before the tag leaves the machine.
+`release.yml`, triggered by `push` of a tag matching `v*`. It runs **no tests**.
+`test.yml` triggers on `pull_request`, `push` to `main` and `workflow_dispatch`;
+`pull_request` and `push` run only its Linux jobs. The macOS suites (pane and rest,
+macos-bridge, the blind hook tests, the macOS rows of hooks-loading) run only on a
+dispatch (`gh workflow run Tests --ref <branch>`) and in `bun run test:macos`, which
+must be green on a Mac before the tag (`CLAUDE.md`, Releasing). The tag is therefore
+the gate: everything must be green before the tag leaves the machine.
 
 **The PR run tests a merge preview, not the merge commit.** On `pull_request`,
 `test.yml` checks out GitHub's merge of the PR head into `main`. Before tagging,
@@ -101,20 +105,24 @@ npm publishing uses OIDC trusted publishing, so no `NPM_TOKEN` exists and nothin
 can be published from a developer machine. `HOMEBREW_TAP_TOKEN` is the only
 release secret, and only the tap job uses it.
 
-**What a soft-fail looks like here** — this workflow has four shapes that stay
+**What a soft-fail looks like here** — this workflow has three shapes that stay
 green while shipping nothing, so a green conclusion is not evidence of a publish:
 
 - The magmux platform publish loop ends in
   `|| echo "Failed to publish @claudish/${name} (may already exist)"`. A genuine
   failure is swallowed and the job still succeeds. Query each platform package on
   npm; do not read the run's conclusion.
-- The `codesign` step is `continue-on-error: true`. Unsigned macOS binaries ship
-  green.
 - The CHANGELOG commit and push are deliberately non-fatal, with a comment
   explaining why. A missing changelog commit is expected behaviour under a race,
   not a failure.
 - `update-homebrew` is gated on `vars.ENABLE_HOMEBREW == 'true'` and is SKIPPED,
   not failed, when unset. A skipped job reads as green.
+
+The darwin binaries are built on `ubuntu-latest` and checked by
+`scripts/check-darwin-binary.sh` (Mach-O arch, the embedded OpenTUI library of the
+target), which fails the build. There is no `codesign` step: Bun ad-hoc signs the
+binary. No step runs a darwin binary before it ships; `bun run test:macos` runs the
+hook loading tests on a Mac under the same Bun (`latest`).
 
 **Reading a red `Tests` run** — shapes observed on PR #351, where the junit
 summary and the log grep disagreed with the job's conclusion:
@@ -200,11 +208,12 @@ SETTLED, then SUPERSEDED — the magmux source. On 2026-09-23 (v10.0.2) the buil
 kept downloading the LATEST release of `MadAppGang/magmux`. Since `7563ab21`
 (10.4.0) it is PINNED: `.github/magmux.env` holds the tag and one checksum per
 platform, `release.yml` refuses a pin below `MIN_MAGMUX_VERSION` and verifies each
-download, and `test.yml` runs the pane suites against the same pin — MCP slots run
-in magmux panes, so the magmux that ships must be the one that was tested, and a
-new magmux release must not change what an existing claudish tag ships. A missing
-asset or checksum mismatch BLOCKS the release before anything publishes. Bump the
-pin deliberately (tag and all four sums together) after the pane suites pass on it.
+download, and the pane suites run against the same pin in `bun run test:macos` and in
+`test.yml`'s dispatched macOS jobs (no pull request runs them) — MCP slots run in
+magmux panes, so the magmux that ships must be the one that was tested, and a new
+magmux release must not change what an existing claudish tag ships. A missing asset
+or checksum mismatch BLOCKS the release before anything publishes. Bump the pin
+deliberately (tag and all four sums together) after `bun run test:macos` passes on it.
 
 SETTLED 2026-09-15 — the two `displayWidth` tests in
 `packages/cli/src/tui/viz/color.test.ts`. They were NOT flaky and must NOT be
