@@ -60,7 +60,9 @@ the GitHub Release as a prerelease, which is the only variant.
 `pull_request` and `push` run only its Linux jobs. The macOS suites (pane and rest,
 macos-bridge, the blind hook tests, the macOS rows of hooks-loading) run only on a
 dispatch (`gh workflow run Tests --ref <branch>`) and in `bun run test:macos`, which
-must be green on a Mac before the tag (`CLAUDE.md`, Releasing). The tag is therefore
+must be green on a Mac before the tag (`CLAUDE.md`, Releasing). The blind hook
+tests and the hook loading (S1) tests run only under `bun run test:macos --full`; the
+default `bun run test:macos` skips them. The tag is therefore
 the gate: everything must be green before the tag leaves the machine.
 
 **Tiers.** Pull requests and `bun run test:macos` run the ESSENTIAL tier
@@ -140,8 +142,9 @@ green while shipping nothing, so a green conclusion is not evidence of a publish
 The darwin binaries are built on `ubuntu-latest` and checked by
 `scripts/check-darwin-binary.sh` (Mach-O arch, the embedded OpenTUI library of the
 target), which fails the build. There is no `codesign` step: Bun ad-hoc signs the
-binary. No step runs a darwin binary before it ships; `bun run test:macos` runs the
-hook loading tests on a Mac under the same Bun (`latest`).
+binary. No step runs a darwin binary before it ships; `bun run test:macos --full` runs
+the hook loading tests on a Mac under the same Bun (`latest`). The default
+`bun run test:macos` does not run them.
 
 **Reading a red `Tests` run** — shapes observed on PR #351, where the junit
 summary and the log grep disagreed with the job's conclusion:
