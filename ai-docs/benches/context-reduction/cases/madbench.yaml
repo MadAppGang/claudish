@@ -255,7 +255,9 @@ scenarios:
     repo:
       url: ../../../..
       ref: 7f8ffe7faabe19fd4984bdeba663cf383cf9c083
-    timeout: 75m
+    # 100m: on glm-5-turbo one baseline trial still worked at 65 min (glm-4.7
+    # needed 30); the limit must not cut a slow trial that is still working.
+    timeout: 100m
     prompt: |
       A bug report from a claudish user, on a Gemini model through the Gemini API:
 
