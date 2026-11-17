@@ -3,15 +3,29 @@
  * real launchctl, no notification. Every command is recorded by an injected runner.
  */
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  closeSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LABEL, install, plistPathFor, plistXml, uninstall } from "./install-weekly-macos-tests.ts";
 import {
   type Command,
   REPO_URL,
+  execToLog,
   logPathFor,
   notificationArgv,
+  parseWeeklyArgs,
+  resolveHome,
   runWeekly,
   weeklyCommands,
   weeklyPaths,
@@ -319,4 +333,173 @@ describe("install and uninstall", () => {
     expect(existsSync(weeklyPaths(home).repoDir)).toBe(true);
     expect(existsSync(weeklyPaths(home).logDir)).toBe(true);
   });
+});
+
+describe("arguments and home", () => {
+  test("parseWeeklyArgs takes the known flags and their values", () => {
+    expect(
+      parseWeeklyArgs(["--home", "/h", "--repo-url", "https://x/y.git"], { uninstall: false })
+    ).toEqual({ home: "/h", repoUrl: "https://x/y.git" });
+    expect(parseWeeklyArgs(["--uninstall"], { uninstall: true })).toEqual({ uninstall: true });
+    expect(parseWeeklyArgs(["--home", "/h"], { uninstall: true })).toEqual({
+      home: "/h",
+      uninstall: false,
+    });
+  });
+
+  test("parseWeeklyArgs refuses an unknown flag, a misspelt --uninstall included", () => {
+    expect(() => parseWeeklyArgs(["--uninstal"], { uninstall: true })).toThrow(
+      "unknown argument --uninstal"
+    );
+    expect(() => parseWeeklyArgs(["--uninstall"], { uninstall: false })).toThrow(
+      "unknown argument --uninstall"
+    );
+    expect(() => parseWeeklyArgs(["extra"], { uninstall: false })).toThrow("unknown argument");
+  });
+
+  test("parseWeeklyArgs refuses a missing or flag-shaped option value", () => {
+    expect(() => parseWeeklyArgs(["--home"], { uninstall: true })).toThrow("--home needs a value");
+    expect(() => parseWeeklyArgs(["--home", "--uninstall"], { uninstall: true })).toThrow(
+      "--home needs a value"
+    );
+    expect(() => parseWeeklyArgs(["--repo-url", ""], { uninstall: false })).toThrow(
+      "--repo-url needs a value"
+    );
+  });
+
+  const account = () => "/Users/someone";
+
+  test("resolveHome takes --home, then a non-empty HOME, then the account's home", () => {
+    expect(resolveHome({ flag: "/h", env: "/e", account })).toBe("/h");
+    expect(resolveHome({ env: "/e", account })).toBe("/e");
+    expect(resolveHome({ env: "", account })).toBe("/Users/someone");
+    expect(resolveHome({ env: undefined, account })).toBe("/Users/someone");
+  });
+
+  test("resolveHome refuses a relative or empty home", () => {
+    expect(() => resolveHome({ flag: "rel-home", account })).toThrow("absolute");
+    expect(() => resolveHome({ flag: "./rel-home", account })).toThrow("absolute");
+    expect(() => resolveHome({ env: "rel", account })).toThrow("absolute");
+    expect(() => resolveHome({ env: "", account: () => "" })).toThrow("absolute");
+  });
+
+  test("execToLog gives the command the run's home as HOME", () => {
+    const home = tempHome();
+    const log = join(home, "out.log");
+    const fd = openSync(log, "a");
+    try {
+      const code = execToLog(
+        { name: "home", cwd: home, argv: ["/bin/sh", "-c", 'printf "%s" "$HOME"'] },
+        fd,
+        home
+      );
+      expect(code).toBe(0);
+    } finally {
+      closeSync(fd);
+    }
+    expect(readFileSync(log, "utf8")).toBe(home);
+  });
+
+  test("runWeekly hands every command the run's home", async () => {
+    const home = tempHome();
+    const seen: string[] = [];
+    await runWeekly({
+      home,
+      now: new Date("2026-11-22T11:00:00Z"),
+      repoUrl: REPO_URL,
+      bun: "/bin/bun",
+      exec: (_cmd, _fd, runHome) => {
+        seen.push(runHome);
+        return 0;
+      },
+      notify: () => {},
+    });
+    expect(seen.length).toBeGreaterThan(0);
+    for (const h of seen) expect(h).toBe(home);
+  });
+});
+
+/**
+ * The scripts themselves, with fake git, launchctl and osascript first on PATH and a temporary
+ * HOME: a refused argument runs no command and writes nothing.
+ */
+describe("the scripts refuse bad arguments before they act", () => {
+  function fakes(): { bin: string; log: string; home: string } {
+    const home = tempHome();
+    const bin = join(home, "fake-bin");
+    const log = join(home, "fake-commands.log");
+    mkdirSync(bin);
+    for (const name of ["git", "launchctl", "osascript"]) {
+      const file = join(bin, name);
+      writeFileSync(file, `#!/bin/sh\necho "${name} $*" >> "${log}"\nexit 1\n`);
+      chmodSync(file, 0o755);
+    }
+    return { bin, log, home };
+  }
+
+  function runScript(script: string, args: string[], f: { bin: string; home: string }) {
+    const cwd = join(f.home, "cwd");
+    mkdirSync(cwd);
+    mkdirSync(join(f.home, "env-home"));
+    const r = Bun.spawnSync(
+      [process.execPath, "--no-env-file", join(import.meta.dir, script), ...args],
+      {
+        cwd,
+        env: { PATH: `${f.bin}:/usr/bin:/bin`, HOME: join(f.home, "env-home") },
+        stdout: "pipe",
+        stderr: "pipe",
+      }
+    );
+    return { code: r.exitCode, err: r.stderr.toString(), cwd };
+  }
+
+  const cases: { script: string; args: (home: string) => string[]; message: string }[] = [
+    {
+      script: "install-weekly-macos-tests.ts",
+      args: (h) => ["--home", h, "--uninstal"],
+      message: "unknown argument --uninstal",
+    },
+    {
+      script: "install-weekly-macos-tests.ts",
+      args: () => ["--home", "--uninstall"],
+      message: "--home needs a value",
+    },
+    {
+      script: "install-weekly-macos-tests.ts",
+      args: () => ["--home", "rel-home"],
+      message: "absolute",
+    },
+    {
+      script: "weekly-macos-tests.ts",
+      args: (h) => ["--home", h, "--hme", h],
+      message: "unknown argument --hme",
+    },
+    { script: "weekly-macos-tests.ts", args: () => ["--home"], message: "--home needs a value" },
+    {
+      script: "weekly-macos-tests.ts",
+      args: () => ["--home", "./rel-home"],
+      message: "absolute",
+    },
+  ];
+
+  for (const c of cases) {
+    test.skipIf(process.platform !== "darwin")(
+      `${c.script} ${c.args("<home>").join(" ")} exits non-zero and runs nothing`,
+      () => {
+        const f = fakes();
+        const r = runScript(c.script, c.args(f.home), f);
+        expect(r.code).not.toBe(0);
+        expect(r.err).toContain(c.message);
+        expect(existsSync(f.log)).toBe(false);
+        // Bun's own transpiler cache may appear under HOME; the weekly directories may not.
+        for (const home of [f.home, join(f.home, "env-home")]) {
+          const paths = weeklyPaths(home);
+          expect(existsSync(paths.cacheDir)).toBe(false);
+          expect(existsSync(paths.logDir)).toBe(false);
+          expect(existsSync(plistPathFor(home))).toBe(false);
+        }
+        expect(readdirSync(r.cwd)).toEqual([]);
+      }
+    );
+  }
 });

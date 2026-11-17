@@ -5,6 +5,10 @@
  *
  *   bun scripts/weekly-macos-tests.ts [--home <dir>] [--repo-url <url>]
  *
+ * Any other argument, or a flag with no value, is refused (exit 2) before anything runs. The
+ * home is `--home`, else a non-empty HOME, else the account's home, and must be absolute; every
+ * command runs with it as HOME.
+ *
  * Pull requests and `bun run test:macos` run the essential tier; this runs everything
  * (`bun run test:macos --full`) on origin's main, once a week.
  *
@@ -19,8 +23,8 @@
  */
 import { spawnSync } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, writeSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { homedir, userInfo } from "node:os";
+import { isAbsolute, join } from "node:path";
 
 export const REPO_URL = "https://github.com/MadAppGang/claudish.git";
 const TITLE = "claudish weekly tests";
@@ -117,11 +121,14 @@ export function notificationArgv(logPath: string): string[] {
   ];
 }
 
-/** Runs one command with its output appended to the log; returns its exit code. */
-export function execToLog(cmd: Command, logFd: number): number {
+/**
+ * Runs one command with its output appended to the log; returns its exit code. The command's
+ * HOME is the run's home, so a run started by hand with `--home <dir>` keeps every child there.
+ */
+export function execToLog(cmd: Command, logFd: number, home: string): number {
   const r = spawnSync(cmd.argv[0] as string, cmd.argv.slice(1), {
     cwd: cmd.cwd,
-    env: process.env,
+    env: { ...process.env, HOME: home },
     stdio: ["ignore", logFd, logFd],
   });
   if (r.error) writeSync(logFd, `could not start ${cmd.argv[0]}: ${r.error.message}\n`);
@@ -138,7 +145,7 @@ export async function runWeekly(opts: {
   now: Date;
   repoUrl: string;
   bun: string;
-  exec?: (cmd: Command, logFd: number) => number;
+  exec?: (cmd: Command, logFd: number, home: string) => number;
   notify?: (argv: string[]) => void;
 }): Promise<number> {
   const exec = opts.exec ?? execToLog;
@@ -155,7 +162,7 @@ export async function runWeekly(opts: {
     say(`start ${opts.now.toISOString()} in ${paths.repoDir}`);
     for (const cmd of commands) {
       say(`▶ ${cmd.name}: ${cmd.argv.join(" ")} (${cmd.cwd})`);
-      const code = exec(cmd, fd);
+      const code = exec(cmd, fd, opts.home);
       if (code !== 0) {
         say(`FAIL ${cmd.name} (exit ${code})`);
         notify(notificationArgv(logPath));
@@ -170,9 +177,60 @@ export async function runWeekly(opts: {
   }
 }
 
-function flag(argv: string[], name: string): string | undefined {
-  const at = argv.indexOf(name);
-  return at === -1 ? undefined : argv[at + 1];
+export interface WeeklyArgs {
+  home?: string;
+  repoUrl?: string;
+  uninstall?: boolean;
+}
+
+const VALUE_FLAGS = { "--home": "home", "--repo-url": "repoUrl" } as const;
+
+/**
+ * The weekly scripts' flags: `--home <dir>`, `--repo-url <url>`, and `--uninstall` where
+ * `o.uninstall` allows it. Anything else, and a missing, empty or flag-shaped value, throws, so a
+ * misspelt `--uninstall` never installs and `--home --uninstall` never reads a flag as a path.
+ */
+export function parseWeeklyArgs(argv: string[], o: { uninstall: boolean }): WeeklyArgs {
+  const out: WeeklyArgs = o.uninstall ? { uninstall: false } : {};
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i] as string;
+    if (o.uninstall && arg === "--uninstall") {
+      out.uninstall = true;
+    } else if (arg in VALUE_FLAGS) {
+      const value = argv[i + 1];
+      if (!value || value.startsWith("-")) throw new Error(`${arg} needs a value`);
+      out[VALUE_FLAGS[arg as keyof typeof VALUE_FLAGS]] = value;
+      i++;
+    } else {
+      const usage = o.uninstall
+        ? "[--uninstall] [--home <dir>] [--repo-url <url>]"
+        : "[--home <dir>] [--repo-url <url>]";
+      throw new Error(`unknown argument ${arg}; usage: ${usage}`);
+    }
+  }
+  return out;
+}
+
+/** The account's home from the user database, which an empty or unset HOME does not change. */
+function accountHome(): string {
+  return homedir() || userInfo().homedir;
+}
+
+/**
+ * The home the weekly run works under: `--home`, else a non-empty HOME, else the account's home.
+ * A relative or empty path is refused, not resolved: the plist and every command's cwd would
+ * otherwise depend on the directory the script was started from.
+ */
+export function resolveHome(p: {
+  flag?: string;
+  env?: string;
+  account?: () => string;
+}): string {
+  const home = p.flag ?? (p.env || (p.account ?? accountHome)());
+  if (!home || !isAbsolute(home)) {
+    throw new Error(`the home must be an absolute path, not "${home}"`);
+  }
+  return home;
 }
 
 if (import.meta.main) {
@@ -180,13 +238,20 @@ if (import.meta.main) {
     console.error(`[weekly] runs on macOS only, not ${process.platform}`);
     process.exit(1);
   }
-  const argv = process.argv.slice(2);
-  const home = flag(argv, "--home") ?? process.env.HOME ?? homedir();
+  let args: WeeklyArgs;
+  let home: string;
+  try {
+    args = parseWeeklyArgs(process.argv.slice(2), { uninstall: false });
+    home = resolveHome({ flag: args.home, env: process.env.HOME });
+  } catch (err) {
+    console.error(`[weekly] ${(err as Error).message}`);
+    process.exit(2);
+  }
   const now = new Date();
   const code = await runWeekly({
     home,
     now,
-    repoUrl: flag(argv, "--repo-url") ?? REPO_URL,
+    repoUrl: args.repoUrl ?? REPO_URL,
     bun: process.execPath,
   });
   const log = logPathFor(weeklyPaths(home).logDir, now);

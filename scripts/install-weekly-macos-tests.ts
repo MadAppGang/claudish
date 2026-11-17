@@ -6,6 +6,10 @@
  *   bun scripts/install-weekly-macos-tests.ts [--home <dir>] [--repo-url <url>]
  *   bun scripts/install-weekly-macos-tests.ts --uninstall [--home <dir>]
  *
+ * Any other argument (a misspelt `--uninstall` included), or a flag with no value, is refused
+ * (exit 2) before anything is cloned, written or loaded. The home is `--home`, else a non-empty
+ * HOME, else the account's home, and must be an absolute path.
+ *
  * Install clones origin's main into the weekly run's own directory when it is not there yet
  * (`<home>/Library/Caches/claudish-weekly-tests/repo`), or, when it is, fetches, hard-resets and
  * cleans that clone (and nothing else) to origin's main, as the weekly run does. It refuses
@@ -24,9 +28,16 @@
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { type Command, REPO_URL, cloneCommands, weeklyPaths } from "./weekly-macos-tests.ts";
+import {
+  type Command,
+  REPO_URL,
+  type WeeklyArgs,
+  cloneCommands,
+  parseWeeklyArgs,
+  resolveHome,
+  weeklyPaths,
+} from "./weekly-macos-tests.ts";
 
 export const LABEL = "com.madappgang.claudish.weekly-macos-tests";
 const WEEKLY_SCRIPT = join("scripts", "weekly-macos-tests.ts");
@@ -153,20 +164,22 @@ export function uninstall(p: { home: string; uid: number; exec?: (cmd: Command) 
   rmSync(plistPathFor(p.home), { force: true });
 }
 
-function flag(argv: string[], name: string): string | undefined {
-  const at = argv.indexOf(name);
-  return at === -1 ? undefined : argv[at + 1];
-}
-
 if (import.meta.main) {
   if (process.platform !== "darwin") {
     console.error(`[weekly] launchd agents exist on macOS only, not ${process.platform}`);
     process.exit(1);
   }
-  const argv = process.argv.slice(2);
-  const home = flag(argv, "--home") ?? process.env.HOME ?? homedir();
+  let args: WeeklyArgs;
+  let home: string;
+  try {
+    args = parseWeeklyArgs(process.argv.slice(2), { uninstall: true });
+    home = resolveHome({ flag: args.home, env: process.env.HOME });
+  } catch (err) {
+    console.error(`[weekly] ${(err as Error).message}`);
+    process.exit(2);
+  }
   const uid = process.getuid?.() ?? 0;
-  if (argv.includes("--uninstall")) {
+  if (args.uninstall) {
     uninstall({ home, uid });
     console.log(`[weekly] removed ${plistPathFor(home)}; the clone and the logs stay`);
   } else {
@@ -174,7 +187,7 @@ if (import.meta.main) {
       home,
       uid,
       bun: process.execPath,
-      repoUrl: flag(argv, "--repo-url") ?? REPO_URL,
+      repoUrl: args.repoUrl ?? REPO_URL,
     });
     if (!result.ok) {
       console.error(`[weekly] ${result.error}`);
