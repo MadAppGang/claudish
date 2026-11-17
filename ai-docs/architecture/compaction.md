@@ -115,7 +115,7 @@ one of them is never compressed and never recorded, so it is sent as it is on ev
   `cd packages/cli && grep -rn "nativeRouteFor" src; echo ---; cat src/providers/native-route.ts`
   (17,088 to 17,176 characters). Compressed, the agent printed and grepped the file again to get
   the exact text to edit: 17 to 22 tool results instead of 10, and +42.9% cost against the
-  baseline ($0.2541 vs $0.1778 mean, 3/3 passing in both arms). The rule is an allowlist, so a miss
+  baseline ($0.2541 vs $0.1778 mean, 3/3 passing in both variants). The rule is an allowlist, so a miss
   only compresses as before. Outside quotes, the command splits into segments on `;`, `&&`, `||`
   and newlines, and each segment into stages on `|`. Every stage must be a printer (`cat`, `nl`,
   `head`, `tail`, `bat`, `less`, `more`, `sed -n '<range>p'`) or a locator (`cd`, `pwd`, `echo`,
