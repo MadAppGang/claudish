@@ -46,8 +46,10 @@
  * finds it. The Mac's own magmux is never used or changed. Anything it cannot read or verify
  * stops the gate.
  *
- * Expect a long `--full` run: the hermetic slices run as 17 concurrent processes. A red run on a
- * loaded machine is still red: rerun once the Mac is quiet.
+ * Expect a long `--full` run: the hermetic slices run as 17 concurrent processes, each with a
+ * `--max-concurrency` scaled to the core count (`sliceConcurrency`), so the whole step runs about
+ * twice the core count of tests at once. A red run on a loaded machine is still red: rerun once
+ * the Mac is quiet.
  */
 import { spawn, spawnSync } from "node:child_process";
 import {
@@ -59,7 +61,7 @@ import {
   rmSync,
   symlinkSync,
 } from "node:fs";
-import { constants as osConstants, tmpdir } from "node:os";
+import { availableParallelism, constants as osConstants, tmpdir } from "node:os";
 import { join } from "node:path";
 import { findMagmuxCandidates } from "../packages/cli/src/launcher/magmux-binary.ts";
 
@@ -89,6 +91,20 @@ export const HERMETIC_RUNS = "pane@1/6,pane@2/6,pane@3/6,pane@4/6,pane@5/6,pane@
  * (`HERMETIC_RUNS`).
  */
 export const GATE_SLICES = { idle: 3, pane: 6, rest: 8 } as const;
+
+/** How many concurrent `bun test` processes the hermetic step starts. */
+export const GATE_SLICE_COUNT = Object.values(GATE_SLICES).reduce((a, b) => a + b, 0);
+
+/**
+ * The `--max-concurrency` each slice gets: `max(1, floor(cores * 2 / slices))`, so all slices
+ * together run about twice the core count of tests at once (18 cores, 17 slices: 2 each).
+ * A fixed 8 per slice let 17 slices run up to 136 tests at once on an 18-core Mac, and
+ * time-bound tests failed: two 5000 ms timeouts, a 10 s timeout, a timing-ratio test and a
+ * sandbox resource limit, all of which passed with 7 slices of 8.
+ */
+export function sliceConcurrency(cores: number, slices: number = GATE_SLICE_COUNT): number {
+  return Math.max(1, Math.floor((cores * 2) / slices));
+}
 
 /** The gate's `--run` list in both tiers: every slice of every group. */
 export const GATE_RUNS = Object.entries(GATE_SLICES)
@@ -190,8 +206,11 @@ export function planSteps(p: {
   release: PlannedBun;
   scriptTests: string[];
   tier: GateTier;
+  /** The machine's core count; `os.availableParallelism()` unless given. */
+  cores?: number;
 }): StepGroup[] {
   const cli = join(p.root, "packages", "cli");
+  const maxConcurrency = sliceConcurrency(p.cores ?? availableParallelism());
   const full = p.tier === "full";
   const groups: StepGroup[] = [
     {
@@ -219,7 +238,7 @@ export function planSteps(p: {
             p.tier,
             "--",
             NO_ENV_FILE,
-            "--max-concurrency=8",
+            `--max-concurrency=${maxConcurrency}`,
           ],
         },
         {

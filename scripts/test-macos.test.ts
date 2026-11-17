@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { discover, groupOf } from "../packages/cli/scripts/ci-tests.ts";
 import {
   GATE_RUNS,
+  GATE_SLICE_COUNT,
   HERMETIC_RUNS,
   NO_ENV_FILE,
   bunPinOf,
@@ -24,6 +25,7 @@ import {
   planSteps,
   runSteps,
   runsPackageScript,
+  sliceConcurrency,
   startStep,
   stepEnv,
   verifySha256,
@@ -92,6 +94,22 @@ describe("tiers", () => {
       const args = hermeticArgs(plan);
       expect(args[args.indexOf("--run") + 1]).toBe(GATE_RUNS);
     }
+  });
+
+  test("each slice's --max-concurrency keeps the total near twice the core count", () => {
+    expect(GATE_SLICE_COUNT).toBe(17);
+    const concurrencyOf = (cores: number, tier: "essential" | "full") => {
+      const plan = planSteps({ ...PLAN_INPUT, tier, cores }).flatMap((g) => g.steps);
+      return hermeticArgs(plan).filter((a) => a.startsWith("--max-concurrency"));
+    };
+    for (const tier of ["essential", "full"] as const) {
+      expect(concurrencyOf(18, tier)).toEqual(["--max-concurrency=2"]);
+      expect(concurrencyOf(4, tier)).toEqual(["--max-concurrency=1"]);
+      expect(concurrencyOf(64, tier)).toEqual(["--max-concurrency=7"]);
+    }
+    expect(sliceConcurrency(1, 17)).toBe(1);
+    expect(sliceConcurrency(18, 17)).toBe(2);
+    expect(sliceConcurrency(64, 17)).toBe(7);
   });
 
   test("the gate's idle slices are test.yml's idle shards", () => {

@@ -108,6 +108,11 @@ group into slices, one concurrent `bun test` process each (`GATE_SLICES` in
 runners) and rest in 8, 17 processes on an 18-core Mac. In the local run above, `rest` as one
 process was the whole 432 s of the hermetic step, against at most 76 s for a pane slice; in 8
 slices each is near 54 s. test.yml's macOS runners still run `rest` whole.
+Each slice gets `--max-concurrency=max(1, floor(cores * 2 / slices))` (`sliceConcurrency`, cores
+from `os.availableParallelism()`), so the 17 slices together run about twice the core count of
+tests at once: 2 per slice on an 18-core Mac. With a fixed 8 per slice (up to 136 concurrent tests
+on 18 cores) an essential run failed five time-bound tests (two 5000 ms timeouts, a 10 s timeout,
+a timing-ratio test and a sandbox resource limit) that all passed with 7 processes of 8.
 
 The macOS weekly run works in a clone of its own, `~/Library/Caches/claudish-weekly-tests/repo`:
 cloned once, then fetched and hard-reset to `origin/main` inside that clone only, so no checkout
