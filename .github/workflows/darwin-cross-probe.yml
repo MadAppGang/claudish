@@ -1,0 +1,38 @@
+name: Darwin cross-compile probe
+
+# Temporary measurement: build the darwin binaries on Linux, the way release.yml
+# would, and upload them so they can be run on a real Mac. Removed before merge.
+
+on:
+  pull_request:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: bun-darwin-arm64
+            artifact: claudish-darwin-arm64
+          - target: bun-darwin-x64
+            artifact: claudish-darwin-x64
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install
+      - run: bun run build:cli
+      - name: Cross-compile
+        run: |
+          bun --version
+          bun build packages/cli/src/index.ts --compile --no-compile-autoload-dotenv --target=${{ matrix.target }} --outfile ${{ matrix.artifact }}
+          ls -la ${{ matrix.artifact }}
+          file ${{ matrix.artifact }}
+      - uses: actions/upload-artifact@v5
+        with:
+          name: probe-${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
