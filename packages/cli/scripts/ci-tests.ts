@@ -3,10 +3,17 @@
  * runner for them.
  *
  *   bun scripts/ci-tests.ts --list
- *   bun scripts/ci-tests.ts --plan pane@6
- *   bun scripts/ci-tests.ts --run pane@1/6,pane@2/6,rest [-- <bun test args>]
+ *   bun scripts/ci-tests.ts --plan pane@6 [--tier essential|full]
+ *   bun scripts/ci-tests.ts --run pane@1/6,pane@2/6,rest [--tier essential|full] [-- <bun test args>]
  *   bun scripts/ci-tests.ts --update-times <junit.xml>…
  *   bun scripts/ci-tests.ts --local <junit.xml> [-- <bun test args>]
+ *
+ * Two tiers. `full` is every file. `essential` (the default of `--plan` and `--run`) is what a
+ * pull request and `bun run test:macos` run: test-tiers.json names at most three files for each
+ * slow category, and every other file of a slow category is weekly; any file outside the slow
+ * categories is essential unless ci-test-times.json measures it at the data file's
+ * `heavySeconds` or more. The weekly runs use `full`. A data file that names a missing file, or
+ * more than three files for one category, stops `--plan` and `--run`.
  *
  * `--local` is the package's `test` script: a plain `bun test` that also writes a junit report
  * and prints the slowest files from it, so a slow local run names its slow files.
@@ -31,6 +38,7 @@ import { join, resolve as resolvePath } from "node:path";
 
 const CLI = join(import.meta.dir, "..");
 const TIMES = join(import.meta.dir, "ci-test-times.json");
+const TIERS = join(import.meta.dir, "test-tiers.json");
 
 /** Bun's own test-file name rule. */
 const TEST_FILE = /(\.test|_test_|\.spec|_spec_)[^/]*\.[cm]?[jt]sx?$/;
@@ -83,6 +91,99 @@ function byGroup(files: string[]): Map<string, string[]> {
   ]);
   for (const f of files) out.get(groupOf(f))?.push(f);
   return out;
+}
+
+export const TIER_NAMES = ["essential", "full"] as const;
+export type Tier = (typeof TIER_NAMES)[number];
+export const MAX_ESSENTIAL_PER_CATEGORY = 3;
+
+/** test-tiers.json. */
+export interface TierData {
+  /** A file outside the slow categories measured at this many seconds or more is weekly. */
+  heavySeconds: number;
+  slow: SlowCategory[];
+}
+
+export interface SlowCategory {
+  category: string;
+  /**
+   * `src/pane/` takes every file under that directory; a prefix that does not end in `/`
+   * (`src/team`) takes only the files directly in its directory whose names start with it.
+   */
+  prefix: string;
+  essential: { file: string; guards: string }[];
+}
+
+export function loadTiers(path: string = TIERS): TierData {
+  return JSON.parse(readFileSync(path, "utf8")) as TierData;
+}
+
+function inPrefix(file: string, prefix: string): boolean {
+  if (!file.startsWith(prefix)) return false;
+  return prefix.endsWith("/") || !file.slice(prefix.length).includes("/");
+}
+
+/** The slow category a file belongs to, or undefined for every other file. */
+export function slowCategoryOf(file: string, data: TierData): string | undefined {
+  return data.slow.find((c) => inPrefix(file, c.prefix))?.category;
+}
+
+/** `essential` or `weekly`: whether a file runs on every pull request or only in the full run. */
+export function tierOf(
+  file: string,
+  data: TierData,
+  times: Record<string, number>
+): "essential" | "weekly" {
+  const category = data.slow.find((c) => inPrefix(file, c.prefix));
+  if (category) return category.essential.some((e) => e.file === file) ? "essential" : "weekly";
+  const measured = times[file];
+  return measured !== undefined && measured >= data.heavySeconds ? "weekly" : "essential";
+}
+
+/** The files of `files` a tier runs, in their own order. */
+export function filesInTier(
+  files: string[],
+  tier: Tier,
+  data: TierData,
+  times: Record<string, number>
+): string[] {
+  if (tier === "full") return files;
+  return files.filter((f) => tierOf(f, data, times) === "essential");
+}
+
+/** Every reason the data file cannot be used; empty when it can. */
+export function validateTiers(data: TierData, known: string[]): string[] {
+  const errors: string[] = [];
+  const exists = new Set(known);
+  if (typeof data.heavySeconds !== "number" || !(data.heavySeconds > 0)) {
+    errors.push(`heavySeconds must be a positive number of seconds, not ${data.heavySeconds}`);
+  }
+  const seen = new Set<string>();
+  for (const c of data.slow ?? []) {
+    if (c.essential.length > MAX_ESSENTIAL_PER_CATEGORY) {
+      errors.push(
+        `category ${c.category} lists ${c.essential.length} essential files; at most ${MAX_ESSENTIAL_PER_CATEGORY}`
+      );
+    }
+    for (const { file, guards } of c.essential) {
+      if (!exists.has(file)) errors.push(`${file} (category ${c.category}) is not a test file`);
+      if (slowCategoryOf(file, data) !== c.category) {
+        errors.push(`${file} is not in category ${c.category} (prefix ${c.prefix})`);
+      }
+      if (seen.has(file)) errors.push(`${file} is listed twice`);
+      seen.add(file);
+      if (!guards?.trim()) errors.push(`${file} has no guards text`);
+    }
+  }
+  return errors;
+}
+
+/** The tier data, refused with every error at once when it names something it cannot. */
+function checkedTiers(): TierData {
+  const data = loadTiers();
+  const errors = validateTiers(data, discover());
+  if (errors.length > 0) throw new Error(`${TIERS}:\n  ${errors.join("\n  ")}`);
+  return data;
 }
 
 function readTimes(): Record<string, number> {
@@ -254,25 +355,49 @@ async function run(
 }
 
 const USAGE =
-  "usage: ci-tests.ts --list | --plan <group>@<n> | --run <group|group@i/n>[,…] [-- <bun test args>] | --update-times <junit.xml>… | --local <junit.xml> [-- <bun test args>]";
+  "usage: ci-tests.ts --list | --plan <group>@<n> [--tier essential|full] | --run <group|group@i/n>[,…] [--tier essential|full] [-- <bun test args>] | --update-times <junit.xml>… | --local <junit.xml> [-- <bun test args>]";
+
+/** `--tier <name>` taken out of our own arguments; `essential` when absent. */
+function takeTier(own: string[]): { tier: Tier; rest: string[] } {
+  const at = own.indexOf("--tier");
+  if (at === -1) return { tier: "essential", rest: own };
+  const name = own[at + 1] ?? "";
+  if (!(TIER_NAMES as readonly string[]).includes(name)) {
+    console.error(`[ci-tests] unknown tier "${name}"; tiers: ${TIER_NAMES.join(", ")}`);
+    process.exit(2);
+  }
+  return { tier: name as Tier, rest: [...own.slice(0, at), ...own.slice(at + 2)] };
+}
 
 if (import.meta.main) {
   const argv = process.argv.slice(2);
   const dash = argv.indexOf("--");
-  const own = dash === -1 ? argv : argv.slice(0, dash);
+  const { tier, rest: own } = takeTier(dash === -1 ? argv : argv.slice(0, dash));
   const bunArgs = dash === -1 ? [] : argv.slice(dash + 1);
-  const groups = byGroup(discover());
+  const all = byGroup(discover());
   const times = readTimes();
   const [command, value] = own;
+  const tiered = () => {
+    const data = checkedTiers();
+    return new Map([...all].map(([g, fs]) => [g, filesInTier(fs, tier, data, times)] as const));
+  };
+  const weigh = (fs: string[]) => fs.reduce((s, f) => s + (times[f] ?? UNMEASURED_SECONDS), 0);
 
   if (command === "--list") {
-    for (const [name, files] of groups) {
-      const secs = files.reduce((s, f) => s + (times[f] ?? UNMEASURED_SECONDS), 0);
-      console.log(`${name}\t${files.length} files\t${secs.toFixed(0)} s measured`);
+    const data = checkedTiers();
+    for (const [name, files] of all) {
+      const essential = filesInTier(files, "essential", data, times);
+      console.log(
+        `${name}\tfull ${files.length} files, ${weigh(files).toFixed(0)} s\tessential ${essential.length} files, ${weigh(essential).toFixed(0)} s`
+      );
     }
   } else if (command === "--plan" && value) {
     const [name, n] = value.split("@");
-    for (const [i, s] of slices(groups.get(name ?? "") ?? [], Number(n), times).entries())
+    const files = tiered().get(name ?? "") ?? [];
+    console.log(
+      `[ci-tests] tier ${tier}: ${name} ${files.length} of ${(all.get(name ?? "") ?? []).length} files`
+    );
+    for (const [i, s] of slices(files, Number(n), times).entries())
       console.log(`${name}@${i + 1}/${n}\t${s.files.length} files\t${s.seconds.toFixed(0)} s`);
   } else if (command === "--update-times" && own.length > 1) {
     const next = { ...times };
@@ -291,10 +416,23 @@ if (import.meta.main) {
     process.exit(await local(value, [...own.slice(2), ...bunArgs]));
   } else if (command === "--run" && value) {
     const wanted = value.split(",").filter(Boolean);
+    const groups = tiered();
     const runs = wanted.map((spec) => resolve(spec, groups, times));
-    for (const r of runs) if (r.files.length === 0) throw new Error(`${r.label} has no test files`);
+    for (const spec of wanted) {
+      const name = spec.split("@")[0] ?? "";
+      if ((groups.get(name) ?? []).length === 0) {
+        throw new Error(`${name} has no test files in the ${tier} tier`);
+      }
+    }
+    console.log(`[ci-tests] tier ${tier}`);
+    // A slice of a group the tier has thinned can be empty; the group's files are all in the
+    // other slices, so it has nothing to run and nothing to fail.
     const codes = await Promise.all(
-      runs.map((r) => run(r.label, r.files, bunArgs, runs.length > 1))
+      runs.map((r) => {
+        if (r.files.length > 0) return run(r.label, r.files, bunArgs, runs.length > 1);
+        console.log(`[ci-tests] ${r.label}: no files in the ${tier} tier`);
+        return Promise.resolve(0);
+      })
     );
     process.exit(codes.some((c) => c !== 0) ? 1 : 0);
   } else {

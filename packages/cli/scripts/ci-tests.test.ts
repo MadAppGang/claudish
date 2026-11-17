@@ -2,11 +2,195 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+  MAX_ESSENTIAL_PER_CATEGORY,
+  type TierData,
+  discover,
+  filesInTier,
+  loadTiers,
+  slowCategoryOf,
+  tierOf,
+  validateTiers,
+} from "./ci-tests";
 import { slowestReport } from "./ci-tests";
 
 const SCRIPT = join(import.meta.dir, "ci-tests.ts");
 const dir = mkdtempSync(join(tmpdir(), "ci-tests-local-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+const DATA: TierData = {
+  heavySeconds: 2,
+  slow: [
+    {
+      category: "pane",
+      prefix: "src/pane/",
+      essential: [{ file: "src/pane/a.test.ts", guards: "a session starts" }],
+    },
+    {
+      category: "team",
+      prefix: "src/team",
+      essential: [{ file: "src/team-a.test.ts", guards: "a run settles" }],
+    },
+  ],
+};
+
+describe("tier derivation", () => {
+  test("a slow category runs only its listed files; every other file of it is weekly", () => {
+    expect(tierOf("src/pane/a.test.ts", DATA, {})).toBe("essential");
+    expect(tierOf("src/pane/b.test.ts", DATA, {})).toBe("weekly");
+    expect(tierOf("src/pane/nested/c.test.ts", DATA, {})).toBe("weekly");
+  });
+
+  test("a new file in a slow category is weekly by default, however fast it is", () => {
+    expect(tierOf("src/pane/brand-new.test.ts", DATA, { "src/pane/brand-new.test.ts": 0 })).toBe(
+      "weekly"
+    );
+  });
+
+  test("a listed slow file stays essential however slow it is", () => {
+    expect(tierOf("src/pane/a.test.ts", DATA, { "src/pane/a.test.ts": 90 })).toBe("essential");
+  });
+
+  test("a prefix without a trailing slash names files directly in that directory", () => {
+    expect(slowCategoryOf("src/team-b.test.ts", DATA)).toBe("team");
+    expect(slowCategoryOf("src/teams/x.test.ts", DATA)).toBeUndefined();
+    expect(slowCategoryOf("src/pane/deep/x.test.ts", DATA)).toBe("pane");
+    expect(tierOf("src/team-b.test.ts", DATA, {})).toBe("weekly");
+  });
+
+  test("any other file is weekly only at or above the heavy threshold", () => {
+    const times = { "src/x.test.ts": 2, "src/y.test.ts": 1.9, "src/z.test.ts": 12 };
+    expect(tierOf("src/x.test.ts", DATA, times)).toBe("weekly");
+    expect(tierOf("src/y.test.ts", DATA, times)).toBe("essential");
+    expect(tierOf("src/z.test.ts", DATA, times)).toBe("weekly");
+  });
+
+  test("an unmeasured file outside the slow categories is essential", () => {
+    expect(tierOf("src/new.test.ts", DATA, {})).toBe("essential");
+  });
+
+  test("the full tier is every file; the essential tier keeps discovery order", () => {
+    const files = ["src/a.test.ts", "src/pane/a.test.ts", "src/pane/b.test.ts", "src/z.test.ts"];
+    const times = { "src/z.test.ts": 5 };
+    expect(filesInTier(files, "full", DATA, times)).toEqual(files);
+    expect(filesInTier(files, "essential", DATA, times)).toEqual([
+      "src/a.test.ts",
+      "src/pane/a.test.ts",
+    ]);
+  });
+});
+
+describe("validateTiers", () => {
+  const known = ["src/pane/a.test.ts", "src/pane/b.test.ts", "src/team-a.test.ts"];
+
+  test("the data above is valid", () => {
+    expect(validateTiers(DATA, known)).toEqual([]);
+  });
+
+  test("an essential file that does not exist is an error", () => {
+    const data: TierData = {
+      ...DATA,
+      slow: [
+        {
+          category: "pane",
+          prefix: "src/pane/",
+          essential: [{ file: "src/pane/gone.test.ts", guards: "x" }],
+        },
+      ],
+    };
+    expect(validateTiers(data, known).join("\n")).toContain("src/pane/gone.test.ts");
+  });
+
+  test(`a category with more than ${MAX_ESSENTIAL_PER_CATEGORY} essential files is an error`, () => {
+    const files = ["a", "b", "c", "d"].map((n) => `src/pane/${n}.test.ts`);
+    const data: TierData = {
+      heavySeconds: 2,
+      slow: [
+        {
+          category: "pane",
+          prefix: "src/pane/",
+          essential: files.map((file) => ({ file, guards: "x" })),
+        },
+      ],
+    };
+    expect(validateTiers(data, files).join("\n")).toMatch(/pane.*4 essential files/);
+  });
+
+  test("an essential file outside its own category, or listed twice, is an error", () => {
+    const data: TierData = {
+      heavySeconds: 2,
+      slow: [
+        {
+          category: "pane",
+          prefix: "src/pane/",
+          essential: [
+            { file: "src/team-a.test.ts", guards: "x" },
+            { file: "src/pane/a.test.ts", guards: "x" },
+            { file: "src/pane/a.test.ts", guards: "x" },
+          ],
+        },
+      ],
+    };
+    const errors = validateTiers(data, known).join("\n");
+    expect(errors).toContain("src/team-a.test.ts is not in category pane");
+    expect(errors).toContain("src/pane/a.test.ts is listed twice");
+  });
+
+  test("an essential file with no reason, or a threshold that is not a positive number, is an error", () => {
+    const data = {
+      heavySeconds: 0,
+      slow: [
+        {
+          category: "pane",
+          prefix: "src/pane/",
+          essential: [{ file: "src/pane/a.test.ts", guards: "" }],
+        },
+      ],
+    } as TierData;
+    const errors = validateTiers(data, known).join("\n");
+    expect(errors).toContain("heavySeconds");
+    expect(errors).toContain("src/pane/a.test.ts has no guards text");
+  });
+
+  test("the tracked test-tiers.json names only existing files, at most 3 per category", () => {
+    expect(validateTiers(loadTiers(), discover())).toEqual([]);
+  });
+});
+
+describe.skipIf(process.env.CLAUDISH_CI_TESTS_NESTED === "1")("--tier", () => {
+  function cli(...args: string[]) {
+    const r = Bun.spawnSync([process.execPath, "--no-env-file", SCRIPT, ...args], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    return { code: r.exitCode, out: r.stdout.toString(), err: r.stderr.toString() };
+  }
+  const total = (out: string) =>
+    [...out.matchAll(/\t(\d+) files\t/g)].reduce((s, m) => s + Number(m[1]), 0);
+
+  test("--plan shows the tier, and the essential tier is a subset of the full tier", () => {
+    const essential = cli("--plan", "pane@6", "--tier", "essential");
+    const full = cli("--plan", "pane@6", "--tier", "full");
+    expect(essential.code).toBe(0);
+    expect(full.code).toBe(0);
+    expect(essential.out).toContain("tier essential");
+    expect(full.out).toContain("tier full");
+    expect(total(essential.out)).toBeGreaterThan(0);
+    expect(total(essential.out)).toBeLessThan(total(full.out));
+  });
+
+  test("--plan with no --tier plans the essential tier", () => {
+    const plain = cli("--plan", "pane@6");
+    expect(plain.out).toContain("tier essential");
+    expect(total(plain.out)).toBe(total(cli("--plan", "pane@6", "--tier", "essential").out));
+  });
+
+  test("an unknown tier is refused", () => {
+    const r = cli("--plan", "pane@6", "--tier", "nightly");
+    expect(r.code).not.toBe(0);
+    expect(r.err).toContain('unknown tier "nightly"');
+  });
+});
 
 describe("slowestReport", () => {
   test("lists the slowest files first, with the total over every file", () => {
