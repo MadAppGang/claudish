@@ -367,6 +367,28 @@ function applyReasoning(
   result.sentEffort = name;
 }
 
+const INCLUDE_THOUGHTS_POINTER = "/generationConfig/thinkingConfig/includeThoughts";
+
+/**
+ * Ask a Gemini model that reasons on this request to stream its thought
+ * summaries. Without them the server sends no byte until the reasoning ends,
+ * and a think longer than the request deadline is answered as an unreachable
+ * host (measured on Antigravity: 270 s of silence on an 86k-token review).
+ *
+ * Written only beside a reasoning field the wire itself wrote, so the model is
+ * one that takes `thinkingConfig`, and not beside `thinkingBudget: 0`, which
+ * turns reasoning off. No catalog wire publishes the flag, so it is written as
+ * a borrowed field: a 400 that names it is resent without it.
+ */
+function requestThoughtSummaries(body: Record<string, unknown>, borrow: PointerWriter): void {
+  const thinking = readPointer(body, "/generationConfig/thinkingConfig");
+  if (thinking === null || typeof thinking !== "object" || Array.isArray(thinking)) return;
+  const config = thinking as Record<string, unknown>;
+  if (Object.keys(config).length === 0 || config.thinkingBudget === 0) return;
+  if ("includeThoughts" in config) return;
+  borrow(INCLUDE_THOUGHTS_POINTER, true);
+}
+
 // ─── The user's choices, read from Claude Code's request ──────────────────
 
 /**
@@ -501,6 +523,7 @@ export function shapeRequestFromWire(
   } else {
     applyReasoning(own, wire.reasoning, wire.toolsWithReasoning, choices, result);
   }
+  if (wire.api === "gemini") requestThoughtSummaries(body, borrow);
 
   if (choices.mode) {
     const control = wire.reasoning.status === "supported" ? wire.reasoning.mode : wire.reasoning;
@@ -530,13 +553,16 @@ export function recoverBorrowedWireFields(
   if (borrowed.length === 0 || !errorText) return null;
   // A field is named only as a whole identifier: `max_tokens` in "Unknown
   // parameter: 'max_tokens'", never `x` inside "exceeded".
-  const named = borrowed.filter((path) =>
-    pointerTokens(path).some((token) =>
-      new RegExp(
-        `(^|[^A-Za-z0-9_])${token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}($|[^A-Za-z0-9_])`
-      ).test(errorText)
-    )
-  );
+  const names = (token: string) =>
+    new RegExp(
+      `(^|[^A-Za-z0-9_])${token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}($|[^A-Za-z0-9_])`
+    ).test(errorText);
+  // The field's own name decides first: an error that quotes a path names the
+  // parents of every borrowed field under it, and only the leaf says which one
+  // was refused.
+  const byLeaf = borrowed.filter((path) => names(pointerTokens(path).at(-1) ?? ""));
+  const named =
+    byLeaf.length > 0 ? byLeaf : borrowed.filter((path) => pointerTokens(path).some(names));
   const generic =
     /unknown|unrecognized|unsupported|not supported|not allowed|not permitted|extra (inputs|fields)|invalid (param|field|argument)/i.test(
       errorText

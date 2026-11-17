@@ -8,7 +8,7 @@
  * primary envelope), the availability check and route gathering all share it.
  */
 
-import type { EffortLevel } from "../adapters/base-api-format.js";
+import { EFFORT_LEVELS, type EffortLevel } from "../adapters/base-api-format.js";
 import {
   carriesEffortInModelId,
   findModelIdEffortConnection,
@@ -81,9 +81,28 @@ function mappedAntigravityModelId(
   served: AntigravityServedSet,
   effort: EffortLevel | undefined
 ): ConnectionMapDecision | undefined {
-  return chooseConnectionModelId(req, "antigravity", effort, {
+  const decision = chooseConnectionModelId(req, "antigravity", effort, {
     sendable: (id) => (servesSelectable(served, id) ? id : undefined),
   });
+  if (effort !== "none" || !decision || decision.usable) return decision;
+  const id = lowestSendableMapId(req, served);
+  return id ? { usable: true, choice: { id, effort: "none", source: "request" } } : decision;
+}
+
+/**
+ * The id of the lowest effort level `req`'s map lists that the account may
+ * send. It answers a request with reasoning turned off on a map with no
+ * sendable `off` id: no Antigravity id turns reasoning off there, and the
+ * family default or the backend's default would answer with a higher level.
+ */
+function lowestSendableMapId(req: string, served: AntigravityServedSet): string | undefined {
+  const map = findModelIdEffortConnection(req, "antigravity")?.map;
+  if (!map) return undefined;
+  for (const level of EFFORT_LEVELS) {
+    const id = level === "none" ? undefined : map.values[level];
+    if (id && !isOptInWireId(id) && servesSelectable(served, id)) return id;
+  }
+  return undefined;
 }
 
 /**

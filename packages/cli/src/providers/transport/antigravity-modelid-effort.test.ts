@@ -211,9 +211,26 @@ describe("Antigravity connection modelIdEffort", () => {
     expect(resolve(BASE, served([HIGH, LOW, off]), "none")).toBe(off);
   });
 
-  test("rule 5: none without off keeps the current backend default behaviour", () => {
+  test("rule 5: none without off sends the lowest listed level, not the backend default", () => {
     publish(effortMap({ high: HIGH, low: LOW }));
-    expect(resolve(BASE, served([HIGH, LOW], HIGH), "none")).toBe(HIGH);
+    expect(resolve(BASE, served([HIGH, LOW], HIGH), "none")).toBe(LOW);
+  });
+
+  test("rule 5: none without off skips a level the backend excludes", () => {
+    publish(effortMap({ high: HIGH, medium: MEDIUM, low: LOW }));
+    const set = { ...served([HIGH, MEDIUM, LOW], HIGH), excludedIds: new Set([LOW]) };
+    expect(resolve(BASE, set, "none")).toBe(MEDIUM);
+  });
+
+  test("rule 5: none without off skips a content-use opt-in id", () => {
+    const optIn = `${BASE}-contributor`;
+    publish(effortMap({ high: HIGH, medium: MEDIUM, low: optIn }));
+    expect(resolve(BASE, served([HIGH, MEDIUM, optIn], HIGH), "none")).toBe(MEDIUM);
+  });
+
+  test("rule 5: none without off skips a level the account does not serve", () => {
+    publish(effortMap({ high: HIGH, medium: MEDIUM, low: LOW }));
+    expect(resolve(BASE, served([HIGH, MEDIUM], HIGH), "none")).toBe(MEDIUM);
   });
 
   test("rule 6: a missing mapped id falls back to the backend default, not another effort", () => {
@@ -229,9 +246,9 @@ describe("Antigravity connection modelIdEffort", () => {
     expect({ present, absent }).toEqual({ present: mapped, absent: HIGH });
   });
 
-  test("rule 6: unlisted off falls back to the current none behaviour", () => {
+  test("rule 6: an off id the account does not list sends the lowest listed level", () => {
     publish(effortMap({ high: HIGH, low: LOW }, { off: "carbon-unlisted-off" }));
-    expect(resolve(BASE, served(), "none")).toBe(HIGH);
+    expect(resolve(BASE, served(), "none")).toBe(LOW);
   });
 
   for (const suffix of ["fast", "priority"]) {

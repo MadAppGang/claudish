@@ -67,6 +67,16 @@ lists, effort ladders by `gpt-5.x`) being falsified by each new model release.
 
 `not_applicable` is an ANSWER, never borrowed over (Codex found the shaper treating it like
 `unknown`). Mode and speed are never borrowed: they carry entitlement and price.
+
+One field is written with no catalog publication at all: on a `gemini` wire,
+`generationConfig.thinkingConfig.includeThoughts: true` beside a reasoning field the wire wrote
+(`requestThoughtSummaries`), and never beside `thinkingBudget: 0`. Without it the Gemini API
+sends no byte while the model reasons. Measured on `g@gemini-3.8-flash` at effort `high`,
+2026-11-17, one prompt: 34.6 s from the request to `Response status: 200` without the flag,
+3.6 s with it, the reasoning then streaming for 52 s. It goes through the borrowed list, so a
+400 that names it is resent without it. Vertex is not covered: the catalog publishes no
+Vertex connection, so no wire shapes its request (and the test project has no
+billing) or on the OpenCode `gemini` connections.
 The one source that may decide speed where the catalog says `unknown` is the account's OWN
 dynamic models catalog — entitlement evidence for that credential, not a value borrowed from
 another connection (step 5s, § Speed). It never overrides an answer.

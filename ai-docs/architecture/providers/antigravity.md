@@ -204,7 +204,12 @@ spelled exactly as requested decides even when it publishes no map; a case-folde
 spelling is consulted only when no connection has the exact one. The choice itself
 is `chooseConnectionModelId` (`providers/model-id-effort-choice.ts`), the function
 Devin uses too. At effort `e` it sends `values[e]`, else the next higher listed
-level, else the highest; `none` sends the published `off` id. With no effort a
+level, else the highest; `none` sends the published `off` id. Where the map has no `off` id
+the account may send, `none` sends the lowest listed level the account serves
+(`lowestSendableMapId`): no Antigravity map published one on 2026-11-17, and the family
+default then answered `none` with `-medium`. A served `gemini-4-carbon-disabled` is a model
+the backend switched off for that list, not a reasoning-off id. Devin keeps its own rule: its
+resolver finds the account's `-none` uid. With no effort a
 served base the backend does not exclude is sent as itself (an excluded base is
 never sent: exclusion is checked before that shortcut, in the map step and in the
 exact-id step, so the transport, `providerServesModel` and the account-listed
