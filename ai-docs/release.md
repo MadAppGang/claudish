@@ -63,6 +63,12 @@ dispatch (`gh workflow run Tests --ref <branch>`) and in `bun run test:macos`, w
 must be green on a Mac before the tag (`CLAUDE.md`, Releasing). The tag is therefore
 the gate: everything must be green before the tag leaves the machine.
 
+**The version bump is the PR's last commit, and it gets its own green run.** Once the
+PR's CI is green, commit the bump (`CLAUDE.md`, Releasing) and push it, wait for that
+commit's PR CI to finish green, then merge and tag the merge commit. The bump
+regenerates `version.ts` and `bundled-recommended-list.json`, so a merge before its
+run finishes tags a tree no CI validated.
+
 **The PR run tests a merge preview, not the merge commit.** On `pull_request`,
 `test.yml` checks out GitHub's merge of the PR head into `main`. Before tagging,
 confirm the merge commit's tree equals

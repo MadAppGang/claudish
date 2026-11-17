@@ -262,10 +262,11 @@ the tag is the gate: everything must be green before it leaves the machine.
 suites; CI runs them only on manual dispatch (`gh workflow run Tests --ref <branch>`). A red run
 stops the tag even when the cause is machine load: rerun once the Mac is quiet.
 
-**Commit the version bump LAST**: after the PR's CI is green, immediately before the merge,
-re-checking `git ls-remote --tags origin` first. A bump made early goes stale when main releases
-during review; the PR then conflicts, and GitHub starts no pull_request workflow for a conflicting
-PR, with no error shown.
+**Commit the version bump LAST**: once the PR's CI is green, re-check `git ls-remote --tags
+origin`, commit the bump and push it, wait for THAT commit's PR CI to finish green, then merge
+and tag the merge commit. A bump made early goes stale when main releases during review; the PR
+then conflicts, and GitHub starts no pull_request workflow for a conflicting PR, with no error
+shown.
 
 Bump TWO files by hand — `package.json` and `packages/cli/package.json` (what npm publishes;
 a stale value fails the publish) — then run
