@@ -151,6 +151,43 @@ describe("tiers", () => {
     expect(parseGateArgs(["--full", "--dry-run"])).toEqual({ dryRun: true, tier: "full" });
     expect(() => parseGateArgs(["--ful"])).toThrow(/--ful/);
   });
+
+  test("parseGateArgs reads --part k/n and refuses a bad part or --part with --full", () => {
+    expect(parseGateArgs(["--part", "3/7"])).toEqual({
+      dryRun: false,
+      tier: "weekly",
+      part: { k: 3, n: 7 },
+    });
+    for (const bad of [[], ["0/7"], ["8/7"], ["3"], ["a/7"], ["--dry-run"]]) {
+      expect(() => parseGateArgs(["--part", ...bad])).toThrow(/--part/);
+    }
+    expect(() => parseGateArgs(["--part", "1/7", "--full"])).toThrow(/--full/);
+  });
+});
+
+describe("a nightly part", () => {
+  const partSteps = (k: number) =>
+    planSteps({ ...PLAN_INPUT, tier: "weekly", part: { k, n: 7 }, cores: 18 }).flatMap(
+      (g) => g.steps
+    );
+
+  test("runs the k-th of n slices of every group on the weekly tier, after the build", () => {
+    const steps = partSteps(3);
+    expect(steps.map((s) => s.name)).toEqual(["build:cli", "hermetic idle@3/7,pane@3/7,rest@3/7"]);
+    const args = steps[1]?.args ?? [];
+    expect(args[args.indexOf("--run") + 1]).toBe("idle@3/7,pane@3/7,rest@3/7");
+    expect(args[args.indexOf("--tier") + 1]).toBe("weekly");
+    expect(args).toContain(`--max-concurrency=${sliceConcurrency(18, 3)}`);
+  });
+
+  test("the last part also runs the blind hook tests and S1 hook loading", () => {
+    expect(partSteps(7).map((s) => s.name)).toEqual([
+      "build:cli",
+      "hermetic idle@7/7,pane@7/7,rest@7/7",
+      "blind hook tests",
+      "S1 hook loading",
+    ]);
+  });
 });
 
 describe("the release Bun", () => {

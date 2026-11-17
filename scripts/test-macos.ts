@@ -111,21 +111,45 @@ export const GATE_RUNS = Object.entries(GATE_SLICES)
   .flatMap(([group, n]) => Array.from({ length: n }, (_, i) => `${group}@${i + 1}/${n}`))
   .join(",");
 
-/** ci-tests.ts's tiers: `essential` by default, `full` with `--full`. */
-export type GateTier = "essential" | "full";
+/** ci-tests.ts's tiers: `essential` by default, `full` with `--full`, `weekly` for a part. */
+export type GateTier = "essential" | "full" | "weekly";
+
+/** Part k of n of the weekly tier: the k-th of n slices of every hermetic group. */
+export interface Part {
+  k: number;
+  n: number;
+}
+
+export interface GateArgs {
+  dryRun: boolean;
+  tier: GateTier;
+  part?: Part;
+}
+
+const GATE_USAGE = "usage: test:macos [--full | --part <k>/<n>] [--dry-run]";
 
 /** The gate's own flags. Anything else is refused, so a misspelt `--full` never runs less. */
-export function parseGateArgs(argv: string[]): { dryRun: boolean; tier: GateTier } {
-  const unknown = argv.filter((a) => a !== "--dry-run" && a !== "--full");
-  if (unknown.length > 0) {
-    throw new Error(
-      `unknown argument ${unknown.join(" ")}; usage: test:macos [--full] [--dry-run]`
-    );
-  }
-  return {
-    dryRun: argv.includes("--dry-run"),
-    tier: argv.includes("--full") ? "full" : "essential",
-  };
+export function parseGateArgs(argv: string[]): GateArgs {
+  const at = argv.indexOf("--part");
+  const own = at === -1 ? argv : [...argv.slice(0, at), ...argv.slice(at + 2)];
+  const unknown = own.filter((a) => a !== "--dry-run" && a !== "--full");
+  if (unknown.length > 0) throw new Error(`unknown argument ${unknown.join(" ")}; ${GATE_USAGE}`);
+  const dryRun = own.includes("--dry-run");
+  if (at === -1) return { dryRun, tier: own.includes("--full") ? "full" : "essential" };
+  const m = (argv[at + 1] ?? "").match(/^(\d+)\/(\d+)$/);
+  const k = Number(m?.[1]);
+  const n = Number(m?.[2]);
+  if (!m || k < 1 || k > n) throw new Error(`--part needs <k>/<n> with 1 <= k <= n; ${GATE_USAGE}`);
+  if (own.includes("--full"))
+    throw new Error(`--part and --full exclude each other; ${GATE_USAGE}`);
+  return { dryRun, tier: "weekly", part: { k, n } };
+}
+
+/** A part's `--run` list: the k-th of n slices of each group. */
+export function partRuns(part: Part): string {
+  return Object.keys(GATE_SLICES)
+    .map((group) => `${group}@${part.k}/${part.n}`)
+    .join(",");
 }
 
 /** The first `bun-version:` of one job in a workflow (`latest`, `1.3.10`), or undefined. */
@@ -206,9 +230,12 @@ export function planSteps(p: {
   release: PlannedBun;
   scriptTests: string[];
   tier: GateTier;
+  /** A nightly part of the weekly tier; see `partSteps`. */
+  part?: Part;
   /** The machine's core count; `os.availableParallelism()` unless given. */
   cores?: number;
 }): StepGroup[] {
+  if (p.part) return partSteps({ ...p, part: p.part });
   const cli = join(p.root, "packages", "cli");
   const maxConcurrency = sliceConcurrency(p.cores ?? availableParallelism());
   const full = p.tier === "full";
@@ -285,6 +312,82 @@ export function planSteps(p: {
             {
               // test.yml's hooks-loading macOS rows: a user hook module loads from a dist bundle
               // and a compiled binary built by the Bun release.yml builds with.
+              name: "S1 hook loading",
+              cwd: p.root,
+              args: [p.release.exe, NO_ENV_FILE, "test", "packages/cli/src/hooks/s1-probe/"],
+            },
+          ]
+        : [],
+    },
+  ];
+  return groups.filter((g) => g.steps.length > 0);
+}
+
+/**
+ * One nightly part: the build, then the k-th of n slices of every group on the weekly tier (the
+ * files the essential tier leaves out), as three concurrent processes. The essential gate on the
+ * release commit runs the rest of the full tier: the essential files, macos-bridge, the script
+ * tests and the Antigravity HTTP client tests. The last part also runs the two suites only
+ * `--full` runs otherwise: the blind hook tests and S1 hook loading.
+ */
+function partSteps(p: {
+  root: string;
+  hermetic: PlannedBun;
+  blind: PlannedBun;
+  release: PlannedBun;
+  part: Part;
+  cores?: number;
+}): StepGroup[] {
+  const cli = join(p.root, "packages", "cli");
+  const runs = partRuns(p.part);
+  const groupCount = Object.keys(GATE_SLICES).length;
+  const maxConcurrency = sliceConcurrency(p.cores ?? availableParallelism(), groupCount);
+  const last = p.part.k === p.part.n;
+  const groups: StepGroup[] = [
+    {
+      bun: p.hermetic,
+      steps: [
+        {
+          name: "build:cli",
+          cwd: p.root,
+          args: [p.hermetic.exe, NO_ENV_FILE, "run", "build:cli"],
+          stopOnFailure: true,
+        },
+        {
+          name: `hermetic ${runs}`,
+          cwd: cli,
+          args: [
+            p.hermetic.exe,
+            NO_ENV_FILE,
+            "scripts/ci-tests.ts",
+            "--run",
+            runs,
+            "--tier",
+            "weekly",
+            "--",
+            NO_ENV_FILE,
+            `--max-concurrency=${maxConcurrency}`,
+          ],
+        },
+      ],
+    },
+    {
+      bun: p.blind,
+      steps: last
+        ? [
+            {
+              name: "blind hook tests",
+              cwd: cli,
+              args: [p.blind.exe, NO_ENV_FILE, "test", "src/hooks/blind"],
+            },
+          ]
+        : [],
+    },
+    {
+      bun: p.release,
+      steps: last
+        ? [
+            {
               name: "S1 hook loading",
               cwd: p.root,
               args: [p.release.exe, NO_ENV_FILE, "test", "packages/cli/src/hooks/s1-probe/"],
@@ -562,13 +665,13 @@ export async function runSteps<S extends { name: string; stopOnFailure?: boolean
 }
 
 if (import.meta.main) {
-  let args: { dryRun: boolean; tier: GateTier };
+  let args: GateArgs;
   try {
     args = parseGateArgs(process.argv.slice(2));
   } catch (err) {
     fail((err as Error).message);
   }
-  const { dryRun, tier } = args;
+  const { dryRun, tier, part } = args;
   if (process.platform !== "darwin") fail(`runs on macOS only, not ${process.platform}`);
 
   const workflow = readFileSync(WORKFLOW, "utf8");
@@ -591,6 +694,7 @@ if (import.meta.main) {
       release: { version: releaseBunVersion, exe: exeOf(releaseBunVersion) },
       scriptTests,
       tier,
+      part,
     });
   // Only the Buns this tier runs a step under are fetched.
   const versions = [...new Set(planFor(() => "").map((g) => g.bun.version))];
