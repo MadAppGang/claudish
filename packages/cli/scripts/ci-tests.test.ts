@@ -136,6 +136,82 @@ describe("validateTiers", () => {
     expect(errors).toContain("src/pane/a.test.ts is listed twice");
   });
 
+  test("a category named twice is an error, so a copied block cannot hold a 4th essential file", () => {
+    const files = ["a", "b", "c", "d"].map((n) => `src/pane/${n}.test.ts`);
+    const data: TierData = {
+      heavySeconds: 2,
+      slow: [
+        {
+          category: "pane",
+          prefix: "src/pane/",
+          essential: files.slice(0, 3).map((file) => ({ file, guards: "x" })),
+        },
+        {
+          category: "pane",
+          prefix: "src/pane/",
+          essential: [{ file: "src/pane/d.test.ts", guards: "x" }],
+        },
+      ],
+    };
+    const errors = validateTiers(data, files).join("\n");
+    expect(errors).toContain("category pane is named twice");
+    expect(errors).toContain("prefix src/pane/ is named twice");
+  });
+
+  test("a prefix named twice, under another category name, is an error", () => {
+    const data: TierData = {
+      heavySeconds: 2,
+      slow: [...DATA.slow, { category: "pane-copy", prefix: "src/pane/", essential: [] }],
+    };
+    expect(validateTiers(data, known).join("\n")).toContain("prefix src/pane/ is named twice");
+  });
+
+  test("a prefix that takes files of another category's prefix is an error", () => {
+    for (const [outer, inner] of [
+      ["src/pane/", "src/pane/sub/"],
+      ["src/team", "src/teamx"],
+      ["src/team", "src/team-"],
+    ] as const) {
+      const data: TierData = {
+        heavySeconds: 2,
+        slow: [
+          { category: "outer", prefix: outer, essential: [] },
+          { category: "inner", prefix: inner, essential: [] },
+        ],
+      };
+      expect(validateTiers(data, known).join("\n")).toContain(
+        `prefix ${inner} (category inner) overlaps prefix ${outer} (category outer)`
+      );
+    }
+  });
+
+  test("prefixes that share no file are valid: a bare prefix and the directory of that name", () => {
+    const data: TierData = {
+      heavySeconds: 2,
+      slow: [
+        { category: "team", prefix: "src/team", essential: [] },
+        { category: "team-dir", prefix: "src/team/", essential: [] },
+        { category: "teams-dir", prefix: "src/teams/", essential: [] },
+      ],
+    };
+    expect(validateTiers(data, known)).toEqual([]);
+  });
+
+  test("a file listed in two categories is an error", () => {
+    const data: TierData = {
+      heavySeconds: 2,
+      slow: [
+        DATA.slow[0] as TierData["slow"][number],
+        {
+          category: "pane-copy",
+          prefix: "src/pane-copy/",
+          essential: [{ file: "src/pane/a.test.ts", guards: "x" }],
+        },
+      ],
+    };
+    expect(validateTiers(data, known).join("\n")).toContain("src/pane/a.test.ts is listed twice");
+  });
+
   test("an essential file with no reason, or a threshold that is not a positive number, is an error", () => {
     const data = {
       heavySeconds: 0,

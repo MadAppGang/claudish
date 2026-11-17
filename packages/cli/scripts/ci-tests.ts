@@ -12,8 +12,9 @@
  * pull request and `bun run test:macos` run: test-tiers.json names at most three files for each
  * slow category, and every other file of a slow category is weekly; any file outside the slow
  * categories is essential unless ci-test-times.json measures it at the data file's
- * `heavySeconds` or more. The weekly runs use `full`. A data file that names a missing file, or
- * more than three files for one category, stops `--plan` and `--run`.
+ * `heavySeconds` or more. The weekly runs use `full`. A data file that names a missing file, a
+ * file twice, more than three files for one category, a category twice, or a prefix twice or
+ * sharing files with another, stops `--plan` and `--run`.
  *
  * `--local` is the package's `test` script: a plain `bun test` that also writes a junit report
  * and prints the slowest files from it, so a slow local run names its slow files.
@@ -158,8 +159,46 @@ export function validateTiers(data: TierData, known: string[]): string[] {
   if (typeof data.heavySeconds !== "number" || !(data.heavySeconds > 0)) {
     errors.push(`heavySeconds must be a positive number of seconds, not ${data.heavySeconds}`);
   }
+  errors.push(...categorySetErrors(data.slow ?? []));
   const seen = new Set<string>();
   for (const c of data.slow ?? []) errors.push(...categoryErrors(c, data, exists, seen));
+  return errors;
+}
+
+/** True when some file path is taken by both prefixes (`inPrefix` of each). */
+export function prefixesOverlap(a: string, b: string): boolean {
+  const [short, long] = a.length <= b.length ? [a, b] : [b, a];
+  if (!long.startsWith(short)) return false;
+  // A bare prefix takes only files directly in its directory: a longer prefix that reaches
+  // into a subdirectory shares no file with it.
+  return short.endsWith("/") || !long.slice(short.length).includes("/");
+}
+
+/**
+ * A file takes the FIRST category whose prefix it matches, so a second category with the same
+ * name or a prefix that shares files with an earlier one would be ignored, its essential files
+ * left weekly while every per-category check passes.
+ */
+function categorySetErrors(slow: SlowCategory[]): string[] {
+  const errors: string[] = [];
+  const names = new Set<string>();
+  const prefixes = new Set<string>();
+  slow.forEach((c, i) => {
+    if (names.has(c.category)) errors.push(`category ${c.category} is named twice`);
+    names.add(c.category);
+    if (prefixes.has(c.prefix)) {
+      errors.push(`prefix ${c.prefix} is named twice`);
+    } else {
+      for (const earlier of slow.slice(0, i)) {
+        if (earlier.prefix !== c.prefix && prefixesOverlap(earlier.prefix, c.prefix)) {
+          errors.push(
+            `prefix ${c.prefix} (category ${c.category}) overlaps prefix ${earlier.prefix} (category ${earlier.category})`
+          );
+        }
+      }
+    }
+    prefixes.add(c.prefix);
+  });
   return errors;
 }
 

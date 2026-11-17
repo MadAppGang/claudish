@@ -66,7 +66,9 @@ new file covers better. Write `guards` as the failure the file catches. A file o
 categories needs no entry: it becomes essential once it measures under the threshold. Check with
 `bun scripts/ci-tests.ts --plan pane@6 --tier essential` (and `--list`, which shows both tiers per
 group). `ci-tests.test.ts` fails when the data file names a file that does not exist, a file
-outside its category, the same file twice, or more than three files in one category, and
+outside its category, the same file twice, more than three files in one category, the same
+category twice, or a prefix twice or one sharing files with another category's prefix (a file
+takes the first category it matches, so a second block would be ignored), and
 `--plan`, `--run` and `--list` refuse such a file.
 
 **Refreshing `ci-test-times.json` can move a file between tiers**, because it also decides what is
