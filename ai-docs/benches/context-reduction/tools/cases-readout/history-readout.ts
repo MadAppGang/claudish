@@ -48,7 +48,9 @@ const PRICES: Record<string, Price> = {
 const M = 1_000_000;
 
 function priceOf(model: string): Price | undefined {
-  return PRICES[model] ?? PRICES[model.replace(/\[.*\]$/, "")];
+  // An explicit model spec (glm@glm-5-turbo) is priced as its model.
+  const bare = model.replace(/^[a-z0-9-]+@/, "");
+  return PRICES[bare] ?? PRICES[bare.replace(/\[.*\]$/, "")];
 }
 
 function haikuCost(inTok: number, outTok: number): number {
@@ -99,10 +101,43 @@ function parseLog(text: string) {
   const swaps: Swap[] = [];
   const hops: Record<string, number> = {};
   const fallbacks: string[] = [];
+  // Rate limits on an OpenAI-format route: Z.ai's code 1302 bodies, claudish's
+  // own retries ("429 rate limited, retry n/m in Xs"), and the final 429
+  // statuses, which on an explicit route (no next hop) reach Claude Code.
+  // waitMs adds, per final 429, the time from its "Calling API" line to the
+  // 429, and the time until the next "Calling API" (Claude Code's own retry).
+  const rate = { code1302: 0, retries: 0, retryWaitS: 0, reachedClient: 0, toNextHop: 0, waitMs: 0, firstTs: "", lastTs: "" };
+  let callTs = "";
+  let pending429 = "";
   let ts = "";
   for (const line of text.split("\n")) {
     const t = line.match(/^\[(\d{4}-\d\d-\d\dT[\d:.]+Z)\]/);
-    if (t) ts = t[1];
+    if (t) {
+      ts = t[1];
+      rate.firstTs ||= ts;
+      rate.lastTs = ts;
+    }
+    if (line.includes('"code":"1302"')) rate.code1302++;
+    const retry = line.match(/429 rate limited, retry \d+\/\d+ in ([\d.]+)s/);
+    if (retry) {
+      rate.retries++;
+      rate.retryWaitS += Number(retry[1]);
+    }
+    if (/\] Response status: 429/.test(line) && !line.includes("[compaction]")) {
+      rate.reachedClient++;
+      if (callTs) rate.waitMs += Date.parse(ts) - Date.parse(callTs);
+      pending429 = ts;
+    }
+    if (line.includes("[Fallback]") && line.includes("trying next provider") && pending429) {
+      rate.reachedClient--;
+      rate.toNextHop++;
+      pending429 = "";
+    }
+    if (/\] Calling API: /.test(line) && !line.includes("[compaction]")) {
+      if (pending429) rate.waitMs += Date.parse(ts) - Date.parse(pending429);
+      pending429 = "";
+      callTs = ts;
+    }
     const meta = line.match(/\[RequestMeta\] model=(\S+)/);
     if (meta) {
       reqs.push({ ts, model: meta[1] });
@@ -182,7 +217,7 @@ function parseLog(text: string) {
       swaps.push({ ts, req: reqs.length - 1, text: line.replace(/^.*\[compaction\] /, "").slice(0, 160) });
     }
   }
-  return { reqs, haiku, decisions, swaps, hops, fallbacks };
+  return { reqs, haiku, decisions, swaps, hops, fallbacks, rate };
 }
 
 function compactionsOf(report: unknown): Compaction[] {
@@ -236,7 +271,7 @@ for (const arg of process.argv.slice(2)) {
     console.log(`${reportPath}: no result`);
     continue;
   }
-  const { reqs, haiku, decisions, swaps, hops, fallbacks } = parseLog(await Bun.file(logPath).text());
+  const { reqs, haiku, decisions, swaps, hops, fallbacks, rate } = parseLog(await Bun.file(logPath).text());
   const compactions = compactionsOf(r);
   const unpriced = [...new Set(reqs.filter((q) => !priceOf(q.model)).map((q) => q.model))];
   const noUsage = reqs.filter((q) => q.input === undefined).length;
@@ -274,6 +309,14 @@ for (const arg of process.argv.slice(2)) {
         `uncached_input=${oa.reduce((s, q) => s + (q.input ?? 0), 0)} output=${oa.reduce((s, q) => s + (q.output ?? 0), 0)}`,
     );
     for (const f of fallbacks) console.log(`  FALLBACK ${f}`);
+    const spanS = (Date.parse(rate.lastTs) - Date.parse(rate.firstTs)) / 1000;
+    const waitS = rate.waitMs / 1000;
+    console.log(
+      `rate_limits code_1302=${rate.code1302} claudish_retries=${rate.retries} (stated waits ${rate.retryWaitS.toFixed(1)} s) ` +
+        `429_to_claude_code=${rate.reachedClient} 429_to_next_hop=${rate.toNextHop} ` +
+        `429_time=${waitS.toFixed(1)} s of log span ${spanS.toFixed(0)} s (${spanS > 0 ? ((100 * waitS) / spanS).toFixed(1) : "0"}%)` +
+        (spanS > 0 && waitS > spanS / 2 ? " RATE-LIMIT-DOMINATED" : ""),
+    );
   }
   arms.push({ arm, pass: r.status === "pass", cost: madbench, recomputed: mainCost + haikuTotal });
 
