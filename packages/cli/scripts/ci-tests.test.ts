@@ -160,6 +160,7 @@ describe("validateTiers", () => {
 describe.skipIf(process.env.CLAUDISH_CI_TESTS_NESTED === "1")("--tier", () => {
   function cli(...args: string[]) {
     const r = Bun.spawnSync([process.execPath, "--no-env-file", SCRIPT, ...args], {
+      env: { ...process.env },
       stdout: "pipe",
       stderr: "pipe",
     });

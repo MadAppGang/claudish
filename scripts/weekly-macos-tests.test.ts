@@ -198,7 +198,7 @@ describe("the launchd agent", () => {
     const home = tempHome();
     const file = join(home, "agent.plist");
     writeFileSync(file, xml);
-    const r = Bun.spawnSync(["plutil", "-lint", file]);
+    const r = Bun.spawnSync(["plutil", "-lint", file], { env: { PATH: "/usr/bin:/bin" } });
     expect(r.exitCode).toBe(0);
   });
 });
