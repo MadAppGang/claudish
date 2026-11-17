@@ -7,6 +7,8 @@
  *
  * It runs what test.yml's dispatched macOS jobs run, which no pull request runs any more:
  *
+ *  0. `bun run build:cli`, so the tests that start packages/cli/dist test this commit (a failed
+ *     build stops the gate);
  *  1. the hermetic pane and rest groups (`ci-tests.ts --run pane@1/6,…,pane@6/6,rest`, the three
  *     `hermetic` runners' slices in one call), under the Bun the `hermetic` job pins;
  *  2. the macos-bridge tests and `scripts/*.test.ts`, under the same Bun;
@@ -94,6 +96,8 @@ export interface Step {
   name: string;
   cwd: string;
   args: string[];
+  /** A failure here makes every later step meaningless, so the gate stops. */
+  stopOnFailure?: boolean;
 }
 
 /** One Bun the gate runs steps under: the version asked of bunx, and its executable. */
@@ -122,6 +126,15 @@ export function planSteps(p: {
     {
       bun: p.hermetic,
       steps: [
+        {
+          // Tests that start dist/ (host-pid.contract.test.ts runs `node bin/claudish.cjs`)
+          // build it only when it is missing, so a Mac's dist/ from an older commit would be
+          // what they test. The build reads no credential, so its nested Buns may load .env.
+          name: "build:cli",
+          cwd: p.root,
+          args: [p.hermetic.exe, NO_ENV_FILE, "run", "build:cli"],
+          stopOnFailure: true,
+        },
         {
           name: `hermetic ${HERMETIC_RUNS}`,
           cwd: cli,
@@ -308,7 +321,7 @@ function codeOf(result: StepResult): number {
  * Runs the steps in order. A step ended by a signal ends the run: the gate was interrupted, or a
  * child was killed, and every later step would be red for the same reason or tell nothing.
  */
-export async function runSteps<S extends { name: string }>(
+export async function runSteps<S extends { name: string; stopOnFailure?: boolean }>(
   steps: readonly S[],
   run: (step: S) => Promise<StepResult>
 ): Promise<{ name: string; code: number }[]> {
@@ -318,6 +331,7 @@ export async function runSteps<S extends { name: string }>(
     const code = codeOf(result);
     results.push({ name: step.name, code });
     if (result.signal) break;
+    if (code !== 0 && step.stopOnFailure) break;
   }
   return results;
 }

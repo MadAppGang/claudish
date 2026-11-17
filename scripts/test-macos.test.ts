@@ -29,6 +29,31 @@ const STEPS = planSteps({
   scriptTests: ["./scripts/a.test.ts"],
 }).flatMap((g) => g.steps);
 
+describe("the build", () => {
+  test("build:cli runs first, under the hermetic Bun, and a failed build stops the gate", () => {
+    const first = STEPS[0];
+    expect(first?.cwd).toBe("/repo");
+    expect(first?.args).toEqual(["/b/1.3.10/bun", NO_ENV_FILE, "run", "build:cli"]);
+    expect(first?.stopOnFailure).toBe(true);
+    const hermetic = STEPS.findIndex((s) => s.args.includes("scripts/ci-tests.ts"));
+    expect(hermetic).toBe(1);
+  });
+
+  test("a failed stop-on-failure step runs no further step", async () => {
+    const ran: string[] = [];
+    const steps = [
+      { name: "build", cwd: "/", args: ["build"], stopOnFailure: true },
+      { name: "tests", cwd: "/", args: ["tests"] },
+    ];
+    const results = await runSteps(steps, async (step) => {
+      ran.push(step.name);
+      return { code: 1, signal: null };
+    });
+    expect(ran).toEqual(["build"]);
+    expect(results).toEqual([{ name: "build", code: 1 }]);
+  });
+});
+
 describe("no step loads a .env file", () => {
   test("every Bun a step starts, and the guard, run with --no-env-file", () => {
     for (const step of STEPS) {
