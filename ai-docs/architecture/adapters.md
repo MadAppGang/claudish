@@ -513,7 +513,9 @@ Located in `handlers/shared/stream-parsers/`:
   reports reasoning apart from the answer (recorded on Antigravity, 2026-11-15:
   prompt 11145 + answer 37 + thoughts 27 = total 11209). Thoughts are added only while
   prompt + answer + thoughts still fits `totalTokenCount`, so a backend whose answer count
-  already holds them is not counted twice. Not measured on `g@` or Vertex
+  already holds them is not counted twice. On `g@gemini-3.8-flash` the answer count also leaves
+  them out (2026-11-17: one answer logged 2 output tokens before the change and 7,581 after).
+  Not measured on Vertex
 - `ollama-jsonl.ts` — Ollama JSONL → Claude SSE
 - `openai-responses-sse.ts` — OpenAI Responses API → Claude SSE (Codex). The module entry point
   only; the work is under `responses/`: `claude-sse-sink.ts` (the one writer of Claude SSE for a

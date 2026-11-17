@@ -537,3 +537,57 @@ test("not-applicable token limit cannot borrow the owner's parameter", () => {
   expect(body).not.toHaveProperty("max_completion_tokens");
   expect(result.borrowed).toEqual(["/thinking/type"]);
 });
+
+function geminiReasoningWire(): KnownWire {
+  const wire = connection("google", "gemini-3.8-flash").wire;
+  wire.reasoning = {
+    status: "supported",
+    enable: { status: "not_applicable" },
+    disable: [{ path: "/generationConfig/thinkingConfig/thinkingBudget", value: 0 }],
+    effort: {
+      path: "/generationConfig/thinkingConfig/thinkingLevel",
+      values: { low: "LOW", high: "HIGH" },
+      default: "low",
+    },
+    mode: { status: "not_applicable" },
+  } as KnownWire["reasoning"];
+  return wire;
+}
+
+test("a Gemini request with a reasoning field asks for thought summaries", () => {
+  const body: Record<string, unknown> = { generationConfig: { maxOutputTokens: 32000 } };
+  const result = shapeRequestFromWire(body, geminiReasoningWire(), { effort: "high" });
+  expect(body.generationConfig).toMatchObject({
+    thinkingConfig: { thinkingLevel: "HIGH", includeThoughts: true },
+  });
+  expect(result.borrowed).toEqual(["/generationConfig/thinkingConfig/includeThoughts"]);
+});
+
+test("a 400 that names includeThoughts is resent without it and keeps the level", () => {
+  const body: Record<string, unknown> = { generationConfig: { maxOutputTokens: 32000 } };
+  const result = shapeRequestFromWire(body, geminiReasoningWire(), { effort: "high" });
+  const recovered = recoverBorrowedWireFields(
+    body,
+    result.borrowed,
+    'Invalid JSON payload received. Unknown name "includeThoughts"'
+  );
+  expect(recovered?.payload.generationConfig).toEqual({
+    maxOutputTokens: 32000,
+    thinkingConfig: { thinkingLevel: "HIGH" },
+  });
+});
+
+test("a Gemini request with no reasoning field asks for no thought summaries", () => {
+  const body: Record<string, unknown> = { generationConfig: { maxOutputTokens: 32000 } };
+  const wire = connection("google", "gemini-3.8-flash").wire;
+  const result = shapeRequestFromWire(body, wire, { effort: "high" });
+  expect(body.generationConfig).toEqual({ maxOutputTokens: 32000 });
+  expect(result.borrowed).toEqual([]);
+});
+
+test("a Gemini request with reasoning turned off asks for no thought summaries", () => {
+  const body: Record<string, unknown> = { generationConfig: { maxOutputTokens: 32000 } };
+  const result = shapeRequestFromWire(body, geminiReasoningWire(), { reasoningOff: true });
+  expect(body.generationConfig).toMatchObject({ thinkingConfig: { thinkingBudget: 0 } });
+  expect(result.borrowed).toEqual([]);
+});

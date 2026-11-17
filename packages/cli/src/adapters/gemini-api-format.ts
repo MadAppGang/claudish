@@ -512,7 +512,8 @@ export class GeminiAPIFormat extends BaseAPIFormat {
    *     on the wire. gemini-sse.ts consumes that signature only to echo it
    *     back on tool calls; there is no reasoning text to strip. (A
    *     `thought: true` part carries text only where `includeThoughts` was
-   *     requested, which is `ag@` alone; gemini-sse.ts routes such a part to
+   *     requested: on `ag@`, and on a `gemini` catalog wire that wrote a reasoning
+   *     field (`requestThoughtSummaries`, wire-request.ts); gemini-sse.ts routes such a part to
    *     thinking output, never to the answer text.)
    *
    * And the filter could not be made correct: it asked "is this string
