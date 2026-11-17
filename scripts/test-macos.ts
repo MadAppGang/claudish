@@ -8,8 +8,8 @@
  *
  * The default is the essential tier (packages/cli/scripts/test-tiers.json): steps 0-2 with
  * `--tier essential`, and step 3's Antigravity HTTP client tests. The blind hook tests and the S1
- * hook loading tests are hook files outside the hooks category's essential list, so only `--full`
- * runs them, as the weekly macOS run does (scripts/weekly-macos-tests.ts). `--full` runs what
+ * hook loading tests are hook files outside the hooks category's essential list, so `--full` runs
+ * them, and so does the last nightly part, `--part 7/7` (scripts/weekly-macos-tests.ts). `--full` runs what
  * test.yml's dispatched macOS jobs run, which no pull request runs, and the idle group its Linux
  * jobs run:
  *

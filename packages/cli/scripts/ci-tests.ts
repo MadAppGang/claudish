@@ -3,16 +3,18 @@
  * runner for them.
  *
  *   bun scripts/ci-tests.ts --list
- *   bun scripts/ci-tests.ts --plan pane@6 [--tier essential|full]
- *   bun scripts/ci-tests.ts --run pane@1/6,pane@2/6,rest [--tier essential|full] [-- <bun test args>]
+ *   bun scripts/ci-tests.ts --plan pane@6 [--tier essential|weekly|full]
+ *   bun scripts/ci-tests.ts --run pane@1/6,pane@2/6,rest [--tier essential|weekly|full] [-- <bun test args>]
  *   bun scripts/ci-tests.ts --update-times <junit.xml>…
  *   bun scripts/ci-tests.ts --local <junit.xml> [-- <bun test args>]
  *
- * Two tiers. `full` is every file. `essential` (the default of `--plan` and `--run`) is what a
+ * Three tiers. `full` is every file. `essential` (the default of `--plan` and `--run`) is what a
  * pull request and `bun run test:macos` run: test-tiers.json names at most three files for each
- * slow category, and every other file of a slow category is weekly; any file outside the slow
- * categories is essential unless ci-test-times.json measures it at the data file's
- * `heavySeconds` or more. The weekly runs use `full`. A data file with no `slow` array, a category
+ * slow category, and every other file of a slow category is weekly; a `pinned` file is essential;
+ * any other file outside the slow categories is essential unless ci-test-times.json measures it
+ * at the data file's `heavySeconds` or more. `weekly` is `full` minus `essential`: the Mac's
+ * nightly parts use it, and the Linux weekly run uses `full`. Off darwin, every tier drops the
+ * data file's `macOnly` files. A data file with no `slow` array, a category
  * without a non-empty `category` or `prefix`, a prefix that matches no test file, a missing file,
  * a file twice, more than three files for one category, a category twice, or a prefix twice or
  * sharing files with another, stops `--plan` and `--run`.
@@ -524,7 +526,7 @@ async function run(
 }
 
 const USAGE =
-  "usage: ci-tests.ts --list | --plan <group>@<n> [--tier essential|full] | --run <group|group@i/n>[,…] [--tier essential|full] [-- <bun test args>] | --update-times <junit.xml>… | --local <junit.xml> [-- <bun test args>]";
+  "usage: ci-tests.ts --list | --plan <group>@<n> [--tier essential|weekly|full] | --run <group|group@i/n>[,…] [--tier essential|weekly|full] [-- <bun test args>] | --update-times <junit.xml>… | --local <junit.xml> [-- <bun test args>]";
 
 /** `--tier <name>` taken out of our own arguments; `essential` when absent. */
 function takeTier(own: string[]): { tier: Tier; rest: string[] } {

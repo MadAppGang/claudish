@@ -69,11 +69,13 @@ the gate: everything must be green before the tag leaves the machine.
 
 **Tiers.** Pull requests and `bun run test:macos` run the ESSENTIAL tier
 (`packages/cli/scripts/test-tiers.json`: the files listed for each slow category, at most
-three, whatever their time; and, outside the slow categories, no file measured at 2 s or
-more); a dispatch of `test.yml` and `bun run test:macos --full` run
+three, whatever their time; the `pinned` files, whatever their time; and, outside the slow
+categories, no other file measured at 2 s or more); a dispatch of `test.yml` and
+`bun run test:macos --full` run
 the FULL tier. The WEEKLY tier (full minus essential) runs on the owner's Mac in 7
 nightly parts, one a night at 03:00 local: `scripts/weekly-macos-tests.ts` under launchd
-runs `bun run test:macos --part <k>/7` on origin's main and writes
+runs `bun run test:macos --part <k>/7` on origin's main, k being the part with no result or
+the oldest result, and writes
 `~/Library/Logs/claudish-weekly-tests/part<k>.json`. A red part also writes
 `RED-<UTC date>-part<k>.json` (date, part, commit, failing tests, log path) and shows a
 notification naming it; triage reads and deletes the marker. `weekly-tests.yml` runs the
@@ -148,9 +150,9 @@ green while shipping nothing, so a green conclusion is not evidence of a publish
 The darwin binaries are built on `ubuntu-latest` and checked by
 `scripts/check-darwin-binary.sh` (Mach-O arch, the embedded OpenTUI library of the
 target), which fails the build. There is no `codesign` step: Bun ad-hoc signs the
-binary. No step runs a darwin binary before it ships; `bun run test:macos --full` runs
-the hook loading tests on a Mac under the same Bun (`latest`). The default
-`bun run test:macos` does not run them.
+binary. No step runs a darwin binary before it ships; `bun run test:macos --full` and
+the last nightly part (`--part 7/7`) run the hook loading tests on a Mac under the same
+Bun (`latest`). The default `bun run test:macos` does not run them.
 
 **Reading a red `Tests` run** — shapes observed on PR #351, where the junit
 summary and the log grep disagreed with the job's conclusion:

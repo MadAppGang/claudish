@@ -26,8 +26,9 @@ still runs alone. CI does not use this script; its jobs write their own junit th
 ## Test tiers: essential on every run, everything once a week
 
 Every pull request and the pre-tag gate (`bun run test:macos`) run the **essential** tier. The
-**full** tier (every file) runs once a week at night, on Linux and on the owner's Mac, and on a
-manual dispatch of `test.yml`. `bun run test` and `test:safe` stay a plain `bun test` of every file.
+**full** tier (every file) runs on Linux every Sunday (`weekly-tests.yml`) and on a manual dispatch
+of `test.yml`. The **weekly** tier (full minus essential) runs on the owner's Mac, one of 7 parts a
+night. `bun run test` and `test:safe` stay a plain `bun test` of every file.
 
 **The data file is `packages/cli/scripts/test-tiers.json`.** `ci-tests.ts` derives the tier of
 every file it discovers from it and from `ci-test-times.json`:
@@ -56,9 +57,15 @@ every file it discovers from it and from `ci-test-times.json`:
   of the measured data (2.2 s, then 1.8 s): at 2 s it moves 18 files, 104 of the 133 measured
   seconds outside the slow categories, among them `recovery/magmux-ui.test.ts` (23.7 s),
   `mcp-shutdown.e2e.test.ts` (15.9 s) and `handlers/stream-head-unreachable.test.ts` (12 s).
+- **A macOS-only file** (`macOnly` in `test-tiers.json`) takes its tier by the rules above, and
+  `ci-tests.ts` drops it from every tier when it runs off darwin (`forPlatform`). The list holds
+  the four Antigravity files that exercise the shared Antigravity token store, which refuses on
+  Linux by design; the first Linux `rest` run failed 57 tests in exactly those files. On a Mac
+  nothing is dropped.
 
-On the timing table of 2026-11-17 the essential tier is 663 files (idle 4, pane 16, rest 643) and
-the full tier 809. The table times only some of them: 335 essential files have no entry, and the
+On the timing table of 2026-11-17, on darwin, the essential tier is 634 files (idle 4, pane 16,
+rest 614), the full tier 809 and the weekly tier 175; on Linux the four macOS-only files leave
+610 essential rest files. The table times only some of them: 335 essential files have no entry, and the
 planner (`--plan`, `--list` and the slicing of `--run`) weighs each such file 1 s. Its seconds
 are weights that balance slices, not a wall-time estimate: `--list` shows the essential `rest` at
 363 s, 333 of them those 1 s weights.
@@ -93,7 +100,8 @@ takes the first category it matches, so a second block would be ignored), and
 `--plan`, `--run` and `--list` refuse such a file.
 
 **Refreshing `ci-test-times.json` can move a file between tiers**, because it also decides what is
-heavy. Refresh it from a full-tier junit (the weekly runs upload theirs), and read
+heavy. Refresh it from a full-tier junit (`weekly-tests.yml` uploads one per idle and rest
+slice; the Mac's nightly parts upload none, so pane times come from a dispatched `test.yml`), and read
 `--list` before and after.
 
 **Where the tiers run:**
@@ -104,7 +112,7 @@ heavy. Refresh it from a full-tier junit (the weekly runs upload theirs), and re
 | `test.yml` on workflow_dispatch | full (Linux idle and rest slices, and the macOS runners) | the run |
 | `bun run test:macos` | essential: `ci-tests.ts --tier essential` over every group (idle, pane, rest), sliced, plus macos-bridge, `scripts/*.test.ts` and the Antigravity client tests | its summary |
 | `bun run test:macos --full` | full: `ci-tests.ts --tier full` over every group, sliced, and adds the blind hook tests and S1 hook loading | its summary |
-| `weekly-tests.yml`, Sunday 11:00 UTC (03:00 PST) | full, every Linux-capable test | GitHub mails the owner on a failed scheduled run; the run opens (or comments on) one issue titled "Weekly full test run failed" with its URL |
+| `weekly-tests.yml`, Sunday 11:00 UTC (03:00 PST) | full: the scripts, the idle and rest slices (the same slices as test.yml's Linux jobs; a test keeps the two in step) and the Linux S1 rows | GitHub mails the owner on a failed scheduled run; the run opens (or comments on) one issue titled "Weekly full test run failed" with its URL |
 | `scripts/weekly-macos-tests.ts` under launchd, every day 03:00 local | `test:macos --part <k>/7` on origin's main: the k-th of 7 slices of every group on the weekly tier (full minus essential); part 7 adds the blind hook tests and S1 hook loading | `~/Library/Logs/claudish-weekly-tests/<UTC date>-part<k>.log` and `part<k>.json`; a red part writes `RED-<UTC date>-part<k>.json` and a notification naming it |
 | `bun scripts/weekly-macos-tests.ts --check` | none: reads the `part<k>.json` files | exit 0 only when all 7 parts are green within 7 days (the release gate's nightly half) |
 
@@ -127,12 +135,16 @@ or worktree is touched. `bun scripts/install-weekly-macos-tests.ts` writes and l
 (`~/Library/LaunchAgents/com.madappgang.claudish.weekly-macos-tests.plist`), and `--uninstall`
 removes it. The agent runs the clone's copy of the script, so the installer refuses until main
 carries it; like the weekly run, it updates an existing clone to `origin/main` first, so an install
-refused before the merge succeeds when run again after it. A Mac asleep at 03:00 runs the job when it wakes; a Mac that is off skips that night's part, which then waits a week unless it is run by hand.
+refused before the merge succeeds when run again after it. A Mac asleep at 03:00 runs the job when it wakes. A clone directory with no `.git` (a clone killed partway) is removed and cloned again.
 
-The part a night runs is `partOfDate`: the UTC day number modulo 7, so 7 consecutive nights run
-parts 1 to 7 once each. The parts come from ci-tests.ts's time-balanced `slices`, so a change to
-`ci-test-times.json` or to the file list can move a file between parts; the part that took it
-then runs it within the week. Each part runs its three groups as three concurrent processes at
+The part a run takes is `nextPart`: the lowest part with no result, else the part whose result is
+oldest. It reads the `part<k>.json` files, never the clock. An earlier rule took the UTC day
+number modulo 7, and launchd fires at 03:00 LOCAL time: at UTC+11, UTC midnight is 11:00 local, so
+a Mac that slept through 03:00 and woke after 11:00 ran the next day's part, and the next night's
+03:00 run, still on that UTC day, ran it again. With `nextPart`, any 7 runs run every part once,
+and a night the Mac was off only delays the rotation by one run. The parts come from ci-tests.ts's
+time-balanced `slices`, so a change to `ci-test-times.json` or to the file list can move a file
+between parts; the part that took it then runs it within the next 7 runs. Each part runs its three groups as three concurrent processes at
 `sliceConcurrency(cores, 3)`, much lighter than the gate's 17. The measured weekly tier
 (2026-11-17) is about 226-301 s of pane, 41-63 s of rest and up to 67 s of idle per part.
 Bootstrapping the gate (no part results yet) means running the 7 parts by hand, one after
