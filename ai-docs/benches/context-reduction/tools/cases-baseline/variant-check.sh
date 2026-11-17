@@ -4,8 +4,9 @@
 #   2. Claude Code's environment held no ANTHROPIC_API_KEY other than
 #      claudish's placeholder, and no CLAUDISH_CONFIG, as the SessionStart
 #      hook of the cc_settings folder (hooks/agent-env.sh) recorded it;
-#   3. no tool call of the agent named ~/.claudish/config.json or
-#      CLAUDISH_CONFIG;
+#   3. no tool call of the agent touched ~/.claudish/config.json in HOME
+#      (read, wrote, copied or listed it); a mention in source, tests or docs
+#      does not count (claudish-compaction/config-touch.ts);
 #   4. the build's debug log exists and has no compaction line at all.
 here=$(cd "$(dirname "$0")" && pwd)
 launch=$(cat "$HOME/.bench-compaction/launch-dir" 2>/dev/null)

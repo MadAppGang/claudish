@@ -4,8 +4,9 @@
 #   2. Claude Code's environment, as the SessionStart hook of the cc_settings
 #      folder (hooks/agent-env.sh) recorded it, held no ANTHROPIC_API_KEY
 #      other than claudish's placeholder, and no CLAUDISH_CONFIG.
-#   3. No tool call of the agent named ~/.claudish/config.json or
-#      CLAUDISH_CONFIG.
+#   3. No tool call of the agent touched ~/.claudish/config.json in HOME
+#      (read, wrote, copied or listed it); a mention in source, tests or docs
+#      does not count (config-touch.ts).
 #   4. claudish logged "[compaction] on", every compaction call was signed with
 #      x-api-key and named claude-haiku-5-5, and no line says compaction
 #      turned itself off.
