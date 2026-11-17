@@ -1,0 +1,58 @@
+--- a/packages/cli/src/profile-config.ts
++++ b/packages/cli/src/profile-config.ts
+@@ -340,6 +340,12 @@
+    * `readRecoveryUi()`, NOT this allowlist — see its doc comment.
+    */
+   recoveryUi?: { enabled?: boolean };
++  /**
++   * The default context window for local models, in `--context-window`'s
++   * syntax (`128k`, `1.5m`, `64000`). The flag and `CLAUDISH_CONTEXT_WINDOW`
++   * win over it; see `contextWindowLimit()`.
++   */
++  contextWindow?: string | number;
+ }
+ 
+ /**
+@@ -485,6 +491,11 @@
+     if (config.recoveryUi !== undefined) {
+       merged.recoveryUi = config.recoveryUi;
+     }
++    // Same trap: omitted here, the default window is dropped at the first
++    // global save and local models fall back to claudish's own size.
++    if (config.contextWindow !== undefined) {
++      merged.contextWindow = config.contextWindow;
++    }
+     return merged;
+   } catch (error) {
+     console.error(`Warning: Failed to load config, using defaults: ${error}`);
+--- a/packages/cli/src/providers/context-window-limit.ts
++++ b/packages/cli/src/providers/context-window-limit.ts
+@@ -2,9 +2,11 @@
+  * The largest context window a launch may use, for providers whose size claudish
+  * sets: local models today. `--context-window` and the picker's size dialog both
+  * end up in `CLAUDISH_CONTEXT_WINDOW`, so the launch, the load and the status line
+- * read one value.
++ * read one value. The config file's `contextWindow` is the default under both.
+  */
+ 
++import { loadConfig } from "../profile-config.js";
++
+ /** The size asked for when nothing else names one. */
+ export const DEFAULT_LOCAL_CONTEXT_WINDOW = 128_000;
+ 
+@@ -18,6 +20,14 @@
+   return size > 0 ? size : undefined;
+ }
+ 
++/**
++ * The window limit: `CLAUDISH_CONTEXT_WINDOW` (which `--context-window` sets),
++ * else the config file's `contextWindow`. A value that is not a size is
++ * skipped. The config is read on every call, so an edit takes effect at once.
++ */
+ export function contextWindowLimit(): number | undefined {
+-  return parseContextWindow(process.env.CLAUDISH_CONTEXT_WINDOW ?? "");
++  const fromEnv = parseContextWindow(process.env.CLAUDISH_CONTEXT_WINDOW ?? "");
++  if (fromEnv !== undefined) return fromEnv;
++  const fromConfig = loadConfig().contextWindow;
++  return fromConfig === undefined ? undefined : parseContextWindow(String(fromConfig));
+ }
