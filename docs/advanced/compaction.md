@@ -204,7 +204,9 @@ JSON length / 4. The debug log shows the count it used:
   wait for it. The summary covers every message before the latest new user turn. Inside a long
   turn of tool calls, it covers everything except the newest two tool rounds, which stay word for
   word. Tool outputs in it are cut short, and reasoning blocks are left out. A later summary starts
-  from the previous one.
+  from the previous one. When the conversation grows fast (for example, a run of large file
+  reads), claudish starts the summary earlier, at the point where the growth it has measured would
+  reach 60% before a summary started now could finish.
 - **At `applyAt`** (75%), when a summary is ready, claudish sends it at the next new user turn or
   at the next request whose tool results answer every tool call before them. It never sends it
   between a tool call and its result. claudish sends one user message,

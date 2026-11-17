@@ -53,7 +53,13 @@ import { type CachePricing, cacheRatios, cacheTtlMs } from "./cache-prices.js";
 import { DEFAULT_TOPIC_SETTINGS, type HistorySettings } from "./config.js";
 import type { CompactionCallResult, CompactionClient } from "./haiku-client.js";
 import { isHarnessCompactionMessage, isHarnessCompactionRequest } from "./harness-compaction.js";
-import { RealTokenCount, type RequestCount, type UsageMark, charsOf } from "./real-count.js";
+import {
+  RealTokenCount,
+  type RequestCount,
+  type ThreadObservation,
+  type UsageMark,
+  charsOf,
+} from "./real-count.js";
 import {
   type CompactionRecord,
   type CompactionStore,
@@ -601,6 +607,38 @@ export function pinnedPromptTooLarge(
   };
 }
 
+/**
+ * The summary latency assumed before a session has timed one: bench summaries
+ * took 10.6 s and 14 s.
+ */
+export const HISTORY_SUMMARY_LATENCY_MS = 15_000;
+
+/** The most requests a projection looks ahead, however short the gap between them. */
+export const MAX_PROJECTED_REQUESTS = 8;
+
+/**
+ * The count `requests` requests from now, where `requests` is how many the
+ * thread sends while one summary runs (`latencyMs` over the gap between
+ * requests, at most `MAX_PROJECTED_REQUESTS`). The count itself when growth
+ * or the gap is not measured yet.
+ */
+export function projectedTokens(
+  count: number,
+  observed: Pick<ThreadObservation, "gapMs" | "growthPerRequest">,
+  latencyMs: number
+): { tokens: number; requests: number } {
+  const { gapMs, growthPerRequest } = observed;
+  if (
+    growthPerRequest === undefined ||
+    !(growthPerRequest > 0) ||
+    !(gapMs !== undefined && gapMs > 0)
+  ) {
+    return { tokens: count, requests: 0 };
+  }
+  const requests = Math.min(MAX_PROJECTED_REQUESTS, Math.ceil(latencyMs / gapMs));
+  return { tokens: count + Math.round(growthPerRequest * requests), requests };
+}
+
 /** The messages a swap sends in place of `original`. */
 export function applySwap(original: readonly unknown[], swap: HistorySwapRecord): unknown[] {
   return [
@@ -703,6 +741,8 @@ export class HistoryCompactor {
   private readonly counter: RealTokenCount;
   /** Sessions and models already told that history is off for want of a window. */
   private readonly windowUnknownLogged = new Set<string>();
+  /** The newest summary's duration per session, in ms, for `projectedTokens`. */
+  private readonly summaryLatency = new Map<string, number>();
 
   constructor(private readonly deps: HistoryCompactorDeps) {
     this.counter = deps.counter ?? new RealTokenCount(deps.now);
@@ -849,12 +889,51 @@ export class HistoryCompactor {
     result.estimate = count.tokens;
     result.countSource = count.source;
 
-    if (count.tokens >= prepareAt) {
-      const current = result.boundary ?? 0;
-      result.precomputeStarted = this.maybePrecompute(sessionId, thread, original, hashes, current);
-    }
+    result.precomputeStarted = this.maybePrepare(
+      sessionId,
+      thread,
+      original,
+      hashes,
+      result.boundary ?? 0,
+      count.tokens,
+      prepareAt
+    );
     result.mark = counter.mark(sessionId, thread, payload, chars);
     return result;
+  }
+
+  /**
+   * Start a background summary when the count reaches `prepareAt`, or
+   * earlier when the thread's measured growth projects it there before a
+   * summary started now would be ready (`projectedTokens`). A fast-growing
+   * turn otherwise reaches Claude Code's own compaction point while its
+   * summary is still running.
+   */
+  private maybePrepare(
+    sessionId: string,
+    thread: string,
+    original: readonly unknown[],
+    hashes: MessageHashes,
+    currentBoundary: number,
+    tokens: number,
+    prepareAt: number
+  ): boolean {
+    if (tokens >= prepareAt) {
+      return this.maybePrecompute(sessionId, thread, original, hashes, currentBoundary);
+    }
+    const projected = projectedTokens(
+      tokens,
+      this.counter.observe(sessionId, thread),
+      this.summaryLatency.get(sessionId) ?? HISTORY_SUMMARY_LATENCY_MS
+    );
+    if (projected.tokens < prepareAt) return false;
+    const started = this.maybePrecompute(sessionId, thread, original, hashes, currentBoundary);
+    if (started) {
+      log(
+        `[compaction] history summary started early in session ${sessionId}: ${tokens} tokens now, projected ${projected.tokens} in ${projected.requests} requests, prepareAt ${Math.round(prepareAt)}`
+      );
+    }
+    return started;
   }
 
   /**
@@ -1183,6 +1262,8 @@ export class HistoryCompactor {
     // runs next may change the body.
     const rendered = renderMessages(original, previous?.boundary ?? 0, boundary);
     const user = summaryRequestText(rendered, previous?.summary);
+    const now = this.deps.now ?? Date.now;
+    const startedAt = now();
     const job = this.runSummary({
       sessionId,
       thread,
@@ -1192,6 +1273,9 @@ export class HistoryCompactor {
       user,
       ...(previous ? { basedOn: previous.prefixHash } : {}),
     })
+      .then(() => {
+        this.summaryLatency.set(sessionId, Math.max(0, now() - startedAt));
+      })
       .catch((err) => {
         log(
           `[compaction] history summary failed: ${err instanceof Error ? err.message : String(err)}`

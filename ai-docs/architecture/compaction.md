@@ -179,7 +179,15 @@ one of them is never compressed and never recorded, so it is sent as it is on ev
   round (`MID_TURN_TAIL_ROUNDS` = 2), so the newest two rounds' outputs stay verbatim after a
   swap (the file-print loss above is the cost of losing them). Inside a turn a new summary starts
   only `MID_TURN_MIN_ADVANCE` (8) messages past the thread's newest summary, so a long turn does
-  not start one per request. Messages `[0, b)` are rendered as plain text (tool_results in the form this
+  not start one per request. **A summary also starts early by projection** (`projectedTokens`):
+  when `count + growthPerRequest × K` reaches `precomputeAt`, where K is the session's newest
+  summary duration over the gap since the previous request (15 s assumed until one is timed,
+  at most 8 requests). Bench E1 cost t1 grew 42,284 -> 162,022 in 4 requests over 27 s; its
+  rolling summary started at 139,555 and was ready 14 s later, after Claude Code compacted at
+  167,869. Growth needs two measured responses, so the first request of a thread never
+  projects. An early start logs
+  `[compaction] history summary started early in session <id>: <N> tokens now, projected <P> in <K> requests, prepareAt <M>`.
+  Messages `[0, b)` are rendered as plain text (tool_results in the form this
   request sends, cut to 2,000 characters; no thinking; the whole input capped at 400,000
   characters by dropping the oldest messages after the first). A summary rolls forward from the
   newest ready summary below `b`. `max_tokens` 8192, claudish's own system prompt. One summary in
