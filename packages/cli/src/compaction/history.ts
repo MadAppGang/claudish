@@ -52,6 +52,7 @@ import { parseModelSpec } from "../providers/model-parser.js";
 import { type CachePricing, cacheRatios, cacheTtlMs } from "./cache-prices.js";
 import { DEFAULT_TOPIC_SETTINGS, type HistorySettings } from "./config.js";
 import type { CompactionCallResult, CompactionClient } from "./haiku-client.js";
+import { isHarnessCompactionMessage, isHarnessCompactionRequest } from "./harness-compaction.js";
 import { RealTokenCount, type RequestCount, type UsageMark, charsOf } from "./real-count.js";
 import {
   type CompactionRecord,
@@ -252,12 +253,14 @@ export function threadOf(messages: readonly unknown[]): string {
 /**
  * True when `message` starts a human turn: a user message with user text and
  * no tool_result. A user message carrying a tool_result belongs to a tool
- * round, even when Claude Code added text blocks beside it.
+ * round, even when Claude Code added text blocks beside it. Claude Code's
+ * compaction instruction is not a human turn.
  */
 export function isHumanTurnStart(message: unknown): boolean {
   if (!message || typeof message !== "object") return false;
   const m = message as Block;
   if (m.role !== "user") return false;
+  if (isHarnessCompactionMessage(m)) return false;
   if (typeof m.content === "string") return m.content.trim().length > 0;
   if (!Array.isArray(m.content)) return false;
   let hasText = false;
@@ -641,8 +644,9 @@ export class HistoryCompactor {
     sessionId: string,
     routedModel?: string
   ): Promise<HistoryPassSummary> {
+    const original = messagesOf(payload);
     const topicSwap =
-      this.deps.settings.policy === "topic"
+      this.deps.settings.policy === "topic" && !(original && isHarnessCompactionRequest(original))
         ? await this.topicDecision(payload, sessionId)
         : undefined;
     return this.compact(payload, sessionId, routedModel, topicSwap);
@@ -726,6 +730,10 @@ export class HistoryCompactor {
     const thread = threadOf(original);
 
     const active = this.replayActive(body, sessionId, thread, original, hashes, result);
+    // Claude Code's compaction request: the swap the model already works
+    // from is replayed (a cache read), and nothing new is decided, because no
+    // later request repeats this one's prefix.
+    if (isHarnessCompactionRequest(original)) return result;
 
     const windowModel = routedModel ?? body.model;
     const limit = effectiveHistoryLimit(

@@ -20,6 +20,7 @@ import { type AnthropicUsage, mergeSseUsage } from "../handlers/shared/claude-ap
 import type { ModelHandler } from "../handlers/types.js";
 import { extractSessionId } from "../hooks/harness.js";
 import { log } from "../logger.js";
+import { harnessCompactionNote } from "./harness-compaction.js";
 import type { UsageMark } from "./real-count.js";
 import type { CompactionRuntime } from "./runtime.js";
 import { isSafeSessionId } from "./store.js";
@@ -57,7 +58,12 @@ export class CompactionHandler implements ModelHandler {
   async handle(c: Context, payload: unknown): Promise<Response> {
     if (c.get("compactionHandled") === true) return this.inner.handle(c, payload);
     c.set("compactionHandled", true);
-    const mark = await compactRequest(this.runtime, payload, this.routedModel);
+    const mark = await compactRequest(
+      this.runtime,
+      payload,
+      this.routedModel,
+      c.req?.header("anthropic-beta")
+    );
     const response = await this.inner.handle(c, payload);
     if (!mark) return response;
     const history = this.runtime.history;
@@ -84,11 +90,14 @@ export function compactionSessionOf(payload: unknown): string | undefined {
  * `routedModel` is the model spec the proxy routes the request to (a role
  * mapping or `--model` can send a `claude-*` request to another model); the
  * history limit is its context window. Absent, the body's own `model` is used.
+ * `anthropicBeta` is the request's `anthropic-beta` header, read only for the
+ * debug line about Claude Code's compaction request.
  */
 export async function compactRequest(
   runtime: CompactionRuntime,
   payload: unknown,
-  routedModel?: string
+  routedModel?: string,
+  anthropicBeta?: string
 ): Promise<UsageMark | undefined> {
   const sessionId = compactionSessionOf(payload);
   if (!sessionId) return undefined;
@@ -107,6 +116,7 @@ export async function compactRequest(
   }
   if (runtime.settings.history.enabled) {
     try {
+      logHarnessCompactionNote(sessionId, payload, anthropicBeta);
       const pass = await runtime.history.compactAsync(payload, sessionId, routedModel);
       mark = pass.mark;
       if (pass.applied !== "none" || pass.precomputeStarted) {
@@ -119,6 +129,18 @@ export async function compactRequest(
     }
   }
   return mark;
+}
+
+/** The debug line `harnessCompactionNote` gives for this request, if any. */
+function logHarnessCompactionNote(
+  sessionId: string,
+  payload: unknown,
+  anthropicBeta: string | undefined
+): void {
+  const messages = (payload as { messages?: unknown } | null)?.messages;
+  if (!Array.isArray(messages)) return;
+  const note = harnessCompactionNote(messages, anthropicBeta);
+  if (note) log(`[compaction] session ${sessionId}: ${note}`);
 }
 
 /**

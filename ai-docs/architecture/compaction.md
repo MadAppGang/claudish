@@ -217,9 +217,22 @@ one of them is never compressed and never recorded, so it is sent as it is on ev
   (`messagesHash`) keep the raw form. A record without per-message hashes compares the whole
   `[b, end)`:
   `[compaction] session <id>: history replayed at <b>, tail changed: recorded [<12hex>,...] current [<12hex>,...]`.
-- A request with another prefix (Claude Code's own `/compact`, a subagent's transcript) matches no
-  swap and is untouched. Several threads per session are possible; records are keyed by prefix
-  hash.
+- A request with another prefix (a subagent's transcript) matches no swap and is untouched.
+  Several threads per session are possible; records are keyed by prefix hash.
+- **Claude Code's own compaction request keeps the conversation's prefix** and adds one
+  instruction at the end (`compaction/harness-compaction.ts`). Measured on Claude Code 2.1.326
+  against a local mock: system, tools, `max_tokens`, thinking and metadata equal the request
+  before it. Auto compaction at a turn start sends the instruction as the whole last user message
+  (a string), and `/compact` after a tool round sends it as a text block after the tool_results.
+  Both start `CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.` On that request the
+  history pass replays the active swap (the model has worked from the swapped view, and the
+  replay is a cache read) and decides nothing else: no new swap, no summary, no topic decision.
+  The instruction never counts as a human turn start. Before this, bench E1 (threshold t3) swapped
+  that request (messages 0..102), a swap no later request repeats. The request also carries the
+  `fallback-credit-2026-06-01` beta, but so do other requests (4 of 13 in one bench run), so the
+  beta is not the signal. A request with the beta and without the instruction logs
+  `history pass: fallback-credit-2026-06-01 without Claude Code's compaction instruction`, so a
+  changed instruction shows in the debug log.
 - A summary that fails is recorded `failed` for its boundary and never retried there. A swap whose
   record did not reach disk is not sent (it could not be replayed after a restart).
 
