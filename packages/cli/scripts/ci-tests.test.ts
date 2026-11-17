@@ -90,6 +90,15 @@ describe("tier derivation", () => {
     expect(forPlatform(files, DATA, "linux")).toEqual(files);
   });
 
+  test("the weekly tier is every file the essential tier leaves out, in discovery order", () => {
+    const files = ["src/a.test.ts", "src/pane/a.test.ts", "src/pane/b.test.ts", "src/z.test.ts"];
+    const times = { "src/z.test.ts": 5 };
+    const weekly = filesInTier(files, "weekly", DATA, times);
+    expect(weekly).toEqual(["src/pane/b.test.ts", "src/z.test.ts"]);
+    const essential = filesInTier(files, "essential", DATA, times);
+    expect([...essential, ...weekly].sort()).toEqual([...files].sort());
+  });
+
   test("the full tier is every file; the essential tier keeps discovery order", () => {
     const files = ["src/a.test.ts", "src/pane/a.test.ts", "src/pane/b.test.ts", "src/z.test.ts"];
     const times = { "src/z.test.ts": 5 };

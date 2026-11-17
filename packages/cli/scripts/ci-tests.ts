@@ -95,7 +95,8 @@ function byGroup(files: string[]): Map<string, string[]> {
   return out;
 }
 
-export const TIER_NAMES = ["essential", "full"] as const;
+/** `weekly` is `full` minus `essential`: the files the nightly parts run. */
+export const TIER_NAMES = ["essential", "weekly", "full"] as const;
 export type Tier = (typeof TIER_NAMES)[number];
 export const MAX_ESSENTIAL_PER_CATEGORY = 3;
 
@@ -161,7 +162,7 @@ export function filesInTier(
   times: Record<string, number>
 ): string[] {
   if (tier === "full") return files;
-  return files.filter((f) => tierOf(f, data, times) === "essential");
+  return files.filter((f) => tierOf(f, data, times) === tier);
 }
 
 /** The files of `files` that run on `platform`: off macOS, the `macOnly` files are left out. */
