@@ -27,7 +27,8 @@ lives in `ROADMAP.md`.
   launches load no hooks), tool outputs compressed once on first sighting and replayed byte for
   byte, the six cache-stability rules, the history swap at a human-turn start or after a complete
   tool round, measured by upstream usage (prefix and tail hashes, thinking stripped, background
-  summary never awaited), the Anthropic key held in memory on
+  summary awaited only by the last request before Claude Code's compaction point, at most 20 s),
+  the Anthropic key held in memory on
   a signing lease, the store and its 7-day retention. Read before editing `compaction/`, the
   `/v1/messages` decorator chain or the `count_tokens` route
 - `settings-env.md` — a settings `env` block overwrites the environment claudish gives Claude Code; why a proxy-auth launch is marked host-managed and withholds first-party trust, and why a launch that keeps the user's login is not; the two Claude launches (the Claude API child holds only claudish's placeholder token under the host marker alone, measured on Claude Code 2.1.323; the Claude subscription launch is refused when a settings layer would hand it an API key); read before changing the child's environment or `launcher/claude-launch.ts`

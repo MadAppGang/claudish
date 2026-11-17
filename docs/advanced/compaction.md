@@ -225,7 +225,12 @@ JSON length / 4. The debug log shows the count it used:
 - A conversation that does not match the one the summary was made for (a subagent) is left
   unchanged. Claude Code's own compaction request (`/compact`, or its automatic compaction) gets
   the summary already in use, and claudish starts nothing new on it.
-- A summary that fails is not retried for the same point. Nothing waits for it.
+- A summary that fails is not retried for the same point.
+- A request normally never waits for a summary. One exception: when the next request would reach
+  the point where Claude Code compacts on its own, and a summary is still being written, that one
+  request waits for it, for at most 20 seconds, so the summary is sent first. If it is not ready
+  by then, the request goes on unchanged and Claude Code's own compaction happens as before. The
+  debug log shows the wait as `history waited <ms> ms`.
 
 **Claude Code's auto-compact stays on.** It is the safety net for the case where no summary is ready
 in time. Claude Code compacts near 80% of its window, so `applyAt` defaults to 75%: a ready summary

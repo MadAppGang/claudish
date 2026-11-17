@@ -85,7 +85,8 @@ export function compactionSessionOf(payload: unknown): string | undefined {
  * Compact one `/v1/messages` body in place: the tool-output pass first, then
  * the history pass, which hashes the messages as the first pass left them.
  * Never rejects: a fault leaves the body as the decisions recorded so far
- * made it. The history pass never waits for a summary.
+ * made it. The history pass waits for a summary only on the last request
+ * before Claude Code's own compaction point, for at most `HISTORY_SWAP_WAIT_MS`.
  *
  * `routedModel` is the model spec the proxy routes the request to (a role
  * mapping or `--model` can send a `claude-*` request to another model); the

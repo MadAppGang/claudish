@@ -10,7 +10,9 @@
  * - **Measure.** A request is measured with the real count (`RealTokenCount`):
  *   the upstream usage of the thread's previous request plus an estimate of
  *   what was appended since, calibrated by that same measurement.
- * - **Prepare** (at `precomputeAt`, never awaited by the request). The boundary
+ * - **Prepare** (at `precomputeAt`, or earlier by `projectedTokens`; awaited
+ *   only by the last request before Claude Code's own compaction point, for
+ *   at most `HISTORY_SWAP_WAIT_MS`). The boundary
  *   `b` is chosen by `summaryBoundary`: the start of the last human turn, or,
  *   inside a turn, the assistant message that keeps the newest
  *   `MID_TURN_TAIL_ROUNDS` complete tool rounds out of the summary. Messages
@@ -613,6 +615,13 @@ export function pinnedPromptTooLarge(
  */
 export const HISTORY_SUMMARY_LATENCY_MS = 15_000;
 
+/**
+ * The longest one request waits for a summary in flight before Claude Code's
+ * own compaction point, the same bound as one request's tool-output
+ * compression (`compaction.toolOutputs.timeoutMs` default).
+ */
+export const HISTORY_SWAP_WAIT_MS = 20_000;
+
 /** The most requests a projection looks ahead, however short the gap between them. */
 export const MAX_PROJECTED_REQUESTS = 8;
 
@@ -680,6 +689,8 @@ export interface HistoryCompactorDeps {
   autoCompactWindow?: () => number | undefined;
   /** The timeout of one summary call. Defaults to `HISTORY_SUMMARY_TIMEOUT_MS`. */
   summaryTimeoutMs?: number;
+  /** The longest a request waits for a summary in flight. Defaults to `HISTORY_SWAP_WAIT_MS`. */
+  swapWaitMs?: number;
   /** The request counter. Defaults to a new `RealTokenCount` on `now`. */
   counter?: RealTokenCount;
   /** The clock, in milliseconds. Defaults to `Date.now`. */
@@ -751,7 +762,8 @@ export class HistoryCompactor {
   /**
    * Replay a recorded swap, record a new one when the request qualifies, and
    * start a background summary when it reaches `precomputeAt`. Mutates
-   * `payload.messages`. Synchronous: it never waits for a summary.
+   * `payload.messages`. Synchronous: it never waits for a summary (only
+   * `compactAsync` does, in `waitBeforeCcCompact`).
    *
    * `routedModel` is the model the request is routed to; its context window
    * is the limit. Absent, the body's own `model` is used.
@@ -767,11 +779,61 @@ export class HistoryCompactor {
     routedModel?: string
   ): Promise<HistoryPassSummary> {
     const original = messagesOf(payload);
+    const harness = original !== undefined && isHarnessCompactionRequest(original);
+    if (original && !harness) {
+      await this.waitBeforeCcCompact(payload, original, sessionId, routedModel);
+    }
     const topicSwap =
-      this.deps.settings.policy === "topic" && !(original && isHarnessCompactionRequest(original))
+      this.deps.settings.policy === "topic" && !harness
         ? await this.topicDecision(payload, sessionId)
         : undefined;
     return this.compact(payload, sessionId, routedModel, topicSwap);
+  }
+
+  /**
+   * Wait, at most `swapWaitMs`, for the thread's summary in flight when this
+   * request is the last one before Claude Code's own compaction point: it is
+   * a swap point at or above the swap gate, and the count plus one request's
+   * measured growth reaches `CLAUDE_CODE_COMPACT_AT` of the limit. Claude Code
+   * decides to compact from the usage of this request's response, so a swap
+   * on any later request comes too late. A summary that is not ready in time
+   * leaves the request as it was; Claude Code's compaction stays the fallback.
+   */
+  private async waitBeforeCcCompact(
+    payload: unknown,
+    original: readonly unknown[],
+    sessionId: string,
+    routedModel: string | undefined
+  ): Promise<void> {
+    const thread = threadOf(original);
+    const flight = this.inFlight.get(`${sessionId}\n${thread}`);
+    if (!flight || !isSwapPoint(original)) return;
+    const limit = effectiveHistoryLimit(
+      (this.deps.contextWindowOf ?? catalogContextWindow)(routedModel ?? (payload as Block).model),
+      (this.deps.autoCompactWindow ?? getLaunchAutoCompactWindow)()
+    );
+    if (limit === undefined) return;
+    const { precomputeAt, applyAt } = this.deps.settings;
+    const gate = (this.deps.settings.policy === "cost" ? precomputeAt : applyAt) * limit;
+    const tokens = this.counter.count(sessionId, thread, payload).tokens;
+    const growth = this.counter.observe(sessionId, thread).growthPerRequest;
+    const ccCompactAt = CLAUDE_CODE_COMPACT_AT * limit;
+    if (tokens < gate || growth === undefined || tokens + growth < ccCompactAt) return;
+
+    const now = this.deps.now ?? Date.now;
+    const started = now();
+    const capMs = this.deps.swapWaitMs ?? HISTORY_SWAP_WAIT_MS;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const ready = await Promise.race([
+      flight.then(() => true),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), capMs);
+      }),
+    ]);
+    if (timer !== undefined) clearTimeout(timer);
+    log(
+      `[compaction] history waited ${Math.max(0, now() - started)} ms in session ${sessionId}: ${tokens} tokens now, next request projected ${Math.round(tokens + growth)}, Claude Code compacts at ${Math.round(ccCompactAt)}; ${ready ? "summary ready" : `summary not ready after ${capMs} ms`}`
+    );
   }
 
   /**

@@ -173,7 +173,20 @@ one of them is never compressed and never recorded, so it is sent as it is on ev
   `[compaction] session <id>: history count <n> of <limit> tokens (<source>)`, the source naming
   the measured usage and the appended estimate. `count_tokens` still answers with
   `localTokenEstimate`: it is Claude Code's gauge, not this decision.
-- **Prepare** at `precomputeAt`, in the background, never awaited. Boundary `b` =
+- **One bounded wait** (`waitBeforeCcCompact`, `HISTORY_SWAP_WAIT_MS` = 20 s, the
+  `toolOutputs.timeoutMs` default). Claude Code decides to compact from the usage claudish
+  returned for the previous request plus what it appended, before it sends the next request. So a
+  swap must be in the response of the last request before that point; a swap on the compaction
+  request itself is too late (and is not made, see Claude Code's own compaction request below). A
+  request waits for the thread's summary in flight only when it is a swap point, its count is at
+  or above the swap gate (`applyAt`, or `precomputeAt` under `cost`), and its count plus one
+  request's measured growth reaches `CLAUDE_CODE_COMPACT_AT` of the limit. It then swaps if the
+  summary is ready. Every wait logs
+  `[compaction] history waited <ms> ms in session <id>: <N> tokens now, next request projected <P>, Claude Code compacts at <M>; summary ready|summary not ready after <cap> ms`.
+  A summary that is not ready by the cap leaves the request unchanged; Claude Code's compaction
+  stays the fallback. Every other request never waits.
+- **Prepare** at `precomputeAt`, in the background, not awaited (except by the one wait above).
+  Boundary `b` =
   `summaryBoundary`: the start of the last human turn when the last message starts one; inside a
   turn, the later of that and the assistant message that begins the second-newest complete tool
   round (`MID_TURN_TAIL_ROUNDS` = 2), so the newest two rounds' outputs stay verbatim after a
