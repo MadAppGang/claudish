@@ -26,6 +26,7 @@
 // pricing.ts. Per trial the readout also prints the requests above a model's
 // band edge and what they cost.
 
+import { launchCwd, sameLaunchCwd } from "./launch-logs";
 import { bandOf, EDGE_RULES, type EdgeRule, priceOf, requestCost, type Usage } from "./pricing";
 
 const M = 1_000_000;
@@ -370,13 +371,14 @@ for (const arg of process.argv.slice(2)) {
   // (the first launch, `claude plugin`, makes ./logs and the session reuses it).
   // Every launch of one trial records the same sandbox cwd, so all launch logs
   // with this cwd are read.
-  const cwd = launchText.match(/^launch: cwd (.*)$/m)?.[1];
+  const cwd = launchCwd(launchText);
   if (cwd) {
     const outDir = logPath.split("/").slice(0, -3).join("/");
     let trialLaunches = "";
     for (const f of new Bun.Glob("*launch-*/launch.log").scanSync({ cwd: outDir, absolute: true })) {
       const t = await Bun.file(f).text();
-      if (t.includes(`launch: cwd ${cwd}\n`)) trialLaunches += t;
+      const other = launchCwd(t);
+      if (other !== undefined && sameLaunchCwd(cwd, other)) trialLaunches += t;
     }
     const active = /^bun-shim: active/m.test(trialLaunches);
     const refused = (trialLaunches.match(/^bun-shim: refused bare bun test/gm) ?? []).length;
