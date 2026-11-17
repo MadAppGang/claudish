@@ -69,6 +69,15 @@ describe("tier derivation", () => {
     expect(tierOf("src/new.test.ts", DATA, {})).toBe("essential");
   });
 
+  test("a pinned file stays essential however slow it is", () => {
+    const data: TierData = {
+      ...DATA,
+      pinned: [{ file: "src/guard.test.ts", guards: "a credential reload" }],
+    };
+    expect(tierOf("src/guard.test.ts", data, { "src/guard.test.ts": 46 })).toBe("essential");
+    expect(tierOf("src/other.test.ts", data, { "src/other.test.ts": 46 })).toBe("weekly");
+  });
+
   test("the full tier is every file; the essential tier keeps discovery order", () => {
     const files = ["src/a.test.ts", "src/pane/a.test.ts", "src/pane/b.test.ts", "src/z.test.ts"];
     const times = { "src/z.test.ts": 5 };
@@ -198,6 +207,36 @@ describe("validateTiers", () => {
     expect(validateTiers(data, files)).toEqual([]);
   });
 
+  test("a pinned list that is not an array, or a pinned entry that is not an object, is an error", () => {
+    for (const pinned of [{}, "src/x.test.ts", [null], ["src/x.test.ts"], [{ file: "" }]]) {
+      const data = { ...DATA, pinned } as unknown as TierData;
+      expect(validateTiers(data, known).join("\n")).toContain("pinned");
+    }
+  });
+
+  test("a pinned file that is missing, in a slow category, named twice or without guards is an error", () => {
+    const files = [...known, "src/guard.test.ts"];
+    const data: TierData = {
+      ...DATA,
+      pinned: [
+        { file: "src/gone.test.ts", guards: "x" },
+        { file: "src/pane/b.test.ts", guards: "x" },
+        { file: "src/guard.test.ts", guards: "x" },
+        { file: "src/guard.test.ts", guards: " " },
+      ],
+    };
+    const errors = validateTiers(data, files).join("\n");
+    expect(errors).toContain("pinned src/gone.test.ts is not a test file");
+    expect(errors).toContain("pinned src/pane/b.test.ts is in slow category pane");
+    expect(errors).toContain("pinned src/guard.test.ts is listed twice");
+    expect(errors).toContain("pinned src/guard.test.ts has no guards text");
+  });
+
+  test("a valid pinned list passes", () => {
+    const data: TierData = { ...DATA, pinned: [{ file: "src/guard.test.ts", guards: "x" }] };
+    expect(validateTiers(data, [...known, "src/guard.test.ts"])).toEqual([]);
+  });
+
   test("a root value that is not an object is an error, not a crash", () => {
     for (const root of [null, [], "x", 3]) {
       const errors = validateTiers(root as unknown as TierData, known).join("\n");
@@ -299,6 +338,20 @@ describe("validateTiers", () => {
     const errors = validateTiers(data, known).join("\n");
     expect(errors).toContain("heavySeconds");
     expect(errors).toContain("src/pane/a.test.ts has no guards text");
+  });
+
+  test("the credential-file and metered-billing guard tests are pinned essential", () => {
+    const pinned = (loadTiers().pinned ?? []).map((e) => e.file);
+    expect(pinned).toEqual(
+      expect.arrayContaining([
+        "src/auth/credential-file.test.ts",
+        "src/auth/grok-oauth.reload.test.ts",
+        "src/auth/kimi-oauth.reload.test.ts",
+        "src/providers/devin/devin-credentials.reload.test.ts",
+        "src/handlers/composed-handler-accounts-2a.test.ts",
+        "src/handlers/v14-merge-fixes.test.ts",
+      ])
+    );
   });
 
   test("the pane essentials run the two-socket check's rejections, a writable view socket included", () => {

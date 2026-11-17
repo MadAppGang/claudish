@@ -211,7 +211,8 @@ negative case: if you are about to type one of those words, stop and use the lef
 - Tiers: `packages/cli/scripts/test-tiers.json` lists at most 3 essential files per slow category
   (`pane/`, `mcp-session/`, `mcp-blackbox/`, `team*`, `recovery-contract/`, `hooks/`); every
   other file of those is weekly, and any other file measured at `heavySeconds` (2 s) or more is
-  weekly. Pull requests run the essential tier. The full tier runs weekly: `weekly-tests.yml`
+  weekly unless `pinned` lists it (the silent-invariant guards). Pull requests run the essential
+  tier of `idle` and `rest` on Linux; `pane` runs on a PR nowhere. The full tier runs weekly: `weekly-tests.yml`
   (Linux, Sunday 11:00 UTC; a failure opens the issue "Weekly full test run failed") and
   `scripts/weekly-macos-tests.ts` under launchd on the owner's Mac (Sunday 03:00; log in
   `~/Library/Logs/claudish-weekly-tests/`, a notification on failure), installed with

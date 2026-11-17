@@ -104,6 +104,14 @@ export interface TierData {
   /** A file outside the slow categories measured at this many seconds or more is weekly. */
   heavySeconds: number;
   slow: SlowCategory[];
+  /** Files outside the slow categories that stay essential whatever their measured time. */
+  pinned?: TierEntry[];
+}
+
+export interface TierEntry {
+  file: string;
+  /** What a regression in this file would break, in one sentence. */
+  guards: string;
 }
 
 export interface SlowCategory {
@@ -113,7 +121,7 @@ export interface SlowCategory {
    * (`src/team`) takes only the files directly in its directory whose names start with it.
    */
   prefix: string;
-  essential: { file: string; guards: string }[];
+  essential: TierEntry[];
 }
 
 export function loadTiers(path: string = TIERS): TierData {
@@ -138,6 +146,7 @@ export function tierOf(
 ): "essential" | "weekly" {
   const category = data.slow.find((c) => inPrefix(file, c.prefix));
   if (category) return category.essential.some((e) => e.file === file) ? "essential" : "weekly";
+  if (data.pinned?.some((e) => e.file === file)) return "essential";
   const measured = times[file];
   return measured !== undefined && measured >= data.heavySeconds ? "weekly" : "essential";
 }
@@ -175,6 +184,7 @@ export function validateTiers(data: TierData, known: string[]): string[] {
   const shape = data.slow.flatMap(shapeErrors);
   if (shape.length > 0) return [...errors, ...shape];
   errors.push(...categorySetErrors(data.slow));
+  errors.push(...pinnedErrors(data, exists));
   const seen = new Set<string>();
   for (const c of data.slow) {
     // A misspelt prefix takes no file, so the directory it meant stays essential in full.
@@ -203,8 +213,36 @@ function shapeErrors(c: SlowCategory, i: number): string[] {
   return errors;
 }
 
+/** A pinned file must exist, sit outside every slow category, and be listed once with guards text. */
+function pinnedErrors(data: TierData, exists: Set<string>): string[] {
+  if (data.pinned === undefined) return [];
+  if (!Array.isArray(data.pinned)) {
+    return [`pinned must be an array of entries, not ${JSON.stringify(data.pinned)}`];
+  }
+  const shape = data.pinned.flatMap((entry: unknown, j) => entryErrors(entry, `pinned[${j}]`));
+  if (shape.length > 0) return shape;
+  const errors: string[] = [];
+  const seen = new Set<string>();
+  for (const { file, guards } of data.pinned) {
+    if (!exists.has(file)) errors.push(`pinned ${file} is not a test file`);
+    const category = slowCategoryOf(file, data);
+    if (category !== undefined) {
+      errors.push(
+        `pinned ${file} is in slow category ${category}; list it in that category's essential files`
+      );
+    }
+    if (seen.has(file)) errors.push(`pinned ${file} is listed twice`);
+    seen.add(file);
+    if (!guards.trim()) errors.push(`pinned ${file} has no guards text`);
+  }
+  return errors;
+}
+
 function essentialEntryErrors(entry: unknown, category: string, j: number): string[] {
-  const where = `category ${category} essential[${j}]`;
+  return entryErrors(entry, `category ${category} essential[${j}]`);
+}
+
+function entryErrors(entry: unknown, where: string): string[] {
   if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
     return [`${where} must be an object with non-empty strings "file" and "guards"`];
   }

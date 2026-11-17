@@ -1,6 +1,32 @@
 {
   "$comment": "Which hermetic test files run on every pull request and in `bun run test:macos` (the essential tier), and which only in the weekly full run. A file in a slow category is essential only when it is listed below (at most 3 per category; a new file there is weekly until it is listed). Any other file is essential unless ci-test-times.json measures it at heavySeconds or more. ci-tests.ts reads this file; ai-docs/architecture/testing.md explains how to promote a file.",
   "heavySeconds": 2,
+  "pinned": [
+    {
+      "file": "src/auth/credential-file.test.ts",
+      "guards": "an unreadable credential file never signs a process out, and a refresh writes back only by compare-and-set on the refresh-token lineage, so it cannot undo a newer login"
+    },
+    {
+      "file": "src/auth/grok-oauth.reload.test.ts",
+      "guards": "a long-lived process follows the Grok credential file: a new login is picked up, a torn or unreadable read keeps the held token"
+    },
+    {
+      "file": "src/auth/kimi-oauth.reload.test.ts",
+      "guards": "a long-lived process follows the Kimi credential file: a new login is picked up, a torn or unreadable read keeps the held token"
+    },
+    {
+      "file": "src/providers/devin/devin-credentials.reload.test.ts",
+      "guards": "the cached Devin credential follows a replaced file, and an unreadable file never clears it"
+    },
+    {
+      "file": "src/handlers/composed-handler-accounts-2a.test.ts",
+      "guards": "once a request signed OAuth, its requireOAuth latch stays set for every later sign, so a subscription request never signs with a metered key"
+    },
+    {
+      "file": "src/handlers/v14-merge-fixes.test.ts",
+      "guards": "a transient credential or connection failure is classified, never advanced to a metered hop"
+    }
+  ],
   "slow": [
     {
       "category": "pane",

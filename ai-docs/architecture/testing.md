@@ -45,6 +45,12 @@ every file it discovers from it and from `ci-test-times.json`:
   which runs under its own Bun in its own gates, `bun run test:macos --full` and test.yml's
   `blind-hooks` job (on dispatch). A blind file therefore has no tier and cannot be listed in
   `test-tiers.json`: `validateTiers` reports it as not a test file.
+- **A pinned file** (`pinned` in `test-tiers.json`, outside every slow category) is essential
+  whatever its time. The list holds the tests of the CLAUDE.md "fails SILENTLY" invariants that
+  the 2 s rule would move to weekly: the credential-file reload tests (credential-file,
+  grok-oauth.reload, kimi-oauth.reload, devin-credentials.reload), the `requireOAuth` latch
+  (`composed-handler-accounts-2a`, 46 s) and the metered-hop guard (`v14-merge-fixes`). A file
+  inside a slow category is refused there: its category's essential list decides it.
 - **Any other file** is essential unless `ci-test-times.json` measures it at `heavySeconds`
   (**2 s**) or more. A file the table has not measured is essential. The threshold sits in a gap
   of the measured data (2.2 s, then 1.8 s): at 2 s it moves 18 files, 104 of the 133 measured
@@ -94,8 +100,8 @@ heavy. Refresh it from a full-tier junit (the weekly runs upload theirs), and re
 
 | Run | Tier | Where its result shows |
 |---|---|---|
-| `test.yml` on pull_request and push | essential (Linux idle slices) | the PR checks |
-| `test.yml` on workflow_dispatch | full (idle slices and the macOS runners) | the run |
+| `test.yml` on pull_request and push | essential (Linux idle slices, Linux rest slices) | the PR checks |
+| `test.yml` on workflow_dispatch | full (Linux idle and rest slices, and the macOS runners) | the run |
 | `bun run test:macos` | essential: `ci-tests.ts --tier essential` over every group (idle, pane, rest), sliced, plus macos-bridge, `scripts/*.test.ts` and the Antigravity client tests | its summary |
 | `bun run test:macos --full` | full: `ci-tests.ts --tier full` over every group, sliced, and adds the blind hook tests and S1 hook loading | its summary |
 | `weekly-tests.yml`, Sunday 11:00 UTC (03:00 PST) | full, every Linux-capable test | GitHub mails the owner on a failed scheduled run; the run opens (or comments on) one issue titled "Weekly full test run failed" with its URL |
