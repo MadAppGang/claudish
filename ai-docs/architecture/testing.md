@@ -29,15 +29,18 @@ Every pull request and the pre-tag gate (`bun run test:macos`) run the **essenti
 **full** tier (every file) runs once a week at night, on Linux and on the owner's Mac, and on a
 manual dispatch of `test.yml`. `bun run test` and `test:safe` stay a plain `bun test` of every file.
 
-**The data file is `packages/cli/scripts/test-tiers.json`.** `ci-tests.ts` derives every file's
-tier from it and from `ci-test-times.json`:
+**The data file is `packages/cli/scripts/test-tiers.json`.** `ci-tests.ts` derives the tier of
+every file it discovers from it and from `ci-test-times.json`:
 
 - A file in a **slow category** is essential only when the data file lists it. The slow
   categories are `src/pane/`, `src/mcp-session/`, `src/mcp-blackbox/`, `src/team*` (files directly
   in `src/` whose names start with `team`; a prefix without a trailing `/` means that),
-  `src/recovery-contract/` and `src/hooks/` (all of it, `hooks/session/`, `hooks/blind/` and
-  `hooks/s1-probe/` included). Each lists at most **3** files. A new file there is weekly until
-  someone lists it.
+  `src/recovery-contract/` and `src/hooks/` (`hooks/session/` and `hooks/s1-probe/` included).
+  Each lists at most **3** files. A new file there is weekly until someone lists it.
+- **`src/hooks/blind/` is not in `ci-tests.ts` at all**: its discovery excludes that directory,
+  which runs under its own Bun in its own gates, `bun run test:macos --full` and test.yml's
+  `blind-hooks` job (on dispatch). A blind file therefore has no tier and cannot be listed in
+  `test-tiers.json`: `validateTiers` reports it as not a test file.
 - **Any other file** is essential unless `ci-test-times.json` measures it at `heavySeconds`
   (**2 s**) or more. A file the table has not measured is essential. The threshold sits in a gap
   of the measured data (2.2 s, then 1.8 s): at 2 s it moves 18 files, 104 of the 133 measured
