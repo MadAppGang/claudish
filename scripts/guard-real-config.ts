@@ -860,8 +860,11 @@ function forwardSignal(signal: NodeJS.Signals): void {
   forwardedSignal ??= signal;
   child.kill(signal);
 }
-process.on("SIGINT", () => forwardSignal("SIGINT"));
-process.on("SIGTERM", () => forwardSignal("SIGTERM"));
+// SIGHUP too: its default disposition would end the guard before `finish` restores the
+// guarded files and removes the run home (a closed terminal, or test:macos forwarding it).
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+  process.on(signal, () => forwardSignal(signal));
+}
 
 /**
  * Check and settle every guarded file before the first exit, so one damaged file

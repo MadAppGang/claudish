@@ -544,7 +544,7 @@ describe("guard-real-config", () => {
   });
 
   // Termination always overrides child success.
-  for (const signal of ["SIGINT", "SIGTERM"] as const) {
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
     for (const damage of [true, false]) {
       test(`forwards ${signal}, finishes once, and rejects child exit 0 (${damage ? "damaged" : "intact"})`, async () => {
         const home = mkdtempSync(join(tmpdir(), "claudish-guard-signal-"));
@@ -555,8 +555,14 @@ describe("guard-real-config", () => {
         const ready = join(home, "ready");
         const received = join(home, "received");
         const childPid = join(home, "child-pid");
+        const guardDirs = join(home, "guard-dirs");
         const source = `
           import { unlinkSync, writeFileSync } from "node:fs";
+          import { dirname } from "node:path";
+          writeFileSync(${JSON.stringify(guardDirs)}, JSON.stringify([
+            process.env.CLAUDISH_GUARD_RUN_HOME,
+            dirname(process.env.CLAUDISH_CATALOG_INCOMPATIBLE_PATH ?? ""),
+          ]));
           process.on(${JSON.stringify(signal)}, () => {
             writeFileSync(${JSON.stringify(received)}, ${JSON.stringify(signal)});
             process.exit(0);
@@ -594,6 +600,12 @@ describe("guard-real-config", () => {
           );
           if (!damage) expect(stderr).toContain(`command terminated by ${signal}`);
           expectNoSecretCopies(path);
+          // The run home and the sentinel directory are removed on every signal path.
+          const [runHome, sentinelDir] = JSON.parse(readFileSync(guardDirs, "utf8")) as string[];
+          expect(runHome).toStartWith(join(tmpdir(), "claudish-guard-home-"));
+          expect(sentinelDir).toStartWith(join(tmpdir(), "claudish-guard-sentinel-"));
+          expect(existsSync(runHome as string)).toBe(false);
+          expect(existsSync(sentinelDir as string)).toBe(false);
         } finally {
           guard.kill("SIGKILL");
           if (existsSync(childPid)) {
