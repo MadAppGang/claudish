@@ -157,7 +157,14 @@ export function filesInTier(
 export function validateTiers(data: TierData, known: string[]): string[] {
   const errors: string[] = [];
   const exists = new Set(known);
-  if (typeof data.heavySeconds !== "number" || !(data.heavySeconds > 0)) {
+  if (typeof data !== "object" || data === null || Array.isArray(data)) {
+    return [`the tiers file must be a JSON object, not ${JSON.stringify(data)}`];
+  }
+  if (
+    typeof data.heavySeconds !== "number" ||
+    !Number.isFinite(data.heavySeconds) ||
+    !(data.heavySeconds > 0)
+  ) {
     errors.push(`heavySeconds must be a positive number of seconds, not ${data.heavySeconds}`);
   }
   // A malformed list or category would crash the checks below (and tierOf), so stop at the shape.

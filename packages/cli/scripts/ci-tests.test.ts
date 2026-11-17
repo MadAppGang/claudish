@@ -198,6 +198,20 @@ describe("validateTiers", () => {
     expect(validateTiers(data, files)).toEqual([]);
   });
 
+  test("a root value that is not an object is an error, not a crash", () => {
+    for (const root of [null, [], "x", 3]) {
+      const errors = validateTiers(root as unknown as TierData, known).join("\n");
+      expect(errors).toContain("must be a JSON object");
+    }
+  });
+
+  test("an infinite or non-finite heavySeconds is an error", () => {
+    for (const heavySeconds of [Number.POSITIVE_INFINITY, Number.NaN]) {
+      const data: TierData = { heavySeconds, slow: [] };
+      expect(validateTiers(data, known).join("\n")).toContain("heavySeconds must be a positive");
+    }
+  });
+
   test("a missing or non-array slow list is an error, not a crash", () => {
     for (const slow of [undefined, {}, "src/pane/"]) {
       const data = { heavySeconds: 2, slow } as unknown as TierData;
