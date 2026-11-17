@@ -24,27 +24,19 @@ import { existsSync, mkdtempSync, readdirSync, rmSync, statSync } from "node:fs"
 import { type Socket, connect } from "node:net";
 import { platform, tmpdir } from "node:os";
 import { join } from "node:path";
+import { findMagmuxBinaryOrNull } from "./launcher/magmux-binary.js";
 
 // ─── Magmux Binary Resolution ────────────────────────────────────────────────
 
 /**
- * Locate the magmux binary for tests. Prefers the npm-installed copy because
- * that is what the CI shipping artifact uses. Falls back to $PATH.
+ * Locate the magmux binary for tests, in the launcher's order (`findMagmuxCandidates`): a
+ * bundled or npm-installed copy, then $PATH, where CI and `bun run test:macos` put the pinned
+ * release. The fixed install paths come last, for a shell whose PATH lacks them.
  */
 export function findMagmuxForTest(): string {
-  const candidates = [
-    join(
-      import.meta.dir,
-      "..",
-      "node_modules",
-      "@claudish",
-      `magmux-${platform()}-${process.arch}`,
-      "bin",
-      "magmux"
-    ),
-    "/opt/homebrew/bin/magmux",
-    "/usr/local/bin/magmux",
-  ];
+  const found = findMagmuxBinaryOrNull();
+  if (found) return found;
+  const candidates = ["/opt/homebrew/bin/magmux", "/usr/local/bin/magmux"];
   for (const c of candidates) {
     if (existsSync(c)) return c;
   }

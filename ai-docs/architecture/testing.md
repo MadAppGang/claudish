@@ -93,7 +93,9 @@ and writing the old document back reinstates a consumed refresh token (`refresh_
 which can revoke the grant). A valid login created during the run is kept at 0600 too. Identical
 bytes with a new mode are only chmodded back to 0600 (`Repaired secret file permissions to
 0600.`). Only a mode change the run made counts; a login that was already 0644 before the run is
-the developer's state. SIGINT and SIGTERM are forwarded to the child so Ctrl-C still repairs.
+the developer's state. SIGINT, SIGTERM and SIGHUP are forwarded to the child so Ctrl-C, a kill
+or a closed terminal still repairs; unhandled, SIGHUP ended the guard before any repair and left
+its run home in the temp dir.
 Credential files were added 2026-10-21 after a full run deleted the real `codex-oauth.json`: a
 test-only singleton reset replaced `CodexOAuth`'s instance, the credential authority kept the old
 one, and a test's `credentials.logout()` reached it. Reset singletons IN PLACE.
@@ -463,8 +465,12 @@ process group, and no socket, pane record or launcher directory in the root. Tha
 what proves the reap; a green suite without it would hide a REPL left billing.
 
 **A missing magmux is "not checked", never a cause.** Without magmux these suites skip with
-`magmux not installed — not checked` (the gated-diagnostic rule above). CI installs it
-(`brew install MadAppGang/tap/magmux` in `test.yml`), so the pane suites run there on macOS.
+`magmux not installed — not checked` (the gated-diagnostic rule above). CI installs the release
+pinned in `.github/magmux.env` (`.github/actions/install-magmux`, sha-256 checked) in `test.yml`'s
+macOS jobs, which run only on manual dispatch (`gh workflow run Tests --ref <branch>`); pull
+requests run no pane suite. Before a release tag they run on a Mac with `bun run test:macos`
+(`scripts/test-macos.ts`), which fails rather than skips when it finds no magmux, because a pane
+suite that skipped everything is green on nothing.
 
 **Time is a seam, and a budget measures a code path, not wall-clock under contention.**
 `PaneSessionOptions.timings` scales the quiet windows, the degraded-mode entry and the resend delay

@@ -19,15 +19,23 @@ name: Tests
 # Adding a key secret here would silently convert this gate into the flaky,
 # billable live suite. Live coverage belongs in smoke-test.yml, which is
 # manually dispatched and holds the secrets on purpose.
+#
+# WHAT RUNS ON WHICH TRIGGER: pull_request and push to main run the Linux jobs (static,
+# scripts, idle, the Linux rows of hooks-loading, darwin-binaries). The macOS jobs (hermetic, blind-hooks, the macOS
+# rows of hooks-loading) run only on a manual dispatch: `gh workflow run Tests --ref
+# <branch>`. Before a release tag the same macOS suites run on a Mac with
+# `bun run test:macos` (scripts/test-macos.ts).
 
 on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
 
-# A superseded push should not keep burning a runner.
+# A superseded push should not keep burning a runner. The event is part of the group, so a
+# dispatched run and a push to the same branch do not cancel each other.
 concurrency:
-  group: tests-${{ github.ref }}
+  group: tests-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -41,7 +49,8 @@ jobs:
   # - idle (recovery ladders, the grok refresh ceiling) passes 54/54 on ubuntu and is CPU-idle,
   #   so it runs there, in three slices.
   # - pane (real magmux panes) and rest stay on macOS: on ubuntu-latest pane fails 23 tests
-  #   and rest 11 (credential, keychain and platform paths written for darwin).
+  #   and rest 11 (credential, keychain and platform paths written for darwin). They run on a
+  #   manual dispatch and in the local gate (`bun run test:macos`), not on every PR.
   # The org is on the free plan: 5 macOS jobs at once across every repo, against 20 Linux
   # ones. So macOS runs two pane runners with three slices each as concurrent processes (the
   # pane slices mostly wait on magmux's fixed send windows, not on CPU), and rest on a third:
@@ -81,6 +90,31 @@ jobs:
       - name: Lint
         run: bun run lint
 
+  # scripts/*.test.ts (the release scripts, the test gates, repo invariants such as spawn env
+  # and retired terms) and release-files.test.ts read files and run portable shell: nothing in
+  # them needs a Mac, so every trigger runs them here. The dispatched macOS rest runner and
+  # `bun run test:macos` run them too.
+  scripts:
+    name: script and release-file tests
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      CLAUDISH_SKIP_LIVE_E2E: "1"
+      CLAUDISH_DISABLE_CATALOG_WARM: "1"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.10"
+      - run: bun install --frozen-lockfile
+      - name: Script tests
+        run: bun test ./scripts/*.test.ts
+        timeout-minutes: 5
+      - name: Release file tests
+        working-directory: packages/cli
+        run: bun test src/release-files.test.ts
+        timeout-minutes: 5
+
   idle:
     name: hermetic · idle ${{ matrix.slice }}/3
     runs-on: ubuntu-latest
@@ -110,6 +144,7 @@ jobs:
 
   hermetic:
     name: hermetic · macOS ${{ matrix.runner }}/3
+    if: github.event_name == 'workflow_dispatch'
     runs-on: macos-latest
     strategy:
       fail-fast: false
@@ -161,9 +196,10 @@ jobs:
   # paused-then-resumed node:child_process reader that drops every byte. The
   # blind TYPECHECK stays in the static job, under the pinned Bun. This job does
   # not lint, so a newer bun rewriting packages/cli/package.json on install does
-  # not matter here.
+  # not matter here. It runs on macOS, so on a manual dispatch only.
   blind-hooks:
     name: blind hook tests · bun 1.4.0
+    if: github.event_name == 'workflow_dispatch'
     runs-on: macos-latest
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -202,13 +238,14 @@ jobs:
   # the pinned 1.3.10; this job runs it on every OS/arch release.yml builds a
   # binary for, with the Bun release.yml builds with (`latest`), because that is
   # the binary magus installs. The test imports no dependency, so there is no
-  # `bun install` (and no package.json rewrite by a newer bun).
+  # `bun install` (and no package.json rewrite by a newer bun). The macOS rows run on a
+  # manual dispatch only; the Linux rows run on every trigger.
   hooks-loading:
     name: hook module loading · ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, macos-15-intel, ubuntu-latest, ubuntu-24.04-arm]
+        os: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '["macos-latest","macos-15-intel","ubuntu-latest","ubuntu-24.04-arm"]' || '["ubuntu-latest","ubuntu-24.04-arm"]') }}
     runs-on: ${{ matrix.os }}
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -222,3 +259,35 @@ jobs:
       - name: S1 hook loading (source, dist bundle, compiled binary)
         run: bun test packages/cli/src/hooks/s1-probe/
         timeout-minutes: 5
+
+  # release.yml builds the darwin binaries on Linux, so every PR proves that build: the same
+  # Bun (`latest`), install and `bun build` line, then the checks release.yml runs on the
+  # result (scripts/check-darwin-binary.sh). `--os='*' --cpu='*'` installs every platform's
+  # optional native packages; a plain install on Linux brings only @opentui/core-linux-*, and
+  # the darwin build then fails: `Could not resolve: "@opentui/core-darwin-arm64/index.ts"`.
+  # No upload: nothing here ships. No lint either, so a newer bun rewriting
+  # packages/cli/package.json on install does not matter.
+  darwin-binaries:
+    name: darwin binaries · build ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: bun-darwin-arm64
+            arch: arm64
+          - target: bun-darwin-x64
+            arch: x64
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --os='*' --cpu='*'
+      - run: bun run build:cli
+      - name: Build binary
+        run: bun build packages/cli/src/index.ts --compile --no-compile-autoload-dotenv --target=${{ matrix.target }} --outfile claudish-${{ matrix.target }}
+      - name: Check the binary
+        run: scripts/check-darwin-binary.sh claudish-${{ matrix.target }} ${{ matrix.arch }}

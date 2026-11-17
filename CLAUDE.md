@@ -200,6 +200,13 @@ negative case: if you are about to type one of those words, stop and use the lef
 
 - `bun run build` — CLI and macOS bridge bundles. `bun run dev` — development mode.
 - `bun run test` — full suite. `bun run test:safe` — same, guarded against touching the real config.
+- `bun run test:macos` — the macOS gate (`scripts/test-macos.ts`): the suites test.yml runs on macOS
+  only on manual dispatch (pane and rest, macos-bridge, `scripts/*.test.ts`, the blind hook tests,
+  `antigravity-fetch.test.ts`, and hooks-loading's `src/hooks/s1-probe/` under release.yml's Bun
+  `latest`), each under the Bun its job pins, fetched with `bunx`, after `build:cli`. The pane
+  suites run against `.github/magmux.env`'s magmux, downloaded with `gh` (signed in), checked
+  against the pinned sum and version, first on PATH; the Mac's own magmux is never used. Needs
+  network. `--dry-run` prints what it would fetch and run, and fetches nothing.
 - `bun run typecheck`, `bun run lint`, `bun run format`
 - `claudish --probe <model>` shows the adapter composition; `--debug` writes a log to `logs/`.
 - Model syntax is `provider@model[:concurrency]` (`google@gemini-2.0-flash`, `ollama@llama3.2:3`); a bare name routes by a matching user routing rule, else by the chain gathered from the cloud models catalog and the accounts' dynamic models catalogs. Prefix meanings: `routing.md`.
@@ -250,6 +257,16 @@ measurement). The thesaurus applies. No narrative or rhetorical framing.
 **CI/CD publishes — do NOT run `npm publish`.** `release.yml` fires on the `v*` tag push,
 generates `CHANGELOG.md` with `git cliff`, and publishes over OIDC. It runs NO test suite, so
 the tag is the gate: everything must be green before it leaves the machine.
+
+**Run `bun run test:macos` on the Mac before the tag.** Pull requests no longer run the macOS
+suites; CI runs them only on manual dispatch (`gh workflow run Tests --ref <branch>`). A red run
+stops the tag even when the cause is machine load: rerun once the Mac is quiet.
+
+**Commit the version bump LAST**: once the PR's CI is green, re-check `git ls-remote --tags
+origin`, commit the bump and push it, wait for THAT commit's PR CI to finish green, then merge
+and tag the merge commit. A bump made early goes stale when main releases during review; the PR
+then conflicts, and GitHub starts no pull_request workflow for a conflicting PR, with no error
+shown.
 
 Bump TWO files by hand — `package.json` and `packages/cli/package.json` (what npm publishes;
 a stale value fails the publish) — then run
