@@ -26,7 +26,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { realpathSync } from "node:fs";
+import { readAllowRules } from "../launcher/read-allow-rules.js";
 import { logStderr } from "../logger.js";
 import { ensureSessionFolder } from "./store.js";
 
@@ -117,11 +117,6 @@ export interface CompactionLaunch {
   dir: string | null;
 }
 
-/** The Read allow rules for one folder: its real spelling, then the given one when it differs. */
-export function compactionReadRules(dir: string): string[] {
-  return [...new Set([realpathSync(dir), dir])].map((path) => `Read(/${path}/**)`);
-}
-
 /**
  * Plan compaction's arguments and create the session's folder (0700). The
  * arguments go at the FRONT of argv: `--allowedTools` takes a variadic list,
@@ -143,7 +138,7 @@ export function prepareCompactionLaunch(
     leadingArgs: [
       ...(minted ? ["--session-id", minted] : []),
       "--allowedTools",
-      ...compactionReadRules(dir),
+      ...readAllowRules(dir),
     ],
     sessionId,
     mintedSessionId: minted,

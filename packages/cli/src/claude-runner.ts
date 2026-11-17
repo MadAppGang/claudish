@@ -3375,8 +3375,8 @@ export async function runClaudeWithProxy(
   if (surfaces.driver) {
     // The transcript path must be known from boot, so claudish mints the session id
     // unless the user named one, asked Claude Code to resume, or compaction minted
-    // one above. Long injections go to a turn file the model Reads from the
-    // `--add-dir` directory (no prompt there: S2b).
+    // one above. Long injections go to a turn file the model Reads from the turn
+    // directory, allowed by a Read rule for that directory only (no prompt there).
     const minted =
       sessionFlags.sessionId || sessionFlags.resumes || compactionMintedId ? null : randomUUID();
     const turnDir = mkdtempSync(join(tmpdir(), "claudish-turns-"));

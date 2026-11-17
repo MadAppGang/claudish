@@ -17,6 +17,7 @@
  */
 
 import type { MagmuxPaneCapability } from "../../launcher/magmux-wrapper.js";
+import { readAllowRules } from "../../launcher/read-allow-rules.js";
 
 export interface SurfacePlan {
   /** spawn Claude Code inside a visible `-w` magmux claudish launches */
@@ -97,13 +98,15 @@ export function sessionFlagsOf(args: ReadonlyArray<string>): {
 
 /**
  * The arguments the driver adds IN FRONT of Claude Code's argv: `--session-id <minted>`
- * when one was minted, and `--add-dir <turn dir>` so the model may Read a long
- * injection's turn file without a permission prompt (S2b, measured: no prompt in default
- * mode, including for a file written after launch).
+ * when one was minted, and a Read allow rule for the turn directory
+ * (`--allowedTools "Read(//<turn dir>/**)"`, see `readAllowRules`) so the model may Read
+ * a long injection's turn file without a permission prompt. claudish writes the turn
+ * files; the model only Reads them. Not `--add-dir`: Claude Code 2.1.326 stops the launch
+ * on a trust question for an added folder.
  *
- * Front, because `--add-dir` takes a VARIADIC list: placed before the user's arguments
- * it would swallow a positional prompt as a second directory. `claude-runner` puts
- * these ahead of its own `--settings <file>`, which ends the list.
+ * Front, because `--allowedTools` takes a VARIADIC list: placed before the user's
+ * arguments it would swallow a positional prompt as a rule. `claude-runner` puts these
+ * ahead of its own `--settings <file>`, which ends the list.
  */
 export function driverLeadingArgs(input: {
   mintedSessionId: string | null;
@@ -111,7 +114,7 @@ export function driverLeadingArgs(input: {
 }): string[] {
   return [
     ...(input.mintedSessionId ? ["--session-id", input.mintedSessionId] : []),
-    "--add-dir",
-    input.turnDir,
+    "--allowedTools",
+    ...readAllowRules(input.turnDir),
   ];
 }
