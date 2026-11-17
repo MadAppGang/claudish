@@ -81,7 +81,7 @@ export interface PaneRecord {
   sockPath: string;
   /** the control directory (pane-launch.sh, sh-shim, magmux.pid, group) */
   launcherDir: string;
-  /** the turn directory (`--add-dir`, turn files only) */
+  /** the turn directory (a Read allow rule, turn files only) */
   turnDir: string;
   createdAt: string;
   reapFailed?: boolean;

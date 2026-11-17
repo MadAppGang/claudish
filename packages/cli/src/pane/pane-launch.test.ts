@@ -10,6 +10,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { readAllowRules } from "../launcher/read-allow-rules.js";
 import {
   FATAL_MAGMUX_STDERR,
   HOST_IDENTITY_VARS,
@@ -101,8 +102,12 @@ describe("launcher and shim", () => {
     expect(() => paneCommand("/tmp/claude ")).toThrow();
   });
 
-  test("argv is -i --model X -y --quiet --session-id U --add-dir D, then the caller flags", () => {
-    expect(buildClaudishPaneArgv("m", "u", "/d", ["--agent", "x"])).toEqual([
+  test("argv is -i --model X -y --quiet --session-id U, a Read rule on the turn folder, then the caller flags", () => {
+    // /tmp is a symlink on macOS, so the turn folder has two spellings.
+    const turnDir = mkdtempSync(join(tmpdir(), "launch-"));
+    dirs.push(turnDir);
+    const argv = buildClaudishPaneArgv("m", "u", turnDir, ["--agent", "x"]);
+    expect(argv).toEqual([
       "-i",
       "--model",
       "m",
@@ -110,11 +115,13 @@ describe("launcher and shim", () => {
       "--quiet",
       "--session-id",
       "u",
-      "--add-dir",
-      "/d",
+      "--allowedTools",
+      ...readAllowRules(turnDir),
       "--agent",
       "x",
     ]);
+    // --add-dir stops a pane on the trust question for a folder never trusted before.
+    expect(argv).not.toContain("--add-dir");
   });
 });
 
