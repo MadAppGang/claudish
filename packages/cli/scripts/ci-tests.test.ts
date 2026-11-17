@@ -194,7 +194,40 @@ describe("validateTiers", () => {
         { category: "teams-dir", prefix: "src/teams/", essential: [] },
       ],
     };
-    expect(validateTiers(data, known)).toEqual([]);
+    const files = ["src/team-a.test.ts", "src/team/x.test.ts", "src/teams/y.test.ts"];
+    expect(validateTiers(data, files)).toEqual([]);
+  });
+
+  test("a missing or non-array slow list is an error, not a crash", () => {
+    for (const slow of [undefined, {}, "src/pane/"]) {
+      const data = { heavySeconds: 2, slow } as unknown as TierData;
+      expect(validateTiers(data, known).join("\n")).toContain("slow must be an array");
+    }
+  });
+
+  test("a category without a non-empty string category or prefix is an error", () => {
+    const data = {
+      heavySeconds: 2,
+      slow: [
+        { category: "", prefix: "src/pane/", essential: [] },
+        { category: "team", prefix: 7, essential: [] },
+        { prefix: "src/x/", essential: [] },
+      ],
+    } as unknown as TierData;
+    const errors = validateTiers(data, [...known, "src/x/a.test.ts"]).join("\n");
+    expect(errors).toContain('slow[0] needs a non-empty string "category"');
+    expect(errors).toContain('slow[1] needs a non-empty string "prefix"');
+    expect(errors).toContain('slow[2] needs a non-empty string "category"');
+  });
+
+  test("a prefix that matches no test file is an error, even with no essential file listed", () => {
+    const data: TierData = {
+      heavySeconds: 2,
+      slow: [...DATA.slow, { category: "panes", prefix: "src/panes/", essential: [] }],
+    };
+    expect(validateTiers(data, known).join("\n")).toContain(
+      "prefix src/panes/ (category panes) matches no test file"
+    );
   });
 
   test("a file listed in two categories is an error", () => {

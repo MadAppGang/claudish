@@ -65,7 +65,9 @@ silent invariants in `CLAUDE.md`. The data file carries a `guards` line for each
 new file covers better. Write `guards` as the failure the file catches. A file outside the slow
 categories needs no entry: it becomes essential once it measures under the threshold. Check with
 `bun scripts/ci-tests.ts --plan pane@6 --tier essential` (and `--list`, which shows both tiers per
-group). `ci-tests.test.ts` fails when the data file names a file that does not exist, a file
+group). `ci-tests.test.ts` fails when the data file has no `slow` array, a category without a
+non-empty string `category` or `prefix`, a prefix that matches no test file (a misspelt prefix
+would leave its whole directory essential), a file that does not exist, a file
 outside its category, the same file twice, more than three files in one category, the same
 category twice, or a prefix twice or one sharing files with another category's prefix (a file
 takes the first category it matches, so a second block would be ignored), and

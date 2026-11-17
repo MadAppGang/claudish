@@ -12,8 +12,9 @@
  * pull request and `bun run test:macos` run: test-tiers.json names at most three files for each
  * slow category, and every other file of a slow category is weekly; any file outside the slow
  * categories is essential unless ci-test-times.json measures it at the data file's
- * `heavySeconds` or more. The weekly runs use `full`. A data file that names a missing file, a
- * file twice, more than three files for one category, a category twice, or a prefix twice or
+ * `heavySeconds` or more. The weekly runs use `full`. A data file with no `slow` array, a category
+ * without a non-empty `category` or `prefix`, a prefix that matches no test file, a missing file,
+ * a file twice, more than three files for one category, a category twice, or a prefix twice or
  * sharing files with another, stops `--plan` and `--run`.
  *
  * `--local` is the package's `test` script: a plain `bun test` that also writes a junit report
@@ -159,9 +160,34 @@ export function validateTiers(data: TierData, known: string[]): string[] {
   if (typeof data.heavySeconds !== "number" || !(data.heavySeconds > 0)) {
     errors.push(`heavySeconds must be a positive number of seconds, not ${data.heavySeconds}`);
   }
-  errors.push(...categorySetErrors(data.slow ?? []));
+  // A malformed list or category would crash the checks below (and tierOf), so stop at the shape.
+  if (!Array.isArray(data.slow)) {
+    errors.push(`slow must be an array of categories, not ${JSON.stringify(data.slow)}`);
+    return errors;
+  }
+  const shape = data.slow.flatMap(shapeErrors);
+  if (shape.length > 0) return [...errors, ...shape];
+  errors.push(...categorySetErrors(data.slow));
   const seen = new Set<string>();
-  for (const c of data.slow ?? []) errors.push(...categoryErrors(c, data, exists, seen));
+  for (const c of data.slow) {
+    // A misspelt prefix takes no file, so the directory it meant stays essential in full.
+    if (!known.some((f) => inPrefix(f, c.prefix))) {
+      errors.push(`prefix ${c.prefix} (category ${c.category}) matches no test file`);
+    }
+    errors.push(...categoryErrors(c, data, exists, seen));
+  }
+  return errors;
+}
+
+function shapeErrors(c: SlowCategory, i: number): string[] {
+  const errors: string[] = [];
+  for (const key of ["category", "prefix"] as const) {
+    const value: unknown = c?.[key];
+    if (typeof value !== "string" || value.length === 0) {
+      errors.push(`slow[${i}] needs a non-empty string "${key}"`);
+    }
+  }
+  if (!Array.isArray(c?.essential)) errors.push(`slow[${i}] needs an "essential" array`);
   return errors;
 }
 
