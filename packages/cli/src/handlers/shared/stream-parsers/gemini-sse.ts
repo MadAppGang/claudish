@@ -11,6 +11,7 @@ import type { BaseAPIFormat } from "../../../adapters/base-api-format.js";
 import type { RawStreamTap } from "../../../hooks/raw.js";
 import { log } from "../../../logger.js";
 import { redactForClient } from "../../../redact.js";
+import { geminiOutputTokens } from "./gemini-usage.js";
 import { messageStartUsage } from "./message-start-usage.js";
 import { sseDataPayload } from "./sse-line.js";
 import {
@@ -151,7 +152,7 @@ export function createGeminiSseStream(
               `[GeminiSSE] Client cancelled the stream for ${opts.modelName} (loop ended: ${reason}); usage ${usage ? "reported" : "not received, not recorded"}`
             );
             if (usage && opts.onTokenUpdate) {
-              opts.onTokenUpdate(usage.promptTokenCount || 0, usage.candidatesTokenCount || 0);
+              opts.onTokenUpdate(usage.promptTokenCount || 0, geminiOutputTokens(usage));
             }
           } finally {
             teardown();
@@ -176,7 +177,7 @@ export function createGeminiSseStream(
           if (opts.raw) await opts.raw.streamEnd();
 
           const inputTokens = usage?.promptTokenCount || 0;
-          const outputTokens = usage?.candidatesTokenCount || 0;
+          const outputTokens = geminiOutputTokens(usage);
 
           if (usage) {
             log(`[GeminiSSE] Usage: prompt=${inputTokens}, completion=${outputTokens}`);

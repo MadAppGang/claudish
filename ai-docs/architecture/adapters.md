@@ -508,7 +508,12 @@ same: `429 RESOURCE_EXHAUSTED` with no reason on the main request while a side r
 Located in `handlers/shared/stream-parsers/`:
 - `openai-sse.ts` — OpenAI SSE → Claude SSE (used by most providers)
 - `anthropic-sse.ts` — Anthropic SSE passthrough (MiniMax, Kimi direct)
-- `gemini-sse.ts` — Gemini SSE → Claude SSE
+- `gemini-sse.ts` — Gemini SSE → Claude SSE. Output tokens are `geminiOutputTokens`
+  (`gemini-usage.ts`): `candidatesTokenCount` plus `thoughtsTokenCount`, because the record
+  reports reasoning apart from the answer (recorded on Antigravity, 2026-11-15:
+  prompt 11145 + answer 37 + thoughts 27 = total 11209). Thoughts are added only while
+  prompt + answer + thoughts still fits `totalTokenCount`, so a backend whose answer count
+  already holds them is not counted twice. Not measured on `g@` or Vertex
 - `ollama-jsonl.ts` — Ollama JSONL → Claude SSE
 - `openai-responses-sse.ts` — OpenAI Responses API → Claude SSE (Codex). The module entry point
   only; the work is under `responses/`: `claude-sse-sink.ts` (the one writer of Claude SSE for a
