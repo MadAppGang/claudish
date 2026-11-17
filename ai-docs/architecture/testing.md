@@ -23,6 +23,74 @@ slow files in its own log. The exit code is `bun test`'s. A file given as `bun r
 still runs alone. CI does not use this script; its jobs write their own junit through
 `ci-tests.ts --run`.
 
+## Test tiers: essential on every run, everything once a week
+
+Every pull request and the pre-tag gate (`bun run test:macos`) run the **essential** tier. The
+**full** tier (every file) runs once a week at night, on Linux and on the owner's Mac, and on a
+manual dispatch of `test.yml`. `bun run test` and `test:safe` stay a plain `bun test` of every file.
+
+**The data file is `packages/cli/scripts/test-tiers.json`.** `ci-tests.ts` derives every file's
+tier from it and from `ci-test-times.json`:
+
+- A file in a **slow category** is essential only when the data file lists it. The slow
+  categories are `src/pane/`, `src/mcp-session/`, `src/mcp-blackbox/`, `src/team*` (files directly
+  in `src/` whose names start with `team`; a prefix without a trailing `/` means that),
+  `src/recovery-contract/` and `src/hooks/` (all of it, `hooks/session/`, `hooks/blind/` and
+  `hooks/s1-probe/` included). Each lists at most **3** files. A new file there is weekly until
+  someone lists it.
+- **Any other file** is essential unless `ci-test-times.json` measures it at `heavySeconds`
+  (**2 s**) or more. A file the table has not measured is essential. The threshold sits in a gap
+  of the measured data (2.2 s, then 1.8 s): at 2 s it moves 18 files, 104 of the 133 measured
+  seconds outside the slow categories, among them `recovery/magmux-ui.test.ts` (23.7 s),
+  `mcp-shutdown.e2e.test.ts` (15.9 s) and `handlers/stream-head-unreachable.test.ts` (12 s).
+
+Measured on the table of 2026-11-17: the essential tier is 663 files and about 174 measured
+seconds (idle 4 files 66 s, pane 16 files 79 s, rest 643 files 30 s); the full tier is 809 files
+and about 1472 s. 335 essential files have no measurement yet (each weighs 1 s for slicing).
+
+**Each essential file guards one failure class**, chosen by reading the files, and preferring the
+silent invariants in `CLAUDE.md`. The data file carries a `guards` line for each:
+
+| Category | Essential files | What breaks silently without them |
+|---|---|---|
+| pane | `pane-child-real-claudish.integration`, `pane-view-socket.integration`, `pane-launch.black-box` | a session that never settles or leaks a process; `CLAUDISH_PANE_CHILD` scrubbed (nested `create_session` returns); the control socket published; `HERDR_*`/`HC_*` inherited |
+| mcp-session | `host-pid.contract`, `session-create-options`, `home-dir` | the npm launcher path and spawn.json pids; a slot's token file or error log lost; records written into the account home |
+| mcp-blackbox | `tool-surface`, `channel-sessions`, `run-prompt` | the 20-tool and nested 4-tool surfaces; the session tools end to end; `run_prompt`'s print child |
+| team | `team-output-classification`, `team-multibyte-answer`, `team-start-failure` | an exit 0 read as an answer; an answer lost between transcript and response file; a failed start that keeps billing |
+| recovery-contract | `recovery-chain`, `recovery-exhaustion`, `recovery-completes` | an outage that advances to a metered hop, or answers 401/429, or a retry that drops the credential |
+| hooks | `seam`, `mcp-isolation`, `engine` | the response seam, MCP stdout corrupted by a hook, the hook chain |
+
+**Promote a test to essential** by adding `{ "file", "guards" }` to its category in
+`test-tiers.json`; when the category already lists three, replace the one whose failure class the
+new file covers better. Write `guards` as the failure the file catches. A file outside the slow
+categories needs no entry: it becomes essential once it measures under the threshold. Check with
+`bun scripts/ci-tests.ts --plan pane@6 --tier essential` (and `--list`, which shows both tiers per
+group). `ci-tests.test.ts` fails when the data file names a file that does not exist, a file
+outside its category, the same file twice, or more than three files in one category, and
+`--plan`, `--run` and `--list` refuse such a file.
+
+**Refreshing `ci-test-times.json` can move a file between tiers**, because it also decides what is
+heavy. Refresh it from a full-tier junit (the weekly runs upload theirs), and read
+`--list` before and after.
+
+**Where the tiers run:**
+
+| Run | Tier | Where its result shows |
+|---|---|---|
+| `test.yml` on pull_request and push | essential (Linux idle slices) | the PR checks |
+| `test.yml` on workflow_dispatch | full (idle slices and the macOS runners) | the run |
+| `bun run test:macos` | essential: `ci-tests.ts --tier essential`, macos-bridge, `scripts/*.test.ts`, the Antigravity client tests | its summary |
+| `bun run test:macos --full` | full: adds the blind hook tests and S1 hook loading | its summary |
+| `weekly-tests.yml`, Sunday 11:00 UTC (03:00 PST) | full, every Linux-capable test | GitHub mails the owner on a failed scheduled run; the run opens (or comments on) one issue titled "Weekly full test run failed" with its URL |
+| `scripts/weekly-macos-tests.ts` under launchd, Sunday 03:00 local | `test:macos --full` on origin's main | `~/Library/Logs/claudish-weekly-tests/<UTC date>.log`; a macOS notification names the log on failure |
+
+The macOS weekly run works in a clone of its own, `~/Library/Caches/claudish-weekly-tests/repo`:
+cloned once, then fetched and hard-reset to `origin/main` inside that clone only, so no checkout
+or worktree is touched. `bun scripts/install-weekly-macos-tests.ts` writes and loads the agent
+(`~/Library/LaunchAgents/com.madappgang.claudish.weekly-macos-tests.plist`), and `--uninstall`
+removes it. The agent runs the clone's copy of the script, so the installer refuses until main
+carries it. A Mac asleep at 03:00 runs the job when it wakes; a Mac that is off skips that week.
+
 ## Three shared resources a test must never reach, and why prevention beats restore
 
 `scripts/guard-real-config.ts` — the thing `bun run test:safe` runs the suite
@@ -468,9 +536,10 @@ what proves the reap; a green suite without it would hide a REPL left billing.
 `magmux not installed — not checked` (the gated-diagnostic rule above). CI installs the release
 pinned in `.github/magmux.env` (`.github/actions/install-magmux`, sha-256 checked) in `test.yml`'s
 macOS jobs, which run only on manual dispatch (`gh workflow run Tests --ref <branch>`); pull
-requests run no pane suite. Before a release tag they run on a Mac with `bun run test:macos`
-(`scripts/test-macos.ts`), which fails rather than skips when it finds no magmux, because a pane
-suite that skipped everything is green on nothing.
+requests run no pane suite. Before a release tag their essential files run on a Mac with
+`bun run test:macos` (`scripts/test-macos.ts`; `--full` and the weekly macOS run take every pane
+file, see "Test tiers" above), which fails rather than skips when it finds no magmux, because a
+pane suite that skipped everything is green on nothing.
 
 **Time is a seam, and a budget measures a code path, not wall-clock under contention.**
 `PaneSessionOptions.timings` scales the quiet windows, the degraded-mode entry and the resend delay

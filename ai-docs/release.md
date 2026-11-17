@@ -63,6 +63,17 @@ dispatch (`gh workflow run Tests --ref <branch>`) and in `bun run test:macos`, w
 must be green on a Mac before the tag (`CLAUDE.md`, Releasing). The tag is therefore
 the gate: everything must be green before the tag leaves the machine.
 
+**Tiers.** Pull requests and `bun run test:macos` run the ESSENTIAL tier
+(`packages/cli/scripts/test-tiers.json`: at most three files per slow category, no file
+measured at 2 s or more); a dispatch of `test.yml` and `bun run test:macos --full` run
+the FULL tier. The full tier also runs every Sunday: `weekly-tests.yml` on Linux (11:00
+UTC; a failed run mails the owner and opens or updates the issue "Weekly full test run
+failed") and `scripts/weekly-macos-tests.ts` under launchd on the owner's Mac (03:00
+local; the log is `~/Library/Logs/claudish-weekly-tests/<UTC date>.log`, and a failure
+shows a notification naming it). A green essential gate says nothing about a weekly file
+changed since the last weekly run: for such a change, run `bun run test:macos --full`.
+`ai-docs/architecture/testing.md` § Test tiers has the list and how to promote a file.
+
 **The version bump is the PR's last commit, and it gets its own green run.** Once the
 PR's CI is green, commit the bump (`CLAUDE.md`, Releasing) and push it, wait for that
 commit's PR CI to finish green, then merge and tag the merge commit. The bump
@@ -219,7 +230,7 @@ download, and the pane suites run against the same pin in `bun run test:macos` a
 magmux panes, so the magmux that ships must be the one that was tested, and a new
 magmux release must not change what an existing claudish tag ships. A missing asset
 or checksum mismatch BLOCKS the release before anything publishes. Bump the pin
-deliberately (tag and all four sums together) after `bun run test:macos` passes on it.
+deliberately (tag and all four sums together) after `bun run test:macos --full` passes on it.
 
 SETTLED 2026-09-15 — the two `displayWidth` tests in
 `packages/cli/src/tui/viz/color.test.ts`. They were NOT flaky and must NOT be
