@@ -39,6 +39,11 @@ const PRICES: Record<string, Price> = {
   // publishes no price for that connection ("unavailable"); these are the
   // rates aggregator sites quote for Z.ai, which charges no cache write.
   "glm-4.7": { input: 0.6, output: 2.2, read: 0.11, w5m: 1, w1h: 1 },
+  // GLM-5-Turbo on the same route. Z.ai's pricing page lists no GLM-5-Turbo
+  // row and the catalog's z-ai/direct-api connection is "unavailable"; these
+  // are the catalog's openrouter/gateway connection prices (generation
+  // g-20261116161706980-7c7c9818), whose upstream is Z.ai.
+  "glm-5-turbo": { input: 1.2, output: 4, read: 0.24, w5m: 1, w1h: 1 },
 };
 const M = 1_000_000;
 
