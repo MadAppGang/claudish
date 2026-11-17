@@ -2,6 +2,50 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.28.0] - 2026-11-17
+
+### Bug Fixes
+
+- refuse agy file calls that Write or Read would change *(antigravity)* ([`23131b5`](https://github.com/MadAppGang/claudish/commit/23131b548533a8d564f7551bf9b135adb57fd9ef))
+- approve claudish's placeholder key before Claude Code starts *(benches)* ([`4c56558`](https://github.com/MadAppGang/claudish/commit/4c56558d9ddbcbd9e69e3b0ac8641eb7b98f6b7e))
+- give Bash calls 10 minutes in the compaction cases sandbox *(benches)* ([`d2876a1`](https://github.com/MadAppGang/claudish/commit/d2876a134b40109512622c7f734a327f5eb66cae))
+- start the cases-compaction arm without a wrapper script *(benches)* ([`de2a9d5`](https://github.com/MadAppGang/claudish/commit/de2a9d5fdcb1d2001935b73e3823ba3e899f6cd3))
+- write the history repo files with printf in stage.sh *(benches)* ([`e6e75a5`](https://github.com/MadAppGang/claudish/commit/e6e75a5f0d66b1e34222110cf235cb4a5ff4ed83))
+- match the compaction debug log lines in evidence.sh *(benches)* ([`8e2507f`](https://github.com/MadAppGang/claudish/commit/8e2507fde4a256f4afcdad7bdf590cff0c0002bc))
+- read trials[].results in summarize.ts for multi-trial reports *(benches)* ([`6b79738`](https://github.com/MadAppGang/claudish/commit/6b79738e0362f052b36e098c0e9e79bc66dc99d4))
+
+### Documentation
+
+- describe agy's system prompt and tools on ag@ *(antigravity)* ([`6397121`](https://github.com/MadAppGang/claudish/commit/6397121fa2e9fe6423523ee4a6f4ba8d6e26104c))
+- add case d on 0aed68ec: one Claude Code compaction, +1.0% *(reports)* ([`d2b4312`](https://github.com/MadAppGang/claudish/commit/d2b431202c3cfa3fc83066c03bf5a1a9d9f5af18))
+- add case f, the minTokens sweep on case a *(reports)* ([`c8e8f3c`](https://github.com/MadAppGang/claudish/commit/c8e8f3c4c8be361225a2f5c2b6fdc1c66c70f8b8))
+- add case a with bashOutputMaxChars 128000: -28.8% cost *(reports)* ([`0edc04a`](https://github.com/MadAppGang/claudish/commit/0edc04a8d47dfb19ba36685c3db91ff95a9767da))
+- add case a: Claude Code saves Bash output over 30,000 chars *(reports)* ([`9aae38c`](https://github.com/MadAppGang/claudish/commit/9aae38c4a79c80b6bdc1cb3ceffea62bf9901b75))
+- add the case c rerun on build 4e4858c3: +0.1% cost *(reports)* ([`ac82f05`](https://github.com/MadAppGang/claudish/commit/ac82f05a797e9a5f9e2c6d5fcee3276dffcfdb27))
+- state that case d's Read outputs are skipped by skipTools *(reports)* ([`6a16587`](https://github.com/MadAppGang/claudish/commit/6a165875517415e94ce1d23ebff8aaf034444907))
+- add compaction cases d (incomplete) and e, research *(reports)* ([`7ef1ed7`](https://github.com/MadAppGang/claudish/commit/7ef1ed717665270fdad3ae5234fa18a0551b6812))
+- add compaction case c, refactor: 6/6, +42.9% cost *(reports)* ([`8eadc3f`](https://github.com/MadAppGang/claudish/commit/8eadc3fe35aaebea50d4541f20a8ad2367e71946))
+- add the claudish-compaction rerun on build a6952916 *(reports)* ([`6b7d596`](https://github.com/MadAppGang/claudish/commit/6b7d596186d7174320a48cf95d9a1a6fc97a9e88))
+- add the history replay re-check on build a6952916 *(reports)* ([`fc5a24c`](https://github.com/MadAppGang/claudish/commit/fc5a24c18b413850dd7de5b4e13c64b0ccf8fec4))
+- mark the history check as swap pass, replay fail *(reports)* ([`2607284`](https://github.com/MadAppGang/claudish/commit/2607284118c5112c36587b383070c7e342b992b6))
+- add the compaction history check result *(reports)* ([`1767360`](https://github.com/MadAppGang/claudish/commit/176736052bd08d8079bbb6de0cb9a612e10a7419))
+- add the claudish-compaction results *(reports)* ([`3a2c477`](https://github.com/MadAppGang/claudish/commit/3a2c47736a04978127dd62557a026126598625ae))
+- add cache hit rate and cache breaks for every variant *(reports)* ([`8db20be`](https://github.com/MadAppGang/claudish/commit/8db20be5bc2b30e257e967ebb47e0daa2e69f559))
+- add the claudish gateway results on a build patched for #48 *(reports)* ([`950a8b0`](https://github.com/MadAppGang/claudish/commit/950a8b0ec55bb7dbeec498a9821c359207cd82c7))
+- state that the gateway_env key file outlives the run *(benches)* ([`a8e1615`](https://github.com/MadAppGang/claudish/commit/a8e16156fe3f008bd963997033f9ce342c0d8386))
+- add the context-gateway-haiku-key results *(reports)* ([`a940e01`](https://github.com/MadAppGang/claudish/commit/a940e019d4d7e74e3ee43b00f2afd15b1bb43b87))
+- cite madbench#216 for the provision-step key leak *(reports)* ([`13ed4e1`](https://github.com/MadAppGang/claudish/commit/13ed4e12dbead9789943ad94f3e3878754f8a4d0))
+- add the haiku-subagent and claudish results *(reports)* ([`b5443b8`](https://github.com/MadAppGang/claudish/commit/b5443b8198cd96183f7e1e7ccb4639b06ea5581e))
+- describe the gateway key variant and VariantCheck *(benches)* ([`0a07a49`](https://github.com/MadAppGang/claudish/commit/0a07a496f3d5a9876b02d48664e1bcc28d70b37b))
+- describe the haiku-subagent and claudish variants *(benches)* ([`99e9724`](https://github.com/MadAppGang/claudish/commit/99e9724315f33d32e0aa9ab13a4f1bfec6ab577e))
+- add the context-reduction bench results for four variants *(reports)* ([`ed06dd7`](https://github.com/MadAppGang/claudish/commit/ed06dd74f17ad2a6ba706502735d0babd7068b91))
+- update CHANGELOG.md for v14.27.3([`8b4999d`](https://github.com/MadAppGang/claudish/commit/8b4999dc7894efc1fb1745c9a31324afa9013d18))
+
+### New Features
+
+- send the agy CLI's system prompt on ag@ *(antigravity)* ([`10f3e55`](https://github.com/MadAppGang/claudish/commit/10f3e558ca5bc18f899f27756bcc622090d38d32))
+- send the agy CLI's 17 tool declarations on ag@ *(antigravity)* ([`b8285ef`](https://github.com/MadAppGang/claudish/commit/b8285ef812f8a55bb158ea216960092149176038))
+
 ## [14.27.3] - 2026-11-16
 
 ### Bug Fixes
