@@ -3,9 +3,10 @@ name: Weekly full tests
 # The FULL tier of every test a Linux runner can run, once a week.
 #
 # Pull requests run the essential tier (packages/cli/scripts/test-tiers.json, ci-tests.ts
-# `--tier essential`): at most three files per slow category, and no file measured at the data
-# file's heavySeconds or more. Everything else runs here, at night, so a weekly test that broke
-# is found within a week rather than at the next release. The macOS suites (pane, rest, the blind
+# `--tier essential`): at most three listed files per slow category, whatever their time, and,
+# outside the slow categories only, no file measured at the data file's heavySeconds or more.
+# Everything else runs here, at night, so a weekly test that broke is found within a week rather
+# than at the next release. The macOS suites (pane, rest, the blind
 # hook tests) run in the same tier on the owner's Mac (scripts/weekly-macos-tests.ts).
 #
 # The jobs are test.yml's Linux jobs with `--tier full`, under the same pinned Bun and the same
