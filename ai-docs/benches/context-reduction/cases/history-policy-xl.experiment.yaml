@@ -5,15 +5,21 @@ bench: ./madbench.yaml
 # on the long-session-xl Scenario: case d's four turns with path-scoped test
 # runs (see the Scenario's comment in madbench.yaml), a second feature on the
 # config file, then long outputs, long reads and recall (12 turns, 127 hidden
-# tests). Both models run with a 200,000-token window
-# (--param case_prep=long-session), so claudish's history limit is 200,000 on
-# both: the limit is the lower of the model's catalog window (1,000,000 for
-# both) and the launch's CLAUDE_CODE_AUTO_COMPACT_WINDOW.
+# tests).
+#
+# Every variant sets case_prep: long-session-xl (../tools/cases-prep). It does
+# what long-session does: both models run with a 200,000-token window, so
+# claudish's history limit is 200,000 on both (the lower of the model's
+# catalog window, 1,000,000 for both, and the launch's
+# CLAUDE_CODE_AUTO_COMPACT_WINDOW). It also puts a `bun` shim first on the
+# agent's PATH that refuses a whole-suite `bun test` (bun-shim.sh), the same
+# for every variant and model. Do not pass --param case_prep: a CLI --param
+# overrides the variant's value, and the run would lose the shim.
 #
 # One variant per madbench call, one trial per call:
 #
 #   madbench cases/history-policy-xl.experiment.yaml --variant history-cost \
-#     --scenario long-session-xl --param case_prep=long-session \
+#     --scenario long-session-xl \
 #     --param model=claude-haiku-5-5 \
 #     --param claudish_build=/absolute/path/to/a/compiled/claudish \
 #     --param claudish_config=/absolute/path/to/a/0600/config/with/policy/cost
@@ -33,19 +39,23 @@ variants:
     params:
       binary: ../bin/claudish-build-plain
       tool: cases-baseline
+      case_prep: long-session-xl
   # precompute 0.6, apply 0.75.
   - name: history-threshold
     params:
       binary: ../bin/claudish-compaction
       tool: policy-threshold
+      case_prep: long-session-xl
   # precompute 0.5, apply 0.7.
   - name: history-early
     params:
       binary: ../bin/claudish-compaction
       tool: policy-early
+      case_prep: long-session-xl
   # summary at 0.5; swap when the break-even function says it pays, when the
   # next request would cross Claude Code's point, or when the cache is cold.
   - name: history-cost
     params:
       binary: ../bin/claudish-compaction
       tool: policy-cost
+      case_prep: long-session-xl
