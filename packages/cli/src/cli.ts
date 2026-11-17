@@ -76,6 +76,7 @@ import { ensureEndpointsRegistered } from "./providers/endpoint-registration.js"
 import { explainRouteSettled } from "./providers/explain-route-settled.js";
 import { describeMuseSigningSource } from "./providers/meta-muse/muse-credentials.js";
 import {
+  concurrencyProviderShortcuts,
   parseListingEntry,
   parseModelChain,
   parseModelFlags,
@@ -2472,12 +2473,13 @@ ${h("USAGE")}
   ${green("claudish")} ${green("--team")} ${yellow("a,b,c")} ${green("-f")} ${yellow("input.md")}       ${dim("# Team mode with file input")}
 
 ${h("MODEL ROUTING")}
-  ${bold("New syntax:")} ${yellow("provider@model[:concurrency]")}
+  ${bold("New syntax:")} ${yellow("provider@model[:concurrency]")} ${dim("(:concurrency on local providers only)")}
     ${magenta("google@<model>")}                   ${dim("Direct Google API (explicit)")}
     ${magenta("openrouter@<vendor>/<model>")}      ${dim("OpenRouter (explicit)")}
     ${magenta("oai@<model>")}                      ${dim("Direct OpenAI API (shortcut)")}
     ${magenta("ollama@<model>:3")}                 ${dim("Local Ollama, 3 concurrent requests")}
     ${magenta("ollama@<model>:0")}                 ${dim("Local Ollama, no limits")}
+    ${dim(`:N works only on ${concurrencyProviderShortcuts()}; any other spec with :N is refused.`)}
 
   ${bold("Provider shortcuts:")} ${dim("(<shortcut>@<model>)")}
 ${shortcutTable}

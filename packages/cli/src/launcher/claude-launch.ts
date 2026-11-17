@@ -36,6 +36,7 @@
  * rows could never be routed.
  */
 
+import { lookupModelCapabilities } from "../adapters/model-catalog.js";
 import {
   type ClaudeCodeStartupCredential,
   claudeCodeStartupCredential,
@@ -67,6 +68,7 @@ import { normalizeNativeModelSpec } from "../providers/claude-code-aliases.js";
 import {
   MODEL_CHAIN_SEPARATOR,
   type ParsedModelFlags,
+  concurrencySuffixRefusal,
   parseModelSpec,
 } from "../providers/model-parser.js";
 import {
@@ -378,6 +380,37 @@ export interface DecideClaudeLaunchDeps {
   paneChild?: boolean;
   /** Default `shadowedEndpointRefusal`: a spec on a custom endpoint name a Claude builtin took over. */
   shadowedEndpointRefusal?: (specs: readonly string[]) => string | null;
+  /** Default: the cloud models catalog has an entry for the id (`lookupModelCapabilities`). */
+  knowsModelId?: (id: string) => boolean;
+}
+
+/** True when the cloud models catalog has an entry for `id`, by model id or alias. */
+function catalogKnowsModelId(id: string): boolean {
+  try {
+    return lookupModelCapabilities(id) !== undefined;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The first refusal among the named specs: a `claude@` spec the subscription
+ * cannot serve, or a `:N` suffix on a provider without a request cap. A chain a
+ * parent claudish pinned holds routed hops, wire ids included, so its `:N` is
+ * not checked again.
+ */
+function namedSpecRefusal(
+  named: readonly string[],
+  pinned: boolean,
+  knowsModelId: (id: string) => boolean = catalogKnowsModelId
+): string | null {
+  for (const spec of named) {
+    const refusal =
+      claudeSubscriptionSpecRefusal(spec) ??
+      (pinned ? null : concurrencySuffixRefusal(spec, knowsModelId));
+    if (refusal) return refusal;
+  }
+  return null;
 }
 
 /**
@@ -417,11 +450,8 @@ export function decideClaudeLaunch(
   );
   const shadowed = (deps.shadowedEndpointRefusal ?? shadowedEndpointRefusal)(named);
   if (shadowed) return { ok: false, message: shadowed };
-  for (const spec of [...specs, ...tiers]) {
-    if (typeof spec !== "string" || spec.length === 0) continue;
-    const refusal = claudeSubscriptionSpecRefusal(spec);
-    if (refusal) return { ok: false, message: refusal };
-  }
+  const refusal = namedSpecRefusal(named, config.modelPinned === true, deps.knowsModelId);
+  if (refusal) return { ok: false, message: refusal };
   // A `claude@` tier is the Claude subscription named explicitly: the proxy
   // serves it on the native passthrough, and the whole launch keeps the login.
   if (tiers.some((spec) => typeof spec === "string" && isClaudeSubscriptionSpec(spec))) {

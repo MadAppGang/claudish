@@ -78,6 +78,7 @@ export interface ParsedModel {
  */
 import { isClaudeCodeModelName, normalizeNativeModelSpec } from "./claude-code-aliases.js";
 import {
+  BUILTIN_PROVIDERS,
   getLegacyPrefixPatterns as _getLegacyPrefixPatterns,
   getNativeModelPatterns as _getNativeModelPatterns,
   getShortcuts as _getShortcuts,
@@ -249,6 +250,31 @@ function splitLocalConcurrency(
   const match = LOCAL_PROVIDERS.has(provider) ? model.match(/^(.+):(\d+)$/) : null;
   if (!match) return { model };
   return { model: match[1] as string, concurrency: Number.parseInt(match[2] as string, 10) };
+}
+
+/** The provider shortcuts whose `:N` is a request cap, e.g. `ollama@, lmstudio@`. */
+export function concurrencyProviderShortcuts(): string {
+  return BUILTIN_PROVIDERS.filter((def) => def.isLocal)
+    .map((def) => `${def.name}@`)
+    .join(", ");
+}
+
+/**
+ * The refusal for a spec whose trailing `:N` no provider honours, or null.
+ * `:N` caps concurrent requests only on a local provider; on any other
+ * provider, or a bare name, it would be dropped or sent as part of the model
+ * id. A `:<digits>` the catalog knows as a model id (`knowsModelId`) is that
+ * model, not a suffix.
+ */
+export function concurrencySuffixRefusal(
+  spec: string,
+  knowsModelId: (id: string) => boolean
+): string | null {
+  if (/^https?:\/\//.test(spec)) return null;
+  const parsed = parseModelSpec(spec);
+  if (parsed.concurrency !== undefined) return null;
+  if (!/:\d+$/.test(parsed.model) || knowsModelId(parsed.model)) return null;
+  return `${spec}: a :N concurrency suffix works only on a local provider (${concurrencyProviderShortcuts()}). Remove the :N, or run the model on one of those.`;
 }
 
 function parseModelSpecWithoutMarkers(modelSpec: string): ParsedModel {
