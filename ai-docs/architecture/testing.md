@@ -463,8 +463,12 @@ process group, and no socket, pane record or launcher directory in the root. Tha
 what proves the reap; a green suite without it would hide a REPL left billing.
 
 **A missing magmux is "not checked", never a cause.** Without magmux these suites skip with
-`magmux not installed — not checked` (the gated-diagnostic rule above). CI installs it
-(`brew install MadAppGang/tap/magmux` in `test.yml`), so the pane suites run there on macOS.
+`magmux not installed — not checked` (the gated-diagnostic rule above). CI installs the release
+pinned in `.github/magmux.env` (`.github/actions/install-magmux`, sha-256 checked) in `test.yml`'s
+macOS jobs, which run only on manual dispatch (`gh workflow run Tests --ref <branch>`); pull
+requests run no pane suite. Before a release tag they run on a Mac with `bun run test:macos`
+(`scripts/test-macos.ts`), which fails rather than skips when it finds no magmux, because a pane
+suite that skipped everything is green on nothing.
 
 **Time is a seam, and a budget measures a code path, not wall-clock under contention.**
 `PaneSessionOptions.timings` scales the quiet windows, the degraded-mode entry and the resend delay
