@@ -196,6 +196,14 @@ describe("checkGate", () => {
     expect(verdict.lines.join("\n")).toMatch(/part 4\/7.*in the future/);
   });
 
+  test("fails on a result whose run did not finish, and says so", () => {
+    const results = all();
+    results[2] = { ...green(3, 1), pass: false, finished: false };
+    const verdict = checkGate(results, now);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.lines.join("\n")).toMatch(/part 3\/7.*did not finish/);
+  });
+
   test("fails on a result from a different part count", () => {
     const results = all().map((r) => ({ ...r, n: 8 }));
     expect(checkGate(results, now).ok).toBe(false);
@@ -379,6 +387,55 @@ describe("runWeekly", () => {
     expect(readdirSync(outside)).toEqual(["repo"]);
     expect(readFileSync(join(outside, "repo", "keep"), "utf8")).toBe("k");
     expect(existsSync(join(logs(home), "RED-2026-11-22-part3.json"))).toBe(true);
+    expect(readFileSync(join(logs(home), "2026-11-22-part3.log"), "utf8")).toContain(
+      "outside the home"
+    );
+  });
+
+  test("while its commands run, the part's result is red and unfinished, so a killed run cannot leave the old green", async () => {
+    const home = tempHome();
+    await run(home, recorder());
+    const r = recorder();
+    let during: { pass?: boolean; finished?: boolean } = {};
+    const peeking = {
+      ...r,
+      exec: (cmd: Command, fd: number) => {
+        if (cmd.name === testStep) {
+          during = JSON.parse(readFileSync(join(logs(home), "part3.json"), "utf8"));
+        }
+        return r.exec(cmd, fd);
+      },
+    };
+    expect(await run(home, peeking)).toBe(0);
+    expect(during).toMatchObject({ pass: false, finished: false });
+    const after = JSON.parse(readFileSync(join(logs(home), "part3.json"), "utf8"));
+    expect(after.pass).toBe(true);
+    expect(after.finished).toBeUndefined();
+  });
+
+  test("a part result that cannot be written still gets a RED marker and a notification", async () => {
+    const home = tempHome();
+    mkdirSync(join(logs(home), "part3.json"), { recursive: true });
+    const r = recorder(testStep);
+    expect(await run(home, r)).toBe(1);
+    const marker = JSON.parse(readFileSync(join(logs(home), "RED-2026-11-22-part3.json"), "utf8"));
+    expect(marker.failing).toEqual(["pane > a slot settles"]);
+    expect(marker.resultError).toContain("EISDIR");
+    expect(r.notified).toHaveLength(1);
+  });
+
+  test("a clone that is a symlink out of the home is a red run that runs no git there", async () => {
+    const home = tempHome();
+    const outside = tempHome();
+    mkdirSync(join(outside, ".git"), { recursive: true });
+    writeFileSync(join(outside, "work-in-progress"), "w");
+    const { cacheDir, repoDir } = weeklyPaths(home);
+    mkdirSync(cacheDir, { recursive: true });
+    symlinkSync(outside, repoDir);
+    const r = recorder();
+    expect(await run(home, r)).toBe(1);
+    expect(r.ran).toEqual([]);
+    expect(readFileSync(join(outside, "work-in-progress"), "utf8")).toBe("w");
     expect(readFileSync(join(logs(home), "2026-11-22-part3.log"), "utf8")).toContain(
       "outside the home"
     );
@@ -675,6 +732,20 @@ describe("install and uninstall", () => {
     if (!result.ok) expect(result.error).toContain("outside the home");
     expect(l.ran).toEqual([]);
     expect(existsSync(plistPathFor(home))).toBe(false);
+  });
+
+  test("refuses a clone that is a symlink out of the home, and runs nothing", () => {
+    const home = tempHome();
+    const outside = tempHome();
+    mkdirSync(join(outside, ".git"), { recursive: true });
+    const { cacheDir, repoDir } = weeklyPaths(home);
+    mkdirSync(cacheDir, { recursive: true });
+    symlinkSync(outside, repoDir);
+    const l = launchctl();
+    const result = install({ home, uid: 501, bun: "/bin/bun", repoUrl: REPO_URL, exec: l.exec });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("outside the home");
+    expect(l.ran).toEqual([]);
   });
 
   test("refuses when origin's main has no weekly script yet, and loads nothing", () => {

@@ -152,18 +152,24 @@ export function cloneCommands(p: {
  */
 export function cloneReady(paths: WeeklyPaths, home: string, nowMs: number = Date.now()): boolean {
   const realHome = realpathSync(home);
-  const realCache = realpathSync(paths.cacheDir);
-  if (realCache !== realHome && !realCache.startsWith(`${realHome}${sep}`)) {
-    throw new Error(`${paths.cacheDir} resolves to ${realCache}, outside the home ${realHome}`);
-  }
-  if (existsSync(join(paths.repoDir, ".git"))) return true;
+  const insideHome = (path: string) => {
+    const real = realpathSync(path);
+    if (real !== realHome && !real.startsWith(`${realHome}${sep}`)) {
+      throw new Error(`${path} resolves to ${real}, outside the home ${realHome}`);
+    }
+  };
+  insideHome(paths.cacheDir);
   let present = true;
   try {
     lstatSync(paths.repoDir);
   } catch {
     present = false;
   }
-  if (present) renameSync(paths.repoDir, `${paths.repoDir}.broken-${nowMs}`);
+  if (!present) return false;
+  // The clone itself may be a symlink: git reset and git clean must never run outside the home.
+  insideHome(paths.repoDir);
+  if (existsSync(join(paths.repoDir, ".git"))) return true;
+  renameSync(paths.repoDir, `${paths.repoDir}.broken-${nowMs}`);
   return false;
 }
 
@@ -230,6 +236,11 @@ export interface PartResult {
   commit: string | null;
   pass: boolean;
   log: string;
+  /**
+   * `false` on the record written before the first command runs, replaced when the run ends. A
+   * run killed meanwhile (SIGTERM, a reboot) leaves it: a red part that did not finish.
+   */
+  finished?: false;
 }
 
 function isPartResult(r: unknown, part: number): r is PartResult {
@@ -286,7 +297,10 @@ export function checkGate(
     }
     const age = now.getTime() - Date.parse(r.date);
     const where = `${r.date} ${r.commit ?? "unknown commit"} (${r.log})`;
-    if (!r.pass) {
+    if (r.finished === false) {
+      ok = false;
+      lines.push(`${label}: RED, the run started and did not finish, ${where}`);
+    } else if (!r.pass) {
       ok = false;
       lines.push(`${label}: RED ${where}`);
     } else if (age < 0) {
@@ -422,6 +436,16 @@ function runPart(p: {
   }
 }
 
+/** Writes `part<k>.json`; returns the error text when it cannot, so the caller still reports. */
+function writePartResult(logDir: string, result: PartResult): string | undefined {
+  try {
+    writeFileSync(join(logDir, `part${result.part}.json`), `${JSON.stringify(result, null, 2)}\n`);
+    return undefined;
+  } catch (e) {
+    return errorText(e);
+  }
+}
+
 /**
  * Writes a red run's marker and returns its path: `RED-<UTC date>-part<k>.json`, or, when an
  * earlier red run of that part and day already wrote one triage has not deleted,
@@ -460,6 +484,17 @@ export async function runWeekly(opts: {
   // Without the log directory no result can be written at all, so this one may throw.
   mkdirSync(paths.logDir, { recursive: true });
   const logPath = logPathFor(paths.logDir, opts.now, part);
+  const resultOf = (pass: boolean, commit: string | null): PartResult => ({
+    part,
+    n: NIGHTLY_PARTS,
+    date: opts.now.toISOString(),
+    commit,
+    pass,
+    log: logPath,
+  });
+  // Before any command: a run killed from here on leaves a red, unfinished result, never the
+  // previous green. A failure to write it is not fatal; the final write reports its own.
+  writePartResult(paths.logDir, { ...resultOf(false, null), finished: false });
   let pass = false;
   let failed: { failing: string[]; logError?: string } = { failing: [] };
   let fd: number | undefined;
@@ -479,21 +514,17 @@ export async function runWeekly(opts: {
     if (fd !== undefined) closeSync(fd);
   }
   const commit = revParse(paths.repoDir);
-  const result: PartResult = {
-    part,
-    n: NIGHTLY_PARTS,
-    date: opts.now.toISOString(),
-    commit,
-    pass,
-    log: logPath,
-  };
-  writeFileSync(join(paths.logDir, `part${part}.json`), `${JSON.stringify(result, null, 2)}\n`);
-  if (pass) return 0;
+  const result = resultOf(pass, commit);
+  const resultError = writePartResult(paths.logDir, result);
+  if (pass && resultError === undefined) return 0;
+  // A green run whose result could not be written is reported too: the gate still reads the
+  // unfinished record written before the commands, and only the marker says why.
   const red = {
     date: result.date,
     part: `${part}/${NIGHTLY_PARTS}`,
     commit,
     ...failed,
+    ...(resultError === undefined ? {} : { resultError }),
     report: logPath,
   };
   const marker = writeRedMarker(paths.logDir, opts.now, part, `${JSON.stringify(red, null, 2)}\n`);
