@@ -5,8 +5,9 @@
 // whose total input (fresh input + cache writes + cache reads) is above the
 // band edge pays the upper band on all of its tokens. The cloud models catalog
 // publishes the band edge as `maxInputTokens` and does not say whether cached
-// tokens count toward it; counting them is this module's assumption, to be
-// checked against madbench's own cost on the first trial that crosses it.
+// tokens count toward it. Anthropic's pricing page does ("Long context
+// pricing", read 2026-11-18): "A request's prompt length counts all of its
+// input tokens, including cache reads and cache writes." That is all-input.
 //
 // Cache writes are a multiple of the band's input price: w5m for the
 // 5-minute TTL, w1h for the 1-hour TTL.
