@@ -53,7 +53,7 @@ silent invariants in `CLAUDE.md`. The data file carries a `guards` line for each
 
 | Category | Essential files | What breaks silently without them |
 |---|---|---|
-| pane | `pane-child-real-claudish.integration`, `pane-view-socket.integration`, `pane-launch.black-box` | a session that never settles or leaks a process; `CLAUDISH_PANE_CHILD` scrubbed (nested `create_session` returns); the control socket published; `HERDR_*`/`HC_*` inherited |
+| pane | `pane-child-real-claudish.integration`, `view-socket`, `pane-launch.black-box` | a session that never settles or leaks a process; `CLAUDISH_PANE_CHILD` scrubbed (nested `create_session` returns); a view socket published with a missing or mismatched path or one that answers `readOnly: false`; `HERDR_*`/`HC_*` inherited |
 | mcp-session | `host-pid.contract`, `session-create-options`, `home-dir` | the npm launcher path and spawn.json pids; a slot's token file or error log lost; records written into the account home |
 | mcp-blackbox | `tool-surface`, `channel-sessions`, `run-prompt` | the 20-tool and nested 4-tool surfaces; the session tools end to end; `run_prompt`'s print child |
 | team | `team-output-classification`, `team-multibyte-answer`, `team-start-failure` | an exit 0 read as an answer; an answer lost between transcript and response file; a failed start that keeps billing |

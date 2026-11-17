@@ -11,8 +11,8 @@
           "guards": "a real pane session starts, answers and settles COMPLETED through this tree's claudish; CLAUDISH_PANE_CHILD is kept in the child; a nested --team is refused with exit 64; nothing outlives the reap"
         },
         {
-          "file": "src/pane/pane-view-socket.integration.test.ts",
-          "guards": "only the read-only magmux-<id>.view socket is verified and published, it refuses input, and the reap removes it with no orphan"
+          "file": "src/pane/view-socket.test.ts",
+          "guards": "the two-socket check publishes a view socket only when control's capabilities.viewSocket is the derived magmux-<id>.view path and a dial answers readOnly:true: a missing or mismatched path, a writable socket (readOnly:false), a refused request or a failed dial is unverified"
         },
         {
           "file": "src/pane/pane-launch.black-box.test.ts",

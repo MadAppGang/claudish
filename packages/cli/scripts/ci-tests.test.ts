@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -226,6 +226,17 @@ describe("validateTiers", () => {
     const errors = validateTiers(data, known).join("\n");
     expect(errors).toContain("heavySeconds");
     expect(errors).toContain("src/pane/a.test.ts has no guards text");
+  });
+
+  test("the pane essentials run the two-socket check's rejections, a writable view socket included", () => {
+    const pane = loadTiers().slow.find((c) => c.category === "pane");
+    const files = pane?.essential.map((e) => e.file) ?? [];
+    expect(files).toContain("src/pane/view-socket.test.ts");
+    const source = readFileSync(
+      join(import.meta.dir, "..", "src/pane/view-socket.test.ts"),
+      "utf8"
+    );
+    expect(source).toContain("{ readOnly: false }");
   });
 
   test("the tracked test-tiers.json names only existing files, at most 3 per category", () => {
