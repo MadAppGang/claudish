@@ -30,9 +30,9 @@
  * Expect a long run: the pane slices run as seven concurrent processes. A red run on a loaded
  * machine is still red: rerun once the Mac is quiet.
  */
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { constants as osConstants, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { findMagmuxCandidates } from "../packages/cli/src/launcher/magmux-binary.ts";
 
@@ -147,18 +147,77 @@ function stepEnv(binDir: string): Record<string, string> {
   return env;
 }
 
-function runStep(step: Step, binDir: string): number {
-  console.log(`\n[test:macos] ▶ ${step.name}  (bun ${step.bun}, ${step.cwd})`);
-  const started = performance.now();
-  const r = spawnSync(
-    process.execPath,
-    [join(ROOT, "scripts", "guard-real-config.ts"), "--", ...step.args],
-    { cwd: step.cwd, stdio: "inherit", env: stepEnv(binDir) }
-  );
-  const secs = ((performance.now() - started) / 1000).toFixed(0);
-  const code = r.status ?? 1;
-  console.log(`[test:macos] ◀ ${step.name}: exit ${code}, ${secs} s`);
-  return code;
+/** How a step's process ended: an exit code, or the signal that ended it. */
+export interface StepResult {
+  code: number | null;
+  signal: NodeJS.Signals | null;
+}
+
+export interface RunningStep {
+  exited: Promise<StepResult>;
+  /** Sends `sig` to the step's whole process group: the guard, every Bun under it, their children. */
+  signal(sig: NodeJS.Signals): void;
+}
+
+/**
+ * Starts `argv` as the leader of a process group of its own (`detached`), so a signal the gate
+ * forwards reaches every process of the step and not only the first. The terminal's Ctrl-C goes
+ * to the gate alone, which forwards it. Stdin is closed: no step reads it.
+ */
+export function startStep(
+  argv: string[],
+  opts: { cwd: string; env: Record<string, string> }
+): RunningStep {
+  const [cmd, ...args] = argv;
+  if (!cmd) throw new Error("startStep: empty argv");
+  const child = spawn(cmd, args, {
+    cwd: opts.cwd,
+    env: opts.env,
+    stdio: ["ignore", "inherit", "inherit"],
+    detached: true,
+  });
+  const exited = new Promise<StepResult>((resolve) => {
+    child.on("error", (err) => {
+      console.error(`[test:macos] could not start ${cmd}: ${err.message}`);
+      resolve({ code: 127, signal: null });
+    });
+    child.on("exit", (code, signal) => resolve({ code, signal }));
+  });
+  return {
+    exited,
+    signal(sig) {
+      if (child.pid === undefined) return;
+      try {
+        process.kill(-child.pid, sig);
+      } catch {
+        /* the group has already exited */
+      }
+    },
+  };
+}
+
+/** The exit code a step counts as: its own, or 128 + the number of the signal that ended it. */
+function codeOf(result: StepResult): number {
+  if (result.signal) return 128 + (osConstants.signals[result.signal] ?? 0);
+  return result.code ?? 1;
+}
+
+/**
+ * Runs the steps in order. A step ended by a signal ends the run: the gate was interrupted, or a
+ * child was killed, and every later step would be red for the same reason or tell nothing.
+ */
+export async function runSteps<S extends { name: string }>(
+  steps: readonly S[],
+  run: (step: S) => Promise<StepResult>
+): Promise<{ name: string; code: number }[]> {
+  const results: { name: string; code: number }[] = [];
+  for (const step of steps) {
+    const result = await run(step);
+    const code = codeOf(result);
+    results.push({ name: step.name, code });
+    if (result.signal) break;
+  }
+  return results;
 }
 
 if (import.meta.main) {
@@ -239,13 +298,45 @@ if (import.meta.main) {
     process.exit(0);
   }
 
-  const results: { name: string; code: number }[] = [];
-  for (const { bin, steps } of groups)
-    for (const step of steps) results.push({ name: step.name, code: runStep(step, bin.dir) });
+  // A signal to the gate goes to the running step's process group; the gate waits for that
+  // step to exit (the guard restores what it guards), then stops with no further step.
+  let interrupted: NodeJS.Signals | null = null;
+  let running: RunningStep | null = null;
+  for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+    process.on(sig, () => {
+      interrupted ??= sig;
+      running?.signal(sig);
+    });
+  }
+  const binOf = new Map(
+    groups.flatMap(({ bin, steps }) => steps.map((s) => [s, bin.dir] as const))
+  );
+  const results = await runSteps(
+    groups.flatMap((g) => g.steps),
+    async (step) => {
+      console.log(`\n[test:macos] ▶ ${step.name}  (bun ${step.bun}, ${step.cwd})`);
+      const started = performance.now();
+      running = startStep(
+        [process.execPath, join(ROOT, "scripts", "guard-real-config.ts"), "--", ...step.args],
+        { cwd: step.cwd, env: stepEnv(binOf.get(step) ?? "") }
+      );
+      const result = await running.exited;
+      running = null;
+      const secs = ((performance.now() - started) / 1000).toFixed(0);
+      const how = result.signal ? `signal ${result.signal}` : `exit ${result.code}`;
+      console.log(`[test:macos] ◀ ${step.name}: ${how}, ${secs} s`);
+      return interrupted ? { code: result.code, signal: result.signal ?? interrupted } : result;
+    }
+  );
 
   console.log("\n[test:macos] summary");
   for (const r of results) console.log(`  ${r.code === 0 ? "PASS" : "FAIL"}  ${r.name}`);
-  const red = results.some((r) => r.code !== 0);
+  if (interrupted) {
+    console.log(`[test:macos] stopped by ${interrupted}: do not tag.`);
+    process.exit(128 + (osConstants.signals[interrupted] ?? 0));
+  }
+  const red =
+    results.length < groups.flatMap((g) => g.steps).length || results.some((r) => r.code !== 0);
   if (red)
     console.log("[test:macos] RED: do not tag. Rerun once the Mac is quiet if it was loaded.");
   process.exit(red ? 1 : 0);
