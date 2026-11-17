@@ -2,7 +2,8 @@ description: "history policies on the long-session-xl Scenario: three swap polic
 bench: ./madbench.yaml
 
 # The same variants as history-policy.experiment.yaml without history-topic,
-# on the long-session-xl Scenario: case d's four turns, a second feature on the
+# on the long-session-xl Scenario: case d's four turns with path-scoped test
+# runs (see the Scenario's comment in madbench.yaml), a second feature on the
 # config file, then long outputs, long reads and recall (12 turns, 127 hidden
 # tests). Both models run with a 200,000-token window
 # (--param case_prep=long-session), so claudish's history limit is 200,000 on

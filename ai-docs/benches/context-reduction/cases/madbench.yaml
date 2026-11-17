@@ -245,18 +245,24 @@ scenarios:
         timeout: "60s"
 
   # Case d at two to three times the length, so a swap is followed by many
-  # requests. Turns 1 to 4 are long-session's, word for word. Turns 5 and 6 add
-  # a second feature on the same code, the config file's `contextWindow`,
-  # graded by its own hidden tests (../hidden-tests-xl, 13 tests). Turns 7 to
-  # 12 add long outputs, long reads and a recall question. The grade is all
-  # 127 hidden tests after the last turn (../checks/grade-xl-check.ts). Run
-  # with --param case_prep=long-session (a 200K window) and --param model=.
+  # requests. Turns 1 to 4 are long-session's, except that every test run
+  # names its test files by path: a bare `bun test` runs all 659 test files of
+  # packages/cli, which in the sandbox takes about 2.5 h (Haiku waited for it
+  # in the background; Sonnet took the Bash tool's 10-minute cut-off), so turn
+  # length depended on how a model treats that wait, not on context. Turns 5
+  # and 6 add a second feature on the same code, the config file's
+  # `contextWindow`, graded by its own hidden tests (../hidden-tests-xl, 13
+  # tests). Turns 7 to 12 add long outputs, long reads and a recall question.
+  # The grade is all 127 hidden tests after the last turn
+  # (../checks/grade-xl-check.ts). Run with --param case_prep=long-session (a
+  # 200K window) and --param model=.
   - name: long-session-xl
-    description: "case d's four turns, a second feature on the config file, then long outputs, long reads and recall, in a 200K window"
+    description: "case d's four turns with path-scoped test runs, a second feature on the config file, then long outputs, long reads and recall, in a 200K window"
     repo:
       url: ../../../..
       ref: fe1a93ec9d6bc63538bbb1401663eb30a51e2e33
-    timeout: 240m
+    # Haiku 5.5's turns run slower than Sonnet 5.5's (its turn 1 took 55 min).
+    timeout: 300m
     prompt: |
       I want a new claudish flag: `--context-window <size>`. It sets the context window for a local model (LM Studio or Ollama). Today the LM Studio window is fixed at 64,000 tokens and I cannot change it from the command line.
 
@@ -277,9 +283,9 @@ scenarios:
          - The passthrough walker treats `--context-window 128k` as claudish's own flag with one value, and does not pass it to Claude Code.
          - The flag appears in the `--help` text.
 
-      3. Add tests for what you built, beside the code they cover, and run them with `bun test` from `packages/cli`. Run `bun run typecheck` there too. Fix what fails.
+      3. Add tests for what you built, beside the code they cover, and run them from `packages/cli` with `bun test` followed by the path of each test file you added or changed. Run `bun run typecheck` there too. Fix what fails.
 
-      4. Get the work reviewed. Start one more subagent with the Agent tool and have it review every file you changed against the list in item 2, point by point, and look for a case the tests miss. Wait for its report. Fix each real finding. Then run `bun test` and `bun run typecheck` from `packages/cli` once more.
+      4. Get the work reviewed. Start one more subagent with the Agent tool and have it review every file you changed against the list in item 2, point by point, and look for a case the tests miss. Wait for its report. Fix each real finding. Then, from `packages/cli`, run `bun test` on the same test files by path, and `bun run typecheck`, once more.
 
       Do not change `bun.lock` or any `package.json`. Do not add dependencies. Do not stop to ask me anything: I am away until you finish. End with the test and typecheck results and the list of files you changed.
     follow_ups:
@@ -297,10 +303,10 @@ scenarios:
            - `contextWindowLimit()` returns the size in `CLAUDISH_CONTEXT_WINDOW` when that is a valid size, else the size in the config file's `contextWindow` when that is a valid size, else `undefined`. A bad value in either place is skipped, never an error. It reads the config on every call, so an edit to the file takes effect at once.
            - The flag still wins over the config, because claudish writes it to `CLAUDISH_CONTEXT_WINDOW`.
 
-        3. Add tests beside the code they cover, and run `bun test` and `bun run typecheck` from `packages/cli`. Fix what fails.
+        3. Add tests beside the code they cover. From `packages/cli`, run `bun test` followed by the path of each test file you added or changed, and `bun run typecheck`. Fix what fails.
 
         Do not change `bun.lock` or any `package.json`. Do not stop to ask me anything.
-      - "Get the config work reviewed. Start one subagent with the Agent tool and have it review every file you changed for the config's `contextWindow` against the four points of item 2 in my last message, point by point, and look for a case the tests miss. Wait for its report. Fix each real finding. Then run `bun test` and `bun run typecheck` from `packages/cli`."
+      - "Get the config work reviewed. Start one subagent with the Agent tool and have it review every file you changed for the config's `contextWindow` against the four points of item 2 in my last message, point by point, and look for a case the tests miss. Wait for its report. Fix each real finding. Then, from `packages/cli`, run `bun test` followed by the path of each test file you added or changed for the config's `contextWindow`, and `bun run typecheck`."
       - "Run `bun test src/adapters src/handlers` from `packages/cli` and read its complete output: do not pipe it through tail, head or grep. Then run `bun run typecheck` and `bun run build` from `packages/cli`, also with complete output. Fix anything that fails, and give me the totals."
       - "Read `packages/cli/src/profile-config.ts` and `packages/cli/src/providers/context-window-limit.ts` in full, every line, without subagents. Then add a section to `packages/cli/CONTEXT-WINDOW.md`: where the config's `contextWindow` is read, and which size wins when the flag, `CLAUDISH_CONTEXT_WINDOW` and the config file each name one."
       - "Run `bun test` on every test file you created or changed in this session, in one command, from `packages/cli`, with complete output. Then run `bun run typecheck`. Fix anything that fails, and give me the totals."
