@@ -21,7 +21,7 @@ name: Tests
 # manually dispatched and holds the secrets on purpose.
 #
 # WHAT RUNS ON WHICH TRIGGER: pull_request and push to main run the Linux jobs (static,
-# idle, the Linux rows of hooks-loading). The macOS jobs (hermetic, blind-hooks, the macOS
+# idle, the Linux rows of hooks-loading, darwin-binaries). The macOS jobs (hermetic, blind-hooks, the macOS
 # rows of hooks-loading) run only on a manual dispatch: `gh workflow run Tests --ref
 # <branch>`. Before a release tag the same macOS suites run on a Mac with
 # `bun run test:macos` (scripts/test-macos.ts).
@@ -234,3 +234,35 @@ jobs:
       - name: S1 hook loading (source, dist bundle, compiled binary)
         run: bun test packages/cli/src/hooks/s1-probe/
         timeout-minutes: 5
+
+  # release.yml builds the darwin binaries on Linux, so every PR proves that build: the same
+  # Bun (`latest`), install and `bun build` line, then the checks release.yml runs on the
+  # result (scripts/check-darwin-binary.sh). `--os='*' --cpu='*'` installs every platform's
+  # optional native packages; a plain install on Linux brings only @opentui/core-linux-*, and
+  # the darwin build then fails: `Could not resolve: "@opentui/core-darwin-arm64/index.ts"`.
+  # No upload: nothing here ships. No lint either, so a newer bun rewriting
+  # packages/cli/package.json on install does not matter.
+  darwin-binaries:
+    name: darwin binaries · build ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: bun-darwin-arm64
+            arch: arm64
+          - target: bun-darwin-x64
+            arch: x64
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --os='*' --cpu='*'
+      - run: bun run build:cli
+      - name: Build binary
+        run: bun build packages/cli/src/index.ts --compile --no-compile-autoload-dotenv --target=${{ matrix.target }} --outfile claudish-${{ matrix.target }}
+      - name: Check the binary
+        run: scripts/check-darwin-binary.sh claudish-${{ matrix.target }} ${{ matrix.arch }}
