@@ -23,7 +23,8 @@
  * Every step runs under scripts/guard-real-config.ts, as `test:safe` does (a throwaway HOME, no
  * Keychain, no 1Password), with an environment built by allowlist: no provider key from the
  * developer's shell reaches it, so the credential-gated live tests skip as they do on a runner.
- * Each step is a process group of its own: SIGINT, SIGTERM or SIGHUP to the gate goes to that
+ * Every Bun the gate starts runs with `--no-env-file`, so a `.env` in a step's directory cannot
+ * put a removed key back. Each step is a process group of its own: SIGINT, SIGTERM or SIGHUP to the gate goes to that
  * group, and the gate stops once the step has exited.
  *
  * The Mac needs magmux on the lookup path the pane suites use (`findMagmuxCandidates`): without
@@ -74,6 +75,21 @@ export function compareVersions(a: string, b: string): number {
   return 0;
 }
 
+/**
+ * On every Bun the gate starts. Bun loads `.env` (and `.env.local`, `.env.<NODE_ENV>`) from its
+ * working directory by default, which would put a key the allowlisted environment removed back
+ * into a step. The flag reaches only the Bun it is given to: a `bun run <script>` starts a second
+ * Bun that loads them again, so test steps start `bun test` directly.
+ */
+export const NO_ENV_FILE = "--no-env-file";
+
+const GUARD = join(ROOT, "scripts", "guard-real-config.ts");
+
+/** How the gate starts a step: under the guard, which hands its own environment to the step. */
+export function launchArgv(step: Step, guard: string = GUARD): string[] {
+  return [process.execPath, NO_ENV_FILE, guard, "--", ...step.args];
+}
+
 export interface Step {
   name: string;
   cwd: string;
@@ -111,22 +127,25 @@ export function planSteps(p: {
           cwd: cli,
           args: [
             p.hermetic.exe,
+            NO_ENV_FILE,
             "scripts/ci-tests.ts",
             "--run",
             HERMETIC_RUNS,
             "--",
+            NO_ENV_FILE,
             "--max-concurrency=8",
           ],
         },
         {
+          // The package's `test` script is `bun test`, started here directly.
           name: "macos-bridge tests",
-          cwd: p.root,
-          args: [p.hermetic.exe, "run", "--cwd", "packages/macos-bridge", "test"],
+          cwd: join(p.root, "packages", "macos-bridge"),
+          args: [p.hermetic.exe, NO_ENV_FILE, "test"],
         },
         {
           name: "script tests",
           cwd: p.root,
-          args: [p.hermetic.exe, "test", ...p.scriptTests],
+          args: [p.hermetic.exe, NO_ENV_FILE, "test", ...p.scriptTests],
         },
       ],
     },
@@ -136,12 +155,17 @@ export function planSteps(p: {
         {
           name: "blind hook tests",
           cwd: cli,
-          args: [p.blind.exe, "test", "src/hooks/blind"],
+          args: [p.blind.exe, NO_ENV_FILE, "test", "src/hooks/blind"],
         },
         {
           name: "Antigravity HTTP client tests",
           cwd: cli,
-          args: [p.blind.exe, "test", "src/providers/transport/antigravity-fetch.test.ts"],
+          args: [
+            p.blind.exe,
+            NO_ENV_FILE,
+            "test",
+            "src/providers/transport/antigravity-fetch.test.ts",
+          ],
         },
       ],
     },
@@ -158,11 +182,15 @@ function fail(message: string): never {
  * this run's own directory.
  */
 function pinnedBun(version: string, runDir: string): { exe: string; dir: string } {
-  const r = spawnSync("bunx", [`bun@${version}`, "-e", "console.log(process.execPath)"], {
-    cwd: runDir,
-    encoding: "utf8",
-    env: { ...process.env },
-  });
+  const r = spawnSync(
+    "bunx",
+    [`bun@${version}`, NO_ENV_FILE, "-e", "console.log(process.execPath)"],
+    {
+      cwd: runDir,
+      encoding: "utf8",
+      env: { ...process.env },
+    }
+  );
   const exe = r.stdout?.trim().split("\n").pop() ?? "";
   if (r.status !== 0 || !existsSync(exe)) {
     fail(`could not get Bun ${version} with bunx:\n${r.stderr ?? ""}`);
@@ -364,10 +392,10 @@ if (import.meta.main) {
   const results = await runSteps(steps, async (step) => {
     console.log(`\n[test:macos] ▶ ${step.name}  (bun ${step.bun.version}, ${step.cwd})`);
     const started = performance.now();
-    running = startStep(
-      [process.execPath, join(ROOT, "scripts", "guard-real-config.ts"), "--", ...step.args],
-      { cwd: step.cwd, env: stepEnv(binDirOf.get(step.bun.version) ?? "") }
-    );
+    running = startStep(launchArgv(step), {
+      cwd: step.cwd,
+      env: stepEnv(binDirOf.get(step.bun.version) ?? ""),
+    });
     const result = await running.exited;
     running = null;
     const secs = ((performance.now() - started) / 1000).toFixed(0);

@@ -1,8 +1,17 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { HERMETIC_RUNS, bunPinOf, compareVersions, runSteps, startStep } from "./test-macos.ts";
+import {
+  HERMETIC_RUNS,
+  NO_ENV_FILE,
+  bunPinOf,
+  compareVersions,
+  launchArgv,
+  planSteps,
+  runSteps,
+  startStep,
+} from "./test-macos.ts";
 
 function tempDir(): string {
   return mkdtempSync(join(tmpdir(), "test-macos-test-"));
@@ -12,6 +21,64 @@ const WORKFLOW = readFileSync(
   join(import.meta.dir, "..", ".github", "workflows", "test.yml"),
   "utf8"
 );
+
+const STEPS = planSteps({
+  root: "/repo",
+  hermetic: { version: "1.3.10", exe: "/b/1.3.10/bun" },
+  blind: { version: "1.4.0", exe: "/b/1.4.0/bun" },
+  scriptTests: ["./scripts/a.test.ts"],
+}).flatMap((g) => g.steps);
+
+describe("no step loads a .env file", () => {
+  test("every Bun a step starts, and the guard, run with --no-env-file", () => {
+    for (const step of STEPS) {
+      expect(step.args[1]).toBe(NO_ENV_FILE);
+      // ci-tests.ts starts one `bun test` per slice; the flag reaches them through `--`.
+      if (step.args.includes("scripts/ci-tests.ts")) {
+        expect(step.args.slice(step.args.indexOf("--") + 1)).toContain(NO_ENV_FILE);
+      }
+    }
+    // A package script (`bun run test`) starts a second Bun the flag does not reach.
+    const bridge = STEPS.find((s) => s.name === "macos-bridge tests");
+    expect(bridge?.cwd).toBe("/repo/packages/macos-bridge");
+    expect(bridge?.args).toEqual(["/b/1.3.10/bun", NO_ENV_FILE, "test"]);
+    const first = STEPS[0] as (typeof STEPS)[number];
+    expect(launchArgv(first, "/guard.ts")).toEqual([
+      process.execPath,
+      NO_ENV_FILE,
+      "/guard.ts",
+      "--",
+      ...first.args,
+    ]);
+  });
+
+  test("a .env in the step's cwd does not reach the command", async () => {
+    const dir = tempDir();
+    try {
+      writeFileSync(join(dir, ".env"), "TEST_MACOS_SYNTHETIC_KEY=sk-synthetic\n");
+      // Stands in for guard-real-config.ts, which hands its own environment to the command.
+      const wrapper = join(dir, "wrapper.ts");
+      writeFileSync(
+        wrapper,
+        // Bun drops the `--` from process.argv; argv[2] onward is the command.
+        'const argv = process.argv.slice(process.argv[2] === "--" ? 3 : 2);\n' +
+          "const r = Bun.spawnSync(argv, { env: process.env, stdout: 'inherit' });\n" +
+          "process.exit(r.exitCode ?? 1);\n"
+      );
+      const out = join(dir, "seen.txt");
+      const print = `require("fs").writeFileSync(${JSON.stringify(out)}, process.env.TEST_MACOS_SYNTHETIC_KEY ?? "absent")`;
+      const step = { name: "probe", cwd: dir, args: [process.execPath, NO_ENV_FILE, "-e", print] };
+      const run = startStep(launchArgv(step, wrapper), {
+        cwd: dir,
+        env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: dir },
+      });
+      expect((await run.exited).code).toBe(0);
+      expect(readFileSync(out, "utf8")).toBe("absent");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("test:macos reads its Buns from test.yml", () => {
   test("the hermetic and blind-hooks jobs each pin an exact Bun", () => {
