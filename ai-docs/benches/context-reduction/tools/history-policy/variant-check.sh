@@ -11,7 +11,8 @@ fail=0
 sh "$here/../claudish-compaction/variant-check.sh" || fail=1
 
 launch=$(cat "$HOME/.bench-compaction/launch-dir" 2>/dev/null)
-logs=$(ls "$launch"/debug/claudish_*.log 2>/dev/null)
+# The session's log can sit in an earlier launch folder of the same trial.
+logs=$(sh "$here/../claudish-compaction/trial-logs.sh" "$launch")
 if [ -z "$logs" ]; then
   echo "debug log: absent"
   exit 1

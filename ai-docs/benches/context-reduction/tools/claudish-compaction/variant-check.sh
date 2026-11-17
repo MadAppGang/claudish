@@ -35,7 +35,8 @@ reads=$(bun "$here/transcripts.ts" | grep -o 'config_reads=[0-9]*' | cut -d= -f2
 echo "agent tool calls naming the config: ${reads:-absent}"
 [ "${reads:-x}" = "0" ] || fail=1
 
-logs=$(ls "$launch"/debug/claudish_*.log 2>/dev/null)
+# The session's log can sit in an earlier launch folder of the same trial.
+logs=$(sh "$here/trial-logs.sh" "$launch")
 if [ -z "$logs" ]; then
   echo "debug log: absent"
   exit 1
