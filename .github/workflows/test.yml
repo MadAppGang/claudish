@@ -21,7 +21,7 @@ name: Tests
 # manually dispatched and holds the secrets on purpose.
 #
 # WHAT RUNS ON WHICH TRIGGER: pull_request and push to main run the Linux jobs (static,
-# idle, the Linux rows of hooks-loading, darwin-binaries). The macOS jobs (hermetic, blind-hooks, the macOS
+# scripts, idle, the Linux rows of hooks-loading, darwin-binaries). The macOS jobs (hermetic, blind-hooks, the macOS
 # rows of hooks-loading) run only on a manual dispatch: `gh workflow run Tests --ref
 # <branch>`. Before a release tag the same macOS suites run on a Mac with
 # `bun run test:macos` (scripts/test-macos.ts).
@@ -89,6 +89,31 @@ jobs:
       # noExcessiveCognitiveComplexity) are pre-existing style debt, which biome exits 0 for.
       - name: Lint
         run: bun run lint
+
+  # scripts/*.test.ts (the release scripts, the test gates, repo invariants such as spawn env
+  # and retired terms) and release-files.test.ts read files and run portable shell: nothing in
+  # them needs a Mac, so every trigger runs them here. The dispatched macOS rest runner and
+  # `bun run test:macos` run them too.
+  scripts:
+    name: script and release-file tests
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      CLAUDISH_SKIP_LIVE_E2E: "1"
+      CLAUDISH_DISABLE_CATALOG_WARM: "1"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.10"
+      - run: bun install --frozen-lockfile
+      - name: Script tests
+        run: bun test ./scripts/*.test.ts
+        timeout-minutes: 5
+      - name: Release file tests
+        working-directory: packages/cli
+        run: bun test src/release-files.test.ts
+        timeout-minutes: 5
 
   idle:
     name: hermetic · idle ${{ matrix.slice }}/3

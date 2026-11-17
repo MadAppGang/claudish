@@ -51,7 +51,7 @@ import {
   symlinkSync,
 } from "node:fs";
 import { constants as osConstants, tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { findMagmuxCandidates } from "../packages/cli/src/launcher/magmux-binary.ts";
 
 const ROOT = join(import.meta.dir, "..");
