@@ -229,8 +229,8 @@ describe("Antigravity connection modelIdEffort", () => {
   });
 
   test("rule 5: none without off skips a level the account does not serve", () => {
-    publish(effortMap({ high: HIGH, low: LOW }));
-    expect(resolve(BASE, served([HIGH], HIGH), "none")).toBe(HIGH);
+    publish(effortMap({ high: HIGH, medium: MEDIUM, low: LOW }));
+    expect(resolve(BASE, served([HIGH, MEDIUM], HIGH), "none")).toBe(MEDIUM);
   });
 
   test("rule 6: a missing mapped id falls back to the backend default, not another effort", () => {
