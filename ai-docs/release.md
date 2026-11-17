@@ -64,8 +64,9 @@ must be green on a Mac before the tag (`CLAUDE.md`, Releasing). The tag is there
 the gate: everything must be green before the tag leaves the machine.
 
 **Tiers.** Pull requests and `bun run test:macos` run the ESSENTIAL tier
-(`packages/cli/scripts/test-tiers.json`: at most three files per slow category, no file
-measured at 2 s or more); a dispatch of `test.yml` and `bun run test:macos --full` run
+(`packages/cli/scripts/test-tiers.json`: the files listed for each slow category, at most
+three, whatever their time; and, outside the slow categories, no file measured at 2 s or
+more); a dispatch of `test.yml` and `bun run test:macos --full` run
 the FULL tier. The full tier also runs every Sunday: `weekly-tests.yml` on Linux (11:00
 UTC; a failed run mails the owner and opens or updates the issue "Weekly full test run
 failed") and `scripts/weekly-macos-tests.ts` under launchd on the owner's Mac (03:00
