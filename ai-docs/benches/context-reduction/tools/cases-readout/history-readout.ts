@@ -96,27 +96,31 @@ function parseLog(text: string) {
       rate.lastTs = ts;
     }
     if (line.includes('"code":"1302"')) rate.code1302++;
-    const retry = line.match(/429 rate limited, retry \d+\/\d+ in ([\d.]+)s/);
+    // A tag counts only on claudish's own line ("[<ISO time>] " then the tag,
+    // matched as t above). A request or response body line (an SSE "data:"
+    // line) carries the model's text, which can name any tag: an answer that
+    // quoted "[Fallback]" was once counted as a hop.
+    const retry = t ? line.match(/429 rate limited, retry \d+\/\d+ in ([\d.]+)s/) : null;
     if (retry) {
       rate.retries++;
       rate.retryWaitS += Number(retry[1]);
     }
-    if (/\] Response status: 429/.test(line) && !line.includes("[compaction]")) {
+    if (t && /\] Response status: 429/.test(line) && !line.includes("[compaction]")) {
       rate.reachedClient++;
       if (callTs) rate.waitMs += Date.parse(ts) - Date.parse(callTs);
       pending429 = ts;
     }
-    if (line.includes("[Fallback]") && line.includes("trying next provider") && pending429) {
+    if (t && line.includes("[Fallback]") && line.includes("trying next provider") && pending429) {
       rate.reachedClient--;
       rate.toNextHop++;
       pending429 = "";
     }
-    if (/\] Calling API: /.test(line) && !line.includes("[compaction]")) {
+    if (t && /\] Calling API: /.test(line) && !line.includes("[compaction]")) {
       if (pending429) rate.waitMs += Date.parse(ts) - Date.parse(pending429);
       pending429 = "";
       callTs = ts;
     }
-    const meta = line.match(/\[RequestMeta\] model=(\S+)/);
+    const meta = t ? line.match(/\[RequestMeta\] model=(\S+)/) : null;
     if (meta) {
       reqs.push({ ts, model: meta[1] });
       continue;
@@ -148,7 +152,7 @@ function parseLog(text: string) {
     // INCLUDES the cached tokens; no cache write is billed.
     // claudish's own Haiku calls write "[compaction] Calling API:" too; they
     // are counted from their HTTP 200 lines below, not as requests or hops.
-    const call = line.includes("[compaction]") ? null : line.match(/\] Calling API: https?:\/\/([^/\s]+)/);
+    const call = !t || line.includes("[compaction]") ? null : line.match(/\] Calling API: https?:\/\/([^/\s]+)/);
     if (call) {
       hops[call[1]] = (hops[call[1]] ?? 0) + 1;
       const prev = reqs[reqs.length - 1];
@@ -156,7 +160,7 @@ function parseLog(text: string) {
       else reqs.push({ ts, model: prev?.model ?? "unknown", host: call[1] });
       continue;
     }
-    if (line.includes("[Fallback]")) fallbacks.push(line.slice(0, 300));
+    if (t && line.includes("[Fallback]")) fallbacks.push(line.slice(0, 300));
     if (line.includes("[SSE:openai]") && line.includes('"prompt_tokens"')) {
       try {
         const u = JSON.parse(line.slice(line.indexOf("{"))).usage;
@@ -180,7 +184,7 @@ function parseLog(text: string) {
       } catch {}
       continue;
     }
-    if (!line.includes("[compaction]")) continue;
+    if (!t || !line.includes("[compaction]")) continue;
     const count = line.match(/history count (\d+) of/);
     if (count && last) last.count = Number(count[1]);
     const h = line.match(/\[compaction\] (history summary of \d+ messages|tool output [^:]*): HTTP 200, (\d+) in \/ (\d+) out tokens/);
