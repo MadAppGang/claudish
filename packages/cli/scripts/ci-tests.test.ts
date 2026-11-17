@@ -220,6 +220,32 @@ describe("validateTiers", () => {
     expect(errors).toContain('slow[2] needs a non-empty string "category"');
   });
 
+  test("an essential entry that is not an object with string file and guards is an error, not a crash", () => {
+    const data = {
+      heavySeconds: 2,
+      slow: [
+        {
+          category: "pane",
+          prefix: "src/pane/",
+          essential: ["src/pane/a.test.ts", null, { file: "src/pane/b.test.ts", guards: 3 }],
+        },
+        { category: "team", prefix: "src/team", essential: [{ guards: "x" }] },
+      ],
+    } as unknown as TierData;
+    let errors = "";
+    expect(() => {
+      errors = validateTiers(data, known).join("\n");
+    }).not.toThrow();
+    expect(errors).toContain(
+      'category pane essential[0] must be an object with non-empty strings "file" and "guards"'
+    );
+    expect(errors).toContain(
+      'category pane essential[1] must be an object with non-empty strings "file" and "guards"'
+    );
+    expect(errors).toContain('category pane essential[2] needs a non-empty string "guards"');
+    expect(errors).toContain('category team essential[0] needs a non-empty string "file"');
+  });
+
   test("a prefix that matches no test file is an error, even with no essential file listed", () => {
     const data: TierData = {
       heavySeconds: 2,
@@ -252,7 +278,7 @@ describe("validateTiers", () => {
         {
           category: "pane",
           prefix: "src/pane/",
-          essential: [{ file: "src/pane/a.test.ts", guards: "" }],
+          essential: [{ file: "src/pane/a.test.ts", guards: "  " }],
         },
       ],
     } as TierData;

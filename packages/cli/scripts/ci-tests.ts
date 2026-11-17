@@ -187,7 +187,27 @@ function shapeErrors(c: SlowCategory, i: number): string[] {
       errors.push(`slow[${i}] needs a non-empty string "${key}"`);
     }
   }
-  if (!Array.isArray(c?.essential)) errors.push(`slow[${i}] needs an "essential" array`);
+  if (!Array.isArray(c?.essential)) {
+    errors.push(`slow[${i}] needs an "essential" array`);
+    return errors;
+  }
+  const name = typeof c.category === "string" && c.category ? c.category : `slow[${i}]`;
+  c.essential.forEach((entry: unknown, j) => errors.push(...essentialEntryErrors(entry, name, j)));
+  return errors;
+}
+
+function essentialEntryErrors(entry: unknown, category: string, j: number): string[] {
+  const where = `category ${category} essential[${j}]`;
+  if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+    return [`${where} must be an object with non-empty strings "file" and "guards"`];
+  }
+  const errors: string[] = [];
+  for (const key of ["file", "guards"] as const) {
+    const value: unknown = (entry as Record<string, unknown>)[key];
+    if (typeof value !== "string" || value.length === 0) {
+      errors.push(`${where} needs a non-empty string "${key}"`);
+    }
+  }
   return errors;
 }
 
