@@ -151,6 +151,33 @@ jobs:
           name: junit-idle-${{ matrix.slice }}
           path: packages/cli/junit-*.xml
 
+  rest:
+    name: hermetic · rest ${{ matrix.slice }}/4
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        slice: [1, 2, 3, 4]
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      CLAUDISH_SKIP_LIVE_E2E: "1"
+      CLAUDISH_DISABLE_CATALOG_WARM: "1"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.10"
+      - run: bun install --frozen-lockfile
+      - name: Tests
+        working-directory: packages/cli
+        run: bun scripts/ci-tests.ts --run rest@${{ matrix.slice }}/4 --tier ${{ github.event_name == 'workflow_dispatch' && 'full' || 'essential' }} -- --reporter=junit --reporter-outfile=junit-{label}.xml
+        timeout-minutes: 15
+      - uses: actions/upload-artifact@v5
+        if: always()
+        with:
+          name: junit-rest-${{ matrix.slice }}
+          path: packages/cli/junit-*.xml
+
   hermetic:
     name: hermetic · macOS ${{ matrix.runner }}/3
     if: github.event_name == 'workflow_dispatch'

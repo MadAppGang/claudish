@@ -57,7 +57,8 @@ the GitHub Release as a prerelease, which is the only variant.
 
 `release.yml`, triggered by `push` of a tag matching `v*`. It runs **no tests**.
 `test.yml` triggers on `pull_request`, `push` to `main` and `workflow_dispatch`;
-`pull_request` and `push` run only its Linux jobs. The macOS suites (pane and rest,
+`pull_request` and `push` run only its Linux jobs, the essential tier of the `idle` and
+`rest` groups among them. The macOS suites (pane and rest,
 macos-bridge, the blind hook tests, the macOS rows of hooks-loading) run only on a
 dispatch (`gh workflow run Tests --ref <branch>`) and in `bun run test:macos`, which
 must be green on a Mac before the tag (`CLAUDE.md`, Releasing). The blind hook

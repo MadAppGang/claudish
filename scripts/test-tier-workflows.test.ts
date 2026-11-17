@@ -35,6 +35,19 @@ describe("test.yml", () => {
     );
   });
 
+  test("the Linux rest slices run on every pull request: essential tier, full on a dispatch", () => {
+    const block = jobBlock(yml, "rest");
+    expect(block).toContain("runs-on: ubuntu-latest");
+    expect(block).not.toMatch(/^ {4}if:/m);
+    const runs = ciTestsRuns(block);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toContain("--run rest@${{ matrix.slice }}/4");
+    expect(runs[0]).toContain(
+      "--tier ${{ github.event_name == 'workflow_dispatch' && 'full' || 'essential' }}"
+    );
+    expect(bunPinOf(yml, "rest")).toBe(bunPinOf(yml, "idle") as string);
+  });
+
   test("the dispatched macOS hermetic runners run the full tier", () => {
     const block = jobBlock(yml, "hermetic");
     expect(block).toContain("if: github.event_name == 'workflow_dispatch'");
