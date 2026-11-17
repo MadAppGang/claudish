@@ -3,7 +3,7 @@
  * The macOS test gate, run on a Mac before a release tag:
  *
  *   bun run test:macos             # run every step, then print a summary
- *   bun run test:macos --dry-run   # resolve the Buns and magmux, print the steps, run nothing
+ *   bun run test:macos --dry-run   # print what a run would fetch and run; fetch and run nothing
  *
  * It runs what test.yml's dispatched macOS jobs run, which no pull request runs any more:
  *
@@ -16,11 +16,15 @@
  *
  * The Bun versions are READ from test.yml, never copied here: a gate on a different Bun than CI
  * proves something else (pane suites passed on 1.4.0 and failed 118 tests on 1.3.10). Each pinned
- * Bun comes from `bunx bun@<version>` and is first on PATH for its steps.
+ * Bun comes from `bunx bun@<version>` and is first on PATH for its steps. Everything a run
+ * fetches goes into one `mkdtemp` directory of its own, removed when the run exits, so two runs
+ * (a `--dry-run` beside a real run included) never touch each other's files.
  *
  * Every step runs under scripts/guard-real-config.ts, as `test:safe` does (a throwaway HOME, no
  * Keychain, no 1Password), with an environment built by allowlist: no provider key from the
  * developer's shell reaches it, so the credential-gated live tests skip as they do on a runner.
+ * Each step is a process group of its own: SIGINT, SIGTERM or SIGHUP to the gate goes to that
+ * group, and the gate stops once the step has exited.
  *
  * The Mac needs magmux on the lookup path the pane suites use (`findMagmuxCandidates`): without
  * it they skip as "not checked" and the gate would be green on nothing, so this fails instead.
@@ -31,7 +35,7 @@
  * machine is still red: rerun once the Mac is quiet.
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { constants as osConstants, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { findMagmuxCandidates } from "../packages/cli/src/launcher/magmux-binary.ts";
@@ -70,11 +74,78 @@ export function compareVersions(a: string, b: string): number {
   return 0;
 }
 
-interface Step {
+export interface Step {
   name: string;
-  bun: string;
   cwd: string;
   args: string[];
+}
+
+/** One Bun the gate runs steps under: the version asked of bunx, and its executable. */
+export interface PlannedBun {
+  version: string;
+  exe: string;
+}
+
+export interface StepGroup {
+  bun: PlannedBun;
+  steps: Step[];
+}
+
+/**
+ * Every step, grouped by the Bun it runs under. Pure, so `--dry-run` prints the steps a run
+ * runs, with placeholders for the executables it has not fetched.
+ */
+export function planSteps(p: {
+  root: string;
+  hermetic: PlannedBun;
+  blind: PlannedBun;
+  scriptTests: string[];
+}): StepGroup[] {
+  const cli = join(p.root, "packages", "cli");
+  return [
+    {
+      bun: p.hermetic,
+      steps: [
+        {
+          name: `hermetic ${HERMETIC_RUNS}`,
+          cwd: cli,
+          args: [
+            p.hermetic.exe,
+            "scripts/ci-tests.ts",
+            "--run",
+            HERMETIC_RUNS,
+            "--",
+            "--max-concurrency=8",
+          ],
+        },
+        {
+          name: "macos-bridge tests",
+          cwd: p.root,
+          args: [p.hermetic.exe, "run", "--cwd", "packages/macos-bridge", "test"],
+        },
+        {
+          name: "script tests",
+          cwd: p.root,
+          args: [p.hermetic.exe, "test", ...p.scriptTests],
+        },
+      ],
+    },
+    {
+      bun: p.blind,
+      steps: [
+        {
+          name: "blind hook tests",
+          cwd: cli,
+          args: [p.blind.exe, "test", "src/hooks/blind"],
+        },
+        {
+          name: "Antigravity HTTP client tests",
+          cwd: cli,
+          args: [p.blind.exe, "test", "src/providers/transport/antigravity-fetch.test.ts"],
+        },
+      ],
+    },
+  ];
 }
 
 function fail(message: string): never {
@@ -82,9 +153,13 @@ function fail(message: string): never {
   process.exit(1);
 }
 
-/** The executable of `bun@<version>`, fetched by bunx, linked as `bun` into a directory of its own. */
-function pinnedBun(version: string): { exe: string; dir: string } {
+/**
+ * The executable of `bun@<version>`, fetched by bunx, linked as `bun` into `bun-<version>` under
+ * this run's own directory.
+ */
+function pinnedBun(version: string, runDir: string): { exe: string; dir: string } {
   const r = spawnSync("bunx", [`bun@${version}`, "-e", "console.log(process.execPath)"], {
+    cwd: runDir,
     encoding: "utf8",
     env: { ...process.env },
   });
@@ -92,9 +167,8 @@ function pinnedBun(version: string): { exe: string; dir: string } {
   if (r.status !== 0 || !existsSync(exe)) {
     fail(`could not get Bun ${version} with bunx:\n${r.stderr ?? ""}`);
   }
-  const dir = join(tmpdir(), `claudish-test-macos-bun-${version}`);
-  rmSync(dir, { recursive: true, force: true });
-  mkdirSync(dir, { recursive: true });
+  const dir = join(runDir, `bun-${version}`);
+  mkdirSync(dir);
   symlinkSync(exe, join(dir, "bun"));
   return { exe, dir };
 }
@@ -230,113 +304,86 @@ if (import.meta.main) {
   if (!hermeticPin || !blindPin) {
     fail(`no bun-version pin for the hermetic or blind-hooks job in ${WORKFLOW}`);
   }
-
-  const magmux = checkMagmux();
-  const hermeticBun = pinnedBun(hermeticPin);
-  const blindBun = pinnedBun(blindPin);
   const scriptTests = [...new Bun.Glob("scripts/*.test.ts").scanSync({ cwd: ROOT })]
     .sort()
     .map((f) => `./${f}`);
 
-  const groups: { bin: { exe: string; dir: string }; steps: Step[] }[] = [
-    {
-      bin: hermeticBun,
-      steps: [
-        {
-          name: `hermetic ${HERMETIC_RUNS}`,
-          bun: hermeticPin,
-          cwd: CLI,
-          args: [
-            hermeticBun.exe,
-            "scripts/ci-tests.ts",
-            "--run",
-            HERMETIC_RUNS,
-            "--",
-            "--max-concurrency=8",
-          ],
-        },
-        {
-          name: "macos-bridge tests",
-          bun: hermeticPin,
-          cwd: ROOT,
-          args: [hermeticBun.exe, "run", "--cwd", "packages/macos-bridge", "test"],
-        },
-        {
-          name: "script tests",
-          bun: hermeticPin,
-          cwd: ROOT,
-          args: [hermeticBun.exe, "test", ...scriptTests],
-        },
-      ],
-    },
-    {
-      bin: blindBun,
-      steps: [
-        {
-          name: "blind hook tests",
-          bun: blindPin,
-          cwd: CLI,
-          args: [blindBun.exe, "test", "src/hooks/blind"],
-        },
-        {
-          name: "Antigravity HTTP client tests",
-          bun: blindPin,
-          cwd: CLI,
-          args: [blindBun.exe, "test", "src/providers/transport/antigravity-fetch.test.ts"],
-        },
-      ],
-    },
-  ];
-
-  console.log(`[test:macos] magmux: ${magmux}`);
-  console.log(`[test:macos] bun ${hermeticPin}: ${hermeticBun.exe}`);
-  console.log(`[test:macos] bun ${blindPin}: ${blindBun.exe}`);
-
   if (dryRun) {
-    for (const { steps } of groups)
+    // Fetches nothing: the executables are placeholders for what a run would fetch.
+    for (const version of [hermeticPin, blindPin])
+      console.log(`[test:macos] would fetch bun@${version} with bunx into a new temp directory`);
+    console.log("[test:macos] would check magmux on the pane suites' lookup path");
+    const placeholder = (version: string) => ({ version, exe: `<bun@${version}>` });
+    const plan = planSteps({
+      root: ROOT,
+      hermetic: placeholder(hermeticPin),
+      blind: placeholder(blindPin),
+      scriptTests,
+    });
+    for (const { steps } of plan)
       for (const s of steps) console.log(`[test:macos] would run (${s.cwd}): ${s.args.join(" ")}`);
     process.exit(0);
   }
 
+  // Everything this run fetches lives under one directory of its own, removed when it exits.
+  const runDir = mkdtempSync(join(tmpdir(), "claudish-test-macos-"));
+  process.on("exit", () => rmSync(runDir, { recursive: true, force: true }));
+
   // A signal to the gate goes to the running step's process group; the gate waits for that
-  // step to exit (the guard restores what it guards), then stops with no further step.
+  // step to exit (the guard restores what it guards), then stops with no further step. Between
+  // steps it exits at once.
   let interrupted: NodeJS.Signals | null = null;
   let running: RunningStep | null = null;
   for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
     process.on(sig, () => {
       interrupted ??= sig;
-      running?.signal(sig);
+      if (running) running.signal(sig);
+      else process.exit(128 + (osConstants.signals[sig] ?? 0));
     });
   }
-  const binOf = new Map(
-    groups.flatMap(({ bin, steps }) => steps.map((s) => [s, bin.dir] as const))
-  );
-  const results = await runSteps(
-    groups.flatMap((g) => g.steps),
-    async (step) => {
-      console.log(`\n[test:macos] ▶ ${step.name}  (bun ${step.bun}, ${step.cwd})`);
-      const started = performance.now();
-      running = startStep(
-        [process.execPath, join(ROOT, "scripts", "guard-real-config.ts"), "--", ...step.args],
-        { cwd: step.cwd, env: stepEnv(binOf.get(step) ?? "") }
-      );
-      const result = await running.exited;
-      running = null;
-      const secs = ((performance.now() - started) / 1000).toFixed(0);
-      const how = result.signal ? `signal ${result.signal}` : `exit ${result.code}`;
-      console.log(`[test:macos] ◀ ${step.name}: ${how}, ${secs} s`);
-      return interrupted ? { code: result.code, signal: result.signal ?? interrupted } : result;
-    }
-  );
+
+  const magmux = checkMagmux();
+  const hermeticBun = pinnedBun(hermeticPin, runDir);
+  const blindBun = pinnedBun(blindPin, runDir);
+  const groups = planSteps({
+    root: ROOT,
+    hermetic: { version: hermeticPin, exe: hermeticBun.exe },
+    blind: { version: blindPin, exe: blindBun.exe },
+    scriptTests,
+  });
+  const binDirOf = new Map([
+    [hermeticPin, hermeticBun.dir],
+    [blindPin, blindBun.dir],
+  ]);
+
+  console.log(`[test:macos] magmux: ${magmux}`);
+  console.log(`[test:macos] bun ${hermeticPin}: ${hermeticBun.exe}`);
+  console.log(`[test:macos] bun ${blindPin}: ${blindBun.exe}`);
+
+  const steps = groups.flatMap(({ bun, steps }) => steps.map((step) => ({ ...step, bun })));
+  const results = await runSteps(steps, async (step) => {
+    console.log(`\n[test:macos] ▶ ${step.name}  (bun ${step.bun.version}, ${step.cwd})`);
+    const started = performance.now();
+    running = startStep(
+      [process.execPath, join(ROOT, "scripts", "guard-real-config.ts"), "--", ...step.args],
+      { cwd: step.cwd, env: stepEnv(binDirOf.get(step.bun.version) ?? "") }
+    );
+    const result = await running.exited;
+    running = null;
+    const secs = ((performance.now() - started) / 1000).toFixed(0);
+    const how = result.signal ? `signal ${result.signal}` : `exit ${result.code}`;
+    console.log(`[test:macos] ◀ ${step.name}: ${how}, ${secs} s`);
+    return interrupted ? { code: result.code, signal: result.signal ?? interrupted } : result;
+  });
 
   console.log("\n[test:macos] summary");
   for (const r of results) console.log(`  ${r.code === 0 ? "PASS" : "FAIL"}  ${r.name}`);
+  for (const s of steps.slice(results.length)) console.log(`  SKIP  ${s.name}`);
   if (interrupted) {
     console.log(`[test:macos] stopped by ${interrupted}: do not tag.`);
     process.exit(128 + (osConstants.signals[interrupted] ?? 0));
   }
-  const red =
-    results.length < groups.flatMap((g) => g.steps).length || results.some((r) => r.code !== 0);
+  const red = results.length < steps.length || results.some((r) => r.code !== 0);
   if (red)
     console.log("[test:macos] RED: do not tag. Rerun once the Mac is quiet if it was loaded.");
   process.exit(red ? 1 : 0);

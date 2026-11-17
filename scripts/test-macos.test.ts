@@ -106,6 +106,28 @@ describe("signals", () => {
   });
 });
 
+describe("--dry-run", () => {
+  test.skipIf(process.platform !== "darwin")(
+    "prints the plan with no bunx on PATH, so it fetches nothing",
+    () => {
+      const dir = tempDir();
+      try {
+        const r = Bun.spawnSync(
+          [process.execPath, join(import.meta.dir, "test-macos.ts"), "--dry-run"],
+          { cwd: dir, env: { PATH: "/nonexistent", HOME: dir, TMPDIR: dir } }
+        );
+        const out = r.stdout.toString();
+        expect(r.stderr.toString()).toBe("");
+        expect(r.exitCode).toBe(0);
+        expect(out).toContain("would fetch bun@");
+        expect(out).toContain("scripts/ci-tests.ts");
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  );
+});
+
 describe("compareVersions", () => {
   test("orders dotted numbers numerically", () => {
     expect(compareVersions("0.19.0", "0.19.0")).toBe(0);
