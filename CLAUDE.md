@@ -200,12 +200,12 @@ negative case: if you are about to type one of those words, stop and use the lef
 
 - `bun run build` — CLI and macOS bridge bundles. `bun run dev` — development mode.
 - `bun run test` — full suite. `bun run test:safe` — same, guarded against touching the real config.
-- `bun run test:macos` — the macOS gate (`scripts/test-macos.ts`), on the ESSENTIAL tier: pane and
-  rest through `ci-tests.ts --tier essential`, macos-bridge, `scripts/*.test.ts` and
-  `antigravity-fetch.test.ts`, each under the Bun its test.yml job pins, fetched with `bunx`, after
-  `build:cli`. `--full` runs everything test.yml runs on macOS only on manual dispatch: the full
-  tier, plus the blind hook tests and hooks-loading's `src/hooks/s1-probe/` under release.yml's Bun
-  `latest`. The pane suites run against `.github/magmux.env`'s magmux, downloaded with `gh`
+- `bun run test:macos` — the macOS gate (`scripts/test-macos.ts`), on the ESSENTIAL tier: idle,
+  pane and rest through `ci-tests.ts --tier essential` (sliced: idle 3, pane 6, rest 8),
+  macos-bridge, `scripts/*.test.ts` and `antigravity-fetch.test.ts`, each under the Bun its
+  test.yml job pins, fetched with `bunx`, after `build:cli`. `--full` runs everything: the full
+  tier of idle, pane and rest, plus the blind hook tests and hooks-loading's `src/hooks/s1-probe/`
+  under release.yml's Bun `latest`. The pane suites run against `.github/magmux.env`'s magmux, downloaded with `gh`
   (signed in), checked against the pinned sum and version, first on PATH; the Mac's own magmux is
   never used. Needs network. `--dry-run` prints what it would fetch and run, and fetches nothing.
 - Tiers: `packages/cli/scripts/test-tiers.json` lists at most 3 essential files per slow category

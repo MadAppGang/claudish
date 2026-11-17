@@ -44,9 +44,15 @@ tier from it and from `ci-test-times.json`:
   seconds outside the slow categories, among them `recovery/magmux-ui.test.ts` (23.7 s),
   `mcp-shutdown.e2e.test.ts` (15.9 s) and `handlers/stream-head-unreachable.test.ts` (12 s).
 
-Measured on the table of 2026-11-17: the essential tier is 663 files and about 174 measured
-seconds (idle 4 files 66 s, pane 16 files 79 s, rest 643 files 30 s); the full tier is 809 files
-and about 1472 s. 335 essential files have no measurement yet (each weighs 1 s for slicing).
+On the timing table of 2026-11-17 the essential tier is 663 files (idle 4, pane 16, rest 643) and
+the full tier 809. The table times only some of them: 335 essential files have no entry, and the
+planner (`--plan`, `--list` and the slicing of `--run`) weighs each such file 1 s. Its seconds
+are weights that balance slices, not a wall-time estimate: `--list` shows the essential `rest` at
+363 s, 333 of them those 1 s weights.
+
+A local essential run (`bun run test:macos`, 2026-11-17, commit bfb5720f, load about 45 on an
+18-core Mac, before the gate sliced `rest`) measured: the hermetic step 432 s wall; `rest`, 634
+files and 8,707 tests in one process, 432 s; each pane slice 15–76 s; `idle` 66 s.
 
 **Each essential file guards one failure class**, chosen by reading the files, and preferring the
 silent invariants in `CLAUDE.md`. The data file carries a `guards` line for each:
@@ -83,15 +89,18 @@ heavy. Refresh it from a full-tier junit (the weekly runs upload theirs), and re
 |---|---|---|
 | `test.yml` on pull_request and push | essential (Linux idle slices) | the PR checks |
 | `test.yml` on workflow_dispatch | full (idle slices and the macOS runners) | the run |
-| `bun run test:macos` | essential: `ci-tests.ts --tier essential` over every group (idle, pane, rest), macos-bridge, `scripts/*.test.ts`, the Antigravity client tests | its summary |
-| `bun run test:macos --full` | full: `ci-tests.ts --tier full` over every group, and adds the blind hook tests and S1 hook loading | its summary |
-
-Both local gates run the idle group too, although `test.yml` runs it on Linux: without it a weekly
-`src/recovery-contract/` file would run in no gate a release owner starts. Idle is one more
-concurrent process, shorter than `rest` in both tiers (essential 66 s against 363 s, full 324 s
-against 449 s, measured seconds), so it adds no wall time, and each gate covers its whole tier.
+| `bun run test:macos` | essential: `ci-tests.ts --tier essential` over every group (idle, pane, rest), sliced, plus macos-bridge, `scripts/*.test.ts` and the Antigravity client tests | its summary |
+| `bun run test:macos --full` | full: `ci-tests.ts --tier full` over every group, sliced, and adds the blind hook tests and S1 hook loading | its summary |
 | `weekly-tests.yml`, Sunday 11:00 UTC (03:00 PST) | full, every Linux-capable test | GitHub mails the owner on a failed scheduled run; the run opens (or comments on) one issue titled "Weekly full test run failed" with its URL |
 | `scripts/weekly-macos-tests.ts` under launchd, Sunday 03:00 local | `test:macos --full` on origin's main | `~/Library/Logs/claudish-weekly-tests/<UTC date>.log`; a macOS notification names the log on failure |
+
+Both local gates run the idle group too, although `test.yml` runs it on Linux: without it a weekly
+`src/recovery-contract/` file would run in no gate a release owner starts. The gate cuts each
+group into slices, one concurrent `bun test` process each (`GATE_SLICES` in
+`scripts/test-macos.ts`): idle in 3 (test.yml's idle shards), pane in 6 (test.yml's `hermetic`
+runners) and rest in 8, 17 processes on an 18-core Mac. In the local run above, `rest` as one
+process was the whole 432 s of the hermetic step, against at most 76 s for a pane slice; in 8
+slices each is near 54 s. test.yml's macOS runners still run `rest` whole.
 
 The macOS weekly run works in a clone of its own, `~/Library/Caches/claudish-weekly-tests/repo`:
 cloned once, then fetched and hard-reset to `origin/main` inside that clone only, so no checkout
