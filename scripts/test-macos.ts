@@ -51,7 +51,8 @@ export function bunPinOf(workflow: string, job: string): string | undefined {
   const start = lines.findIndex((line) => line === `  ${job}:`);
   if (start === -1) return undefined;
   for (const line of lines.slice(start + 1)) {
-    if (/^ {2}\S/.test(line)) break;
+    // The next key at the jobs' indent ends the job; a comment at that indent does not.
+    if (/^ {2}[^\s#]/.test(line)) break;
     const pin = line.match(/^\s*bun-version:\s*"(\d+\.\d+\.\d+)"\s*$/);
     if (pin) return pin[1];
   }

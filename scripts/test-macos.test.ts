@@ -33,6 +33,22 @@ describe("test:macos reads its Buns from test.yml", () => {
     expect(bunPinOf(yml, "missing")).toBeUndefined();
   });
 
+  test("a two-space comment inside a job does not end the job", () => {
+    const yml = [
+      "jobs:",
+      "  a:",
+      "    runs-on: macos-latest",
+      "  # a comment at the job key's indent",
+      "    steps:",
+      "      - uses: oven-sh/setup-bun@v2",
+      "        with:",
+      '          bun-version: "1.2.3"',
+      "  b:",
+      "    steps: []",
+    ].join("\n");
+    expect(bunPinOf(yml, "a")).toBe("1.2.3");
+  });
+
   test("the hermetic runs are the slices test.yml's hermetic runners run", () => {
     const runs = [...WORKFLOW.matchAll(/^\s+runs: (\S+)$/gm)].map((m) => m[1]).join(",");
     expect(runs).toBe(HERMETIC_RUNS);
