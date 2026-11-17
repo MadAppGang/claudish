@@ -27,6 +27,24 @@
       "guards": "a transient credential or connection failure is classified, never advanced to a metered hop"
     }
   ],
+  "macOnly": [
+    {
+      "file": "src/subscription-probe-command.test.ts",
+      "guards": "reads the shared Antigravity token store, which is macOS-only: on Linux the probe answers credential_missing (exit 3)"
+    },
+    {
+      "file": "src/auth/antigravity-user.account-switch.test.ts",
+      "guards": "reads the shared Antigravity token store, which is macOS-only"
+    },
+    {
+      "file": "src/auth/antigravity-client-version-regression.test.ts",
+      "guards": "reads the shared Antigravity token store, which is macOS-only"
+    },
+    {
+      "file": "src/model-selector-antigravity-order.test.ts",
+      "guards": "production Antigravity discovery reads the shared token store, which is macOS-only"
+    }
+  ],
   "slow": [
     {
       "category": "pane",

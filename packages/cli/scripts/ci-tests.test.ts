@@ -7,6 +7,7 @@ import {
   type TierData,
   discover,
   filesInTier,
+  forPlatform,
   loadTiers,
   slowCategoryOf,
   tierOf,
@@ -76,6 +77,17 @@ describe("tier derivation", () => {
     };
     expect(tierOf("src/guard.test.ts", data, { "src/guard.test.ts": 46 })).toBe("essential");
     expect(tierOf("src/other.test.ts", data, { "src/other.test.ts": 46 })).toBe("weekly");
+  });
+
+  test("a macOnly file is left out on Linux and kept on macOS", () => {
+    const data: TierData = {
+      ...DATA,
+      macOnly: [{ file: "src/agy.test.ts", guards: "the shared token store is macOS-only" }],
+    };
+    const files = ["src/a.test.ts", "src/agy.test.ts"];
+    expect(forPlatform(files, data, "linux")).toEqual(["src/a.test.ts"]);
+    expect(forPlatform(files, data, "darwin")).toEqual(files);
+    expect(forPlatform(files, DATA, "linux")).toEqual(files);
   });
 
   test("the full tier is every file; the essential tier keeps discovery order", () => {
@@ -230,6 +242,36 @@ describe("validateTiers", () => {
     expect(errors).toContain("pinned src/pane/b.test.ts is in slow category pane");
     expect(errors).toContain("pinned src/guard.test.ts is listed twice");
     expect(errors).toContain("pinned src/guard.test.ts has no guards text");
+  });
+
+  test("a macOnly entry that is missing, named twice, malformed or without guards is an error", () => {
+    const files = [...known, "src/agy.test.ts"];
+    const data: TierData = {
+      ...DATA,
+      macOnly: [
+        { file: "src/gone.test.ts", guards: "x" },
+        { file: "src/agy.test.ts", guards: "x" },
+        { file: "src/agy.test.ts", guards: " " },
+      ],
+    };
+    const errors = validateTiers(data, files).join("\n");
+    expect(errors).toContain("macOnly src/gone.test.ts is not a test file");
+    expect(errors).toContain("macOnly src/agy.test.ts is listed twice");
+    expect(errors).toContain("macOnly src/agy.test.ts has no guards text");
+    const bad = { ...DATA, macOnly: "src/agy.test.ts" } as unknown as TierData;
+    expect(validateTiers(bad, files).join("\n")).toContain("macOnly must be an array");
+  });
+
+  test("the four Antigravity token-store test files are macOS-only", () => {
+    const macOnly = (loadTiers().macOnly ?? []).map((e) => e.file);
+    expect(macOnly).toEqual(
+      expect.arrayContaining([
+        "src/subscription-probe-command.test.ts",
+        "src/auth/antigravity-user.account-switch.test.ts",
+        "src/auth/antigravity-client-version-regression.test.ts",
+        "src/model-selector-antigravity-order.test.ts",
+      ])
+    );
   });
 
   test("a valid pinned list passes", () => {

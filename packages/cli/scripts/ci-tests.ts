@@ -106,6 +106,8 @@ export interface TierData {
   slow: SlowCategory[];
   /** Files outside the slow categories that stay essential whatever their measured time. */
   pinned?: TierEntry[];
+  /** Files that test macOS-only code paths: left out when the run is not on macOS. */
+  macOnly?: TierEntry[];
 }
 
 export interface TierEntry {
@@ -162,6 +164,13 @@ export function filesInTier(
   return files.filter((f) => tierOf(f, data, times) === "essential");
 }
 
+/** The files of `files` that run on `platform`: off macOS, the `macOnly` files are left out. */
+export function forPlatform(files: string[], data: TierData, platform: string): string[] {
+  if (platform === "darwin" || !data.macOnly?.length) return files;
+  const mac = new Set(data.macOnly.map((e) => e.file));
+  return files.filter((f) => !mac.has(f));
+}
+
 /** Every reason the data file cannot be used; empty when it can. */
 export function validateTiers(data: TierData, known: string[]): string[] {
   const errors: string[] = [];
@@ -185,6 +194,7 @@ export function validateTiers(data: TierData, known: string[]): string[] {
   if (shape.length > 0) return [...errors, ...shape];
   errors.push(...categorySetErrors(data.slow));
   errors.push(...pinnedErrors(data, exists));
+  errors.push(...macOnlyErrors(data, exists));
   const seen = new Set<string>();
   for (const c of data.slow) {
     // A misspelt prefix takes no file, so the directory it meant stays essential in full.
@@ -234,6 +244,25 @@ function pinnedErrors(data: TierData, exists: Set<string>): string[] {
     if (seen.has(file)) errors.push(`pinned ${file} is listed twice`);
     seen.add(file);
     if (!guards.trim()) errors.push(`pinned ${file} has no guards text`);
+  }
+  return errors;
+}
+
+/** A macOnly file must exist and be listed once, with the reason it cannot run elsewhere. */
+function macOnlyErrors(data: TierData, exists: Set<string>): string[] {
+  if (data.macOnly === undefined) return [];
+  if (!Array.isArray(data.macOnly)) {
+    return [`macOnly must be an array of entries, not ${JSON.stringify(data.macOnly)}`];
+  }
+  const shape = data.macOnly.flatMap((entry: unknown, j) => entryErrors(entry, `macOnly[${j}]`));
+  if (shape.length > 0) return shape;
+  const errors: string[] = [];
+  const seen = new Set<string>();
+  for (const { file, guards } of data.macOnly) {
+    if (!exists.has(file)) errors.push(`macOnly ${file} is not a test file`);
+    if (seen.has(file)) errors.push(`macOnly ${file} is listed twice`);
+    seen.add(file);
+    if (!guards.trim()) errors.push(`macOnly ${file} has no guards text`);
   }
   return errors;
 }
@@ -518,7 +547,12 @@ if (import.meta.main) {
   const [command, value] = own;
   const tiered = () => {
     const data = checkedTiers();
-    return new Map([...all].map(([g, fs]) => [g, filesInTier(fs, tier, data, times)] as const));
+    return new Map(
+      [...all].map(
+        ([g, fs]) =>
+          [g, forPlatform(filesInTier(fs, tier, data, times), data, process.platform)] as const
+      )
+    );
   };
   const weigh = (fs: string[]) => fs.reduce((s, f) => s + (times[f] ?? UNMEASURED_SECONDS), 0);
 
