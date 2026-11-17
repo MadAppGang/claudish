@@ -71,6 +71,37 @@ interface Compaction {
   pre: number;
   post: number;
 }
+/** One history summary: messages 0..last, when it started and became ready. */
+interface Summary {
+  last: number;
+  started: string;
+  ready?: string;
+  used: boolean;
+}
+/** claudish's count for one request: "history count|none|replayed|swapped ... X of W tokens". */
+interface CountAt {
+  ts: string;
+  count: number;
+  window: number;
+}
+
+/**
+ * The count at which a policy swaps, as a share of the window (history.ts
+ * at 640a3aec: threshold 0.6/0.75, early 0.5/0.7). The cost policy swaps
+ * on its projection, not at a count, so it has none.
+ */
+const SWAP_AT: Record<string, number> = { threshold: 0.75, early: 0.7 };
+
+/**
+ * A summary was ready after the request that needed it when claudish sent a
+ * request at or above the policy's swap point between the summary's start
+ * and its ready time (or after its start, if it never became ready).
+ */
+function lateSummaries(summaries: Summary[], counts: CountAt[], swapAt: number): number {
+  return summaries.filter((s) =>
+    counts.some((c) => c.ts >= s.started && (s.ready === undefined || c.ts < s.ready) && c.count >= swapAt * c.window),
+  ).length;
+}
 
 function parseLog(text: string) {
   const reqs: Req[] = [];
@@ -79,6 +110,8 @@ function parseLog(text: string) {
   const swaps: Swap[] = [];
   const hops: Record<string, number> = {};
   const fallbacks: string[] = [];
+  const summaries: Summary[] = [];
+  const counts: CountAt[] = [];
   // Rate limits on an OpenAI-format route: Z.ai's code 1302 bodies, claudish's
   // own retries ("429 rate limited, retry n/m in Xs"), and the final 429
   // statuses, which on an explicit route (no next hop) reach Claude Code.
@@ -187,6 +220,19 @@ function parseLog(text: string) {
     if (!t || !line.includes("[compaction]")) continue;
     const count = line.match(/history count (\d+) of/);
     if (count && last) last.count = Number(count[1]);
+    const anyCount = line.match(/history (?:count|none,|replayed at \d+,|swapped at \d+,) (\d+) of (\d+) tokens/);
+    if (anyCount) counts.push({ ts, count: Number(anyCount[1]), window: Number(anyCount[2]) });
+    const sum = line.match(/history summary (started|ready)\b.*?messages 0\.\.(\d+)/);
+    if (sum && sum[1] === "started") summaries.push({ last: Number(sum[2]), started: ts, used: false });
+    if (sum && sum[1] === "ready") {
+      const s = summaries.find((x) => x.last === Number(sum[2]) && x.ready === undefined);
+      if (s) s.ready = ts;
+    }
+    const replaced = line.match(/history swap in session .*messages 0\.\.(\d+) replaced/);
+    if (replaced) {
+      const s = [...summaries].reverse().find((x) => x.last === Number(replaced[1]));
+      if (s) s.used = true;
+    }
     const h = line.match(/\[compaction\] (history summary of \d+ messages|tool output [^:]*): HTTP 200, (\d+) in \/ (\d+) out tokens/);
     if (h) haiku.push({ ts, purpose: h[1], in: Number(h[2]), out: Number(h[3]) });
     const d = line.match(/\[compaction\] history decision (\S+): (swap|hold)\b(.*)$/);
@@ -199,7 +245,7 @@ function parseLog(text: string) {
       swaps.push({ ts, req: reqs.length - 1, text: line.replace(/^.*\[compaction\] /, "").slice(0, 160) });
     }
   }
-  return { reqs, haiku, decisions, swaps, hops, fallbacks, rate };
+  return { reqs, haiku, decisions, swaps, hops, fallbacks, rate, summaries, counts };
 }
 
 function compactionsOf(report: unknown): Compaction[] {
@@ -262,7 +308,7 @@ for (const arg of process.argv.slice(2)) {
     console.log(`${reportPath}: no result`);
     continue;
   }
-  const { reqs, haiku, decisions, swaps, hops, fallbacks, rate } = parseLog(await Bun.file(logPath).text());
+  const { reqs, haiku, decisions, swaps, hops, fallbacks, rate, summaries, counts } = parseLog(await Bun.file(logPath).text());
   const compactions = compactionsOf(r);
   const unpriced = [...new Set(reqs.filter((q) => !priceOf(q.model)).map((q) => q.model))];
   const noUsage = reqs.filter((q) => q.input === undefined).length;
@@ -294,6 +340,18 @@ for (const arg of process.argv.slice(2)) {
     `swaps=${swaps.length} decisions=${decisions.length} (swap ${decisions.filter((d) => d.action === "swap").length}, hold ${decisions.filter((d) => d.action === "hold").length}) ` +
       `haiku_calls=${haiku.length} ${haiku.reduce((s, h) => s + h.in, 0)} in / ${haiku.reduce((s, h) => s + h.out, 0)} out`,
   );
+  if (summaries.length > 0) {
+    const policy = decisions[0]?.policy ?? variant.replace(/^history-/, "");
+    const swapAt = SWAP_AT[policy];
+    const late =
+      swapAt === undefined
+        ? `n/a (${policy}: no fixed swap point)`
+        : `${lateSummaries(summaries, counts, swapAt)} of ${summaries.length} (swap point ${swapAt})`;
+    console.log(
+      `summaries=${summaries.length} used=${summaries.filter((s) => s.used).length} never_ready=${summaries.filter((s) => !s.ready).length} ` +
+        `ready_after_the_request_that_needed_them=${late}`,
+    );
+  }
   // The launch log sits two folders above the claudish log (<launch>/debug/x.log).
   const launchLog = logPath.split("/").slice(0, -2).concat("launch.log").join("/");
   const launchText = (await Bun.file(launchLog).exists()) ? await Bun.file(launchLog).text() : "";
