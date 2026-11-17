@@ -24,7 +24,10 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
-      - run: bun install
+      # The default install brings only the host's optional native packages
+      # (@opentui/core-linux-*); a darwin build needs the darwin ones too.
+      - run: bun install --os='*' --cpu='*'
+      - run: ls -d node_modules/@opentui/core-* node_modules/.bun/@opentui+core-* 2>/dev/null || true
       - run: bun run build:cli
       - name: Cross-compile
         run: |
