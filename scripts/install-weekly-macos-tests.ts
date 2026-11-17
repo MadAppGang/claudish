@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 /**
- * Installs (or removes) the launchd agent that runs scripts/weekly-macos-tests.ts every Sunday at
- * 03:00 local time:
+ * Installs (or removes) the launchd agent that runs scripts/weekly-macos-tests.ts, one nightly
+ * part of the weekly tier, every day at 03:00 local time:
  *
  *   bun scripts/install-weekly-macos-tests.ts [--home <dir>] [--repo-url <url>]
  *   bun scripts/install-weekly-macos-tests.ts --uninstall [--home <dir>]
@@ -17,11 +17,12 @@
  * scripts/weekly-macos-tests.ts, writes
  * `<home>/Library/LaunchAgents/com.madappgang.claudish.weekly-macos-tests.plist` and loads it
  * into the user's GUI domain (`launchctl bootout`, then `launchctl bootstrap gui/<uid>`). The agent
- * runs the CLONE's copy of the weekly script, which updates the clone first, so each week runs
+ * runs the CLONE's copy of the weekly script, which updates the clone first, so each night runs
  * main's own version of it.
  *
  * A Mac asleep at 03:00 runs the job when it next wakes (launchd's StartCalendarInterval); a
- * Mac that is off skips that week.
+ * Mac that is off skips that night, and its part waits a week unless it is run by hand
+ * (`bun scripts/weekly-macos-tests.ts --part <k>`).
  *
  * Uninstall unloads the agent and removes the plist. The clone and the logs stay: remove
  * `~/Library/Caches/claudish-weekly-tests` and `~/Library/Logs/claudish-weekly-tests` by hand.
@@ -50,7 +51,7 @@ function xmlText(value: string): string {
   return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 }
 
-/** The agent's plist: the clone's weekly script under `bun`, Sunday 03:00 local time. */
+/** The agent's plist: the clone's weekly script under `bun`, every day at 03:00 local time. */
 export function plistXml(p: { home: string; bun: string; path: string }): string {
   const paths = weeklyPaths(p.home);
   const s = (value: string) => `<string>${xmlText(value)}</string>`;
@@ -68,8 +69,6 @@ export function plistXml(p: { home: string; bun: string; path: string }): string
     "  </array>",
     "  <key>StartCalendarInterval</key>",
     "  <dict>",
-    "    <key>Weekday</key>",
-    "    <integer>0</integer>",
     "    <key>Hour</key>",
     "    <integer>3</integer>",
     "    <key>Minute</key>",
@@ -193,7 +192,7 @@ if (import.meta.main) {
       console.error(`[weekly] ${result.error}`);
       process.exit(1);
     }
-    console.log(`[weekly] installed ${result.plist}: Sunday 03:00 local time`);
+    console.log(`[weekly] installed ${result.plist}: every day at 03:00 local time`);
     console.log(`[weekly] logs: ${weeklyPaths(home).logDir}`);
   }
 }

@@ -20,11 +20,17 @@ import { join } from "node:path";
 import { LABEL, install, plistPathFor, plistXml, uninstall } from "./install-weekly-macos-tests.ts";
 import {
   type Command,
+  NIGHTLY_PARTS,
+  type PartResult,
   REPO_URL,
+  checkGate,
   execToLog,
+  failingTests,
   logPathFor,
   notificationArgv,
   parseWeeklyArgs,
+  partOfDate,
+  readPartResults,
   resolveHome,
   runWeekly,
   weeklyCommands,
@@ -50,10 +56,62 @@ describe("weeklyPaths and logPathFor", () => {
     });
   });
 
-  test("the log is named by the UTC date of the run", () => {
+  test("the log is named by the UTC date of the run and its part", () => {
     // 23:30 on the 15th in Los Angeles is the 16th in UTC.
     const now = new Date("2026-11-15T23:30:00-08:00");
-    expect(logPathFor("/logs", now)).toBe("/logs/2026-11-16.log");
+    expect(logPathFor("/logs", now, 4)).toBe("/logs/2026-11-16-part4.log");
+  });
+});
+
+describe("partOfDate", () => {
+  test("seven consecutive UTC days take parts 1 to 7 once each, then repeat", () => {
+    const day = (i: number) => new Date(Date.UTC(2026, 10, 16 + i, 2));
+    const week = Array.from({ length: 7 }, (_, i) => partOfDate(day(i)));
+    expect([...week].sort()).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    expect(partOfDate(day(7))).toBe(week[0] as number);
+    expect(NIGHTLY_PARTS).toBe(7);
+  });
+});
+
+describe("failingTests", () => {
+  test("lists each failing test once, from Bun's (fail) lines", () => {
+    const log = [
+      "(pass) a > b",
+      "(fail) suite > one [1.00ms]",
+      "noise",
+      "(fail) suite > two",
+      "(fail) suite > one [1.00ms]",
+    ].join("\n");
+    expect(failingTests(log)).toEqual(["suite > one", "suite > two"]);
+  });
+});
+
+describe("checkGate", () => {
+  const now = new Date("2026-11-24T12:00:00Z");
+  const green = (part: number, daysAgo: number): PartResult => ({
+    part,
+    n: 7,
+    date: new Date(now.getTime() - daysAgo * 86_400_000).toISOString(),
+    commit: "abc",
+    pass: true,
+    log: `/logs/p${part}.log`,
+  });
+  const all = () => [1, 2, 3, 4, 5, 6, 7].map((p) => green(p, 1));
+
+  test("passes when every part is green within the last 7 days", () => {
+    expect(checkGate(all(), now).ok).toBe(true);
+  });
+
+  test("fails on a missing part, a red part or a green older than 7 days, naming each", () => {
+    const results = all().filter((r) => r.part !== 2);
+    results[0] = { ...green(1, 1), pass: false };
+    results[1] = green(3, 8);
+    const verdict = checkGate(results, now);
+    expect(verdict.ok).toBe(false);
+    const text = verdict.lines.join("\n");
+    expect(text).toMatch(/part 1\/7.*RED/);
+    expect(text).toMatch(/part 2\/7.*no run/);
+    expect(text).toMatch(/part 3\/7.*older than 7 days/);
   });
 });
 
@@ -61,7 +119,13 @@ describe("weeklyCommands", () => {
   const paths = weeklyPaths("/h");
 
   test("a first run clones origin's main into the dedicated directory", () => {
-    const cmds = weeklyCommands({ paths, repoUrl: REPO_URL, cloned: false, bun: "/bin/bun" });
+    const cmds = weeklyCommands({
+      paths,
+      repoUrl: REPO_URL,
+      cloned: false,
+      bun: "/bin/bun",
+      part: 2,
+    });
     expect(cmds[0]).toEqual({
       name: "clone",
       cwd: paths.cacheDir,
@@ -69,14 +133,20 @@ describe("weeklyCommands", () => {
     });
   });
 
-  test("a later run fetches and hard-resets inside the clone only, then runs test:macos --full", () => {
-    const cmds = weeklyCommands({ paths, repoUrl: REPO_URL, cloned: true, bun: "/bin/bun" });
+  test("a later run fetches and hard-resets inside the clone only, then runs its part", () => {
+    const cmds = weeklyCommands({
+      paths,
+      repoUrl: REPO_URL,
+      cloned: true,
+      bun: "/bin/bun",
+      part: 2,
+    });
     expect(cmds.map((c) => c.argv)).toEqual([
       ["git", "fetch", "origin", "main"],
       ["git", "reset", "--hard", "origin/main"],
       ["git", "clean", "-ffd"],
       ["/bin/bun", "--no-env-file", "install", "--frozen-lockfile"],
-      ["/bin/bun", "--no-env-file", "run", "test:macos", "--full"],
+      ["/bin/bun", "--no-env-file", "run", "test:macos", "--part", "2/7"],
     ]);
     for (const c of cmds) expect(c.cwd).toBe(paths.repoDir);
     // git never gets a path that could point it at another checkout
@@ -96,6 +166,9 @@ describe("notificationArgv", () => {
 
 describe("runWeekly", () => {
   const now = new Date("2026-11-22T11:00:00Z");
+  const part = 3;
+  const testStep = "test:macos --part 3/7";
+  const logs = (home: string) => join(home, "Library/Logs/claudish-weekly-tests");
 
   function recorder(failAt?: string) {
     const ran: Command[] = [];
@@ -106,69 +179,99 @@ describe("runWeekly", () => {
       exec: (cmd: Command, logFd: number) => {
         ran.push(cmd);
         writeFileSync(logFd, `output of ${cmd.name}\n`);
+        if (cmd.name === failAt && cmd.name === testStep) {
+          writeFileSync(logFd, "(fail) pane > a slot settles [5000.00ms]\n");
+        }
         return cmd.name === failAt ? 1 : 0;
       },
       notify: (argv: string[]) => {
         notified.push(argv);
       },
+      revParse: () => "0123abc",
     };
   }
+  const run = (home: string, r: ReturnType<typeof recorder>) =>
+    runWeekly({ home, now, repoUrl: REPO_URL, bun: "/bin/bun", part, ...r });
 
-  test("a green run writes the dated log and shows no notification", async () => {
+  test("a green run writes the dated log and a green part result, and no notification", async () => {
     const home = tempHome();
     const r = recorder();
-    const code = await runWeekly({ home, now, repoUrl: REPO_URL, bun: "/bin/bun", ...r });
-    expect(code).toBe(0);
+    expect(await run(home, r)).toBe(0);
     expect(r.ran[0]?.name).toBe("clone");
-    expect(r.ran.at(-1)?.argv).toEqual([
-      "/bin/bun",
-      "--no-env-file",
-      "run",
-      "test:macos",
-      "--full",
-    ]);
+    expect(r.ran.at(-1)?.argv.slice(-3)).toEqual(["test:macos", "--part", "3/7"]);
     expect(r.notified).toEqual([]);
-    const log = readFileSync(
-      join(home, "Library/Logs/claudish-weekly-tests/2026-11-22.log"),
-      "utf8"
-    );
-    expect(log).toContain("output of test:macos --full");
-    expect(log).toContain("PASS");
+    const logPath = join(logs(home), "2026-11-22-part3.log");
+    expect(readFileSync(logPath, "utf8")).toContain(`output of ${testStep}`);
+    const result = JSON.parse(readFileSync(join(logs(home), "part3.json"), "utf8"));
+    expect(result).toEqual({
+      part: 3,
+      n: 7,
+      date: now.toISOString(),
+      commit: "0123abc",
+      pass: true,
+      log: logPath,
+    });
+    expect(readdirSync(logs(home)).filter((f) => f.startsWith("RED-"))).toEqual([]);
   });
 
   test("an existing clone is updated, not cloned again", async () => {
     const home = tempHome();
     mkdirSync(join(weeklyPaths(home).repoDir, ".git"), { recursive: true });
     const r = recorder();
-    await runWeekly({ home, now, repoUrl: REPO_URL, bun: "/bin/bun", ...r });
+    await run(home, r);
     expect(r.ran.map((c) => c.name)).not.toContain("clone");
     expect(r.ran[0]?.argv).toEqual(["git", "fetch", "origin", "main"]);
   });
 
-  test("a red step stops the run, exits 1 and notifies with the log path", async () => {
+  test("a red part writes a RED marker with the failing tests and notifies with its path", async () => {
     const home = tempHome();
-    const r = recorder("test:macos --full");
-    const code = await runWeekly({ home, now, repoUrl: REPO_URL, bun: "/bin/bun", ...r });
-    expect(code).toBe(1);
-    const logPath = join(home, "Library/Logs/claudish-weekly-tests/2026-11-22.log");
+    const r = recorder(testStep);
+    expect(await run(home, r)).toBe(1);
+    const logPath = join(logs(home), "2026-11-22-part3.log");
+    const markerPath = join(logs(home), "RED-2026-11-22-part3.json");
+    expect(JSON.parse(readFileSync(markerPath, "utf8"))).toEqual({
+      date: now.toISOString(),
+      part: "3/7",
+      commit: "0123abc",
+      failing: ["pane > a slot settles"],
+      report: logPath,
+    });
+    expect(JSON.parse(readFileSync(join(logs(home), "part3.json"), "utf8")).pass).toBe(false);
     expect(r.notified).toHaveLength(1);
-    expect(r.notified[0]).toContain(`Weekly claudish tests failed. Log: ${logPath}`);
-    expect(readFileSync(logPath, "utf8")).toContain("FAIL test:macos --full (exit 1)");
+    expect(r.notified[0]).toContain(
+      `Nightly claudish tests part 3/7 failed. Marker: ${markerPath}`
+    );
+    expect(readFileSync(logPath, "utf8")).toContain(`FAIL ${testStep} (exit 1)`);
   });
 
-  test("a failed update runs no test and still notifies", async () => {
+  test("a later green run of the same part keeps an earlier RED marker", async () => {
+    const home = tempHome();
+    await run(home, recorder(testStep));
+    await run(home, recorder());
+    expect(existsSync(join(logs(home), "RED-2026-11-22-part3.json"))).toBe(true);
+    expect(JSON.parse(readFileSync(join(logs(home), "part3.json"), "utf8")).pass).toBe(true);
+  });
+
+  test("a failed update runs no test, writes a red result and still notifies", async () => {
     const home = tempHome();
     const r = recorder("clone");
-    expect(await runWeekly({ home, now, repoUrl: REPO_URL, bun: "/bin/bun", ...r })).toBe(1);
+    expect(await run(home, r)).toBe(1);
     expect(r.ran.map((c) => c.name)).toEqual(["clone"]);
     expect(r.notified).toHaveLength(1);
+    expect(existsSync(join(logs(home), "RED-2026-11-22-part3.json"))).toBe(true);
+  });
+
+  test("readPartResults reads every part<k>.json the runs wrote", async () => {
+    const home = tempHome();
+    await run(home, recorder());
+    expect(readPartResults(logs(home)).map((p) => [p.part, p.pass])).toEqual([[3, true]]);
   });
 });
 
 describe("the launchd agent", () => {
   const xml = plistXml({ home: "/h", bun: "/opt/bun/bin/bun", path: "/opt/bun/bin:/usr/bin:/bin" });
 
-  test("runs the clone's weekly script with the pinned home, Sunday 03:00 local", () => {
+  test("runs the clone's weekly script with the pinned home, every day at 03:00 local", () => {
     expect(xml).toContain(`<key>Label</key>\n  <string>${LABEL}</string>`);
     expect(xml).toContain(
       [
@@ -186,8 +289,6 @@ describe("the launchd agent", () => {
       [
         "<key>StartCalendarInterval</key>",
         "  <dict>",
-        "    <key>Weekday</key>",
-        "    <integer>0</integer>",
         "    <key>Hour</key>",
         "    <integer>3</integer>",
         "    <key>Minute</key>",
@@ -347,6 +448,20 @@ describe("arguments and home", () => {
     });
   });
 
+  test("the nightly run takes --part <k> and --check; the installer takes neither", () => {
+    expect(parseWeeklyArgs(["--part", "5"], { uninstall: false })).toEqual({ part: 5 });
+    expect(parseWeeklyArgs(["--check"], { uninstall: false })).toEqual({ check: true });
+    for (const bad of ["0", "8", "x", "2/7"]) {
+      expect(() => parseWeeklyArgs(["--part", bad], { uninstall: false })).toThrow("--part");
+    }
+    expect(() => parseWeeklyArgs(["--part", "1"], { uninstall: true })).toThrow(
+      "unknown argument --part"
+    );
+    expect(() => parseWeeklyArgs(["--check"], { uninstall: true })).toThrow(
+      "unknown argument --check"
+    );
+  });
+
   test("parseWeeklyArgs refuses an unknown flag, a misspelt --uninstall included", () => {
     expect(() => parseWeeklyArgs(["--uninstal"], { uninstall: true })).toThrow(
       "unknown argument --uninstal"
@@ -413,6 +528,7 @@ describe("arguments and home", () => {
         return 0;
       },
       notify: () => {},
+      revParse: () => "abc",
     });
     expect(seen.length).toBeGreaterThan(0);
     for (const h of seen) expect(h).toBe(home);
@@ -475,6 +591,11 @@ describe("the scripts refuse bad arguments before they act", () => {
       message: "unknown argument --hme",
     },
     { script: "weekly-macos-tests.ts", args: () => ["--home"], message: "--home needs a value" },
+    {
+      script: "weekly-macos-tests.ts",
+      args: (h) => ["--home", h, "--part", "9"],
+      message: "--part",
+    },
     {
       script: "weekly-macos-tests.ts",
       args: () => ["--home", "./rel-home"],
