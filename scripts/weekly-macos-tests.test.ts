@@ -252,6 +252,62 @@ describe("install and uninstall", () => {
     expect(existsSync(plistPathFor(home))).toBe(false);
   });
 
+  test("a run after a refusal updates the existing clone to origin's main, then installs", () => {
+    const home = tempHome();
+    const repo = weeklyPaths(home).repoDir;
+    // origin's main gains the weekly script between the two runs
+    let originHasScript = false;
+    const ran: Command[] = [];
+    const exec = (cmd: Command) => {
+      ran.push(cmd);
+      if (cmd.name === "clone") mkdirSync(join(repo, ".git"), { recursive: true });
+      if ((cmd.name === "clone" || cmd.name === "reset") && originHasScript) {
+        mkdirSync(join(repo, "scripts"), { recursive: true });
+        writeFileSync(join(repo, "scripts", "weekly-macos-tests.ts"), "");
+      }
+      return 0;
+    };
+
+    const first = install({ home, uid: 501, bun: "/bin/bun", repoUrl: REPO_URL, exec });
+    expect(first.ok).toBe(false);
+    expect(ran.map((c) => c.name)).toEqual(["clone"]);
+
+    originHasScript = true;
+    ran.length = 0;
+    const second = install({ home, uid: 501, bun: "/bin/bun", repoUrl: REPO_URL, exec });
+    expect(second).toEqual({ ok: true, plist: plistPathFor(home) });
+    expect(ran.map((c) => c.argv)).toEqual([
+      ["git", "fetch", "origin", "main"],
+      ["git", "reset", "--hard", "origin/main"],
+      ["git", "clean", "-ffd"],
+      ["launchctl", "bootout", `gui/501/${LABEL}`],
+      ["launchctl", "bootstrap", "gui/501", plistPathFor(home)],
+    ]);
+    // the update runs inside the dedicated clone only
+    for (const c of ran.filter((c) => c.argv[0] === "git")) {
+      expect(c.cwd).toBe(repo);
+      expect(c.argv).not.toContain("-C");
+    }
+  });
+
+  test("a failed update of the existing clone refuses and loads nothing", () => {
+    const home = tempHome();
+    const repo = weeklyPaths(home).repoDir;
+    mkdirSync(join(repo, ".git"), { recursive: true });
+    mkdirSync(join(repo, "scripts"), { recursive: true });
+    writeFileSync(join(repo, "scripts", "weekly-macos-tests.ts"), "");
+    const ran: Command[] = [];
+    const exec = (cmd: Command) => {
+      ran.push(cmd);
+      return cmd.name === "fetch" ? 128 : 0;
+    };
+    const result = install({ home, uid: 501, bun: "/bin/bun", repoUrl: REPO_URL, exec });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("fetch");
+    expect(ran.map((c) => c.name)).toEqual(["fetch"]);
+    expect(existsSync(plistPathFor(home))).toBe(false);
+  });
+
   test("uninstall unloads the agent and removes the plist, keeping the clone and the logs", () => {
     const home = tempHome();
     const l = launchctl();

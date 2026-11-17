@@ -7,7 +7,9 @@
  *   bun scripts/install-weekly-macos-tests.ts --uninstall [--home <dir>]
  *
  * Install clones origin's main into the weekly run's own directory when it is not there yet
- * (`<home>/Library/Caches/claudish-weekly-tests/repo`), refuses when that main has no
+ * (`<home>/Library/Caches/claudish-weekly-tests/repo`), or, when it is, fetches, hard-resets and
+ * cleans that clone (and nothing else) to origin's main, as the weekly run does. It refuses
+ * when that main has no
  * scripts/weekly-macos-tests.ts, writes
  * `<home>/Library/LaunchAgents/com.madappgang.claudish.weekly-macos-tests.plist` and loads it
  * into the user's GUI domain (`launchctl bootout`, then `launchctl bootstrap gui/<uid>`). The agent
@@ -24,7 +26,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { type Command, REPO_URL, weeklyCommands, weeklyPaths } from "./weekly-macos-tests.ts";
+import { type Command, REPO_URL, cloneCommands, weeklyPaths } from "./weekly-macos-tests.ts";
 
 export const LABEL = "com.madappgang.claudish.weekly-macos-tests";
 const WEEKLY_SCRIPT = join("scripts", "weekly-macos-tests.ts");
@@ -114,10 +116,15 @@ export function install(p: {
   const paths = weeklyPaths(p.home);
   mkdirSync(paths.cacheDir, { recursive: true });
   mkdirSync(paths.logDir, { recursive: true });
-  if (!existsSync(join(paths.repoDir, ".git"))) {
-    const [clone] = weeklyCommands({ paths, repoUrl: p.repoUrl, cloned: false, bun: p.bun });
-    if (!clone || exec(clone) !== 0) {
-      return { ok: false, error: `could not clone ${p.repoUrl} into ${paths.repoDir}` };
+  // An existing clone is brought to origin's main first: a run refused before the merge left a
+  // clone without the weekly script, and only an update can give it one.
+  const cloned = existsSync(join(paths.repoDir, ".git"));
+  for (const cmd of cloneCommands({ paths, repoUrl: p.repoUrl, cloned })) {
+    if (exec(cmd) !== 0) {
+      return {
+        ok: false,
+        error: `${cmd.name} failed: ${cmd.argv.join(" ")} (in ${cmd.cwd}), so ${paths.repoDir} is not origin's main`,
+      };
     }
   }
   if (!existsSync(join(paths.repoDir, WEEKLY_SCRIPT))) {

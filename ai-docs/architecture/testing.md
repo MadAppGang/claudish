@@ -89,7 +89,8 @@ cloned once, then fetched and hard-reset to `origin/main` inside that clone only
 or worktree is touched. `bun scripts/install-weekly-macos-tests.ts` writes and loads the agent
 (`~/Library/LaunchAgents/com.madappgang.claudish.weekly-macos-tests.plist`), and `--uninstall`
 removes it. The agent runs the clone's copy of the script, so the installer refuses until main
-carries it. A Mac asleep at 03:00 runs the job when it wakes; a Mac that is off skips that week.
+carries it; like the weekly run, it updates an existing clone to `origin/main` first, so an install
+refused before the merge succeeds when run again after it. A Mac asleep at 03:00 runs the job when it wakes; a Mac that is off skips that week.
 
 ## Three shared resources a test must never reach, and why prevention beats restore
 

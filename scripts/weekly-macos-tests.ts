@@ -52,15 +52,17 @@ export interface Command {
   argv: string[];
 }
 
-/** The clone (first run only), its update to origin's main, the install and the full gate. */
-export function weeklyCommands(p: {
+/**
+ * The clone (when there is none yet), or the update of the existing clone to origin's main, every
+ * git command inside the dedicated clone only. The installer runs the same commands.
+ */
+export function cloneCommands(p: {
   paths: WeeklyPaths;
   repoUrl: string;
   cloned: boolean;
-  bun: string;
 }): Command[] {
   const repo = p.paths.repoDir;
-  const update: Command[] = p.cloned
+  return p.cloned
     ? [
         { name: "fetch", cwd: repo, argv: ["git", "fetch", "origin", "main"] },
         { name: "reset", cwd: repo, argv: ["git", "reset", "--hard", "origin/main"] },
@@ -75,8 +77,18 @@ export function weeklyCommands(p: {
           argv: ["git", "clone", "--branch", "main", p.repoUrl, repo],
         },
       ];
+}
+
+/** The clone (first run only), its update to origin's main, the install and the full gate. */
+export function weeklyCommands(p: {
+  paths: WeeklyPaths;
+  repoUrl: string;
+  cloned: boolean;
+  bun: string;
+}): Command[] {
+  const repo = p.paths.repoDir;
   return [
-    ...update,
+    ...cloneCommands(p),
     {
       name: "install",
       cwd: repo,
