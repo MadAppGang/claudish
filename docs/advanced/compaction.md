@@ -102,7 +102,10 @@ claudish keychain set ANTHROPIC_API_KEY
 
 A tool output is a candidate when it is text only, not an error, at least `minTokens` long, not
 the advisor's, not from a tool listed in `skipTools`, not a read of the session's own recovery
-files, and not a Bash command that only prints files. It is decided **once**, the first time it appears, before the model sees it:
+files, and not a Bash command that only prints files. An output that is not a candidate gets one
+debug log line on its first sighting, with the reason:
+`[compaction] session <id>: tool_result <tool_use_id> (<tool>) not compressed: 3120 tokens, below minTokens 4000`.
+A candidate is decided **once**, the first time it appears, before the model sees it:
 
 - **Compressed:** the compression keeps every error line, file path, line number, identifier,
   command and number, and drops repeats, boilerplate and progress lines. The result ends with:

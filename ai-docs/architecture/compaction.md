@@ -127,6 +127,14 @@ one of them is never compressed and never recorded, so it is sent as it is on ev
   output that would have been compressed logs `[compaction] session <sessionId>: file print
   <tool_use_id> not compressed`, and only when the block is in the request's last message. It is
   not configurable.
+- **Every other skip of a fresh block is logged too**, so a session whose outputs never reach
+  Haiku says why: `[compaction] session <sessionId>: tool_result <tool_use_id> (<tool>) not
+  compressed: <reason>`, where the reason is `is_error`, `<tool> is in skipTools`, `content is not
+  text only`, or `<N> tokens, below minTokens <minTokens>` (`candidateVerdict`). Only a block in
+  the request's last message logs, so each output logs once, on its first sighting. The advisor's
+  result logs nothing, and a recovery read keeps its own line. Before this line, a case-b bench
+  trial on `glm@glm-5-turbo` (53 requests) logged only the `[compaction] on` line, and its log
+  could not tell outputs below the minimum from outputs of a skipped tool.
 
 ## History swap shape (`compaction/history.ts`)
 

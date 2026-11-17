@@ -401,14 +401,6 @@ function recoveryFileRead(tool: ToolUse | undefined, folders: string[]): string 
   return undefined;
 }
 
-/** Whether the tool_use's result is never compressed, whatever its size. */
-function isExcludedTool(tool: ToolUse | undefined, scan: BlockScan): boolean {
-  if (tool?.name === ADVISOR_TOOL_NAME) return true;
-  // Before the name list, so a recovery read is logged also when its tool is listed.
-  if (isRecoveryRead(tool, scan)) return true;
-  return tool !== undefined && scan.skipTools.has(tool.name);
-}
-
 /**
  * Whether the tool_use reads one of the session's recovery files. A fresh
  * sighting (the block is in the last message) is logged.
@@ -427,12 +419,43 @@ function isRecoveryRead(tool: ToolUse | undefined, scan: BlockScan): boolean {
  * an error, not an excluded tool, at least `minTokens`, and not a file print.
  */
 function candidateText(block: Block, toolUseId: string, scan: BlockScan): string | undefined {
-  if (block.is_error === true) return undefined;
   const tool = scan.tools.get(toolUseId);
-  if (isExcludedTool(tool, scan)) return undefined;
-  const text = toolResultText(block.content);
-  if (text === undefined || estimateTokens(text) < scan.minTokens) return undefined;
+  const verdict = candidateVerdict(block, tool, scan);
+  if (typeof verdict === "object") {
+    // A fresh sighting only: the same block in later requests is not logged again.
+    if (scan.isLast && verdict.reason) {
+      log(
+        `[compaction] session ${scan.sessionId}: tool_result ${toolUseId} (${tool?.name ?? "unknown tool"}) not compressed: ${verdict.reason}`
+      );
+    }
+    return undefined;
+  }
   if (isFilePrint(tool, toolUseId, scan)) return undefined;
+  return verdict;
+}
+
+/**
+ * The block's text when it passes every size and kind condition, else why not.
+ * An empty reason is a skip already logged elsewhere (a recovery read) or never
+ * worth a line (the advisor's own result).
+ */
+function candidateVerdict(
+  block: Block,
+  tool: ToolUse | undefined,
+  scan: BlockScan
+): string | { reason: string } {
+  if (block.is_error === true) return { reason: "is_error" };
+  // The recovery read before the name list, so it is logged also when its tool is listed.
+  if (tool?.name === ADVISOR_TOOL_NAME || isRecoveryRead(tool, scan)) return { reason: "" };
+  if (tool !== undefined && scan.skipTools.has(tool.name)) {
+    return { reason: `${tool.name} is in skipTools` };
+  }
+  const text = toolResultText(block.content);
+  if (text === undefined) return { reason: "content is not text only" };
+  const tokens = estimateTokens(text);
+  if (tokens < scan.minTokens) {
+    return { reason: `${tokens} tokens, below minTokens ${scan.minTokens}` };
+  }
   return text;
 }
 
