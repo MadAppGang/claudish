@@ -10,16 +10,20 @@ permissions:
   id-token: write  # Required for npm OIDC trusted publishing
 
 jobs:
+  # Every binary is built on Linux: Bun cross-compiles the darwin targets, and test.yml's
+  # darwin-binaries job builds them the same way on every PR. A Linux-built darwin binary is
+  # already ad-hoc signed by Bun (`codesign -dv`: flags=0x20002(adhoc,linker-signed)),
+  # `codesign -v` passes on an arm64 Mac, and both darwin binaries run there.
   build:
     strategy:
       matrix:
         include:
-          - os: macos-latest
+          - os: ubuntu-latest
             target: bun-darwin-arm64
             artifact: claudish-darwin-arm64
             goos: darwin
             goarch: arm64
-          - os: macos-15-intel
+          - os: ubuntu-latest
             target: bun-darwin-x64
             artifact: claudish-darwin-x64
             goos: darwin
@@ -68,7 +72,14 @@ jobs:
           # the PINNED sum, not the release's own checksums.txt: that one moves with the asset
           echo "${WANT}  /tmp/${ASSET}" | shasum -a 256 -c -
           tar xzf "/tmp/${ASSET}" -C /tmp
-          /tmp/magmux --version | grep -q "${MAGMUX_TAG#v}" || { echo "downloaded magmux is not ${MAGMUX_TAG}"; /tmp/magmux --version; exit 1; }
+          # The version check runs the binary, so only where the target is the host (the
+          # linux rows); a darwin magmux cannot run on Linux. The pinned sum above checks
+          # every row.
+          HOST_OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+          HOST_ARCH=$(uname -m); case "$HOST_ARCH" in (arm64|aarch64) HOST_ARCH=arm64;; (x86_64) HOST_ARCH=amd64;; esac
+          if [ "$HOST_OS" = "${{ matrix.goos }}" ] && [ "$HOST_ARCH" = "${{ matrix.goarch }}" ]; then
+            /tmp/magmux --version | grep -q "${MAGMUX_TAG#v}" || { echo "downloaded magmux is not ${MAGMUX_TAG}"; /tmp/magmux --version; exit 1; }
+          fi
           # Rename to Node.js platform-arch convention (amd64 → x64)
           NODE_ARCH="${{ matrix.goarch }}"
           if [ "$NODE_ARCH" = "amd64" ]; then NODE_ARCH="x64"; fi
@@ -79,8 +90,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
+      # Every platform's optional native packages: a plain install on Linux brings only
+      # @opentui/core-linux-*, and a darwin build then fails to resolve
+      # @opentui/core-darwin-<arch>.
       - name: Install dependencies
-        run: bun install
+        run: bun install --os='*' --cpu='*'
 
       - name: Build CLI
         run: bun run build:cli
@@ -93,11 +107,11 @@ jobs:
           # Build from root to preserve workspace resolution
           bun build packages/cli/src/index.ts --compile --no-compile-autoload-dotenv --target=${{ matrix.target }} --outfile ${{ matrix.artifact }}
 
-      - name: Ad-hoc sign binary (macOS Gatekeeper compatibility)
+      # The binary cannot run on this host, so check its Mach-O arch and the embedded OpenTUI
+      # library of its own target. Bun's ad-hoc signature replaces a codesign step.
+      - name: Check the darwin binary
         if: startsWith(matrix.target, 'bun-darwin')
-        continue-on-error: true
-        run: |
-          codesign --force --deep --sign - ${{ matrix.artifact }} && codesign -v ${{ matrix.artifact }} || echo "Warning: codesign failed — Bun binary format may not support ad-hoc signing on this runner. Binary is still functional."
+        run: scripts/check-darwin-binary.sh ${{ matrix.artifact }} ${{ matrix.goarch }}
 
       - name: Upload CLI artifact
         uses: actions/upload-artifact@v5
