@@ -22,13 +22,14 @@ real=$(command -v bun)
 mkdir -p "$shim/bin"
 sed "s|@REAL_BUN@|$real|" "$here/bun-shim.sh" >"$shim/bin/bun"
 chmod +x "$shim/bin/bun"
-cat >"$shim/env.sh" <<EOF
-export PATH="$shim/bin:\$PATH"
-if [ ! -f "$shim/active" ]; then
-  : >"$shim/active"
-  d=\$(cat "$HOME/.bench-compaction/launch-dir" 2>/dev/null) && [ -n "\$d" ] &&
-    echo "bun-shim: active, bun resolves to \$(command -v bun)" >>"\$d/launch.log"
-fi
-EOF
+# printf, not a here-document: the sandbox refuses the temp file a
+# here-document needs ("cannot create temp file for here document").
+printf '%s\n' \
+  "export PATH=\"$shim/bin:\$PATH\"" \
+  "if [ ! -f \"$shim/active\" ]; then" \
+  "  : >\"$shim/active\"" \
+  "  d=\$(cat \"$HOME/.bench-compaction/launch-dir\" 2>/dev/null) && [ -n \"\$d\" ] &&" \
+  "    echo \"bun-shim: active, bun resolves to \$(command -v bun)\" >>\"\$d/launch.log\"" \
+  "fi" >"$shim/env.sh"
 echo "CLAUDE_ENV_FILE=$shim/env.sh" >>"$HOME/.bench-compaction/launch-env"
 echo "prep: long-session-xl: bun shim in $shim/bin (real bun $real), CLAUDE_ENV_FILE=$shim/env.sh"
