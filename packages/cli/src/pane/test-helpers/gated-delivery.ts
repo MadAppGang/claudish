@@ -49,17 +49,22 @@ export function assertOneCopy(r: GateRun, prompt: string): void {
   }
 }
 
-/** Real CPU load in separate threads; every thread is joined, including on assertion failure. */
+/**
+ * Real CPU load in separate threads; every thread is joined, including on assertion failure.
+ * Each worker leaves its loop when the shared stop flag is set and then exits on its own:
+ * Bun 1.3.10's `worker.terminate()` never resolves for a worker spinning in a tight loop.
+ */
 export async function underLoad(work: () => Promise<void>): Promise<void> {
-  const workers: Worker[] = [];
+  const stop = new Int32Array(new SharedArrayBuffer(4));
+  const exited: Promise<unknown>[] = [];
   try {
     const ready: Promise<unknown>[] = [];
     for (let i = 0; i < cpus().length; i++) {
       const worker = new Worker(
-        `const { parentPort } = require('node:worker_threads'); parentPort.postMessage('ready'); let n = 0; while (true) { n = (n + Math.sqrt(n + 1)) % 1000000; }`,
-        { eval: true }
+        `const { parentPort, workerData } = require('node:worker_threads'); const stop = new Int32Array(workerData); parentPort.postMessage('ready'); let n = 0; while (Atomics.load(stop, 0) === 0) { n = (n + Math.sqrt(n + 1)) % 1000000; }`,
+        { eval: true, workerData: stop.buffer }
       );
-      workers.push(worker);
+      exited.push(new Promise((resolve) => worker.once("exit", resolve)));
       ready.push(
         new Promise((resolve, reject) => {
           worker.once("message", resolve);
@@ -70,7 +75,8 @@ export async function underLoad(work: () => Promise<void>): Promise<void> {
     await Promise.all(ready);
     await work();
   } finally {
-    await Promise.all(workers.map((worker) => worker.terminate()));
+    Atomics.store(stop, 0, 1);
+    await Promise.all(exited);
   }
 }
 
