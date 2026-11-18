@@ -11,6 +11,7 @@ import {
   settled,
 } from "./test-helpers/gated-delivery.js";
 import {
+  DISPOSE_GATE_PANES_HOOK_MS,
   clientOf,
   disposeGatePanes,
   gateUntil,
@@ -24,7 +25,7 @@ describe.skipIf(!MAGMUX)(
   `gated retypes at production timings (${MAGMUX ? "real magmux" : NO_MAGMUX_MESSAGE})`,
   () => {
     // One disposal awaits reaped() and then polls up to 8 s for orphans; 5 s is bun's default.
-    afterEach(disposeGatePanes, 30_000);
+    afterEach(disposeGatePanes, DISPOSE_GATE_PANES_HOOK_MS);
 
     test(
       "I17: a real socket drop during SUBMIT leaves magmux delivering, and the own witness accepts once",

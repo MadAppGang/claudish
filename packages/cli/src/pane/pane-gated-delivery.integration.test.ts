@@ -16,6 +16,7 @@ import {
   underLoad,
 } from "./test-helpers/gated-delivery.js";
 import {
+  DISPOSE_GATE_PANES_HOOK_MS,
   clientOf,
   disposeGatePanes,
   gatedSends,
@@ -28,7 +29,7 @@ describe.skipIf(!MAGMUX)(
   `gated delivery at production timings (${MAGMUX ? "real magmux" : NO_MAGMUX_MESSAGE})`,
   () => {
     // One disposal awaits reaped() and then polls up to 8 s for orphans; 5 s is bun's default.
-    afterEach(disposeGatePanes, 30_000);
+    afterEach(disposeGatePanes, DISPOSE_GATE_PANES_HOOK_MS);
 
     test(
       "I1: promptless boot uses the declared gate, without a transcript or a send",

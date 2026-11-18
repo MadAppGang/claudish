@@ -6,6 +6,7 @@ import type { MagmuxReply } from "./magmux-client.js";
 import { PaneSessionImpl, type PaneSessionOptions } from "./pane-session.js";
 import type { ScrollRequest } from "./scroll-input.js";
 import {
+  DISPOSE_GATE_PANES_HOOK_MS,
   type GateRun,
   clientOf,
   disposeGatePanes,
@@ -102,7 +103,7 @@ const restores: Array<() => void> = [];
 afterEach(async () => {
   for (const restore of restores.splice(0).reverse()) restore();
   await disposeGatePanes();
-}, 30_000);
+}, DISPOSE_GATE_PANES_HOOK_MS);
 
 function attachFake(r: GateRun, holdLists = false, original = clientOf(r)) {
   const previous = clientOf(r);

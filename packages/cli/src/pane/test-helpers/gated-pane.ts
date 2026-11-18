@@ -179,6 +179,13 @@ export async function disposeGatePane(r: GateRun): Promise<void> {
   }
 }
 
+/**
+ * The timeout of an `afterEach` that disposes gate panes: the pane's reap, then up to
+ * `WAIT_NO_ORPHANS_MS` of leftover polling. Bun's 5 s hook default ends the hook inside that
+ * wait on a loaded machine, and the disposal then keeps running under the next test.
+ */
+export const DISPOSE_GATE_PANES_HOOK_MS = 30_000;
+
 export async function disposeGatePanes(): Promise<void> {
   // Shared-cwd tests need both children stopped before either environment is removed.
   for (const r of open) r.s.cancel();

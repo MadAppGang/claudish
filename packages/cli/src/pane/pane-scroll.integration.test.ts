@@ -16,6 +16,7 @@ import {
 import { type TempLayout, makeTempLayout, waitFor } from "../test-helpers/contract-records.js";
 import type { CaptureResult, ContractError } from "./contract.js";
 import {
+  DISPOSE_GATE_PANES_HOOK_MS,
   type GateRun,
   clientOf,
   disposeGatePanes,
@@ -606,7 +607,7 @@ describe.skipIf(!MAGMUX_AVAILABLE)("pane scroll through MCP", () => {
 });
 
 describe.skipIf(!MAGMUX_AVAILABLE)("pane scroll lifecycle observations", () => {
-  afterEach(disposeGatePanes, 30_000);
+  afterEach(disposeGatePanes, DISPOSE_GATE_PANES_HOOK_MS);
 
   // REQ: 5 (state gate: settling)
   test(

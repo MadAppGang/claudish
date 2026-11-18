@@ -239,6 +239,9 @@ export function orphanReport(
  */
 export const REAP_DEADLINE_MS = 60_000;
 
+/** How long `waitNoOrphans` waits for nothing of the test to remain by default. */
+export const WAIT_NO_ORPHANS_MS = 8000;
+
 /**
  * Wait up to `ms` for nothing of the test to remain; returns the last report. A process table
  * `ps` could not read inside the wait is read again on the next poll, since `ps` can fail to
@@ -246,7 +249,7 @@ export const REAP_DEADLINE_MS = 60_000;
  */
 export async function waitNoOrphans(
   o: { sockRoot: string; ids?: string[]; pgids?: number[] },
-  ms = 8000
+  ms = WAIT_NO_ORPHANS_MS
 ): Promise<OrphanReport> {
   const end = Date.now() + ms;
   const poll = (): OrphanReport | null => {
