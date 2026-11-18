@@ -69,13 +69,10 @@ describe("killLeftovers", () => {
   test("reads a process table that ps could not read again, and kills the leftover", async () => {
     const sockRoot = emptySockRoot();
     // One process with the sock root in its own arguments, so the kill leaves no untagged child.
-    const leftover = Bun.spawn([
-      process.execPath,
-      "--no-env-file",
-      "-e",
-      "setTimeout(() => {}, 30_000)",
-      sockRoot,
-    ]);
+    const leftover = Bun.spawn(
+      [process.execPath, "--no-env-file", "-e", "setTimeout(() => {}, 30_000)", sockRoot],
+      { env: { PATH: process.env.PATH ?? "/usr/bin:/bin" } }
+    );
     try {
       restore = setPsSpawnForTest(refusedFor(2));
       killLeftovers({ sockRoot });
