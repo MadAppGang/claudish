@@ -79,10 +79,10 @@ const extraProcs: ChildProcess[] = [];
 
 afterAll(async () => {
   for (const p of extraProcs) if (p.exitCode === null && p.signalCode === null) p.kill("SIGKILL");
-  for (const t of envs) {
-    killLeftovers({ sockRoot: t.sockRoot });
-    t.cleanup();
-  }
+  // One process table read for every env: one each made 33 `ps` runs, past the 5 s hook default
+  // on a loaded machine.
+  killLeftovers({ sockRoot: envs.map((t) => t.sockRoot) });
+  for (const t of envs) t.cleanup();
 });
 
 function env(): PaneTestEnv {

@@ -268,12 +268,13 @@ export async function waitNoOrphans(
 const KILL_LEFTOVERS_READS = 5;
 
 /**
- * SIGKILL anything a failed test left behind (by sockRoot / session id needles only). A table
- * `ps` could not read is read again, since `ps` can fail to start for a moment on a loaded
- * machine; one still unavailable after the last read throws.
+ * SIGKILL anything a failed test left behind (by sockRoot / session id needles only). Several
+ * sock roots take one process table read, not one each. A table `ps` could not read is read
+ * again, since `ps` can fail to start for a moment on a loaded machine; one still unavailable
+ * after the last read throws.
  */
-export function killLeftovers(o: { sockRoot: string; ids?: string[] }): void {
-  const needles = [o.sockRoot, ...(o.ids ?? [])];
+export function killLeftovers(o: { sockRoot: string | string[]; ids?: string[] }): void {
+  const needles = [...(Array.isArray(o.sockRoot) ? o.sockRoot : [o.sockRoot]), ...(o.ids ?? [])];
   let table = readProcessTable();
   for (let read = 1; !table && read < KILL_LEFTOVERS_READS; read++) {
     Bun.sleepSync(200);

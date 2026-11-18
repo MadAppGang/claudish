@@ -16,13 +16,23 @@ const REPO_ROOT = join(import.meta.dir, "..");
 
 const ALLOWLIST: AllowlistEntry[] = [];
 
+/**
+ * The repo scan reads every test file. It took 1.8 s on CI and up to 8.7 s on a loaded 18-core
+ * Mac, past Bun's 5 s test default.
+ */
+const SCAN_REPO_TEST_MS = 30_000;
+
 describe("spawn env rule", () => {
-  test("every Bun.spawn / node:child_process spawn in test code passes env", () => {
-    const violations = scanRepo(REPO_ROOT, ALLOWLIST).map(
-      (v) => `${v.file}:${v.line} ${v.callee} (${v.problem}): ${v.text}`
-    );
-    expect(violations).toEqual([]);
-  });
+  test(
+    "every Bun.spawn / node:child_process spawn in test code passes env",
+    () => {
+      const violations = scanRepo(REPO_ROOT, ALLOWLIST).map(
+        (v) => `${v.file}:${v.line} ${v.callee} (${v.problem}): ${v.text}`
+      );
+      expect(violations).toEqual([]);
+    },
+    SCAN_REPO_TEST_MS
+  );
 
   test("the scanner reports a spawn without env, with its file and line", () => {
     const src = [
