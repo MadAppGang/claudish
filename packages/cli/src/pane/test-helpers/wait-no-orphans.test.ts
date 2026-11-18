@@ -1,7 +1,7 @@
 /**
- * `waitNoOrphans` polls the process table, and `ps` can fail to start for a moment on a loaded
- * machine. One failed read inside the wait is retried; an unavailable table at the end of the
- * wait still throws, because reading it as "no process" would pass with every orphan running.
+ * `waitNoOrphans` and `killLeftovers` read the process table, and `ps` can fail to start for a
+ * moment on a loaded machine. A failed read is read again; a table still unavailable at the end
+ * still throws, because reading it as "no process" would pass with every orphan running.
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
@@ -9,7 +9,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type PsSpawn, setPsSpawnForTest } from "../process-identity.js";
-import { SANDBOX_REFUSED_PS, waitNoOrphans } from "./hermetic-env.js";
+import { SANDBOX_REFUSED_PS, killLeftovers, waitNoOrphans } from "./hermetic-env.js";
 
 const dirs: string[] = [];
 let restore: PsSpawn | undefined;
@@ -51,6 +51,38 @@ describe("waitNoOrphans", () => {
     const sockRoot = emptySockRoot();
     restore = setPsSpawnForTest(SANDBOX_REFUSED_PS);
     await expect(waitNoOrphans({ sockRoot }, 500)).rejects.toThrow(
+      "process table unavailable: ps could not run"
+    );
+  });
+});
+
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+describe("killLeftovers", () => {
+  test("reads a process table that ps could not read again, and kills the leftover", async () => {
+    const sockRoot = emptySockRoot();
+    const leftover = Bun.spawn(["/bin/sh", "-c", `sleep 30; : ${sockRoot}`]);
+    try {
+      restore = setPsSpawnForTest(refusedFor(2));
+      killLeftovers({ sockRoot });
+      await leftover.exited;
+      expect(alive(leftover.pid)).toBe(false);
+    } finally {
+      leftover.kill("SIGKILL");
+    }
+  });
+
+  test("still throws when ps can never read the table", () => {
+    const sockRoot = emptySockRoot();
+    restore = setPsSpawnForTest(SANDBOX_REFUSED_PS);
+    expect(() => killLeftovers({ sockRoot })).toThrow(
       "process table unavailable: ps could not run"
     );
   });
