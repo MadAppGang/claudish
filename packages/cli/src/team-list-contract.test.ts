@@ -27,6 +27,7 @@ import {
   startModels,
 } from "./team-orchestrator.js";
 import {
+  FINISH_PANE_TEST_HOOK_MS,
   MAGMUX,
   NO_MAGMUX_MESSAGE,
   type PaneTestEnv,
@@ -59,7 +60,7 @@ afterEach(async () => {
   rmSync(base, { recursive: true, force: true });
   const report = await finishPaneTest(t);
   expect(report).toEqual({ processes: [], files: [] });
-});
+}, FINISH_PANE_TEST_HOOK_MS);
 
 async function start(path: string, models: string[], input: string): Promise<TeamHandle> {
   setupSession(path, models, input);

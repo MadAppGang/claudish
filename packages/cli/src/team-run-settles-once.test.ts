@@ -38,6 +38,7 @@ import { SessionManager } from "./mcp-session/session-manager.js";
 import { waitNoOrphans } from "./pane/test-helpers/hermetic-env.js";
 import { type TeamStatus, setupSession, startModels } from "./team-orchestrator.js";
 import {
+  FINISH_PANE_TEST_HOOK_MS,
   MAGMUX,
   NO_MAGMUX_MESSAGE,
   type PaneTestEnv,
@@ -70,7 +71,7 @@ afterEach(async () => {
   rmSync(tempRoot, { recursive: true, force: true });
   const report = await finishPaneTest(panes);
   expect(report).toEqual({ processes: [], files: [] });
-});
+}, FINISH_PANE_TEST_HOOK_MS);
 
 describe("team run record settles once", () => {
   it.skipIf(!MAGMUX)(

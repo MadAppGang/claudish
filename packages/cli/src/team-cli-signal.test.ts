@@ -12,6 +12,7 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { orphanReport } from "./pane/test-helpers/hermetic-env.js";
 import {
+  FINISH_PANE_TEST_HOOK_MS,
   MAGMUX,
   NO_MAGMUX_MESSAGE,
   type PaneTestEnv,
@@ -33,7 +34,7 @@ beforeEach(() => {
 afterEach(async () => {
   const report = await finishPaneTest(t);
   expect(report).toEqual({ processes: [], files: [] });
-});
+}, FINISH_PANE_TEST_HOOK_MS);
 
 function slotRows(sessionPath: string): Array<{ state: string; error?: { reason?: string } }> {
   try {

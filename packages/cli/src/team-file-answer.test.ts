@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type TeamRunOptions, runModels, setupSession } from "./team-orchestrator.js";
 import {
+  FINISH_PANE_TEST_HOOK_MS,
   MAGMUX,
   NO_MAGMUX_MESSAGE,
   type PaneTestEnv,
@@ -28,7 +29,7 @@ afterEach(async () => {
     for (const dir of outsideDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
     expect(existsSync(worktreeAnswer)).toBe(false);
   }
-});
+}, FINISH_PANE_TEST_HOOK_MS);
 
 describe.skipIf(!MAGMUX)("MTL-229 team file answer", () => {
   async function run(

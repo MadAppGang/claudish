@@ -15,6 +15,7 @@ import {
   teamRunRow,
 } from "./team-orchestrator.js";
 import {
+  FINISH_PANE_TEST_HOOK_MS,
   MAGMUX,
   NO_MAGMUX_MESSAGE,
   type PaneTestEnv,
@@ -38,7 +39,7 @@ afterEach(async () => {
   await shutdownAllTeamRuns();
   const report = await finishPaneTest(t);
   expect(report).toEqual({ processes: [], files: [] });
-});
+}, FINISH_PANE_TEST_HOOK_MS);
 
 describe.skipIf(!MAGMUX)("shutdownAllTeamRuns", () => {
   it(

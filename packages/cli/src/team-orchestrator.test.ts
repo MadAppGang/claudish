@@ -29,6 +29,7 @@ import { basename, join, resolve } from "node:path";
 import { UPSTREAM_ERROR_LOG_ENV } from "./handlers/shared/upstream-error-capture.js";
 import type { ModelStatus, TeamManifest, TeamStatus, VoteResult } from "./team-orchestrator.js";
 import {
+  FINISH_PANE_TEST_HOOK_MS,
   MAGMUX,
   type PaneTestEnv,
   finishPaneTest,
@@ -71,7 +72,7 @@ function usePaneHooks(): void {
   afterEach(async () => {
     const report = await finishPaneTest(t);
     expect(report).toEqual({ processes: [], files: [] });
-  });
+  }, FINISH_PANE_TEST_HOOK_MS);
 }
 
 beforeEach(() => {

@@ -10,6 +10,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { runModels, setupSession } from "./team-orchestrator.js";
 import {
+  FINISH_PANE_TEST_HOOK_MS,
   MAGMUX,
   NO_MAGMUX_MESSAGE,
   type PaneTestEnv,
@@ -30,7 +31,7 @@ beforeEach(() => {
 afterEach(async () => {
   const report = await finishPaneTest(t);
   expect(report).toEqual({ processes: [], files: [] });
-});
+}, FINISH_PANE_TEST_HOOK_MS);
 
 describe.skipIf(!MAGMUX)("team multibyte answer capture", () => {
   it("writes a CJK and emoji answer byte-exact", async () => {

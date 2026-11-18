@@ -26,6 +26,7 @@ import { readTeamStatus, summarise } from "./team-orchestrator.js";
 import { setupTeamSession, startModels } from "./test-helpers/contract-adapters.js";
 import { type TempLayout, makeTempLayout, waitFor } from "./test-helpers/contract-records.js";
 import {
+  FINISH_PANE_TEST_HOOK_MS,
   MAGMUX,
   NO_MAGMUX_MESSAGE,
   type PaneTestEnv,
@@ -57,7 +58,7 @@ afterEach(async () => {
   const report = await finishPaneTest(panes);
   layout.cleanup();
   expect(report).toEqual({ processes: [], files: [] });
-});
+}, FINISH_PANE_TEST_HOOK_MS);
 
 async function settledWithin<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
