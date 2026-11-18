@@ -1,0 +1,50 @@
+description: "history policies on long-session-natural: two swap policies against no compaction, with path-scoped test runs and the bun shim"
+bench: ./madbench.yaml
+
+# Case d without the forced whole-file reads (the long-session-natural
+# Scenario; see its comment in madbench.yaml), under the threshold and cost
+# policies and with no compaction.
+#
+# Every variant sets case_prep: long-session-xl (../tools/cases-prep). It runs
+# long-session's preparation unchanged (a 200,000-token window for Claude Code
+# and claudish), and puts a `bun` shim first on the agent's PATH that refuses a
+# whole-suite `bun test` (bun-shim.sh), the same for every variant. Do not pass
+# --param case_prep: a CLI --param overrides the variant's value, and the run
+# would lose the shim. The results compare only with this file's own baseline:
+# history-policy.experiment.yaml runs long-session with no shim and unscoped
+# test runs.
+#
+# One variant per madbench call, one trial per call:
+#
+#   madbench cases/history-policy-natural.experiment.yaml --variant history-cost \
+#     --scenario long-session-natural \
+#     --param claudish_build=/absolute/path/to/a/compiled/claudish \
+#     --param claudish_config=/absolute/path/to/a/0600/config/with/policy/cost
+#
+# The model is --param model (default claude-sonnet-5-5). The baseline variant
+# takes no claudish_config.
+guard_changes:
+  allow:
+    - harness/binary
+    - sandbox/provision/steps/1
+
+variants:
+  # The build with --debug-claudish and no --compaction. No key file.
+  - name: history-baseline
+    params:
+      binary: ../bin/claudish-build-plain
+      tool: cases-baseline
+      case_prep: long-session-xl
+  # precompute 0.6, apply 0.75.
+  - name: history-threshold
+    params:
+      binary: ../bin/claudish-compaction
+      tool: policy-threshold
+      case_prep: long-session-xl
+  # summary at 0.5; swap when the break-even function says it pays, when the
+  # next request would cross Claude Code's point, or when the cache is cold.
+  - name: history-cost
+    params:
+      binary: ../bin/claudish-compaction
+      tool: policy-cost
+      case_prep: long-session-xl

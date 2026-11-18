@@ -177,11 +177,15 @@ scenarios:
         timeout: "60s"
 
   # Case d without the forced whole-file reads. Everything is as in
-  # long-session except the second follow-up: it asks for the same document
-  # but leaves to the agent what to read, instead of "Read cli.ts and
-  # claude-runner.ts in full, every line". The first and third follow-ups still
-  # FORCE the complete test, typecheck and build output. Run with
-  # --param case_prep=long-session.
+  # long-session except two things. The second follow-up asks for the same
+  # document but leaves to the agent what to read, instead of "Read cli.ts and
+  # claude-runner.ts in full, every line". And items 3 and 4 of the task name
+  # their test runs by path, as long-session-xl does: a bare `bun test` runs
+  # all 659 test files of packages/cli, about 2.5 h in the sandbox. The first
+  # and third follow-ups still FORCE the complete test, typecheck and build
+  # output. Run through ./history-policy-natural.experiment.yaml, whose
+  # variants set case_prep long-session-xl (a 200K window and the bun shim
+  # that refuses a bare `bun test`); do not pass --param case_prep.
   - name: long-session-natural
     description: "the --context-window task, then three turns of full test output and a self-directed trace, in a 200K window"
     repo:
@@ -208,9 +212,9 @@ scenarios:
          - The passthrough walker treats `--context-window 128k` as claudish's own flag with one value, and does not pass it to Claude Code.
          - The flag appears in the `--help` text.
 
-      3. Add tests for what you built, beside the code they cover, and run them with `bun test` from `packages/cli`. Run `bun run typecheck` there too. Fix what fails.
+      3. Add tests for what you built, beside the code they cover, and run them from `packages/cli` with `bun test` followed by the path of each test file you added or changed. Run `bun run typecheck` there too. Fix what fails.
 
-      4. Get the work reviewed. Start one more subagent with the Agent tool and have it review every file you changed against the list in item 2, point by point, and look for a case the tests miss. Wait for its report. Fix each real finding. Then run `bun test` and `bun run typecheck` from `packages/cli` once more.
+      4. Get the work reviewed. Start one more subagent with the Agent tool and have it review every file you changed against the list in item 2, point by point, and look for a case the tests miss. Wait for its report. Fix each real finding. Then, from `packages/cli`, run `bun test` on the same test files by path, and `bun run typecheck`, once more.
 
       Do not change `bun.lock` or any `package.json`. Do not add dependencies. Do not stop to ask me anything: I am away until you finish. End with the test and typecheck results and the list of files you changed.
     follow_ups:
