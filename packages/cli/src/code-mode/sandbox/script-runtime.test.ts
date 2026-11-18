@@ -16,7 +16,7 @@ import {
 const MiB = 1024 * 1024;
 const runtimes: ScriptRuntime[] = [];
 
-async function runtime(limits: Partial<SandboxLimits> = {}, seed = "T3-seed") {
+async function runtime(limits: Partial<SandboxLimits> = {}, seed = "T3-seed", now?: () => number) {
   const module = await loadQuickJSModule();
   if (!module) throw new Error("REQ-12: the real isolated QuickJS module must load");
   const result = createScriptRuntime({
@@ -24,6 +24,7 @@ async function runtime(limits: Partial<SandboxLimits> = {}, seed = "T3-seed") {
     limits,
     seed,
     module,
+    now,
   });
   runtimes.push(result);
   return result;
@@ -291,7 +292,12 @@ describe("T3 runtime resource limits", () => {
   );
 
   test("REQ-9 fails memory runaway without poisoning an innocent subsequent script", async () => {
-    const script = await runtime({ memoryBytes: 8 * MiB });
+    // A loaded machine starves the script: on this clock each reading lands 200 ms after the
+    // last, so the default 2 s budget runs out within a few interrupt checks. Only a test that
+    // keeps the time budget out of the way sees the memory limit decide.
+    let readings = 0;
+    const starved = () => performance.now() + 200 * readings++;
+    const script = await runtime({ memoryBytes: 8 * MiB, cpuMs: 3_600_000 }, "T3-seed", starved);
     const error = failure(
       script.start(`
       const held = [];
