@@ -35,6 +35,7 @@
 // own descendants) directly; `team-orchestrator.ts` does exactly that.
 
 const { execFileSync, execSync, spawn } = require("node:child_process");
+const { homedir } = require("node:os");
 const { resolve } = require("node:path");
 const { NO_ENV_FILE_FLAG, envFileKeys, probeFailedNotice } = require("./env-files.cjs");
 
@@ -43,6 +44,17 @@ const { NO_ENV_FILE_FLAG, envFileKeys, probeFailedNotice } = require("./env-file
  * everything ignored, after its own `.env` load (src/launch-env.ts reads and deletes it).
  */
 const LAUNCHER_DROPPED_VAR = "CLAUDISH_LAUNCHER_DROPPED";
+
+/**
+ * The commands that need no working directory. The whole argument list must be
+ * exactly one of these; any other argument may read or write relative to the
+ * working directory.
+ *
+ * A deleted working directory makes `process.cwd()` throw, and package managers such
+ * as npm cannot run there either, so these start the child in the home directory.
+ * `-v` is not here: it is `--verbose`, not a version flag.
+ */
+const CWD_FREE_COMMANDS = ["update", "--version", "--help", "-h"];
 
 /**
  * The shell command that asks PATH where bun is.
@@ -118,11 +130,15 @@ function bunArgv(entry, argv) {
  * those files set is left out (env-files.cjs asks Bun which). A real value sharing a
  * name with a file's is left out too, the safe direction; the child still reads the
  * provider API keys and model settings in `.env`. When Bun cannot answer, there is no child.
+ * A null `cwd` (the working directory no longer exists) means no file was loaded.
  */
 function childEnv({ isBun, execArgv, bunPath, cwd, env }) {
   const out = { ...env };
   delete out[LAUNCHER_DROPPED_VAR];
-  if (!isBun || execArgv.includes(NO_ENV_FILE_FLAG)) return { env: out, dropped: [] };
+  // A null `cwd` means the working directory is gone, so Bun loaded no env file from it.
+  if (!isBun || execArgv.includes(NO_ENV_FILE_FLAG) || cwd === null) {
+    return { env: out, dropped: [] };
+  }
   const fileKeys = envFileKeys({ bunPath, execArgv, cwd, env });
   if (fileKeys === null) return null;
   const dropped = [];
@@ -136,6 +152,24 @@ function childEnv({ isBun, execArgv, bunPath, cwd, env }) {
 }
 
 function main() {
+  // `spawnCwd` stays undefined while the working directory exists, so the child
+  // inherits it. `cwd` is null when the directory is gone.
+  let cwd;
+  let spawnCwd;
+  try {
+    cwd = process.cwd();
+  } catch {
+    const args = process.argv.slice(2);
+    if (args.length !== 1 || !CWD_FREE_COMMANDS.includes(args[0])) {
+      console.error(
+        "[claudish] the current directory no longer exists (it was deleted or moved). cd to a folder that exists and run claudish again."
+      );
+      process.exit(1);
+    }
+    cwd = null;
+    spawnCwd = homedir();
+  }
+
   const bun = findBun();
   if (!bun) {
     console.error(`claudish requires the Bun runtime but it was not found.
@@ -156,7 +190,7 @@ Learn more: https://bun.sh`);
     isBun: process.versions.bun !== undefined,
     execArgv: process.execArgv,
     bunPath: process.execPath,
-    cwd: process.cwd(),
+    cwd,
     env: process.env,
   });
   if (base === null) {
@@ -168,6 +202,7 @@ Learn more: https://bun.sh`);
   try {
     child = spawn(bun, bunArgv(entry, process.argv.slice(2)), {
       stdio: "inherit",
+      cwd: spawnCwd,
       // The pid pair tells the Bun child who launched it: this launcher, and the
       // launcher's own parent (Claude Code, for an MCP server). The child
       // believes the pair only when CLAUDISH_LAUNCHER_PID is its real parent
