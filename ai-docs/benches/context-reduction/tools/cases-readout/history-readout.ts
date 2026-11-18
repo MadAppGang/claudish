@@ -92,6 +92,8 @@ interface CountAt {
  * on its projection, not at a count, so it has none.
  */
 const SWAP_AT: Record<string, number> = { threshold: 0.75, early: 0.7 };
+/** CLAUDE_CODE_AUTO_COMPACT_WINDOW as cases-prep/long-session.sh sets it. */
+const AUTO_COMPACT_WINDOW = 200_000;
 
 /**
  * A summary was ready after the request that needed it when claudish sent a
@@ -343,6 +345,16 @@ for (const arg of process.argv.slice(2)) {
   }
   console.log(
     `cc_compactions=${compactions.length} ${compactions.map((c) => `[${c.ts} pre=${c.pre} post=${c.post}]`).join(" ")}`,
+  );
+  // The largest request sent upstream against Claude Code's auto-compact
+  // window. preTokens is Claude Code's own estimate before it compacts, so it
+  // can pass the window while no request does; a request above it can still
+  // be answered on a model with a larger real window, so usage is the signal.
+  const inputTotals = reqs.filter((q) => q.input !== undefined).map((q) => q.input! + (q.creation ?? 0) + (q.read ?? 0));
+  const preMax = compactions.reduce((m, c) => Math.max(m, c.pre ?? 0), 0);
+  console.log(
+    `window: max_input=${inputTotals.reduce((m, x) => Math.max(m, x), 0)} ` +
+      `over_${AUTO_COMPACT_WINDOW}=${inputTotals.filter((x) => x > AUTO_COMPACT_WINDOW).length} compact_pre_max=${preMax}`,
   );
   console.log(
     `swaps=${swaps.length} decisions=${decisions.length} (swap ${decisions.filter((d) => d.action === "swap").length}, hold ${decisions.filter((d) => d.action === "hold").length}) ` +
