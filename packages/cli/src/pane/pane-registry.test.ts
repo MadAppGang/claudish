@@ -107,19 +107,22 @@ function alive(pid: number): boolean {
  * CI pin) removes the file, and the dial answers ENOENT. (A plain file there answers
  * ENOTSOCK, which is not proof of a stale socket.)
  */
-async function staleSocket(path: string): Promise<void> {
+async function staleSocket(path: string | string[]): Promise<void> {
+  const paths = Array.isArray(path) ? path : [path];
+  // one child binds every path: a child per socket costs a Bun start each
   const child = Bun.spawn(
     [
       process.execPath,
       "-e",
-      `require("node:net").createServer().listen(${JSON.stringify(path)}, () => console.log("up"));`,
+      `const net = require("node:net"); const paths = ${JSON.stringify(paths)}; let n = 0;
+       for (const p of paths) net.createServer().listen(p, () => { if (++n === paths.length) console.log("up"); });`,
     ],
     { env: { ...process.env }, stdout: "pipe", stderr: "inherit" }
   );
-  await child.stdout.getReader().read(); // "up": bound and listening
+  await child.stdout.getReader().read(); // "up": every path bound and listening
   child.kill("SIGKILL");
   await child.exited;
-  expect(lstatSync(path).isSocket()).toBe(true);
+  for (const p of paths) expect(lstatSync(p).isSocket()).toBe(true);
 }
 
 function deadPid(): number {
@@ -795,7 +798,8 @@ describe("with the process table unavailable (a sandbox refuses ps): owners judg
   async function ownerPane(
     t: PaneTestEnv,
     label: string,
-    owner: "live" | "dead"
+    owner: "live" | "dead",
+    socket = true
   ): Promise<PaneRecord> {
     const root = ensureSockRoot(t.sockRoot);
     const ownerPid = owner === "live" ? process.pid : deadPid();
@@ -817,7 +821,7 @@ describe("with the process table unavailable (a sandbox refuses ps): owners judg
       turnDir: turn,
       createdAt: new Date().toISOString(),
     };
-    await staleSocket(rec.sockPath);
+    if (socket) await staleSocket(rec.sockPath);
     writeRecord(root, rec);
     return rec;
   }
@@ -864,8 +868,10 @@ describe("with the process table unavailable (a sandbox refuses ps): owners judg
 
   test("dead owners never fill the pane limit", async () => {
     const t = env();
+    const recs: PaneRecord[] = [];
     for (let i = 0; i < MAX_LIVE_PANES; i++)
-      await ownerPane(t, i.toString(36).padStart(2, "0"), "dead");
+      recs.push(await ownerPane(t, i.toString(36).padStart(2, "0"), "dead", false));
+    await staleSocket(recs.map((r) => r.sockPath));
     // 48 records of dead owners: a start must still be admitted, not refused as pane_limit
     await withProcessTableUnavailable(() => reservePanes(1, t.sockRoot));
     releasePaneReservations(1);

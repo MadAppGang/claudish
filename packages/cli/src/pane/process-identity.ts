@@ -591,6 +591,11 @@ set -f
 export LC_ALL=C
 PANE=$1 UUID=$2 CTL=$3 SOCKP=$4 REC=$5 TURN=$6 ROOT=$7 PROJ=$8 FORK=$9 FORKDIR=\${10}
 pstable() { ps -ax -ww -o pid=,pgid=,lstart=,command=; }
+# one table read per check: every predicate below reads the snapshot, never ps -ax itself.
+# A failed read returns 1 and leaves the snapshot empty, which no caller may read as "gone".
+T=""
+snap() { T=$(pstable) || { T=""; return 1; }; }
+table() { printf '%s\\n' "$T"; }
 ps_ok() { ps -o pid= -p $$ >/dev/null 2>&1; }
 mag=""
 mag_ok() {
@@ -600,16 +605,16 @@ mag_ok() {
 find_mag() {
   if [ -f "$CTL/magmux.pid" ]; then mag=$(head -n 1 "$CTL/magmux.pid"); fi
   mag_ok && return 0
-  mag=$(pstable | N="--id $PANE --sock-dir" awk 'index($0, ENVIRON["N"]) { print $1; exit }')
+  mag=$(table | N="--id $PANE --sock-dir" awk 'index($0, ENVIRON["N"]) { print $1; exit }')
   mag_ok
 }
 pg=""
 ident_in_pg() {
-  pstable | P="$pg" A="--session-id $UUID" B="$CTL/pane-launch.sh" awk '$2 == ENVIRON["P"] && (index($0, ENVIRON["A"]) || index($0, ENVIRON["B"])) { f = 1 } END { exit !f }'
+  table | P="$pg" A="--session-id $UUID" B="$CTL/pane-launch.sh" awk '$2 == ENVIRON["P"] && (index($0, ENVIRON["A"]) || index($0, ENVIRON["B"])) { f = 1 } END { exit !f }'
 }
 member_in_pg() {
   [ -f "$CTL/group" ] || return 1
-  pstable | P="$pg" G="$CTL/group" awk 'BEGIN { g = ENVIRON["G"]; while ((getline l < g) > 0) { if (++n == 1) continue; if (l == "--") break; k[l] = 1 } } $2 == ENVIRON["P"] && (($1 " " $3 " " $4 " " $5 " " $6 " " $7) in k) { f = 1 } END { exit !f }'
+  table | P="$pg" G="$CTL/group" awk 'BEGIN { g = ENVIRON["G"]; while ((getline l < g) > 0) { if (++n == 1) continue; if (l == "--") break; k[l] = 1 } } $2 == ENVIRON["P"] && (($1 " " $3 " " $4 " " $5 " " $6 " " $7) in k) { f = 1 } END { exit !f }'
 }
 group_ok() {
   case "$pg" in (''|*[!0-9]*|0|1) return 1;; esac
@@ -627,10 +632,12 @@ find_pg() {
 }
 escaped_live() {
   [ -f "$CTL/group" ] || return 0
-  pstable | G="$CTL/group" awk 'BEGIN { g = ENVIRON["G"]; while ((getline l < g) > 0) { if (l == "--") f = 1; else if (f) k[l] = 1 } } { if (($1 " " $3 " " $4 " " $5 " " $6 " " $7) in k) print $1 }'
+  table | G="$CTL/group" awk 'BEGIN { g = ENVIRON["G"]; while ((getline l < g) > 0) { if (l == "--") f = 1; else if (f) k[l] = 1 } } { if (($1 " " $3 " " $4 " " $5 " " $6 " " $7) in k) print $1 }'
 }
-alive() { group_ok || mag_ok || [ -n "$(escaped_live)" ]; }
-settle_wait() { i=0; while [ "$i" -lt "$1" ] && alive; do sleep 0.2; i=$((i + 1)); done; }
+# an unreadable table proves nothing, so the pane counts as alive
+alive() { snap || return 0; group_ok || mag_ok || [ -n "$(escaped_live)" ]; }
+# 0 while still alive after $1 checks, 1 once a check finds everything gone
+settle_wait() { i=0; while [ "$i" -lt "$1" ]; do alive || return 1; sleep 0.2; i=$((i + 1)); done; ! alive || return 0; return 1; }
 launch_dir_ok() {
   case "$1" in ("$ROOT"/launch-??????) ;; (*) return 1;; esac
   b=\${1#"$ROOT"/launch-}
@@ -657,16 +664,22 @@ while IFS= read -r l; do [ "$l" = done ] && exit 0; done
 # No readable table (a sandbox refuses the setuid ps): nothing can be verified, so nothing
 # is signalled or removed; the files stay for a sweep that can read the table.
 ps_ok || exit 1
+snap || exit 1
 find_mag
 find_pg
+gone=""
 for s in TERM KILL; do
-  alive || break
+  # a fresh table after find_pg, so a pane child it just found is seen; an unreadable table
+  # verifies nothing: no signal, and the files stay for a sweep
+  snap || break
+  group_ok || mag_ok || [ -n "$(escaped_live)" ] || { gone=1; break; }
   group_ok && kill -"$s" -"$pg" 2>/dev/null
   for e in $(escaped_live); do kill -"$s" "$e" 2>/dev/null; done
   mag_ok && kill -"$s" "$mag" 2>/dev/null
-  if [ "$s" = TERM ]; then settle_wait 10; else settle_wait 5; fi
+  if [ "$s" = TERM ]; then n=10; else n=5; fi
+  settle_wait "$n" || { gone=1; break; }
 done
-alive && exit 1
+[ -n "$gone" ] || exit 1
 # a replay's fork record, before the record that names it: a watcher killed here leaves both for the sweep
 if fork_ok; then
   rm -f -- "$FORK"
