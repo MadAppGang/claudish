@@ -32,6 +32,16 @@ export const PANE_FAKE_CHILD = join(SRC_DIR, "pane", "test-helpers", "fake-inter
 export const CLAUDE_CODE_TOOL_USE_META_KEY = "claudecode/toolUseId";
 export const FAKE_MODEL = "contract-fake-model";
 
+/** How long `McpServer.request` waits for a reply by default, `initialize` in `start` included. */
+export const MCP_REQUEST_MS = 20_000;
+
+/**
+ * The timeout of a hook that calls `McpServer.start`: its whole `initialize` wait plus room for
+ * the rest of the hook. Bun's 5 s hook default ends the hook inside that wait on a loaded
+ * machine, where the server's start alone can take longer than 5 s.
+ */
+export const MCP_START_HOOK_MS = MCP_REQUEST_MS + 10_000;
+
 /** Suites that start panes skip with this message when magmux is absent (testing.md). */
 export const MAGMUX_AVAILABLE = findMagmuxBinaryOrNull() !== null;
 export const NO_MAGMUX_MESSAGE = "magmux not installed — not checked";
@@ -220,7 +230,11 @@ export class McpServer {
     this.write({ jsonrpc: "2.0", method, params });
   }
 
-  request(method: string, params: unknown, timeoutMs = 20_000): Promise<Record<string, unknown>> {
+  request(
+    method: string,
+    params: unknown,
+    timeoutMs = MCP_REQUEST_MS
+  ): Promise<Record<string, unknown>> {
     if (this.exited)
       return Promise.reject(
         new Error(`MCP server already exited; stderr:\n${this.stderrText.slice(-3000)}`)

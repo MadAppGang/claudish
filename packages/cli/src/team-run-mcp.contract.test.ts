@@ -18,6 +18,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   MAGMUX_AVAILABLE,
+  MCP_START_HOOK_MS,
   McpServer,
   NO_MAGMUX_MESSAGE,
   findField,
@@ -53,7 +54,7 @@ beforeEach(async () => {
     env: serverEnv(layout),
     cwd: layout.cwd,
   });
-});
+}, MCP_START_HOOK_MS);
 afterEach(async () => {
   await server.close();
   const report = await paneOrphans(layout);

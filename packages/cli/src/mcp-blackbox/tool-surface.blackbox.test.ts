@@ -13,6 +13,7 @@ import { version as packageVersion } from "../../package.json";
 import { allowanceStatusAnswerSchema } from "../auth/accounts/allowance-report-schema.js";
 import { useBlackboxEnv } from "../test-helpers/blackbox-env.js";
 import {
+  MCP_START_HOOK_MS,
   McpServer,
   SERVER_ENTRY,
   type ToolResult,
@@ -95,7 +96,7 @@ function useStandardServer(): void {
   beforeEach(async () => {
     layout = makeTempLayout("bbsurface");
     server = await McpServer.start({ env: serverEnv(layout), cwd: layout.cwd });
-  });
+  }, MCP_START_HOOK_MS);
 
   afterEach(async () => {
     await server.close();

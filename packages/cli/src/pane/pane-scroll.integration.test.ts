@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { useBlackboxEnv } from "../test-helpers/blackbox-env.js";
 import {
   MAGMUX_AVAILABLE,
+  MCP_START_HOOK_MS,
   McpServer,
   NO_MAGMUX_MESSAGE,
   type ToolResult,
@@ -62,7 +63,7 @@ describe.skipIf(!MAGMUX_AVAILABLE)("pane scroll through MCP", () => {
       }),
       cwd: layout.cwd,
     });
-  });
+  }, MCP_START_HOOK_MS);
   afterEach(async () => {
     try {
       await server?.close();

@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { CAPABILITIES, CONTRACT_VERSION, type ContractError } from "../pane/contract.js";
 import { useBlackboxEnv } from "../test-helpers/blackbox-env.js";
 import {
+  MCP_START_HOOK_MS,
   McpServer,
   type ToolResult,
   paneOrphans,
@@ -18,7 +19,7 @@ let server: McpServer | undefined;
 beforeEach(async () => {
   layout = makeTempLayout("bbscroll");
   server = await McpServer.start({ env: serverEnv(layout), cwd: layout.cwd });
-});
+}, MCP_START_HOOK_MS);
 afterEach(async () => {
   try {
     await server?.close();

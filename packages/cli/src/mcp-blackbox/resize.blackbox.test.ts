@@ -2,7 +2,12 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import type { ContractError } from "../pane/contract.js";
 import { useBlackboxEnv } from "../test-helpers/blackbox-env.js";
-import { McpServer, paneOrphans, serverEnv } from "../test-helpers/contract-mcp.js";
+import {
+  MCP_START_HOOK_MS,
+  McpServer,
+  paneOrphans,
+  serverEnv,
+} from "../test-helpers/contract-mcp.js";
 import { type TempLayout, makeTempLayout } from "../test-helpers/contract-records.js";
 
 useBlackboxEnv();
@@ -13,7 +18,7 @@ let server: McpServer;
 beforeEach(async () => {
   layout = makeTempLayout("bbresize");
   server = await McpServer.start({ env: serverEnv(layout), cwd: layout.cwd });
-});
+}, MCP_START_HOOK_MS);
 
 afterEach(async () => {
   await server.close();

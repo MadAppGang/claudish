@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { lstatSync, mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import {
+  MCP_START_HOOK_MS,
   McpServer,
   type ToolResult,
   paneOrphans,
@@ -123,7 +124,7 @@ describe.skipIf(!RESIZE_AVAILABLE)("pane resize through MCP (requires magmux res
       env: serverEnv(layout, { CONTRACT_FAKE_MAX_MS: "120000" }),
       cwd: layout.cwd,
     });
-  });
+  }, MCP_START_HOOK_MS);
   afterEach(async () => {
     try {
       await server?.close();

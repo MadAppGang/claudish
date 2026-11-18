@@ -6,27 +6,8 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { hooksCalling, hooksWithout } from "./hook-calls.js";
 import { FINISH_PANE_TEST_HOOK_MS, FINISH_PANE_TEST_MS } from "./team-pane.js";
-
-const SRC = join(import.meta.dir, "..");
-
-/** Each `afterEach(...)` call in `source`, from its name to its closing parenthesis. */
-function afterEachCalls(source: string): string[] {
-  const calls: string[] = [];
-  for (let at = source.indexOf("afterEach("); at >= 0; at = source.indexOf("afterEach(", at + 1)) {
-    let depth = 0;
-    for (let i = at + "afterEach".length; i < source.length; i++) {
-      if (source[i] === "(") depth++;
-      else if (source[i] === ")" && --depth === 0) {
-        calls.push(source.slice(at, i + 1));
-        break;
-      }
-    }
-  }
-  return calls;
-}
 
 describe("finishPaneTest hooks", () => {
   test("the hook timeout leaves room for the whole leftover wait", () => {
@@ -34,16 +15,8 @@ describe("finishPaneTest hooks", () => {
   });
 
   test("every afterEach that awaits finishPaneTest passes FINISH_PANE_TEST_HOOK_MS", () => {
-    const files = [...new Bun.Glob("**/*.test.ts").scanSync(SRC)];
-    const hooks = files.flatMap((file) =>
-      afterEachCalls(readFileSync(join(SRC, file), "utf8"))
-        .filter((call) => call.includes("finishPaneTest("))
-        .map((call) => ({ file, call }))
-    );
+    const hooks = hooksCalling(["afterEach"], "finishPaneTest(");
     expect(hooks.length).toBeGreaterThanOrEqual(14);
-    const missing = hooks
-      .filter(({ call }) => !/,\s*FINISH_PANE_TEST_HOOK_MS\s*\)$/.test(call))
-      .map(({ file }) => file);
-    expect(missing).toEqual([]);
+    expect(hooksWithout(hooks, "FINISH_PANE_TEST_HOOK_MS")).toEqual([]);
   });
 });

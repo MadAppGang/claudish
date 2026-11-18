@@ -4,7 +4,12 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { allowanceReportSchema } from "./auth/accounts/allowance-report-schema.js";
 import { buildResponseRow } from "./auth/accounts/ledger/ledger-row.js";
-import { McpServer, type ToolResult, serverEnv } from "./test-helpers/contract-mcp.js";
+import {
+  MCP_START_HOOK_MS,
+  McpServer,
+  type ToolResult,
+  serverEnv,
+} from "./test-helpers/contract-mcp.js";
 import { type TempLayout, makeTempLayout } from "./test-helpers/contract-records.js";
 
 const H = 3_600_000;
@@ -146,7 +151,7 @@ beforeEach(async () => {
     cwd: layout.cwd,
     command: [process.execPath, "--no-env-file", "-e", source],
   });
-}, 30000);
+}, MCP_START_HOOK_MS);
 afterEach(async () => {
   try {
     await server?.close();

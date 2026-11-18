@@ -16,6 +16,7 @@ import { join } from "node:path";
 import { CAPABILITIES, SLOT_STATES } from "./pane/contract.js";
 import {
   MAGMUX_AVAILABLE,
+  MCP_START_HOOK_MS,
   McpServer,
   NO_MAGMUX_MESSAGE,
   type ToolResult,
@@ -88,7 +89,7 @@ beforeEach(async () => {
     env: serverEnv(layout, { CONTRACT_FAKE_MAX_MS: "60000" }),
     cwd: layout.cwd,
   });
-});
+}, MCP_START_HOOK_MS);
 afterEach(async () => {
   await server.close();
   const report = await paneOrphans(layout);

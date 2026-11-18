@@ -20,6 +20,7 @@ import { join } from "node:path";
 import { waitNoOrphans } from "./pane/test-helpers/hermetic-env.js";
 import {
   MAGMUX_AVAILABLE,
+  MCP_START_HOOK_MS,
   McpServer,
   NO_MAGMUX_MESSAGE,
   findField,
@@ -52,7 +53,7 @@ beforeEach(async () => {
     env: serverEnv(layout, { CONTRACT_FAKE_MAX_MS: "60000" }),
     cwd: layout.cwd,
   });
-});
+}, MCP_START_HOOK_MS);
 afterEach(async () => {
   await server.close(2_000);
   const report = await paneOrphans(layout, 12_000);
