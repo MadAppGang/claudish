@@ -2,6 +2,71 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.28.2] - 2026-11-18
+
+### Bug Fixes
+
+- stop underLoad's busy workers with a shared flag on Bun 1.3.10 *(pane)* ([`d9399bb`](https://github.com/MadAppGang/claudish/commit/d9399bb58b30834f83c188449bcf0a227bd1e5e7))
+- run update and --version from a deleted working directory *(launcher)* ([`867d9c6`](https://github.com/MadAppGang/claudish/commit/867d9c6713c774d4f57737929db2c0f831ff6dd0))
+- mark a nightly part red before its commands run *(release)* ([`b38c54b`](https://github.com/MadAppGang/claudish/commit/b38c54bfe5eb6fa3eaea9f67e3d00fa1b12b9e3c))
+- keep each red nightly run's RED marker on the same day *(release)* ([`88f86bc`](https://github.com/MadAppGang/claudish/commit/88f86bcbb96a6d09eda7e6ee3fd95ae2171f7a6c))
+- record a red nightly run when clone preparation throws *(release)* ([`8df1756`](https://github.com/MadAppGang/claudish/commit/8df1756c555265c6aaba1811ee92c71863053093))
+- run the full tier of the Linux rest slices in weekly-tests.yml *(ci)* ([`7eff75b`](https://github.com/MadAppGang/claudish/commit/7eff75ba18b42d62da84945c0ac8db61446e5989))
+- pick the nightly part by its oldest result, not UTC date *(release)* ([`ae6e44c`](https://github.com/MadAppGang/claudish/commit/ae6e44c74e7b285ad2f2034bd5ee7a01b318805b))
+- count a crashed nightly step as red and reject bad results *(release)* ([`74de6b2`](https://github.com/MadAppGang/claudish/commit/74de6b2be57dc69bb4cf74edb7619d3404617cce))
+- reject a non-object tiers file and infinite heavySeconds *(ci-tests)* ([`e817c6b`](https://github.com/MadAppGang/claudish/commit/e817c6b465ba94f734d1df423007a6758767529e))
+- reject non-object essential entries in validateTiers *(ci-tests)* ([`55be840`](https://github.com/MadAppGang/claudish/commit/55be84050d9ae701227c1346e844dc781d06f884))
+- scale test:macos per-slice concurrency to the core count *(release)* ([`8853aab`](https://github.com/MadAppGang/claudish/commit/8853aab1b003a1c9ecf7ee94caea89dcd0a3cc44))
+- reject test-tiers.json with no slow list or an unmatched prefix *(ci)* ([`6419a0d`](https://github.com/MadAppGang/claudish/commit/6419a0d58f23d404d9b534f165c7ea4ea334cf4d))
+- refuse unknown flags and a relative home in weekly scripts *(release)* ([`6d080fb`](https://github.com/MadAppGang/claudish/commit/6d080fbfa2013e29ed006081a7abcc59210acb38))
+- reject a test-tiers.json category or prefix named twice *(ci)* ([`4b2a7a3`](https://github.com/MadAppGang/claudish/commit/4b2a7a3696973e56c2b6c16d4ec4fb3b9d9c88dc))
+- run the idle group in both test:macos tiers *(release)* ([`6be25ef`](https://github.com/MadAppGang/claudish/commit/6be25efdef42ecdc2b61d4bdc01c15df12e9a25b))
+- update the existing weekly clone before install checks it *(release)* ([`1b24f0d`](https://github.com/MadAppGang/claudish/commit/1b24f0d1657f19730e8fb418a3a0cdc84b3cf940))
+- drop only the borrowed field a 400 names by its own name *(adapters)* ([`ced4436`](https://github.com/MadAppGang/claudish/commit/ced4436e22a2b319ef727de89c0f8245068ea246))
+- request Gemini thought summaries on g@ *(adapters)* ([`a8df1ea`](https://github.com/MadAppGang/claudish/commit/a8df1ea2d0c5137805b50d5088a1f404e31d6056))
+- count Gemini thought tokens as output tokens *(adapters)* ([`9c37dac`](https://github.com/MadAppGang/claudish/commit/9c37dac9585159531a0ed4e4302b73d0662a1113))
+- send the lowest effort id for none, not -medium *(antigravity)* ([`7776fb6`](https://github.com/MadAppGang/claudish/commit/7776fb6a5cafbf9fb6d67ee7e37857fddfbd73e8))
+- handle SIGHUP in guard-real-config teardown *(release)* ([`4325537`](https://github.com/MadAppGang/claudish/commit/4325537a8ae0915ea8a98ef2dffc552db578fc98))
+- pass BUN_OPTIONS=--no-env-file to test:macos build:cli *(release)* ([`6629ab9`](https://github.com/MadAppGang/claudish/commit/6629ab91997ef29f1219220132f431532333105e))
+- run test:macos pane suites on the pinned magmux release *(release)* ([`14bea91`](https://github.com/MadAppGang/claudish/commit/14bea911a79ccf0654bf175054365523651d247c))
+- run the s1-probe hook tests under Bun latest in test:macos *(release)* ([`d7de08e`](https://github.com/MadAppGang/claudish/commit/d7de08ee08b020817c96e4bb58b4acb7d87831eb))
+- build packages/cli/dist before the test:macos suites *(release)* ([`929b0e9`](https://github.com/MadAppGang/claudish/commit/929b0e90459288ad01e510981eb69e3430779d1b))
+- start every test:macos Bun with --no-env-file *(release)* ([`140b37c`](https://github.com/MadAppGang/claudish/commit/140b37cd519ad0e625aa8d442023c5c29ddcc06f))
+- fetch each test:macos Bun into a mkdtemp dir of its run *(release)* ([`07559c0`](https://github.com/MadAppGang/claudish/commit/07559c07d69b675437740fdb93f8bd340102f696))
+- forward SIGINT and SIGTERM to a test:macos step's group *(release)* ([`fe86fee`](https://github.com/MadAppGang/claudish/commit/fe86feef54851a8262ae9844ab453e39445c61d4))
+- read a job's Bun pin past a two-space YAML comment *(release)* ([`c691e98`](https://github.com/MadAppGang/claudish/commit/c691e986338b9312ee90b7a1f2afad2d281ed6b5))
+
+### Documentation
+
+- describe the pinned, macOnly and weekly tiers where they run *(ci)* ([`a61fe5d`](https://github.com/MadAppGang/claudish/commit/a61fe5d0ff566796592c28c43fc181b503f4ca5a))
+- say the last nightly part runs the blind and S1 tests *(release)* ([`48c159c`](https://github.com/MadAppGang/claudish/commit/48c159cff16e446f4edb40d5638cc4e65fc7bef9))
+- gate a tag on test:macos plus 7 green nightly parts *(release)* ([`f3486c8`](https://github.com/MadAppGang/claudish/commit/f3486c8be9d14e6b1d5bb33da9434517abfd90eb))
+- say S1 hook tests run on every PR in the Linux hooks-loading job *(release)* ([`3acd32b`](https://github.com/MadAppGang/claudish/commit/3acd32b74763091c3e909560aaa570aca3e86915))
+- limit the heavySeconds rule to files outside slow categories *(ci)* ([`f7d230f`](https://github.com/MadAppGang/claudish/commit/f7d230f44d23a52ea1e6267ecb6fa8aa19307d4b))
+- say only test:macos --full runs blind and S1 hook tests *(release)* ([`b8f65d2`](https://github.com/MadAppGang/claudish/commit/b8f65d21112f40012b7131f915455a6f44939ca7))
+- limit the 2 s heavy rule to files outside slow categories *(release)* ([`d3a28de`](https://github.com/MadAppGang/claudish/commit/d3a28def928e43ca9fb8816bbecf2bc500c7d5dc))
+- name the hooks-loading job that runs S1 tests on every PR *(test)* ([`996c096`](https://github.com/MadAppGang/claudish/commit/996c096839ace5ef4974b101ae43388ee4142a39))
+- say src/hooks/blind/ is outside ci-tests.ts and its tiers *(test)* ([`a523e74`](https://github.com/MadAppGang/claudish/commit/a523e74eca9fe8890edff195c99f82422c1a4850))
+- repair the tier table and state the local test:macos timings *(test)* ([`6b3e60e`](https://github.com/MadAppGang/claudish/commit/6b3e60e7b2a98b50071c67a0bfe620d385a414d3))
+- describe the essential and full test tiers and the weekly runs *(test)* ([`d957b3d`](https://github.com/MadAppGang/claudish/commit/d957b3d094e50aae295c1034f2f996e90a4e83b4))
+- add the live validation report for the bundled list *(routing)* ([`f2e64c3`](https://github.com/MadAppGang/claudish/commit/f2e64c3603e30a3605d8872d6db0b6c4e579cf3f))
+- wait for the bump commit's PR CI before the merge *(release)* ([`e224ad2`](https://github.com/MadAppGang/claudish/commit/e224ad288a3bbf0ad430f8ffb4d4c19e06c59ff6))
+- correct the playbook's test.yml triggers and soft-fails *(release)* ([`1c0f9a5`](https://github.com/MadAppGang/claudish/commit/1c0f9a5633ff5d8cda06a753c6f5b4ca01b8dcd8))
+- run test:macos before the tag and bump the version last *(release)* ([`7ea4146`](https://github.com/MadAppGang/claudish/commit/7ea414699cebdee8530b11c86c1bbc8adc268cc9))
+- update CHANGELOG.md for v14.28.1([`c6b9b4b`](https://github.com/MadAppGang/claudish/commit/c6b9b4b3a83d34b74278393ddb25890f0f3187d1))
+
+### New Features
+
+- run one of 7 weekly-tier parts each night on the Mac *(release)* ([`7afedb0`](https://github.com/MadAppGang/claudish/commit/7afedb0b1adf426672c07117a72859deb4f81202))
+
+### Performance
+
+- run idle in 3 and rest in 8 slices in test:macos *(release)* ([`3f30d30`](https://github.com/MadAppGang/claudish/commit/3f30d3061eee5155b2f488b03f008e6107f84b37))
+
+### Refactoring
+
+- split validateTiers' per-category checks into a helper *(ci)* ([`c5586f1`](https://github.com/MadAppGang/claudish/commit/c5586f199be01330bf74cca17cc0ac45046dcdcb))
+
 ## [14.28.1] - 2026-11-17
 
 ### Bug Fixes
