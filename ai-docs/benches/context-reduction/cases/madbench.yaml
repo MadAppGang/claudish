@@ -51,15 +51,21 @@ defaults:
     # by default: Claude Code's own default is 2 minutes, which kills the
     # adapters and handlers tests (95 s on an idle host) under load, so their
     # full output never reaches the model.
+    # ~/.local/bin and ~/.local/share/claude are not shared: shared read-write
+    # (the only live share at level home), a self-update inside the sandbox
+    # rewrote the user's real ~/.local/bin/claude to the sandbox's own path,
+    # and every Claude Code on the host failed once the sandbox was removed.
+    # The runner puts the pinned claude first on PATH; context-gateway (E2-E4)
+    # is the one file copied in. DISABLE_AUTOUPDATER stops the self-update.
     env:
+      DISABLE_AUTOUPDATER: "1"
       CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1"
       BASH_DEFAULT_TIMEOUT_MS: "600000"
       BASH_MAX_TIMEOUT_MS: "600000"
     share:
       paths:
         - { from: ~/.bun, to: ~/.bun, access: rw }
-        - { from: ~/.local/bin, to: ~/.local/bin, access: rw }
-        - { from: ~/.local/share/claude, to: ~/.local/share/claude, access: rw }
+        - { from: ~/.local/bin/context-gateway, to: ~/.local/bin/context-gateway, access: copy }
         - { from: ../tools, to: ~/.bench-tools, access: copy }
         - { from: ../out, to: ~/.bench-out, access: rw }
         - { from: "{{claudish_build}}", to: ~/.bench-compaction/build, access: copy }
