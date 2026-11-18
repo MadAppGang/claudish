@@ -143,6 +143,9 @@ async function restarted(
   return JSON.parse(line!.slice(7));
 }
 
+// 14 real process restarts: about 0.55 s at a load average of 24, and 5.0 s at 106 to 187,
+// where Bun's 5 s default timed the test out. The test asserts what reaches the disk, never
+// how fast, so the timeout only has to outlast a starved scheduler.
 test("E6 estimates persist 15/30/60/120/240/300/300 minutes across actual process restarts", async () => {
   const root = mkdtempSync(join(tmpdir(), "claudish-2a-estimates-"));
   try {
@@ -159,7 +162,7 @@ test("E6 estimates persist 15/30/60/120/240/300/300 minutes across actual proces
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-});
+}, 30_000);
 
 function isolatedPool(root: string): { pool: AccountPool; state: StateStore; ref: AccountRef } {
   const ref: AccountRef = { provider: "openai-codex", id: "aaaaaaaaaaaa", label: "A" };

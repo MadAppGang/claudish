@@ -9,6 +9,7 @@ import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { getStatus, setupSession, startModels } from "./team-orchestrator.js";
 import {
+  FINISH_PANE_TEST_HOOK_MS,
   MAGMUX,
   NO_MAGMUX_MESSAGE,
   type PaneTestEnv,
@@ -29,7 +30,7 @@ beforeEach(() => {
 afterEach(async () => {
   const report = await finishPaneTest(t);
   expect(report).toEqual({ processes: [], files: [] });
-});
+}, FINISH_PANE_TEST_HOOK_MS);
 
 describe.skipIf(!MAGMUX)("team response file", () => {
   it("an unwritable response file: the slot still ends COMPLETED in status.json", async () => {

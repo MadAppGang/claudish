@@ -44,8 +44,21 @@ export function teamDirOf(t: PaneTestEnv, name = "team"): string {
   return join(t.tmp, name);
 }
 
+/** How long `finishPaneTest` waits for the panes' reap by default. */
+export const FINISH_PANE_TEST_MS = 10_000;
+
+/**
+ * The timeout of an `afterEach` that awaits `finishPaneTest`: its whole wait plus room for the
+ * final sweep. Bun's 5 s hook default ends the hook inside the wait on a loaded machine, where
+ * a reap takes 3.5 to 6.4 s at the median (`REAP_DEADLINE_MS`).
+ */
+export const FINISH_PANE_TEST_HOOK_MS = FINISH_PANE_TEST_MS + 5_000;
+
 /** Wait for every process and file of this test's panes to be gone, then clean up. */
-export async function finishPaneTest(t: PaneTestEnv, ms = 10_000): Promise<OrphanReport> {
+export async function finishPaneTest(
+  t: PaneTestEnv,
+  ms = FINISH_PANE_TEST_MS
+): Promise<OrphanReport> {
   const report = await waitNoOrphans({ sockRoot: t.sockRoot }, ms);
   killLeftovers({ sockRoot: t.sockRoot });
   t.cleanup();

@@ -18,6 +18,7 @@ import { join } from "node:path";
 import { orphanReport, requireProcessTable } from "./pane/test-helpers/hermetic-env.js";
 import { setupSession, startModels } from "./team-orchestrator.js";
 import {
+  FINISH_PANE_TEST_HOOK_MS,
   MAGMUX,
   NO_MAGMUX_MESSAGE,
   type PaneTestEnv,
@@ -46,7 +47,7 @@ afterEach(async () => {
   }
   const report = await finishPaneTest(panes);
   expect(report).toEqual({ processes: [], files: [] });
-});
+}, FINISH_PANE_TEST_HOOK_MS);
 
 describe.skipIf(!MAGMUX)("team spawn-loop failure", () => {
   it("escalates to SIGKILL for a started pane that ignores SIGTERM, before rethrowing", async () => {

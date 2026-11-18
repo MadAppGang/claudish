@@ -186,14 +186,17 @@ export async function withProcessTableUnavailable<T>(fn: () => T | Promise<T>): 
   }
 }
 
-export function orphanReport(o: {
-  sockRoot: string;
-  ids?: string[];
-  pgids?: number[];
-}): OrphanReport {
+export function orphanReport(
+  o: {
+    sockRoot: string;
+    ids?: string[];
+    pgids?: number[];
+  },
+  table: PsRow[] = requireProcessTable()
+): OrphanReport {
   const needles = [o.sockRoot, ...(o.ids ?? [])];
   const pgids = new Set((o.pgids ?? []).filter((p) => p > 1));
-  const processes = requireProcessTable()
+  const processes = table
     .filter((r) => r.pid !== process.pid)
     .filter((r) => needles.some((n) => r.command.includes(n)) || pgids.has(r.pgid))
     .map((r) => `${r.pid} ${r.pgid} ${r.command.slice(0, 200)}`);
@@ -236,18 +239,26 @@ export function orphanReport(o: {
  */
 export const REAP_DEADLINE_MS = 60_000;
 
-/** Wait up to `ms` for nothing of the test to remain; returns the last report. */
+/**
+ * Wait up to `ms` for nothing of the test to remain; returns the last report. A process table
+ * `ps` could not read inside the wait is read again on the next poll, since `ps` can fail to
+ * start for a moment on a loaded machine; one still unavailable when the wait ends throws.
+ */
 export async function waitNoOrphans(
   o: { sockRoot: string; ids?: string[]; pgids?: number[] },
   ms = 8000
 ): Promise<OrphanReport> {
   const end = Date.now() + ms;
-  let r = orphanReport(o);
-  while ((r.processes.length || r.files.length) && Date.now() < end) {
+  const poll = (): OrphanReport | null => {
+    const table = readProcessTable();
+    return table ? orphanReport(o, table) : null;
+  };
+  let r = poll();
+  while ((r === null || r.processes.length || r.files.length) && Date.now() < end) {
     await Bun.sleep(200);
-    r = orphanReport(o);
+    r = poll();
   }
-  return r;
+  return r ?? orphanReport(o);
 }
 
 /** SIGKILL anything a failed test left behind (by sockRoot / session id needles only). */

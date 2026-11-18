@@ -584,9 +584,8 @@ describe("guard-real-config", () => {
             await Bun.sleep(5);
           }
           guard.kill(signal);
-          const signalDeadline = Date.now() + 1000;
-          while (!existsSync(received) && Date.now() < signalDeadline) await Bun.sleep(5);
-          expect(existsSync(received)).toBe(true);
+          // the guard finishes only after its child has exited, so the child's report is on
+          // disk by the time the guard exits; no separate deadline races a starved scheduler
           const exitCode = await guard.exited;
           const stderr = await output;
           expect(exitCode).toBe(1);

@@ -17,6 +17,7 @@ import {
   teamRunRow,
 } from "./team-orchestrator.js";
 import {
+  FINISH_PANE_TEST_HOOK_MS,
   MAGMUX,
   NO_MAGMUX_MESSAGE,
   type PaneTestEnv,
@@ -44,7 +45,7 @@ afterEach(async () => {
   }
   const report = await finishPaneTest(t);
   expect(report).toEqual({ processes: [], files: [] });
-});
+}, FINISH_PANE_TEST_HOOK_MS);
 
 describe.skipIf(!MAGMUX)("team slot liveness", () => {
   it("omits a terminal slot's liveness while another slot is still running", async () => {

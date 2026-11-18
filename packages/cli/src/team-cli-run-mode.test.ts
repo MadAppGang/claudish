@@ -8,6 +8,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { setupSession } from "./team-orchestrator.js";
 import {
+  FINISH_PANE_TEST_HOOK_MS,
   MAGMUX,
   NO_MAGMUX_MESSAGE,
   type PaneTestEnv,
@@ -29,7 +30,7 @@ beforeEach(() => {
 afterEach(async () => {
   const report = await finishPaneTest(t);
   expect(report).toEqual({ processes: [], files: [] });
-});
+}, FINISH_PANE_TEST_HOOK_MS);
 
 async function runCli(cwd: string, sessionPath: string, extraArgs: string[] = []) {
   // Grid commands invoke `claudish` by name rather than CLAUDISH_BIN. Keep that
