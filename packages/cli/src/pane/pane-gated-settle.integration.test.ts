@@ -7,6 +7,7 @@ import { parseGateBinding } from "./input-gate.js";
 import { inputBox } from "./screen-classifier.js";
 import { PROMPT, T, listResult, screen, settled, sha8 } from "./test-helpers/gated-delivery.js";
 import {
+  DISPOSE_GATE_PANES_HOOK_MS,
   type SendTrace,
   clientOf,
   disposeGatePanes,
@@ -21,7 +22,7 @@ describe.skipIf(!MAGMUX)(
   `gated settle and binding at production timings (${MAGMUX ? "real magmux" : NO_MAGMUX_MESSAGE})`,
   () => {
     // One disposal awaits reaped() and then polls up to 8 s for orphans; 5 s is bun's default.
-    afterEach(disposeGatePanes, 30_000);
+    afterEach(disposeGatePanes, DISPOSE_GATE_PANES_HOOK_MS);
 
     test(
       "I14: a transcript-closed turn with box text settles after the 32 s gate grace, naming box_not_empty",

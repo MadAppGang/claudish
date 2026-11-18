@@ -239,6 +239,9 @@ export function orphanReport(
  */
 export const REAP_DEADLINE_MS = 60_000;
 
+/** How long `waitNoOrphans` waits for nothing of the test to remain by default. */
+export const WAIT_NO_ORPHANS_MS = 8000;
+
 /**
  * Wait up to `ms` for nothing of the test to remain; returns the last report. A process table
  * `ps` could not read inside the wait is read again on the next poll, since `ps` can fail to
@@ -246,7 +249,7 @@ export const REAP_DEADLINE_MS = 60_000;
  */
 export async function waitNoOrphans(
   o: { sockRoot: string; ids?: string[]; pgids?: number[] },
-  ms = 8000
+  ms = WAIT_NO_ORPHANS_MS
 ): Promise<OrphanReport> {
   const end = Date.now() + ms;
   const poll = (): OrphanReport | null => {
@@ -261,10 +264,22 @@ export async function waitNoOrphans(
   return r ?? orphanReport(o);
 }
 
-/** SIGKILL anything a failed test left behind (by sockRoot / session id needles only). */
+/** How many times `killLeftovers` reads a process table `ps` could not read, 200 ms apart. */
+const KILL_LEFTOVERS_READS = 5;
+
+/**
+ * SIGKILL anything a failed test left behind (by sockRoot / session id needles only). A table
+ * `ps` could not read is read again, since `ps` can fail to start for a moment on a loaded
+ * machine; one still unavailable after the last read throws.
+ */
 export function killLeftovers(o: { sockRoot: string; ids?: string[] }): void {
   const needles = [o.sockRoot, ...(o.ids ?? [])];
-  for (const r of requireProcessTable()) {
+  let table = readProcessTable();
+  for (let read = 1; !table && read < KILL_LEFTOVERS_READS; read++) {
+    Bun.sleepSync(200);
+    table = readProcessTable();
+  }
+  for (const r of table ?? requireProcessTable()) {
     if (r.pid === process.pid) continue;
     if (needles.some((n) => r.command.includes(n))) {
       try {

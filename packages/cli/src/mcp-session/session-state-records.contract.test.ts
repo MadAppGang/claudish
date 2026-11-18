@@ -21,6 +21,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import {
   MAGMUX_AVAILABLE,
+  MCP_START_HOOK_MS,
   McpServer,
   NO_MAGMUX_MESSAGE,
   createSession,
@@ -53,7 +54,7 @@ if (!MAGMUX_AVAILABLE) console.warn(NO_MAGMUX_MESSAGE);
 beforeEach(async () => {
   layout = makeTempLayout("state");
   server = await McpServer.start({ env: serverEnv(layout), cwd: layout.cwd });
-});
+}, MCP_START_HOOK_MS);
 afterEach(async () => {
   await server.close();
   const report = await paneOrphans(layout);

@@ -20,6 +20,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, renameSync } from "node:fs";
 import {
+  DISPOSE_GATE_PANES_HOOK_MS,
   type GateRun,
   clientOf,
   disposeGatePanes,
@@ -34,7 +35,7 @@ const PROMPT_FINISH_MS = 12_000;
 
 afterEach(async () => {
   await disposeGatePanes();
-});
+}, DISPOSE_GATE_PANES_HOOK_MS);
 
 function alive(pid: number): boolean {
   try {

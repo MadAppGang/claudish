@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { FAILURE_REASONS } from "../pane/index.js";
 import {
   MAGMUX_AVAILABLE,
+  MCP_START_HOOK_MS,
   McpServer,
   NO_MAGMUX_MESSAGE,
   createSession,
@@ -186,7 +187,7 @@ describe.skipIf(!MAGMUX_AVAILABLE)("live records", () => {
   beforeEach(async () => {
     layout = makeTempLayout("records");
     server = await McpServer.start({ env: serverEnv(layout), cwd: layout.cwd });
-  });
+  }, MCP_START_HOOK_MS);
   afterEach(async () => {
     await server.close();
     const report = await paneOrphans(layout);

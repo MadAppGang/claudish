@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { useBlackboxEnv } from "../test-helpers/blackbox-env.js";
 import {
   MAGMUX_AVAILABLE,
+  MCP_START_HOOK_MS,
   McpServer,
   NO_MAGMUX_MESSAGE,
   type ToolResult,
@@ -15,6 +16,7 @@ import {
 import { type TempLayout, makeTempLayout, waitFor } from "../test-helpers/contract-records.js";
 import type { CaptureResult, ContractError } from "./contract.js";
 import {
+  DISPOSE_GATE_PANES_HOOK_MS,
   type GateRun,
   clientOf,
   disposeGatePanes,
@@ -62,7 +64,7 @@ describe.skipIf(!MAGMUX_AVAILABLE)("pane scroll through MCP", () => {
       }),
       cwd: layout.cwd,
     });
-  });
+  }, MCP_START_HOOK_MS);
   afterEach(async () => {
     try {
       await server?.close();
@@ -605,7 +607,7 @@ describe.skipIf(!MAGMUX_AVAILABLE)("pane scroll through MCP", () => {
 });
 
 describe.skipIf(!MAGMUX_AVAILABLE)("pane scroll lifecycle observations", () => {
-  afterEach(disposeGatePanes, 30_000);
+  afterEach(disposeGatePanes, DISPOSE_GATE_PANES_HOOK_MS);
 
   // REQ: 5 (state gate: settling)
   test(

@@ -16,6 +16,7 @@ import { useBlackboxEnv } from "../test-helpers/blackbox-env.js";
 import {
   FAKE_MODEL,
   MAGMUX_AVAILABLE,
+  MCP_START_HOOK_MS,
   McpServer,
   NO_MAGMUX_MESSAGE,
   type ToolResult,
@@ -122,7 +123,7 @@ beforeEach(async () => {
     env: serverEnv(layout, { CONTRACT_FAKE_MAX_MS: "80000" }),
     cwd: layout.cwd,
   });
-});
+}, MCP_START_HOOK_MS);
 
 afterEach(async () => {
   await server.close();
