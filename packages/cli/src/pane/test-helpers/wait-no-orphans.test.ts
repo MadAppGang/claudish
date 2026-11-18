@@ -83,6 +83,33 @@ describe("killLeftovers", () => {
     }
   });
 
+  test("kills the leftovers of several sock roots with one process table read", async () => {
+    const roots = [emptySockRoot(), emptySockRoot()];
+    const leftovers = roots.map((root) =>
+      Bun.spawn([process.execPath, "--no-env-file", "-e", "setTimeout(() => {}, 30_000)", root], {
+        env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+      })
+    );
+    const real = setPsSpawnForTest(SANDBOX_REFUSED_PS);
+    setPsSpawnForTest(real);
+    let reads = 0;
+    try {
+      restore = setPsSpawnForTest({
+        execFileSync: (file, args, opts) => {
+          reads++;
+          return real.execFileSync(file, args, opts);
+        },
+        execFile: real.execFile,
+      });
+      killLeftovers({ sockRoot: roots });
+      await Promise.all(leftovers.map((p) => p.exited));
+      expect(leftovers.map((p) => alive(p.pid))).toEqual([false, false]);
+      expect(reads).toBe(1);
+    } finally {
+      for (const p of leftovers) p.kill("SIGKILL");
+    }
+  });
+
   test("still throws when ps can never read the table", () => {
     const sockRoot = emptySockRoot();
     restore = setPsSpawnForTest(SANDBOX_REFUSED_PS);
