@@ -16,7 +16,7 @@ afterEach(async () => {
   for (const c of cleanups.splice(0).reverse()) await c();
 });
 
-function session(captureText: string): PaneSessionImpl {
+function session(captureText: string, captureAlt = false): PaneSessionImpl {
   const root = mkdtempSync("/tmp/pxd-");
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const configDir = join(root, "config");
@@ -47,7 +47,9 @@ function session(captureText: string): PaneSessionImpl {
   });
   (s as any).client = {
     request: async (msg: { type: string }) =>
-      msg.type === "capture" ? { ok: true, result: { text: captureText } } : { ok: false },
+      msg.type === "capture"
+        ? { ok: true, result: { text: captureText, alt: captureAlt } }
+        : { ok: false },
   };
   cleanups.push(async () => {
     (s as any).client = null;
@@ -103,5 +105,38 @@ describe("child_exited detail", () => {
     const snap = await exitWith(s, 1, "…not found. Avail…");
     expect(snap.reason).toBe("agent_rejected");
     expect(snap.detail).toBe("--agent 'zzz-not-real' not found. Available agents: a, b");
+  });
+});
+
+const RULE = "─".repeat(160);
+const TUI_FRAME = [
+  "⏺ Bash(bun test)",
+  "  ⎿  1 fail",
+  "    Error: expected 200 to be 401",
+  RULE,
+  "❯ ",
+  RULE,
+  "  ? for shortcuts",
+];
+
+describe("child_exited detail on the alternate screen", () => {
+  test("an alternate-screen capture adds no evidence before the last line", async () => {
+    const s = session(TUI_FRAME.join("\n"), true);
+    const snap = await exitWith(s, 1, "Segmentation fault");
+    expect(snap.reason).toBe("child_exited");
+    expect((snap.detail ?? "").split("\n")[0]).toBe(
+      "pane child exited with code 1; last line: Segmentation fault"
+    );
+  });
+
+  test("an alternate screen adds no evidence before the last line", async () => {
+    const s = session(TUI_FRAME.join("\n"));
+    const screen = (s as any).screen;
+    (s as any).screen = { ...screen, alt: true, lines: [...TUI_FRAME] };
+    const snap = await exitWith(s, 1, "Segmentation fault");
+    expect(snap.reason).toBe("child_exited");
+    expect((snap.detail ?? "").split("\n")[0]).toBe(
+      "pane child exited with code 1; last line: Segmentation fault"
+    );
   });
 });

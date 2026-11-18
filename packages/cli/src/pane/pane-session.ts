@@ -637,6 +637,8 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   private exitScrollback = "";
   /** the exit capture's text, whatever it holds */
   private exitCapture = "";
+  /** whether the exit capture was taken on the alternate screen */
+  private exitCaptureAlt = false;
   private exitLastLine = "";
 
   /** the size the viewer asked for last (clamped); the drain worker always sends THIS one */
@@ -1154,6 +1156,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       );
       if (cap.ok) {
         this.exitCapture = cap.result.text ?? "";
+        this.exitCaptureAlt = cap.result.alt === true;
         if (agentRejectedLine(this.exitCapture) && !agentRejectedLine(screenText(this.screen)))
           this.exitScrollback = this.exitCapture;
       }
@@ -3155,9 +3158,10 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
 
   /**
    * §2.2 rule 3: agent_rejected when the child's own refusal is on screen, else child_exited.
-   * A child_exited detail leads with the child's own `Error:` line (or, with none, its last
-   * lines) right after the exit code, so a display that keeps only the first line still says
-   * why it exited.
+   * A child that exited outside the alternate screen gets its own error line (or, with none,
+   * its last lines) right after the exit code, so a display that keeps only the first line
+   * still says why it exited. On the alternate screen those lines are the interface's own
+   * (box rules, the prompt, tool output), so the detail carries the exit code and last line only.
    */
   private firePaneExit(code: number | null): void {
     const screen = screenText(this.screen);
@@ -3170,10 +3174,13 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       this.fire("pane_exit", { reason: "agent_rejected", detail: rejected });
       return;
     }
-    const evidence = childExitEvidence(
-      [this.exitCapture, screen, this.exitLastLine],
-      [this.exitCapture, screen]
-    );
+    const onAltScreen = this.screen.alt || this.exitCaptureAlt;
+    const evidence = onAltScreen
+      ? ""
+      : childExitEvidence(
+          [this.exitCapture, screen, this.exitLastLine],
+          [this.exitCapture, screen]
+        );
     const exited = `pane child exited ${code === null ? "(code unknown)" : `with code ${code}`}`;
     this.fire("pane_exit", {
       reason: "child_exited",
