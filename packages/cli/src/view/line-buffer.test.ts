@@ -26,9 +26,13 @@ describe("LineBuffer", () => {
       for (let sent = 0; sent < bytes; sent += chunk.length) b.push(chunk);
       return performance.now() - t0;
     };
+    // the fastest of several runs: load only ever adds time, so one preempted run cannot
+    // decide the ratio
+    const fastest = (bytes: number): number =>
+      Math.min(...Array.from({ length: 5 }, () => feed(bytes)));
     feed(1024 * 1024); // warm up
-    const small = Math.max(feed(4 * 1024 * 1024), 1);
-    const large = feed(16 * 1024 * 1024);
+    const small = Math.max(fastest(4 * 1024 * 1024), 1);
+    const large = fastest(16 * 1024 * 1024);
     // four times the input: about 4x when linear, about 16x when every chunk rescans the buffer
     expect(large / small).toBeLessThan(10);
   });
