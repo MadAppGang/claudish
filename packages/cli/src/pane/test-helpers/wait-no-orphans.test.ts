@@ -68,7 +68,14 @@ function alive(pid: number): boolean {
 describe("killLeftovers", () => {
   test("reads a process table that ps could not read again, and kills the leftover", async () => {
     const sockRoot = emptySockRoot();
-    const leftover = Bun.spawn(["/bin/sh", "-c", `sleep 30; : ${sockRoot}`]);
+    // One process with the sock root in its own arguments, so the kill leaves no untagged child.
+    const leftover = Bun.spawn([
+      process.execPath,
+      "--no-env-file",
+      "-e",
+      "setTimeout(() => {}, 30_000)",
+      sockRoot,
+    ]);
     try {
       restore = setPsSpawnForTest(refusedFor(2));
       killLeftovers({ sockRoot });
