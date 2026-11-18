@@ -86,14 +86,16 @@ function resetState(): void {
 // this file's mock runs. Both paths honor setConfigFileOverride(), so the temp
 // fixture remains isolation-safe regardless of import order.
 
-const realProfileConfig = await import("../../profile-config.js");
+// A snapshot, not the live namespace: once mock.module runs, the namespace's exports are the
+// mock's, and afterAll needs the real functions to put back.
+const realProfileConfig = { ...(await import("../../profile-config.js")) };
 const { setConfigFileOverride } = realProfileConfig;
 // The REAL op-source — used to reset its sync sniff after we rewrite the fixture.
 const { __resetSniffForTests: resetOpSniff } = await import("./op-source.js");
 
 // The REAL oauth-registry: the mock below keeps all of it but hasOAuthCredentials, because
 // the mock is process-global and later files read OAUTH_PROVIDERS and its rules through it.
-const realOauthRegistry = await import("../oauth-registry.js");
+const realOauthRegistry = { ...(await import("../oauth-registry.js")) };
 
 function installModuleMocks(): void {
   mock.module("../oauth-registry.js", () => ({
@@ -216,6 +218,11 @@ afterAll(() => {
   try {
     codexRegistry.hasConfiguredAccounts = realCodexHasCreds;
     mock.restore();
+    // mock.restore() does not undo mock.module, and a module mock outlives this file in
+    // the process: put the real exports back so a later file (keychain-source.test.ts reads
+    // getApiKey through local-api-key) sees the real modules.
+    mock.module("../oauth-registry.js", () => ({ ...realOauthRegistry }));
+    mock.module("../../profile-config.js", () => ({ ...realProfileConfig }));
   } finally {
     setConfigFileOverride(null);
     resetOpSniff();
