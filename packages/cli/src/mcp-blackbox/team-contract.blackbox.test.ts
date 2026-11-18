@@ -18,6 +18,7 @@ import { waitNoOrphans } from "../pane/test-helpers/hermetic-env.js";
 import { useBlackboxEnv } from "../test-helpers/blackbox-env.js";
 import {
   MAGMUX_AVAILABLE,
+  MCP_START_HOOK_MS,
   McpServer,
   NO_MAGMUX_MESSAGE,
   type ToolResult,
@@ -152,7 +153,7 @@ async function startServer(): Promise<McpServer> {
 beforeEach(async () => {
   layout = makeTempLayout("bbteam");
   server = await startServer();
-});
+}, MCP_START_HOOK_MS);
 
 afterEach(async () => {
   await server.close();

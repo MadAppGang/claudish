@@ -35,6 +35,7 @@ import {
 import { useBlackboxEnv } from "../test-helpers/blackbox-env.js";
 import {
   MAGMUX_AVAILABLE,
+  MCP_START_HOOK_MS,
   McpServer,
   NO_MAGMUX_MESSAGE,
   type ToolResult,
@@ -102,7 +103,7 @@ beforeEach(async () => {
   exitedPid = child.pid;
   expect(() => process.kill(exitedPid, 0)).toThrow();
   server = await startServer();
-});
+}, MCP_START_HOOK_MS);
 
 afterEach(async () => {
   try {

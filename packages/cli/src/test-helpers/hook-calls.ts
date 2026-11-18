@@ -26,7 +26,37 @@ export function hookCalls(source: string, name: string): string[] {
   return calls;
 }
 
-/** Every `<name>(...)` hook under `SRC` whose text contains `needle`, with its file. */
+/** The end index (exclusive) of the bracket group that opens at `source[open]`. */
+function groupEnd(source: string, open: number, left: string, right: string): number {
+  let depth = 0;
+  for (let i = open; i < source.length; i++) {
+    if (source[i] === left) depth++;
+    else if (source[i] === right && --depth === 0) return i + 1;
+  }
+  return source.length;
+}
+
+/**
+ * The names of the `function` declarations in `source` whose bodies contain `needle`: a hook
+ * that calls one of them waits as long as a hook that calls `needle` itself.
+ */
+export function localCallersOf(source: string, needle: string): string[] {
+  const names: string[] = [];
+  const re = /\bfunction\s+(\w+)\s*(?:<[^>]*>)?\s*\(/g;
+  for (let m = re.exec(source); m; m = re.exec(source)) {
+    const paramsEnd = groupEnd(source, m.index + m[0].length - 1, "(", ")");
+    const open = source.indexOf("{", paramsEnd);
+    if (open < 0) continue;
+    const body = source.slice(open, groupEnd(source, open, "{", "}"));
+    if (body.includes(needle) && m[1]) names.push(m[1]);
+  }
+  return names;
+}
+
+/**
+ * Every `<name>(...)` hook under `SRC` that calls `needle`, directly or through a function
+ * declared in the same file (`localCallersOf`), with its file.
+ */
 export function hooksCalling(
   names: readonly string[],
   needle: string
@@ -34,9 +64,10 @@ export function hooksCalling(
   const files = [...new Bun.Glob("**/*.test.ts").scanSync(SRC)];
   return files.flatMap((file) => {
     const source = readFileSync(join(SRC, file), "utf8");
+    const needles = [needle, ...localCallersOf(source, needle).map((n) => `${n}(`)];
     return names.flatMap((name) =>
       hookCalls(source, name)
-        .filter((call) => call.includes(needle))
+        .filter((call) => needles.some((n) => call.includes(n)))
         .map((call) => ({ file, call }))
     );
   });
