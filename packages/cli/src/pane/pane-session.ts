@@ -57,6 +57,7 @@ import {
   type FailureReason,
   type SlotState,
 } from "./contract.js";
+import { childExitEvidence } from "./exit-evidence.js";
 import { checkGateBinding } from "./gate-binding.js";
 import {
   BOOT_DIALOG_KINDS,
@@ -632,7 +633,10 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   /** registry/screen disagreements now holding, with when each began; counted once at onset */
   private disagreeSince = new Map<string, number>();
   private disagreeCounted = new Set<string>();
+  /** the exit capture's text, kept only when it holds an `--agent` refusal the screen lacks */
   private exitScrollback = "";
+  /** the exit capture's text, whatever it holds */
+  private exitCapture = "";
   private exitLastLine = "";
 
   /** the size the viewer asked for last (clamped); the drain worker always sends THIS one */
@@ -1148,12 +1152,11 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
         { type: "capture", pane: 0, offset: 200 },
         1000
       );
-      if (
-        cap.ok &&
-        agentRejectedLine(cap.result.text ?? "") &&
-        !agentRejectedLine(screenText(this.screen))
-      )
-        this.exitScrollback = cap.result.text ?? "";
+      if (cap.ok) {
+        this.exitCapture = cap.result.text ?? "";
+        if (agentRejectedLine(this.exitCapture) && !agentRejectedLine(screenText(this.screen)))
+          this.exitScrollback = this.exitCapture;
+      }
     }
     this.step(() => this.applyExitPath(code));
   }
@@ -3150,18 +3153,31 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     return (this.exitRequested || this.turnsCompleted >= 1) && this.admission === null;
   }
 
-  /** §2.2 rule 3: agent_rejected when the child's own refusal is on screen, else child_exited. */
+  /**
+   * §2.2 rule 3: agent_rejected when the child's own refusal is on screen, else child_exited.
+   * A child_exited detail leads with the child's own `Error:` line (or, with none, its last
+   * lines) right after the exit code, so a display that keeps only the first line still says
+   * why it exited.
+   */
   private firePaneExit(code: number | null): void {
-    const text = `${this.exitLastLine}\n${this.exitScrollback}\n${screenText(this.screen)}`;
+    const screen = screenText(this.screen);
+    const text = `${this.exitLastLine}\n${this.exitScrollback}\n${screen}`;
     const rejected =
-      agentRejectedLine(screenText(this.screen)) ??
+      agentRejectedLine(screen) ??
       agentRejectedLine(this.exitScrollback) ??
       agentRejectedLine(text);
+    if (rejected) {
+      this.fire("pane_exit", { reason: "agent_rejected", detail: rejected });
+      return;
+    }
+    const evidence = childExitEvidence(
+      [this.exitCapture, screen, this.exitLastLine],
+      [this.exitCapture, screen]
+    );
+    const exited = `pane child exited ${code === null ? "(code unknown)" : `with code ${code}`}`;
     this.fire("pane_exit", {
-      reason: rejected ? "agent_rejected" : "child_exited",
-      detail: rejected
-        ? rejected
-        : `pane child exited ${code === null ? "(code unknown)" : `with code ${code}`}${this.exitLastLine ? `; last line: ${this.exitLastLine}` : ""}\n${screenTailOf(this.screen)}`,
+      reason: "child_exited",
+      detail: `${exited}${evidence ? `: ${evidence}` : ""}${this.exitLastLine ? `; last line: ${this.exitLastLine}` : ""}\n${screenTailOf(this.screen)}`,
     });
   }
 

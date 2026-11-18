@@ -290,6 +290,15 @@ scrollback `capture {offset:200}`, giving FAILED `agent_rejected`. A child that 
 before the first subscription, so its `exit` event is never pushed to us: every attach also asks
 `list`, and a dead pane 0 found there takes the exit path.
 
+**Any other startup exit is `child_exited`, and its detail names the child's own line.** A child
+that dies before its first frame (a claudish that cannot find Claude Code prints
+`Error: Claude Code CLI not found` and four more lines) leaves an empty final screen, and magmux's
+`exit.lastLine` holds only the last of those lines (`export CLAUDE_PATH=…`). The exit capture is
+therefore always kept, and the detail reads `pane child exited with code N: <line>; last line: …`,
+where `<line>` is the first line starting with `Error:` in the capture, the screen or the last line
+(`childExitEvidence`, `pane/exit-evidence.ts`), else the capture's or screen's last five non-empty
+lines. It comes first because `reasonDetail` and the team error log keep the detail's first line.
+
 ## Settle — Claude Code's own end-of-turn record, turn-scoped
 
 The rule is the pure function `decideSettle` in `pane/settle-rule.ts`. A turn needs its witness, at

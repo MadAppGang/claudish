@@ -127,7 +127,7 @@ export type FailureReason =
   | "agent_rejected" // the child refused --agent (its own "not found. Available agents" line)
   | "prompt_not_accepted" // the first prompt never produced an acceptance witness within the admission bound
   | "prompt_not_read" // a file-delivered turn settled without Read returning every line of its task file
-  | "child_exited" // pane child exited before the turn settled (exit code + last line + screen tail)
+  | "child_exited" // pane child exited before the turn settled (exit code + the child's Error: line or last lines + last line + screen tail)
   | "pane_lost" // the magmux PROCESS died without reporting the pane's exit
   | "blocked" // team slot stopped on a question/permission dialog team cannot answer (question in detail)
   | "api_error" // the settled turn is an isApiErrorMessage entry (or a screen-mode error row)
