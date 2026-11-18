@@ -208,7 +208,8 @@ function shell(script: string, opts: { ctl?: string; root?: string; rows?: PsRow
     "/bin/sh",
     [
       "-c",
-      `${WATCHER_FUNCTIONS}\n${script}`,
+      // the predicates read the snapshot the watcher takes first
+      `${WATCHER_FUNCTIONS}\nsnap\n${script}`,
       "claudish-pane-watcher",
       fx.paneId,
       fx.sessionUuid,
@@ -279,7 +280,7 @@ describe("the generated watcher shell agrees with the TS predicates on the same 
       "/bin/sh",
       [
         "-c",
-        `${WATCHER_FUNCTIONS}\npg=${fx.panePid}; group_ok && echo Y || echo N`,
+        `${WATCHER_FUNCTIONS}\nsnap; pg=${fx.panePid}; group_ok && echo Y || echo N`,
         "w",
         fx.paneId,
         "wrong-uuid",
@@ -306,7 +307,7 @@ describe("the generated watcher shell agrees with the TS predicates on the same 
       "/bin/sh",
       [
         "-c",
-        `${WATCHER_FUNCTIONS}\npg=${fx.panePid}; group_ok && echo Y || echo N`,
+        `${WATCHER_FUNCTIONS}\nsnap; pg=${fx.panePid}; group_ok && echo Y || echo N`,
         "w",
         fx.paneId,
         "wrong-uuid",
@@ -434,7 +435,10 @@ describe("the process table when ps cannot run (macOS refuses the setuid ps in a
 });
 
 /** The whole watcher script, its owner already gone (stdin at EOF), against a stand-in `ps`. */
-function watcherAfterOwnerDeath(psBody: string): {
+function watcherAfterOwnerDeath(
+  psBody: string,
+  setup?: (ctl: string, root: string) => void
+): {
   status: number | null;
   left: Record<string, boolean>;
 } {
@@ -452,6 +456,7 @@ function watcherAfterOwnerDeath(psBody: string): {
   mkdirSync(join(root, "panes"));
   writeFileSync(sock, "");
   writeFileSync(rec, "{}");
+  setup?.(ctl, root);
   const r = spawnSync(
     "/bin/sh",
     ["-c", WATCHER_SCRIPT, "claudish-pane-watcher", paneId, "uuid", ctl, sock, rec, turn, root],
@@ -467,6 +472,37 @@ describe("the watcher when its owner dies and ps cannot run", () => {
   test("nothing verifiable: exit 1, the socket, record and dirs are kept for a later sweep", () => {
     // what /bin/sh reports when the sandbox refuses the exec
     const r = watcherAfterOwnerDeath('echo "ps: Operation not permitted" >&2; exit 126');
+    expect(r.status).toBe(1);
+    expect(r.left).toEqual({ ctl: true, turn: true, sock: true, rec: true });
+  });
+
+  test("a pane whose processes are already gone costs at most two process table reads", () => {
+    let scans = "";
+    const r = watcherAfterOwnerDeath(
+      // `-o pid= -p $$` (ps_ok) answers; other `-p <pid>` lookups find nothing; every
+      // full-table read appends a line to <root>/scans (this script is <root>/bin/ps)
+      `case " $* " in (*" -o pid= "*) echo 1; exit 0;; (*" -p "*) exit 1;; esac; echo x >> "\${0%/bin/ps}/scans"; echo "    1     1 ${leader.lstart} /sbin/launchd"`,
+      (ctl, root) => {
+        scans = join(root, "scans");
+        // the pane had a recorded group and magmux, both dead by now
+        writeFileSync(join(ctl, "group"), `4242\n4242 ${leader.lstart}\n--\n`);
+        writeFileSync(join(ctl, "magmux.pid"), "4243\n");
+      }
+    );
+    expect(r.status).toBe(0);
+    expect(r.left).toEqual({ ctl: false, turn: false, sock: false, rec: false });
+    expect(readFileSync(scans, "utf8").split("\n").filter(Boolean).length).toBeLessThanOrEqual(2);
+  });
+
+  test("a full table read that fails is not proof the pane is gone: exit 1, files kept", () => {
+    const r = watcherAfterOwnerDeath(
+      // `-o pid= -p $$` (ps_ok) answers, so ps can run; every full-table read then fails
+      `case " $* " in (*" -o pid= "*) echo 1; exit 0;; (*" -p "*) exit 1;; esac; exit 1`,
+      (ctl) => {
+        writeFileSync(join(ctl, "group"), `4242\n4242 ${leader.lstart}\n--\n`);
+        writeFileSync(join(ctl, "magmux.pid"), "4243\n");
+      }
+    );
     expect(r.status).toBe(1);
     expect(r.left).toEqual({ ctl: true, turn: true, sock: true, rec: true });
   });
