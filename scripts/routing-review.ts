@@ -43,7 +43,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import {
   claudeCodeConfigDir,
   claudeCodeGlobalConfigPath,
@@ -358,6 +358,23 @@ export function credentialRefusal(
   return consoleKeyRefusal(childEnv, deps) ?? loginRefusal(childEnv, deps);
 }
 
+/**
+ * Resolve `CLAUDE_CONFIG_DIR` once, with Claude Code's own rule, and write the absolute result
+ * into `childEnv`, so the credential check and Claude Code (which runs in the export, not here)
+ * read the same directory. An empty or relative value would resolve against Claude Code's working
+ * directory, and an empty one also splits the config dir from `.claude.json`, so either is
+ * refused; the message is returned. Unset stays unset: setting it changes the Keychain names.
+ */
+export function pinConfigDir(childEnv: Record<string, string>, cwd: string): string | undefined {
+  const dir = childEnv.CLAUDE_CONFIG_DIR;
+  if (dir === undefined) return undefined;
+  if (dir.trim() === "" || !isAbsolute(dir)) {
+    return "CLAUDE_CONFIG_DIR is empty or relative; set it to an absolute path or unset it";
+  }
+  childEnv.CLAUDE_CONFIG_DIR = claudeCodeConfigDir(childEnv, cwd);
+  return undefined;
+}
+
 type CredentialDeps = Pick<ReviewDeps, "keychainPresence" | "managedSettingsPath" | "cwd">;
 
 /** A stored Console key, in `.claude.json` or the Keychain, by presence. */
@@ -561,6 +578,11 @@ export async function runRoutingReview(
   }
 
   const childEnv = reviewEnv(deps.env);
+  const unpinned = pinConfigDir(childEnv, deps.cwd);
+  if (unpinned) {
+    console.error(`routing-review: refused: ${unpinned}`);
+    return 1;
+  }
   if (!args.dryRun) {
     const refused = credentialRefusal(childEnv, deps);
     if (refused) {

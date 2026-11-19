@@ -582,4 +582,38 @@ describe("the review signs only with the Claude Code login", () => {
     });
     expect(code).toBe(0);
   });
+
+  for (const [name, value] of [
+    ["an empty", ""],
+    ["a relative", "cfg"],
+  ] as const) {
+    test(`${name} CLAUDE_CONFIG_DIR refuses before any check or spawn`, async () => {
+      const { code, printed, review } = await refusal(({ deps }) => {
+        deps.env = { ...deps.env, CLAUDE_CONFIG_DIR: value };
+      });
+      expect(code).toBe(1);
+      expect(review.spawned).toHaveLength(0);
+      expect(printed).toContain("CLAUDE_CONFIG_DIR");
+    });
+  }
+
+  test("an absolute CLAUDE_CONFIG_DIR is read for the login and handed to Claude Code resolved", async () => {
+    const { code, review } = await refusal(({ root, home, deps }) => {
+      rmSync(join(home, ".claude"), { recursive: true, force: true });
+      mkdirSync(join(root, "cfg"));
+      writeFileSync(
+        join(root, "cfg", ".credentials.json"),
+        JSON.stringify({ claudeAiOauth: { accessToken: "test-oauth-token" } })
+      );
+      deps.env = { ...deps.env, CLAUDE_CONFIG_DIR: `${join(root, "cfg")}/` };
+    });
+    expect(code).toBe(0);
+    expect(review.spawned[0]!.env.CLAUDE_CONFIG_DIR).toBe(join(review.root, "cfg"));
+  });
+
+  test("an unset CLAUDE_CONFIG_DIR stays unset for Claude Code", async () => {
+    const { code, review } = await refusal(() => {});
+    expect(code).toBe(0);
+    expect("CLAUDE_CONFIG_DIR" in review.spawned[0]!.env).toBe(false);
+  });
 });
