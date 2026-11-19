@@ -120,8 +120,23 @@ function commandWord(segment: string): string | undefined {
   return undefined;
 }
 
+/** The line without its shell comment: a `#` outside quotes, at line start or after whitespace. */
 function stripShellComment(line: string): string {
-  return line.replace(/(^|\s)#.*$/, "");
+  let quote = "";
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+    if (quote) {
+      if (char === "\\" && quote === '"') i++;
+      else if (char === quote) quote = "";
+    } else if (char === "'" || char === '"') {
+      quote = char;
+    } else if (char === "\\") {
+      i++;
+    } else if (char === "#" && (i === 0 || /\s/.test(line[i - 1]))) {
+      return line.slice(0, i);
+    }
+  }
+  return line;
 }
 
 function runsClaude(run: string, depth = 0): string | undefined {
@@ -380,6 +395,23 @@ describe("the detector finds each kind", () => {
       "claude-code-installer",
     ],
     [
+      "the installer after a quoted # that is not a comment",
+      stepYaml(
+        "run: |\n          printf '%s\\n' 'setup #1'; curl -fsSL https://claude.ai/install.sh | bash"
+      ),
+      "claude-code-installer",
+    ],
+    [
+      "claude after a double-quoted # that is not a comment",
+      stepYaml('run: |\n          echo "a #b"; claude -p hi'),
+      "claude-command",
+    ],
+    [
+      "claude after a # inside a word",
+      stepYaml('run: |\n          echo "a#b"; claude -p hi'),
+      "claude-command",
+    ],
+    [
       "the installer URL as an action input",
       stepYaml(
         "uses: some/download@v1\n        with:\n          url: https://claude.ai/install.sh"
@@ -407,6 +439,14 @@ describe("the detector leaves clean workflows alone", () => {
     [
       "the package named in a trailing shell comment",
       stepYaml("run: 'echo ok # do not install @anthropic-ai/claude-code'"),
+    ],
+    [
+      "an npm install in a trailing shell comment",
+      stepYaml("run: |\n          echo ok # npm i @anthropic-ai/claude-code"),
+    ],
+    [
+      "a comment after a closed quote",
+      stepYaml("run: |\n          echo 'a b' # npm i @anthropic-ai/claude-code"),
     ],
     [
       "the package named in a shell comment line",
