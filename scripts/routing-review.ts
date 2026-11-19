@@ -68,6 +68,12 @@ For each rule, read the files in its Scope and decide whether the code
 satisfies it. Work through the rules in order and read only what a rule
 needs.
 
+Find code with Grep first (with line numbers, limited to the rule's Scope
+paths). Read at most 120 lines at a time, around a Grep match. Never Read
+a whole source file; the rulebook is the one exception. Make every Grep
+and Read a rule needs in the same turn, several Reads of one file
+included, not one call per turn.
+
 Report only a violation of a numbered rule that you can point to in the
 code. Style, naming and suggestions are not violations.
 
