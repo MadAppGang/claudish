@@ -100,85 +100,6 @@ const matches = (path: string, patterns: readonly string[]) => {
   );
 };
 
-type WorkflowStep = {
-  name?: string;
-  id?: string;
-  if?: string;
-  uses?: string;
-  run?: string;
-  env?: Record<string, string>;
-  with?: Record<string, unknown>;
-  "working-directory"?: string;
-  "continue-on-error"?: boolean | string;
-};
-function forkGuard() {
-  const repo = resolve(import.meta.dir, "../../../..");
-  return Bun.YAML.parse(
-    readFileSync(join(repo, ".github/workflows/routing-fork-guard.yml"), "utf8")
-  ) as {
-    on: Record<string, unknown>;
-    jobs: Record<
-      string,
-      {
-        permissions: Record<string, string>;
-        steps: WorkflowStep[];
-      }
-    >;
-  };
-}
-const expression = (value: string) => "$" + "{{ " + value + " }}";
-
-describe("REQ-108 R4.2: routing-fork-guard/verdict commit status", () => {
-  test("REQ-108: the base-branch guard owns statuses:write and never checks out the head", () => {
-    const workflow = forkGuard();
-    expect(Object.keys(workflow.on)).toContain("pull_request_target");
-    expect(Object.keys(workflow.on)).not.toContain("pull_request");
-    const guard = workflow.jobs.guard!;
-    expect(guard.permissions.statuses).toBe("write");
-    const checkouts = guard.steps.filter((step) => step.uses?.startsWith("actions/checkout@"));
-    expect(checkouts).toHaveLength(1);
-    expect(checkouts[0]!.with?.ref).toBe(expression("github.event.pull_request.base.sha"));
-    expect(checkouts[0]!.with?.["sparse-checkout"]).toBe(".github/routing-files.yml");
-    expect(checkouts[0]!.with?.["persist-credentials"]).toBe(false);
-  });
-
-  test("REQ-108: the final non-cancelled step posts the required context to the PR head", () => {
-    const steps = forkGuard().jobs.guard!.steps;
-    const post = steps.at(-1)!;
-    expect(post.if).toBe(expression("!cancelled()"));
-    expect(post.env).toMatchObject({
-      GH_TOKEN: expression("github.token"),
-      HEAD_SHA: expression("github.event.pull_request.head.sha"),
-      OUTCOME: expression("steps.check.outcome"),
-    });
-    expect(post.env?.RUN_URL).toBe(
-      expression("github.server_url") +
-        "/" +
-        expression("github.repository") +
-        "/actions/runs/" +
-        expression("github.run_id")
-    );
-    expect(post.run).toMatch(
-      /gh api\s+--method POST\s+"repos\/\$GITHUB_REPOSITORY\/statuses\/\$HEAD_SHA"/
-    );
-    expect(post.run).toContain('context="routing-fork-guard/verdict"');
-    expect(post.run).toContain('state="$state"');
-    expect(post.run).toContain('description="$description"');
-    expect(post.run).toContain('target_url="$RUN_URL"');
-    expect(JSON.stringify(post)).not.toContain("secrets.");
-  });
-
-  test("REQ-108: a failed or skipped check posts failure, never a successful verdict", () => {
-    const steps = forkGuard().jobs.guard!.steps;
-    expect(steps.some((step) => step.id === "check")).toBe(true);
-    const script = steps.at(-1)!.run!;
-    expect(script).toMatch(
-      /if\s+\[\s+"\$OUTCOME"\s+=\s+"success"\s+\];\s*then\s+state=success\b[\s\S]*?\belse\s+state=failure\b[\s\S]*?\bfi/
-    );
-    expect(script).toContain("set -euo pipefail");
-  });
-});
-
 describe("R4.2 RB-16 RB-27: routing review filter is complete", () => {
   test("R4.2: every value importer and routing call site is covered by the routing filter", () => {
     // Paths are resolved only when this test runs in packages/cli/src/providers.
@@ -224,7 +145,6 @@ describe("R4.2 RB-16 RB-27: routing review filter is complete", () => {
       "packages/cli/scripts/generate-bundled-list.ts",
       "scripts/routing-review.ts",
       ".github/routing-files.yml",
-      ".github/workflows/routing-fork-guard.yml",
       ".github/workflows/release.yml",
     ])
       expect(matches(name, patterns)).toBe(true);

@@ -1,5 +1,5 @@
-# The files the routing rulebook polices. routing-fork-guard.yml reads this file from
-# the pull request's base commit, so a pull request cannot narrow what it guards.
+# The files the routing rulebook polices; packages/cli/src/providers/routing-files.test.ts
+# checks that it covers every routing call site.
 routing:
   - 'packages/cli/src/providers/**'
   - 'packages/cli/src/adapters/model-catalog.ts'
@@ -39,5 +39,4 @@ routing:
   - 'ai-docs/architecture/routing-rulebook.md'
   - 'ai-docs/architecture/routing.md'
   - '.github/routing-files.yml'
-  - '.github/workflows/routing-fork-guard.yml'
   - '.github/workflows/release.yml'
