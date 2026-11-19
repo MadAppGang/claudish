@@ -83,7 +83,7 @@ the oldest result, and writes
 `~/Library/Logs/claudish-weekly-tests/part<k>.json`. A red part also writes
 `RED-<UTC date>-part<k>.json` (date, part, commit, failing tests, log path) and shows a
 notification naming it; triage reads and deletes the marker. `weekly-tests.yml` runs the
-Linux github tier every Sunday (11:00 UTC; a failed run on `main` opens or updates the issue "Weekly
+`idle` and `rest` groups of the github tier on Linux every Sunday (11:00 UTC; a failed run on `main` opens or updates the issue "Weekly
 full test run failed"). The release gate is `bun run test:macos` on the release commit,
 `bun scripts/weekly-macos-tests.ts --check` (every part green within 7 days) and
 `bun run review:routing` on the release commit (a PASS verdict). A green
