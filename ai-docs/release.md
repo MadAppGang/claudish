@@ -129,8 +129,10 @@ runners only: it boots each spawn shape against the Claude Code pinned in
 `.github/claude-code.version` (blocking cell) and npm's latest (non-blocking). The
 scenarios all boot at once (`--jobs`), and a job that runs longer than 1 minute fails
 (`timeout-minutes: 1`); the wait for a runner is outside that limit. It is not part
-of `release.yml`. A red pinned cell means the pane boot reader no longer matches
-Claude Code — fix that before releasing, the same as a red `test.yml`. The macOS boot
+of `release.yml`. A red pinned cell whose "Boot every spawn shape" step failed means
+the pane boot reader no longer matches Claude Code — fix that before releasing, the
+same as a red `test.yml`. A cell that failed in a setup step or at the 1-minute limit
+did not test the reader: read the failed step, then re-run the job. The macOS boot
 of the pinned version is the "Claude Code boot canary" step of `bun run test:macos`
 (both tiers, no nightly part): the gate fetches that Claude Code with `npm pack` and
 never uses the Mac's own.
