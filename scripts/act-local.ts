@@ -73,8 +73,11 @@ export const BUNDLED_LIST = "packages/cli/src/providers/bundled-recommended-list
 /** Caller variables act may see; everything else, every token included, stays out. */
 export const ENV_ALLOWLIST = ["PATH", "USER", "LANG", "TMPDIR", "DOCKER_CONTEXT"] as const;
 
-/** Leads every git call: no hook of the caller's (core.hooksPath) runs in the source or the clone. */
-const NO_HOOKS = ["-c", "core.hooksPath=/dev/null"];
+/**
+ * Leads every git call: no hook of the caller's (core.hooksPath) runs in the source or the clone,
+ * and a path such as `--change` is a file name, never pathspec magic like `:(glob)`.
+ */
+const NO_HOOKS = ["-c", "core.hooksPath=/dev/null", "--literal-pathspecs"];
 
 const COMMIT_IDENTITY = [
   "-c",
