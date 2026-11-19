@@ -6,10 +6,13 @@
  *
  * Why (ai-docs/reports/pane-ui-independent-signals.md): the `--agent` label in the input box's top
  * rule broke every agent slot, though every Claude Code from 2.1.288 drew it. The fixtures never
- * booted a valid agent. This boots each shape against each new release, on macOS and Linux.
+ * booted a valid agent. This boots each shape: on Linux in boot-canary.yml (the pinned release and
+ * npm's latest), on macOS in `bun run test:macos` (the pinned release).
  *
  * Usage:
  *   bun scripts/boot-canary.ts [--bin <claude binary>] [--scenarios a,b] [--expect <json>] [--out <dir>]
+ *                              [--jobs <n>]
+ * `--jobs` is how many scenarios boot at once (default 5); 1 boots them one after another.
  * Exit 0 when every scenario reads as expected, 1 on any mismatch, 2 on a usage error.
  */
 
@@ -68,6 +71,8 @@ interface Reading {
 const MAX_MS = 25_000;
 /** A boot is read once the screen has been static this long (the logo animates for ~10 s). */
 const QUIET_MS = 4_000;
+/** Scenarios booted at once. A boot is mostly waiting for a quiet screen, so they overlap well. */
+const DEFAULT_JOBS = 5;
 
 function arg(name: string): string | undefined {
   const i = process.argv.indexOf(name);
@@ -294,6 +299,8 @@ async function main(): Promise<void> {
   for (const s of wanted) if (!SCENARIOS.includes(s as Scenario)) usage(`unknown scenario ${s}`);
   const expectPath = arg("--expect") ?? join(import.meta.dir, "boot-canary.expect.json");
   const expected = JSON.parse(readFileSync(expectPath, "utf8")) as Record<string, Partial<Reading>>;
+  const jobs = Number(arg("--jobs") ?? DEFAULT_JOBS);
+  if (!Number.isInteger(jobs) || jobs < 1) usage("--jobs takes a whole number, 1 or more");
   const outDir = resolve(arg("--out") ?? "canary-out");
   mkdirSync(outDir, { recursive: true });
   // macOS caps a socket path at 104 bytes: a short directory under /tmp, never $TMPDIR
@@ -303,8 +310,23 @@ async function main(): Promise<void> {
   const results: Record<string, Reading & { ok: boolean }> = {};
   let failed = 0;
   try {
-    for (const s of wanted as Scenario[]) {
-      const r = await runScenario(s, bin, version, sockDir, outDir);
+    // every scenario has its own world, magmux and socket, so `jobs` of them boot side by side
+    const scenarios = wanted as Scenario[];
+    const readings = new Map<Scenario, Reading>();
+    let next = 0;
+    const worker = async (): Promise<void> => {
+      while (next < scenarios.length) {
+        const s = scenarios[next++] as Scenario;
+        readings.set(s, await runScenario(s, bin, version, sockDir, outDir));
+      }
+    };
+    // wait for every worker before a throw leaves: each scenario closes its own magmux
+    const ended = await Promise.allSettled(
+      Array.from({ length: Math.min(jobs, scenarios.length) }, worker)
+    );
+    for (const e of ended) if (e.status === "rejected") throw e.reason;
+    for (const s of scenarios) {
+      const r = readings.get(s) as Reading;
       const want = expected[s] ?? {};
       const ok = (Object.keys(want) as (keyof Reading)[]).every((k) => want[k] === r[k]);
       if (!ok) failed++;
