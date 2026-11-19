@@ -12,8 +12,8 @@
  * Usage:
  *   bun scripts/boot-canary.ts [--bin <claude binary>] [--scenarios a,b] [--expect <json>] [--out <dir>]
  *                              [--jobs <n>]
- * `--jobs` is how many scenarios boot at once (default: all of them, so the whole run waits for
- * one boot deadline at most); 1 boots them one after another.
+ * `--jobs` is how many scenarios boot at once (default: all of them, so the wait for the screens
+ * is one boot deadline at most; setup and teardown are outside it); 1 boots them one after another.
  * Exit 0 when every scenario reads as expected, 1 on any mismatch, 2 on a usage error.
  */
 

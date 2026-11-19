@@ -10,10 +10,11 @@ name: Claude Code boot canary
 # `latest` is npm's current release and only warns, so a new Claude Code release is caught within
 # 6 hours without turning unrelated PRs red.
 #
-# Linux only, and the scenarios all boot at once (--jobs in scripts/boot-canary.ts), so the boot
-# step waits for one 25 s boot deadline at most. A job that runs longer than 1 minute fails
-# (timeout-minutes); the wait for a runner is outside that limit. The macOS boot of the pinned
-# version is a step of `bun run test:macos` (scripts/test-macos.ts).
+# Linux only, and the scenarios all boot at once (--jobs in scripts/boot-canary.ts), so the wait
+# for the screens is one 25 s boot deadline at most; setup and teardown are outside that deadline.
+# A job that runs longer than 1 minute fails (timeout-minutes); the wait for a runner is outside
+# that limit. The macOS boot of the pinned version is a step of `bun run test:macos`
+# (scripts/test-macos.ts).
 
 on:
   schedule:
