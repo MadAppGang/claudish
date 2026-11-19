@@ -3,7 +3,7 @@
  * The macOS test gate, run on a Mac before a release tag:
  *
  *   bun run test:macos             # the essential tier, then print a summary
- *   bun run test:macos --full      # every test: test.yml's dispatched jobs, idle included
+ *   bun run test:macos --full      # every test, the full tier
  *   bun run test:macos --dry-run   # print what a run would fetch and run; fetch and run nothing
  *
  * The default is the essential tier (packages/cli/scripts/test-tiers.json): steps 0-2 with
@@ -11,30 +11,32 @@
  * hook loading tests are hook files outside the hooks category's essential list, so `--full` runs
  * them, and so does the last nightly part, `--part 7/7` (scripts/weekly-macos-tests.ts). Nightly part
  * `ADVISORY_PART` also boots npm's `latest` Claude Code (`LATEST_CANARY_STEP`), an advisory step:
- * a red result is reported and written to `--advisory-out <file>`, and never makes the run red. `--full` runs what
- * test.yml's dispatched macOS jobs run, which no pull request runs, and the idle group its Linux
- * jobs run:
+ * a red result is reported and written to `--advisory-out <file>`, and never makes the run red.
+ * `--full` runs every test file, the slow and macOS-only ones no pull request runs included:
  *
  *  0. `bun run build:cli`, so the tests that start packages/cli/dist test this commit (a failed
  *     build stops the gate);
  *  1. every hermetic group, sliced (`ci-tests.ts --run idle@1/3,…,pane@1/6,…,rest@1/8,…
  *     --tier <tier>`, `GATE_RUNS`: test.yml's idle shards and pane slices, and `rest` in 8, in
- *     one call), under the Bun the `hermetic` job pins;
+ *     one call), under the Bun test.yml's `rest` job pins;
  *  2. the macos-bridge tests, `scripts/*.test.ts` and the Claude Code boot canary
  *     (scripts/boot-canary.ts: one boot per spawn shape, no credentials, no model call), under
  *     the same Bun. The canary boots the Claude Code .github/claude-code.version pins, fetched
- *     with `npm pack`. No GitHub workflow boots Claude Code: this step is the only boot check;
- *  3. the blind hook tests and the Antigravity HTTP client tests, under the Bun the
- *     `blind-hooks` job pins (two blind tests fail on 1.3.10 because of bugs in Bun's test
- *     client);
+ *     with `npm pack`. No GitHub workflow boots Claude Code: this step is the only boot check that
+ *     gates;
+ *  3. the blind hook tests and the Antigravity HTTP client tests, under `BLIND_BUN` (two blind
+ *     tests fail on the pinned Bun because of bugs in Bun's test client);
  *  4. the S1 hook loading tests (`packages/cli/src/hooks/s1-probe/`, test.yml's hooks-loading
  *     macOS rows) under the Bun release.yml builds the binaries with (`latest`).
  *
- * The Bun versions are READ from test.yml, never copied here: a gate on a different Bun than CI
- * proves something else (pane suites passed on 1.4.0 and failed 118 tests on 1.3.10). Each pinned
- * Bun comes from `bunx bun@<version>` and is first on PATH for its steps. Everything a run
- * fetches goes into one `mkdtemp` directory of its own, removed when the run exits, so two runs
- * (a `--dry-run` beside a real run included) never touch each other's files.
+ * The hermetic Bun is READ from test.yml's `rest` job and the release Bun from release.yml's
+ * `build` job, never copied here: a gate on a different Bun than CI proves something else (pane
+ * suites passed on 1.4.0 and failed 118 tests on 1.3.10). The blind Bun is the constant
+ * `BLIND_BUN`, for the reason given there. Each pinned Bun comes from `bunx bun@<version>` and
+ * is first on PATH for its steps. Everything a run fetches goes into one `mkdtemp` directory of
+ * its own, removed when the run exits, so two runs (a `--dry-run` beside a real run included)
+ * never touch each other's files. The boot canary writes to a new directory of the run's own
+ * too (`canaryOutputDir`), which outlives the run so a red canary can be read.
  *
  * Every step runs under scripts/guard-real-config.ts, as `test:safe` does (a throwaway HOME, no
  * Keychain, no 1Password), with an environment built by allowlist: no provider key from the
@@ -70,7 +72,6 @@ import {
 import { availableParallelism, constants as osConstants, tmpdir } from "node:os";
 import { join } from "node:path";
 import { findMagmuxCandidates } from "../packages/cli/src/launcher/magmux-binary.ts";
-import { removeCanaryOutput } from "./boot-canary.output.ts";
 
 const ROOT = join(import.meta.dir, "..");
 const CLI = join(ROOT, "packages", "cli");
@@ -80,8 +81,14 @@ const MAGMUX_ENV = join(ROOT, ".github", "magmux.env");
 const PANE_LAUNCH = join(CLI, "src", "pane", "pane-launch.ts");
 const CLAUDE_CODE_VERSION = join(ROOT, ".github", "claude-code.version");
 
-/** The suites of test.yml's three `hermetic` runners. */
-export const HERMETIC_RUNS = "pane@1/6,pane@2/6,pane@3/6,pane@4/6,pane@5/6,pane@6/6,rest";
+/**
+ * The Bun the blind hook tests run on, not the pinned one: two of them fail on 1.3.10 because of
+ * bugs in Bun's test client, not in claudish, and pass 20 of 20 on 1.4.0 (reproduced on 1.3.10
+ * with no claudish code in the loop): C-17, a fetch reader.cancel() that never closes the
+ * connection, and X-12, a paused-then-resumed node:child_process reader that drops every byte.
+ * The blind typecheck stays under the pinned Bun.
+ */
+export const BLIND_BUN = "1.4.0";
 
 /**
  * How many slices the gate cuts each ci-tests.ts group into; every slice is one concurrent
@@ -90,13 +97,10 @@ export const HERMETIC_RUNS = "pane@1/6,pane@2/6,pane@3/6,pane@4/6,pane@5/6,pane@
  * - `idle` runs on test.yml's Linux runners and not on its macOS ones, so without it here a
  *   weekly recovery-contract file would run in no gate a release owner starts. 3 slices, as
  *   test.yml's idle shards.
- * - `pane`: 6 slices, as test.yml's `hermetic` runners.
+ * - `pane`: 6 slices.
  * - `rest`: 8 slices. A local essential run (2026-11-17, load about 45 on an 18-core Mac) took
  *   432 s for `rest` as one process, against 15-76 s for each pane slice; 8 slices put each near
  *   54 s, under the longest pane slice, and 3 + 6 + 8 = 17 processes still fit 18 cores.
- *
- * The gate keeps its own list: test.yml's macOS runners keep running `rest` whole
- * (`HERMETIC_RUNS`).
  */
 export const GATE_SLICES = { idle: 3, pane: 6, rest: 8 } as const;
 
@@ -250,6 +254,22 @@ export const CANARY_STEP = "Claude Code boot canary";
  */
 export const LATEST_CANARY_STEP = "Claude Code boot canary, npm latest";
 export const ADVISORY_PART = 1;
+
+/** True when the plan has a step that writes boot canary output (`CANARY_STEP`, `LATEST_CANARY_STEP`). */
+export function runsCanary(groups: readonly StepGroup[]): boolean {
+  return groups.some((g) =>
+    g.steps.some((s) => s.name === CANARY_STEP || s.name === LATEST_CANARY_STEP)
+  );
+}
+
+/**
+ * A boot canary output directory of this run's own, made under `root` with `mkdtemp`, so it is
+ * new and empty and no other run writes there. A `dryRun` names a placeholder and makes nothing.
+ */
+export function canaryOutputDir(root: string, dryRun: boolean): string {
+  if (dryRun) return join(root, "claudish-boot-canary-<run>");
+  return mkdtempSync(join(root, "claudish-boot-canary-"));
+}
 
 /**
  * Every step of one tier, grouped by the Bun it runs under; a Bun with no step in the tier is
@@ -431,7 +451,7 @@ function partSteps(p: {
                   NO_ENV_FILE,
                   "scripts/boot-canary-latest.ts",
                   "--out",
-                  `${p.canary.out}-latest`,
+                  join(p.canary.out, "latest"),
                 ],
                 advisory: true as const,
               },
@@ -829,27 +849,17 @@ if (import.meta.main) {
   const { dryRun, tier, part } = args;
   if (process.platform !== "darwin") fail(`runs on macOS only, not ${process.platform}`);
 
-  // What the canary read (one screen per spawn shape, results.json) outlives the run directory,
-  // so a red canary can be read after the gate exits. Every run but a nightly part has the canary
-  // step. Such a run removes those files, and no other file there, before it reads a pin or
-  // fetches anything: a run that stops there never reaches the step, and what an earlier run
-  // read must not stay at the path this run names. A `--dry-run` removes nothing.
-  const canaryOut = join(tmpdir(), "claudish-boot-canary");
-  if (!part && !dryRun) removeCanaryOutput(canaryOut);
-
   const workflow = readFileSync(WORKFLOW, "utf8");
-  const hermeticPin = bunPinOf(workflow, "hermetic");
-  const blindPin = bunPinOf(workflow, "blind-hooks");
-  if (!hermeticPin || !blindPin) {
-    fail(`no bun-version pin for the hermetic or blind-hooks job in ${WORKFLOW}`);
-  }
+  const hermeticPin = bunPinOf(workflow, "rest");
+  if (!hermeticPin) fail(`no bun-version pin for the rest job in ${WORKFLOW}`);
+  const blindPin = BLIND_BUN;
   // The Bun the release binaries are built with (`latest`), as test.yml's hooks-loading uses.
   const releaseBunVersion = bunVersionOf(readFileSync(RELEASE_WORKFLOW, "utf8"), "build");
   if (!releaseBunVersion) fail(`no bun-version in the build job of ${RELEASE_WORKFLOW}`);
   const scriptTests = [...new Bun.Glob("scripts/*.test.ts").scanSync({ cwd: ROOT })]
     .sort()
     .map((f) => `./${f}`);
-  const planFor = (exeOf: (version: string) => string, claude = "") =>
+  const planFor = (exeOf: (version: string) => string, claude = "", canaryOut = "") =>
     planSteps({
       root: ROOT,
       hermetic: { version: hermeticPin, exe: exeOf(hermeticPin) },
@@ -881,7 +891,8 @@ if (import.meta.main) {
     console.log(`[test:macos] tier ${tier}`);
     const plan = planFor(
       (version) => `<bun@${version}>`,
-      claudePin ? `<claude@${claudePin.version}>` : ""
+      claudePin ? `<claude@${claudePin.version}>` : "",
+      canaryOutputDir(tmpdir(), true)
     );
     for (const { steps } of plan)
       for (const s of steps) {
@@ -911,7 +922,11 @@ if (import.meta.main) {
   const magmuxDir = installPinnedMagmux(magmuxPin, runDir);
   const buns = new Map(versions.map((v) => [v, pinnedBun(v, runDir)] as const));
   const claude = claudePin ? installPinnedClaudeCode(claudePin, runDir) : "";
-  const groups = planFor((version) => buns.get(version)?.exe ?? "", claude);
+  // What the canary reads (one screen per spawn shape, results.json) goes to a new directory of
+  // this run's own, made only when the plan has a canary step. It outlives the run directory, so
+  // a red canary can be read after the gate exits; old ones are left to macOS's $TMPDIR purge.
+  const canaryOut = runsCanary(unfetched) ? canaryOutputDir(tmpdir(), false) : "";
+  const groups = planFor((version) => buns.get(version)?.exe ?? "", claude, canaryOut);
   const binDirOf = new Map([...buns].map(([v, bun]) => [v, bun.dir] as const));
 
   console.log(`[test:macos] tier ${tier}`);
@@ -919,6 +934,7 @@ if (import.meta.main) {
   for (const [version, bun] of buns)
     console.log(`[test:macos] bun@${version}: Bun ${bun.resolved}, ${bun.exe}`);
   if (claudePin) console.log(`[test:macos] Claude Code ${claudePin.version}: ${claude}`);
+  if (canaryOut) console.log(`[test:macos] canary output: ${canaryOut}`);
 
   const steps = groups.flatMap(({ bun, steps }) => steps.map((step) => ({ ...step, bun })));
   const results = await runSteps(steps, async (step) => {

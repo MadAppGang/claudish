@@ -39,7 +39,7 @@ const EXPRESSION = /\$\{\{[\s\S]*?\}\}/g;
 // The local scripts that download, boot or run Claude Code, and the package scripts that start
 // them; a workflow that starts one runs it.
 const SCRIPTS =
-  /(\bscripts\/(boot-canary|routing-review|test-macos|weekly-macos-tests)\.ts\b|\b(review:routing|test:macos)(?![\w:-]))/;
+  /(\bscripts\/(boot-canary|boot-canary-latest|routing-review|test-macos|weekly-macos-tests)\.ts\b|\b(review:routing|test:macos)(?![\w:-]))/;
 // Shells whose `-c` argument is itself a command line.
 const SHELLS = new Set(["bash", "sh", "zsh", "dash"]);
 // `<shell> [options] -c '<command line>'` and `eval '<command line>'`, quoted.
@@ -285,6 +285,11 @@ describe("the detector finds each kind", () => {
     [
       "the boot canary script",
       stepYaml("run: bun scripts/boot-canary.ts --bin x"),
+      "claude-code-script",
+    ],
+    [
+      "the boot canary on npm's latest Claude Code",
+      stepYaml("run: bun scripts/boot-canary-latest.ts --out x"),
       "claude-code-script",
     ],
     [

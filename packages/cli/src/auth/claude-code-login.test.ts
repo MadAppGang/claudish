@@ -1,10 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { claudeCodeSecureStorageServices } from "./claude-code-facts.js";
 import {
   claudeCodeStartupCredential,
   hasClaudeCodeLogin,
+  keychainAnthropicMemoKey,
   keychainLoginPresent,
+  keychainPresenceArgs,
+  keychainPresenceIn,
+  keychainPresenceOf,
 } from "./claude-code-login.js";
 
 /** Runs the startup check over no files and records every Keychain service it asks about. */
@@ -132,5 +138,79 @@ describe("hasClaudeCodeLogin Keychain probe under a relative CLAUDE_CONFIG_DIR",
     );
     expect(services).toEqual(claudeCodeSecureStorageServices("-credentials", env, childCwd));
     expect(services).toContain(childService);
+  });
+});
+
+describe("the Keychain presence probe", () => {
+  test("names the keychain file only from the env it is given", () => {
+    expect(keychainPresenceArgs("svc", { CLAUDISH_KEYCHAIN_FILE: "/k" })).toEqual([
+      "find-generic-password",
+      "-s",
+      "svc",
+      "/k",
+    ]);
+    const before = process.env.CLAUDISH_KEYCHAIN_FILE;
+    process.env.CLAUDISH_KEYCHAIN_FILE = "/process-level.keychain";
+    try {
+      expect(keychainPresenceArgs("svc", {})).toEqual(["find-generic-password", "-s", "svc"]);
+    } finally {
+      if (before === undefined) delete process.env.CLAUDISH_KEYCHAIN_FILE;
+      else process.env.CLAUDISH_KEYCHAIN_FILE = before;
+    }
+  });
+
+  test("reads found, absent and failed from security's result", () => {
+    expect(keychainPresenceOf({ status: 0 })).toBe("found");
+    expect(keychainPresenceOf({ status: 44 })).toBe("absent");
+    expect(keychainPresenceOf({ status: 1 })).toBe("failed");
+    expect(keychainPresenceOf({ status: null })).toBe("failed");
+    expect(keychainPresenceOf({ status: 0, error: new Error("spawn failed") })).toBe("failed");
+  });
+});
+
+describe("the default Keychain probes read the env they are given", () => {
+  test("keychainPresenceIn hands every service the given env, never process.env", () => {
+    const env = { CLAUDISH_KEYCHAIN_FILE: "/given.keychain" };
+    const seen: { service: string; env: NodeJS.ProcessEnv | undefined }[] = [];
+    const presence = keychainPresenceIn(env, (service, e) => {
+      seen.push({ service, env: e });
+      return "absent";
+    });
+    expect(presence("svc-a")).toBe("absent");
+    expect(presence("svc-b")).toBe("absent");
+    expect(seen).toEqual([
+      { service: "svc-a", env },
+      { service: "svc-b", env },
+    ]);
+  });
+
+  test("no default path passes defaultKeychainPresence unbound", () => {
+    // A bare `defaultKeychainPresence` value is called with one argument and reads process.env.
+    const source = readFileSync(join(import.meta.dir, "claude-code-login.ts"), "utf8");
+    const code = source
+      .split("\n")
+      .filter((line) => !/^\s*(\/\/|\*|\/\*\*)/.test(line))
+      .join("\n");
+    const bare = [...code.matchAll(/defaultKeychainPresence(?!\s*\()/g)]
+      .map((m) => code.slice(Math.max(0, (m.index ?? 0) - 40), (m.index ?? 0) + 30))
+      .filter((around) => !around.includes("keychainPresenceIn(env, defaultKeychainPresence)"));
+    expect(bare).toEqual([]);
+    expect(code).toContain("keychainPresenceIn(env, defaultKeychainPresence)");
+  });
+});
+
+describe("the picker's Keychain probe memo", () => {
+  test("two keychain files give two memo entries", () => {
+    const a = keychainAnthropicMemoKey({ CLAUDISH_KEYCHAIN_FILE: "/a.keychain" }, "/w");
+    const b = keychainAnthropicMemoKey({ CLAUDISH_KEYCHAIN_FILE: "/b.keychain" }, "/w");
+    const none = keychainAnthropicMemoKey({}, "/w");
+    expect(new Set([a, b, none]).size).toBe(3);
+    expect(keychainAnthropicMemoKey({ CLAUDISH_KEYCHAIN_FILE: "/a.keychain" }, "/w")).toBe(a);
+  });
+
+  test("a changed config dir still gives another entry", () => {
+    expect(keychainAnthropicMemoKey({ CLAUDE_CONFIG_DIR: "/c1" }, "/w")).not.toBe(
+      keychainAnthropicMemoKey({ CLAUDE_CONFIG_DIR: "/c2" }, "/w")
+    );
   });
 });

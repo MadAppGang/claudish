@@ -4,6 +4,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -14,15 +15,16 @@ import { discover, groupOf } from "../packages/cli/scripts/ci-tests.ts";
 import { SCENARIOS, removeCanaryOutput } from "./boot-canary.output.ts";
 import {
   ADVISORY_PART,
+  BLIND_BUN,
   CANARY_STEP,
   GATE_RUNS,
   GATE_SLICE_COUNT,
-  HERMETIC_RUNS,
   LATEST_CANARY_STEP,
   NO_ENV_FILE,
   advisoryResults,
   bunPinOf,
   bunVersionOf,
+  canaryOutputDir,
   compareVersions,
   gateRed,
   launchArgv,
@@ -32,6 +34,7 @@ import {
   planSteps,
   reportedClaudeCodeVersion,
   runSteps,
+  runsCanary,
   runsPackageScript,
   sliceConcurrency,
   startStep,
@@ -218,8 +221,15 @@ describe("a nightly part", () => {
       NO_ENV_FILE,
       "scripts/boot-canary-latest.ts",
       "--out",
-      `${PLAN_INPUT.canary.out}-latest`,
+      join(PLAN_INPUT.canary.out, "latest"),
     ]);
+  });
+
+  test("the advisory canary writes inside the canary directory the gate reserved and prints", () => {
+    const step = partSteps(ADVISORY_PART).find((s) => s.name === LATEST_CANARY_STEP);
+    const args = step?.args ?? [];
+    const out = args[args.indexOf("--out") + 1] ?? "";
+    expect(out.startsWith(`${PLAN_INPUT.canary.out}/`)).toBe(true);
   });
 
   test("a red advisory step does not make the gate red; any other red step does", () => {
@@ -462,9 +472,16 @@ describe("no step loads a .env file", () => {
 });
 
 describe("test:macos reads its Buns from test.yml", () => {
-  test("the hermetic and blind-hooks jobs each pin an exact Bun", () => {
-    expect(bunPinOf(WORKFLOW, "hermetic")).toMatch(/^\d+\.\d+\.\d+$/);
-    expect(bunPinOf(WORKFLOW, "blind-hooks")).toMatch(/^\d+\.\d+\.\d+$/);
+  test("the rest job pins an exact Bun, and the blind Bun is an exact version", () => {
+    expect(bunPinOf(WORKFLOW, "rest")).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(BLIND_BUN).toMatch(/^\d+\.\d+\.\d+$/);
+  });
+
+  test("no Bun is read from a macOS job of test.yml", () => {
+    const source = readFileSync(join(import.meta.dir, "test-macos.ts"), "utf8");
+    expect(source).not.toContain('bunPinOf(workflow, "hermetic")');
+    expect(source).not.toContain('bunPinOf(workflow, "blind-hooks")');
+    expect(source).toContain('bunPinOf(workflow, "rest")');
   });
 
   test("a pin is read from its own job, not the next one", () => {
@@ -500,11 +517,6 @@ describe("test:macos reads its Buns from test.yml", () => {
       "    steps: []",
     ].join("\n");
     expect(bunPinOf(yml, "a")).toBe("1.2.3");
-  });
-
-  test("the hermetic runs are the slices test.yml's hermetic runners run", () => {
-    const runs = [...WORKFLOW.matchAll(/^\s+runs: (\S+)$/gm)].map((m) => m[1]).join(",");
-    expect(runs).toBe(HERMETIC_RUNS);
   });
 });
 
@@ -669,6 +681,44 @@ describe("removeCanaryOutput", () => {
     rmSync(dir, { recursive: true, force: true });
     removeCanaryOutput(dir);
     expect(existsSync(dir)).toBe(false);
+  });
+});
+
+describe("canaryOutputDir", () => {
+  test("each run gets a new empty directory of its own", () => {
+    const root = tempDir();
+    try {
+      const a = canaryOutputDir(root, false);
+      const b = canaryOutputDir(root, false);
+      expect(a).not.toBe(b);
+      for (const dir of [a, b]) {
+        expect(dir.startsWith(join(root, "claudish-boot-canary-"))).toBe(true);
+        expect(existsSync(dir)).toBe(true);
+        expect(readdirSync(dir)).toEqual([]);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a dry run names a directory and makes nothing", () => {
+    const root = tempDir();
+    try {
+      const dir = canaryOutputDir(root, true);
+      expect(dir.startsWith(join(root, "claudish-boot-canary-"))).toBe(true);
+      expect(existsSync(dir)).toBe(false);
+      expect(readdirSync(root)).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("only a plan with a canary step needs the directory", () => {
+    const part = (k: number) => planSteps({ ...PLAN_INPUT, tier: "weekly", part: { k, n: 7 } });
+    expect(runsCanary(ESSENTIAL)).toBe(true);
+    expect(runsCanary(planSteps({ ...PLAN_INPUT, tier: "full" }))).toBe(true);
+    expect(runsCanary(part(ADVISORY_PART))).toBe(true);
+    for (const k of [2, 3, 4, 5, 6, 7]) expect(runsCanary(part(k))).toBe(false);
   });
 });
 
