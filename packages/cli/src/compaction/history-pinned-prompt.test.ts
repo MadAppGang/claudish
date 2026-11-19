@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -135,6 +136,43 @@ test("a swap inside the turn keeps the turn's user prompt verbatim", async () =>
     ],
   });
   expect(b.messages[1]?.role).toBe("assistant");
+});
+
+test("the swap line names the pinned prompt with its length and sha256", async () => {
+  const r = rig();
+  const { pass } = await swapInsideTurn(r);
+  expect(pass.applied).toBe("swapped");
+  const line = (await capturedLines()).find((l) => l.includes("history swap in session"));
+  const sha = createHash("sha256").update(SPEC).digest("hex").slice(0, 12);
+  expect(line).toContain(
+    `; the turn's prompt, message 0 (${SPEC.length} characters, sha256 ${sha}), kept verbatim after the summary`
+  );
+});
+
+test("a swap that pins nothing names no prompt in its line", async () => {
+  const r = rig();
+  const turns = (n: number): Payload => {
+    const messages: Message[] = [];
+    for (let i = 0; i < n; i++) {
+      messages.push({ role: "user", content: `request ${i} `.repeat(300) });
+      messages.push({
+        role: "assistant",
+        content: [{ type: "text", text: `answer ${i} `.repeat(300) }],
+      });
+    }
+    messages.push({ role: "user", content: `request ${n}` });
+    return { model, messages };
+  };
+  const a = turns(5);
+  r.windowAt(a, 0.65);
+  r.h.compact(a, session);
+  await r.h.whenIdle();
+  const b = turns(6);
+  r.windowAt(b, 0.8);
+  expect(r.h.compact(b, session).applied).toBe("swapped");
+  const line = (await capturedLines()).find((l) => l.includes("history swap in session"));
+  expect(line).toBeDefined();
+  expect(line).not.toContain("the turn's prompt");
 });
 
 test("the pinned prompt is replayed byte for byte, across requests and a restart", async () => {

@@ -1422,11 +1422,24 @@ export class HistoryCompactor {
   }
 }
 
-/** Log a new swap, and whether it was sent inside a turn. */
+/**
+ * Log a new swap, whether it was sent inside a turn, and the prompt it pins:
+ * its message index, the length and a sha256 prefix of its text as sent, so a
+ * reader can compare it with the prompt the user typed.
+ */
 function logSwap(sessionId: string, swap: HistorySwapRecord, original: readonly unknown[]): void {
   const midTurn = !isHumanTurnStart(original[original.length - 1]);
+  let pinnedPart = "";
+  if (swap.pinned !== undefined && isHumanTurnStart(original[swap.pinned])) {
+    const text = pinnedPromptBlocks(original[swap.pinned])
+      .filter((b) => b.type === "text" && typeof b.text === "string")
+      .map((b) => b.text as string)
+      .join("");
+    const sha = createHash("sha256").update(text).digest("hex").slice(0, 12);
+    pinnedPart = `; the turn's prompt, message ${swap.pinned} (${text.length} characters, sha256 ${sha}), kept verbatim after the summary`;
+  }
   log(
-    `[compaction] history swap in session ${sessionId}${midTurn ? " mid-turn, after a complete tool round" : ""}: messages 0..${swap.boundary} replaced by a summary of ${swap.summary.length} characters`
+    `[compaction] history swap in session ${sessionId}${midTurn ? " mid-turn, after a complete tool round" : ""}: messages 0..${swap.boundary} replaced by a summary of ${swap.summary.length} characters${pinnedPart}`
   );
 }
 
