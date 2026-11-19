@@ -75,9 +75,10 @@ export const ENV_ALLOWLIST = ["PATH", "USER", "LANG", "TMPDIR", "DOCKER_CONTEXT"
 
 /**
  * Leads every git call: no hook of the caller's (core.hooksPath) runs in the source or the clone,
- * and a path such as `--change` is a file name, never pathspec magic like `:(glob)`.
+ * a path such as `--change` is a file name, never pathspec magic like `:(glob)`, and
+ * `git status` on the source does not rewrite its index to refresh file stats.
  */
-const NO_HOOKS = ["-c", "core.hooksPath=/dev/null", "--literal-pathspecs"];
+const NO_HOOKS = ["-c", "core.hooksPath=/dev/null", "--literal-pathspecs", "--no-optional-locks"];
 
 const COMMIT_IDENTITY = [
   "-c",

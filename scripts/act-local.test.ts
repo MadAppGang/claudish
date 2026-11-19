@@ -418,7 +418,7 @@ describe("runActLocal", () => {
     const command = (args: string[]): string[] => {
       let i = 0;
       while (args[i] === "-c") i += 2;
-      if (args[i] === "--literal-pathspecs") i += 1;
+      while (args[i]?.startsWith("--")) i += 1;
       return args.slice(i);
     };
     const seen: { env?: Record<string, string>; config?: string; started?: boolean } = {};
@@ -469,7 +469,7 @@ describe("runActLocal", () => {
   const sub = (args: string[]) => {
     let i = 0;
     while (args[i] === "-c") i += 2;
-    if (args[i] === "--literal-pathspecs") i += 1;
+    while (args[i]?.startsWith("--")) i += 1;
     return args.slice(i);
   };
 
@@ -653,16 +653,17 @@ describe("runActLocal", () => {
     }
   });
 
-  test("every git call of a real run reads paths literally, not as pathspec magic", async () => {
+  test("every git call reads paths literally and never refreshes an index", async () => {
     const root = mkdtempSync(join(tmpdir(), "act-local-test-"));
     const { deps, gitCalls } = realRunDeps(root);
     try {
       expect(await runActLocal(TAG_RUN, deps)).toBe(0);
       for (const call of gitCalls) {
-        expect(call.args.slice(0, 3)).toEqual([
+        expect(call.args.slice(0, 4)).toEqual([
           "-c",
           "core.hooksPath=/dev/null",
           "--literal-pathspecs",
+          "--no-optional-locks",
         ]);
       }
     } finally {
