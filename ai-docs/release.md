@@ -80,8 +80,9 @@ the oldest result, and writes
 `RED-<UTC date>-part<k>.json` (date, part, commit, failing tests, log path) and shows a
 notification naming it; triage reads and deletes the marker. `weekly-tests.yml` runs the
 Linux full tier every Sunday (11:00 UTC; a failed run opens or updates the issue "Weekly
-full test run failed"). The release gate is `bun run test:macos` on the release commit
-plus `bun scripts/weekly-macos-tests.ts --check` (every part green within 7 days). A green
+full test run failed"). The release gate is `bun run test:macos` on the release commit,
+`bun scripts/weekly-macos-tests.ts --check` (every part green within 7 days) and
+`bun run review:routing` on the release commit (a PASS verdict). A green
 essential gate says nothing about a weekly file changed since its part last ran: for such
 a change, run that part by hand (`--part <k>`) or `bun run test:macos --full`.
 `ai-docs/architecture/testing.md` § Test tiers has the list and how to promote a file.
@@ -124,20 +125,39 @@ PR that also fails on a clean export of `origin/main` is not the release's, but
 it is still a red gate: make the test hermetic (seed the catalog; disable and
 reset the warm) and re-run, rather than tag over it.
 
-`boot-canary.yml` also runs on PRs that touch `pane/` and every 6 hours, on Linux
-runners only: it boots each spawn shape against the Claude Code pinned in
-`.github/claude-code.version` (blocking cell) and npm's latest (non-blocking). The
-scenarios all boot at once (`--jobs`), and a job that runs longer than 1 minute fails
-(`timeout-minutes: 1`); the wait for a runner is outside that limit. It is not part
-of `release.yml`. A red pinned cell whose "Boot every spawn shape" step failed blocks
-a release, the same as a red `test.yml`. Read the step's lines: a scenario that booted
-and read differently means the pane boot reader no longer matches Claude Code, and a
-scenario that did not boot or connect is a failed start. Fix the first, and re-run the
-job for the second. A cell that failed in a setup step or at the 1-minute limit did not
-test the reader: read the failed step, then re-run the job. The macOS boot
-of the pinned version is the "Claude Code boot canary" step of `bun run test:macos`
-(both tiers, no nightly part): the gate fetches that Claude Code with `npm pack` and
-never uses the Mac's own.
+The only Claude Code boot check is the "Claude Code boot canary" step of
+`bun run test:macos` (both tiers, no nightly part). It boots each spawn shape against the
+Claude Code pinned in `.github/claude-code.version`, fetched with `npm pack` (the
+per-platform package; the Mac's own Claude Code is never used), with every scenario
+booting at once (`--jobs`). Read the step's lines: a scenario that booted and read
+differently means the pane boot reader no longer matches Claude Code, and a scenario that
+did not boot or connect is a failed start. Fix the first, and rerun the gate for the
+second. npm's newest Claude Code is booted only once `.github/claude-code.version` is
+bumped to it.
+
+**No GitHub workflow installs, downloads or runs Claude Code.**
+`scripts/no-claude-code-in-ci.test.ts` (in test.yml's `scripts` job on every pull
+request) parses every workflow and fails on `anthropics/claude-code-action`, an
+`@anthropic-ai/claude-code` package, the `ANTHROPIC_API_KEY` or
+`CLAUDE_CODE_OAUTH_TOKEN` secret, a `claude` command, or a step that starts
+`scripts/boot-canary.ts` or `scripts/routing-review.ts`. Claude Code runs only on the
+Mac, on the owner's own login.
+
+**The routing rulebook review is `bun run review:routing`, on the release commit.**
+`scripts/routing-review.ts` exports the committed ref (default `HEAD`) with
+`git archive` into a directory under the system temp directory, removes every
+`.claude/`, `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`, `.mcp.json` and
+`.claude.json` from it, and runs `claude -p` there on the user's Claude Code login with
+`--safe-mode`, `--strict-mcp-config`, `--setting-sources project` and only the Read,
+Glob and Grep tools. Uncommitted edits are never reviewed (it warns when there are any).
+It prints the verdict and each violation and writes `result.json` beside the export.
+Exit 0 is PASS; exit 1 is FAIL, an unreadable verdict, or Claude Code failing or
+running past 20 minutes; exit 2 is a usage error. Anything but 0 stops the tag.
+`--ref <rev>` reviews another commit, `--bin <claude>` names the binary, and
+`--dry-run` exports the tree and prints the argv without starting Claude Code. A routing
+pull request's author may run it on the branch before merge. `release.yml` no longer
+reviews routing: its `bundled-list` job only refuses a bundled recommended list
+unchanged since the previous tag, and the publish waits on it.
 
 npm publishing uses OIDC trusted publishing, so no `NPM_TOKEN` exists and nothing
 can be published from a developer machine. `HOMEBREW_TAP_TOKEN` is the only
