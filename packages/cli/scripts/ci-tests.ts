@@ -8,14 +8,15 @@
  *   bun scripts/ci-tests.ts --update-times <junit.xml>…
  *   bun scripts/ci-tests.ts --local <junit.xml> [-- <bun test args>]
  *
- * Three tiers. `full` is every file. `essential` (the default of `--plan` and `--run`) is what a
+ * Four tiers. `full` is every file. `essential` (the default of `--plan` and `--run`) is what a
  * pull request and `bun run test:macos` run: test-tiers.json names at most three files for each
  * slow category, and every other file of a slow category is weekly; a `pinned` file is essential;
  * any other file outside the slow categories is essential unless ci-test-times.json measures it
  * at the data file's `heavySeconds` or more. `weekly` is `full` minus `essential`: the Mac's
  * nightly parts use it. `github` is what a GitHub-hosted full run takes (a dispatched test.yml,
- * weekly-tests.yml): `essential` plus every weekly file measured under `githubMaxSeconds`, so
- * no GitHub job holds a file that alone would take it past a minute. Off darwin, every tier drops the
+ * weekly-tests.yml): `essential` plus every weekly file measured under `githubMaxSeconds` or
+ * not measured yet (weighed at 1 s), so no Linux GitHub job holds a file that alone would take
+ * it past a minute. Off darwin, every tier drops the
  * data file's `macOnly` files. A data file with no `slow` array, a category
  * without a non-empty `category` or `prefix`, a prefix that matches no test file, a missing file,
  * a file twice, more than three files for one category, a category twice, or a prefix twice or
@@ -103,7 +104,8 @@ function byGroup(files: string[]): Map<string, string[]> {
 /**
  * `weekly` is `full` minus `essential`: the files the nightly parts run. `github` is what a
  * GitHub-hosted full run takes (a dispatched test.yml and weekly-tests.yml): `essential` plus
- * every weekly file measured under the data file's `githubMaxSeconds`. A file it leaves out is
+ * every weekly file measured under the data file's `githubMaxSeconds` or not measured yet (a
+ * file the table lacks weighs 1 s and is kept). A file it leaves out is
  * weekly by construction, so the Mac's nightly parts and `test:macos --full` still run it.
  */
 export const TIER_NAMES = ["essential", "weekly", "full", "github"] as const;
@@ -115,8 +117,9 @@ export interface TierData {
   /** A file outside the slow categories measured at this many seconds or more is weekly. */
   heavySeconds: number;
   /**
-   * A weekly file measured at this many seconds or more runs only on the Mac: the `github`
-   * tier leaves it out, so no GitHub job holds it. Absent, the `github` tier is `full`.
+   * A weekly file measured at this many seconds or more runs in no Linux GitHub job: the
+   * `github` tier leaves it out, and the Mac's nightly parts and `test:macos --full` run it.
+   * Absent, the `github` tier is `full`.
    */
   githubMaxSeconds?: number;
   slow: SlowCategory[];

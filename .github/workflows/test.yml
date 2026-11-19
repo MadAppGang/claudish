@@ -31,16 +31,18 @@ name: Tests
 # files per slow category, whatever their time, the pinned files, and, outside the slow
 # categories, no other file measured at the data file's heavySeconds or more. A manual dispatch
 # runs the GITHUB tier on Linux: the essential files plus every weekly file measured under the
-# data file's githubMaxSeconds (10 s), so that no job holds a file that alone takes it past a
-# minute. weekly-tests.yml runs the same github tier on Sunday. The rest is the WEEKLY tier, and
+# data file's githubMaxSeconds (10 s) or not measured yet, so that no Linux job holds a file
+# that alone takes it past a minute. weekly-tests.yml runs the same github tier on Sunday. The rest is the WEEKLY tier, and
 # scripts/weekly-macos-tests.ts runs one weekly-tier part a night on the owner's Mac, the files
 # the github tier leaves out (recovery-ladder 67 s, claude-runner-exit-code 62.5 s, ...)
 # included.
 #
-# THE TIME BUDGET: every run of this workflow finishes in under a minute, and each job well under
-# 50 s. A long check moves to the Mac (`bun run test:macos`, the nightly parts); a timeout is
-# never raised to make room. scripts/test-tier-workflows.test.ts fails when a slice of a GitHub
-# job weighs more than its budget.
+# THE TIME BUDGET: every Linux job of this workflow finishes well under 50 s, and a pull-request
+# or push run in under a minute. A long check moves to the Mac (`bun run test:macos`, the
+# nightly parts); a timeout is never raised to make room. scripts/test-tier-workflows.test.ts
+# fails when a slice of a Linux job weighs more than its budget. The dispatch-only macOS jobs
+# below (hermetic, blind-hooks, the macOS rows of hooks-loading) do not meet the budget yet:
+# hermetic runs the full pane and rest groups for 5-11 minutes.
 
 on:
   pull_request:

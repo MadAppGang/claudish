@@ -29,10 +29,11 @@ Every pull request and the pre-tag gate (`bun run test:macos`) run the **essenti
 **full** tier (every file) runs in `bun run test:macos --full`. The **weekly** tier (full minus
 essential) runs on the owner's Mac, one of 7 parts a night. The **github** tier runs on Linux
 every Sunday (`weekly-tests.yml`) and on a manual dispatch of `test.yml`: the essential files
-plus every weekly file measured under `githubMaxSeconds` (10 s) in `test-tiers.json`. `bun run
+plus every weekly file measured under `githubMaxSeconds` (10 s) in `test-tiers.json`, or not
+measured yet (a file `ci-test-times.json` lacks weighs 1 s and is kept). `bun run
 test` and `test:safe` stay a plain `bun test` of every file.
 
-**Why the github tier exists: every GitHub run finishes in under a minute.** Jack's rule
+**Why the github tier exists: every Linux GitHub job finishes well under 50 s.** Jack's rule
 (2026-11-19): a GitHub workflow run takes under 1 minute, aim 50 s; long validation runs on the
 Mac, which has no limit, and a timeout is never raised to make room. A slice cannot be lighter
 than its heaviest file, and a job adds 10-20 s of setup, so a file such as
@@ -105,7 +106,7 @@ silent invariants in `CLAUDE.md`. The data file carries a `guards` line for each
 `test-tiers.json`; when the category already lists three, replace the one whose failure class the
 new file covers better. Write `guards` as the failure the file catches. A file outside the slow
 categories needs no entry: it becomes essential once it measures under the threshold. Check with
-`bun scripts/ci-tests.ts --plan pane@6 --tier essential` (and `--list`, which shows both tiers per
+`bun scripts/ci-tests.ts --plan pane@6 --tier essential` (and `--list`, which shows the full, essential and github tiers per
 group). `ci-tests.test.ts` fails when the data file has no `slow` array, a category without a
 non-empty string `category` or `prefix`, a prefix that matches no test file (a misspelt prefix
 would leave its whole directory essential), a file that does not exist, a file
