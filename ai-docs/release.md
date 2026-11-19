@@ -58,8 +58,9 @@ the GitHub Release as a prerelease, which is the only variant.
 `release.yml`, triggered by `push` of a tag matching `v*`. It runs **no tests**.
 `test.yml` triggers on `pull_request`, `push` to `main` and `workflow_dispatch`;
 every trigger runs Linux jobs only, the `idle` and `rest` groups among them. No GitHub
-workflow starts a macOS runner. The macOS suites (pane and rest, macos-bridge, the blind
-hook tests, hook loading on macOS) run only on this Mac, in `bun run test:macos`, which
+workflow starts a macOS runner. The `pane` group, the `macOnly` files of `idle` and `rest`
+(skipped on Linux), macos-bridge, the blind hook tests and hook loading on macOS run only
+on this Mac, in `bun run test:macos`, which
 must be green before the tag (`CLAUDE.md`, Releasing). The blind hook
 tests and the hook loading (S1) tests run locally under `bun run test:macos --full` and in
 the last nightly part (`--part 7/7`); the default `bun run test:macos` skips them. In CI, the Linux `hooks-loading` job runs
@@ -72,8 +73,9 @@ three, whatever their time; the `pinned` files, whatever their time; and, outsid
 categories, no other file measured at 2 s or more); `bun run test:macos --full` runs
 the FULL tier. A dispatch of `test.yml` and `weekly-tests.yml` run the GITHUB tier: the
 essential files plus every weekly file measured under `githubMaxSeconds` or not measured.
-It leaves the slow files to this Mac, toward the target of every GitHub job under 50 s; it
-does not cap a job's wall time (`ai-docs/architecture/testing.md`). The WEEKLY tier (full minus essential) runs on the owner's Mac in 7
+Weekly files measured at `githubMaxSeconds` or more run only on this Mac; essential and
+pinned files run on GitHub whatever their time. The target is every GitHub job under 50 s;
+the tier does not cap a job's wall time (`ai-docs/architecture/testing.md`). The WEEKLY tier (full minus essential) runs on the owner's Mac in 7
 nightly parts, one a night at 03:00 local: `scripts/weekly-macos-tests.ts` under launchd
 runs `bun run test:macos --part <k>/7` on origin's main, k being the part with no result or
 the oldest result, and writes
