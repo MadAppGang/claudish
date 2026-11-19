@@ -679,14 +679,25 @@ export function keptInlineSystemMessages(
   return kept;
 }
 
-/** The messages a swap sends in place of `original`. */
+/**
+ * The messages a swap sends in place of `original`.
+ *
+ * The API accepts an inline system message only right before an assistant
+ * message (other system messages may sit between) or at the end of the
+ * array. So the kept system messages go right before the first assistant
+ * message at or after the boundary, and at the end while the turn has none
+ * yet. A later request of the same turn appends that assistant message after
+ * them, so the messages sent before it keep their bytes.
+ */
 export function applySwap(original: readonly unknown[], swap: HistorySwapRecord): unknown[] {
-  return [
-    summaryMessage(swap.summary, original, swap.boundary, swap.pinned),
-    ...keptInlineSystemMessages(original, swap.boundary),
+  const tail = [
     ...original.slice(swap.boundary, swap.end).map(stripThinking),
     ...original.slice(swap.end),
   ];
+  const kept = keptInlineSystemMessages(original, swap.boundary);
+  const at = tail.findIndex((m) => (m as Block | null)?.role === "assistant");
+  tail.splice(at === -1 ? tail.length : at, 0, ...kept);
+  return [summaryMessage(swap.summary, original, swap.boundary, swap.pinned), ...tail];
 }
 
 // ---------------------------------------------------------------------------

@@ -18,10 +18,11 @@ import {
   HISTORY_PINNED_PROMPT_MARKER,
   HISTORY_SUMMARY_MARKER,
   HistoryCompactor,
+  applySwap,
   isSwapPoint,
   summaryBoundary,
 } from "./history.js";
-import { CompactionStore, toolOutputKey } from "./store.js";
+import { CompactionStore, type HistorySwapRecord, toolOutputKey } from "./store.js";
 import { ToolOutputCompactor } from "./tool-outputs.js";
 
 const session = "inline-system-session";
@@ -238,4 +239,53 @@ test("a long styled turn swaps mid-turn and keeps its inline system messages ver
   windowAt(c, 0.8);
   expect(h.compact(c, session).applied).toBe("replayed");
   expect(JSON.stringify(c.messages.slice(0, sent.length))).toBe(JSON.stringify(sent));
+});
+
+/** True when every run of inline system messages ends before an assistant message or ends the array. */
+function systemOrderValid(messages: readonly Message[]): boolean {
+  for (let i = 0; i < messages.length; i++) {
+    if (messages[i]?.role !== "system") continue;
+    const next = messages[i + 1];
+    if (next !== undefined && next.role !== "system" && next.role !== "assistant") return false;
+  }
+  return true;
+}
+
+function swapRecord(boundary: number, end: number): HistorySwapRecord {
+  return {
+    kind: "history-swap",
+    thread: "t",
+    prefixHash: "p",
+    tailHash: "t",
+    boundary,
+    end,
+    summary: SUMMARY,
+  } as HistorySwapRecord;
+}
+
+test("a swap at a human-turn start places the kept system messages where the API accepts them", () => {
+  // Turn 1 of three rounds, then turn 2's prompt with its trailing reminder.
+  const turn1 = styledTurn(3).messages;
+  const promptAt = turn1.length;
+  const first: Message[] = [
+    ...turn1,
+    { role: "user", content: "Now list the exports" },
+    STYLE_REMINDER,
+  ];
+  const swap = swapRecord(promptAt, first.length);
+
+  const sentFirst = applySwap(first, swap) as Message[];
+  expect(systemOrderValid(sentFirst)).toBe(true);
+  expect(sentFirst.filter((m) => JSON.stringify(m) === JSON.stringify(CONTEXT)).length).toBe(1);
+
+  // The next request of turn 2 adds the assistant's tool round.
+  const second: Message[] = [
+    ...first,
+    { role: "assistant", content: [{ type: "tool_use", id: "t-x", name: "Bash", input: {} }] },
+    { role: "user", content: [{ type: "tool_result", tool_use_id: "t-x", content: "ok" }] },
+    STYLE_REMINDER,
+  ];
+  const sentSecond = applySwap(second, swap) as Message[];
+  expect(systemOrderValid(sentSecond)).toBe(true);
+  expect(JSON.stringify(sentSecond.slice(0, sentFirst.length))).toBe(JSON.stringify(sentFirst));
 });
