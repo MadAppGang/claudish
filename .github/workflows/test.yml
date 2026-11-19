@@ -60,7 +60,7 @@ jobs:
   #   so it runs there, in three slices.
   # - pane (real magmux panes) stays on macOS: on ubuntu-latest it fails 23 tests. It runs on a
   #   manual dispatch and in the local gate (`bun run test:macos`), not on every PR.
-  # - rest also runs on Linux, in the rest job below, on every PR. The files written for the
+  # - rest also runs on Linux, in the rest job below, in six slices, on every PR. The files written for the
   #   darwin-only shared Antigravity token store are listed in test-tiers.json's macOnly, and
   #   ci-tests.ts drops them off darwin.
   # The org is on the free plan: 5 macOS jobs at once across every repo, against 20 Linux
@@ -170,12 +170,12 @@ jobs:
           path: packages/cli/junit-*.xml
 
   rest:
-    name: hermetic · rest ${{ matrix.slice }}/4
+    name: hermetic · rest ${{ matrix.slice }}/6
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        slice: [1, 2, 3, 4]
+        slice: [1, 2, 3, 4, 5, 6]
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       CLAUDISH_SKIP_LIVE_E2E: "1"
@@ -188,7 +188,7 @@ jobs:
       - run: bun install --frozen-lockfile
       - name: Tests
         working-directory: packages/cli
-        run: bun scripts/ci-tests.ts --run rest@${{ matrix.slice }}/4 --tier ${{ github.event_name == 'workflow_dispatch' && 'full' || 'essential' }} -- --reporter=junit --reporter-outfile=junit-{label}.xml
+        run: bun scripts/ci-tests.ts --run rest@${{ matrix.slice }}/6 --tier ${{ github.event_name == 'workflow_dispatch' && 'full' || 'essential' }} -- --reporter=junit --reporter-outfile=junit-{label}.xml
         timeout-minutes: 15
       - uses: actions/upload-artifact@v5
         if: always()

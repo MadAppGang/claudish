@@ -48,10 +48,19 @@ function linuxTieredJobs(workflow: string): string[] {
 
 describe("test.yml", () => {
   const yml = read("test.yml");
+  /** The job's slice matrix, which must be 1..n: its length is the `/n` of the run line. */
+  const slicesOf = (job: string): number[] => {
+    // biome-ignore lint/suspicious/noExplicitAny: a parsed workflow is untyped YAML
+    const matrix = (Bun.YAML.parse(yml) as any).jobs[job].strategy.matrix.slice as number[];
+    expect(matrix.length).toBeGreaterThan(0);
+    expect(matrix).toEqual(matrix.map((_, i) => i + 1));
+    return matrix;
+  };
 
   test("the Linux idle slices run the essential tier, and the full tier on a dispatch", () => {
     const runs = ciTestsRuns(jobBlock(yml, "idle"));
     expect(runs).toHaveLength(1);
+    expect(runs[0]).toContain(`--run idle@\${{ matrix.slice }}/${slicesOf("idle").length}`);
     expect(runs[0]).toContain(
       "--tier ${{ github.event_name == 'workflow_dispatch' && 'full' || 'essential' }}"
     );
@@ -63,7 +72,7 @@ describe("test.yml", () => {
     expect(block).not.toMatch(/^ {4}if:/m);
     const runs = ciTestsRuns(block);
     expect(runs).toHaveLength(1);
-    expect(runs[0]).toContain("--run rest@${{ matrix.slice }}/4");
+    expect(runs[0]).toContain(`--run rest@\${{ matrix.slice }}/${slicesOf("rest").length}`);
     expect(runs[0]).toContain(
       "--tier ${{ github.event_name == 'workflow_dispatch' && 'full' || 'essential' }}"
     );
