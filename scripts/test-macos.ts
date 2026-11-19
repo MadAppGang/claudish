@@ -61,13 +61,13 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
-  readdirSync,
   rmSync,
   symlinkSync,
 } from "node:fs";
 import { availableParallelism, constants as osConstants, tmpdir } from "node:os";
 import { join } from "node:path";
 import { findMagmuxCandidates } from "../packages/cli/src/launcher/magmux-binary.ts";
+import { removeCanaryOutput } from "./boot-canary.output.ts";
 
 const ROOT = join(import.meta.dir, "..");
 const CLI = join(ROOT, "packages", "cli");
@@ -645,17 +645,6 @@ export function installPinnedClaudeCode(pin: ClaudeCodePin, runDir: string): str
   return exe;
 }
 
-/**
- * Removes what a canary run wrote in `dir`: `results.json` and each `<scenario>.screen.txt`.
- * Every other file stays, as in a run of `boot-canary.ts` itself.
- */
-export function removeCanaryOutput(dir: string): void {
-  if (!existsSync(dir)) return;
-  for (const name of readdirSync(dir))
-    if (name === "results.json" || name.endsWith(".screen.txt"))
-      rmSync(join(dir, name), { force: true });
-}
-
 /** True when the step's Bun runs a package script (`bun --no-env-file run build:cli`). */
 export function runsPackageScript(step: Pick<Step, "args">): boolean {
   return step.args.slice(1).find((arg) => !arg.startsWith("-")) === "run";
@@ -776,6 +765,13 @@ if (import.meta.main) {
   const { dryRun, tier, part } = args;
   if (process.platform !== "darwin") fail(`runs on macOS only, not ${process.platform}`);
 
+  // What the canary read (one screen per spawn shape, results.json) outlives the run directory,
+  // so a red canary can be read after the gate exits. Every run but a nightly part has the canary
+  // step. Such a run removes those files, and no other file there, before it reads a pin or
+  // fetches anything: a run that stops there never reaches the step, and what an earlier run
+  // read must not stay at the path this run names. A `--dry-run` removes nothing.
+  const canaryOut = join(tmpdir(), "claudish-boot-canary");
+
   const workflow = readFileSync(WORKFLOW, "utf8");
   const hermeticPin = bunPinOf(workflow, "hermetic");
   const blindPin = bunPinOf(workflow, "blind-hooks");
@@ -788,10 +784,6 @@ if (import.meta.main) {
   const scriptTests = [...new Bun.Glob("scripts/*.test.ts").scanSync({ cwd: ROOT })]
     .sort()
     .map((f) => `./${f}`);
-  // What the canary read (one screen per spawn shape, results.json) outlives the run directory,
-  // so a red canary can be read after the gate exits. The next run that has the canary step
-  // removes those files, and no other file there, before it reads a pin or fetches anything.
-  const canaryOut = join(tmpdir(), "claudish-boot-canary");
   const planFor = (exeOf: (version: string) => string, claude = "") =>
     planSteps({
       root: ROOT,
@@ -807,8 +799,6 @@ if (import.meta.main) {
   const unfetched = planFor(() => "");
   const versions = [...new Set(unfetched.map((g) => g.bun.version))];
   const bootsClaudeCode = unfetched.some((g) => g.steps.some((s) => s.name === CANARY_STEP));
-  // A run that stops at a pin or in a fetch never reaches the canary step, so what an earlier
-  // run read must not stay at the path this run names. A `--dry-run` removes nothing.
   if (bootsClaudeCode && !dryRun) removeCanaryOutput(canaryOut);
   const magmuxPin = magmuxPinOfThisMac();
   const claudePin = bootsClaudeCode ? claudeCodePinOfThisMac() : undefined;

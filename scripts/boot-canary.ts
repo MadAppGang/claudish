@@ -48,21 +48,8 @@ import {
   emptyScreen,
 } from "../packages/cli/src/pane/screen-model.js";
 import { SessionRegistry } from "../packages/cli/src/pane/session-registry.js";
+import { SCENARIOS, type Scenario, removeCanaryOutput } from "./boot-canary.output.js";
 import { runPool } from "./run-pool.js";
-
-const SCENARIOS = [
-  "boot",
-  "agent",
-  "badagent",
-  "onboarding",
-  "trust",
-  "apikey",
-  "bypass",
-  "mcp",
-  "settingserr",
-  "nokey",
-] as const;
-type Scenario = (typeof SCENARIOS)[number];
 
 /** What one boot read as. `boot` is `repl`, `booting`, `dialog:<name>`, `choice` or `exited`. */
 interface Reading {
@@ -314,8 +301,7 @@ async function main(): Promise<void> {
   // a run that throws before the report is written leaves no report, so the report of an earlier
   // run must not stay in its place; the same holds for the screen of every scenario, named in
   // this run or not. A usage error exits above this line and removes nothing.
-  rmSync(join(outDir, "results.json"), { force: true });
-  for (const s of SCENARIOS) rmSync(join(outDir, `${s}.screen.txt`), { force: true });
+  removeCanaryOutput(outDir);
   const version =
     execFileSync(bin, ["--version"], { encoding: "utf8" }).trim().split(/\s/)[0] ?? "unknown";
   const expected = JSON.parse(readFileSync(expectPath, "utf8")) as Record<string, Partial<Reading>>;

@@ -11,6 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { discover, groupOf } from "../packages/cli/scripts/ci-tests.ts";
+import { SCENARIOS, removeCanaryOutput } from "./boot-canary.output.ts";
 import {
   CANARY_STEP,
   GATE_RUNS,
@@ -25,7 +26,6 @@ import {
   parseGateArgs,
   parseMagmuxPin,
   planSteps,
-  removeCanaryOutput,
   reportedClaudeCodeVersion,
   runSteps,
   runsPackageScript,
@@ -605,12 +605,14 @@ describe("removeCanaryOutput", () => {
     const dir = tempDir();
     try {
       writeFileSync(join(dir, "results.json"), "{}\n");
-      writeFileSync(join(dir, "plain.screen.txt"), "screen\n");
+      for (const s of SCENARIOS) writeFileSync(join(dir, `${s}.screen.txt`), "screen\n");
+      writeFileSync(join(dir, "comparison.screen.txt"), "mine\n");
       writeFileSync(join(dir, "notes.txt"), "mine\n");
       mkdirSync(join(dir, "kept"));
       removeCanaryOutput(dir);
       expect(existsSync(join(dir, "results.json"))).toBe(false);
-      expect(existsSync(join(dir, "plain.screen.txt"))).toBe(false);
+      for (const s of SCENARIOS) expect(existsSync(join(dir, `${s}.screen.txt`))).toBe(false);
+      expect(readFileSync(join(dir, "comparison.screen.txt"), "utf8")).toBe("mine\n");
       expect(readFileSync(join(dir, "notes.txt"), "utf8")).toBe("mine\n");
       expect(existsSync(join(dir, "kept"))).toBe(true);
     } finally {
