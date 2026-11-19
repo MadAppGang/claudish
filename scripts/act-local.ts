@@ -41,12 +41,21 @@
  *   bun scripts/act-local.ts --dry-run [--job <id>] [--workflow <file>] [--tag-case ...]
  * `--workflow` is a file name under .github/workflows, default release.yml. The temp dir is
  * removed at exit unless `--keep`, which prints its path.
- * Exit: act's own exit code; 2 on a usage error or a job outside RUNNABLE_JOBS; 1 when the setup
+ * Exit: act's own exit code; 2 on a usage error, a job outside RUNNABLE_JOBS, or a `--change`
+ * path that is not a regular file in the commit (a symbolic link included); 1 when the setup
  * fails (git, a found actrc, a missing workflow) or act cannot start.
  */
 
 import { execFileSync, spawn } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir, constants as osConstants, tmpdir } from "node:os";
 import { isAbsolute, join, normalize } from "node:path";
 
@@ -429,10 +438,26 @@ function prepareClone(git: Git, cwd: string, toplevel: string, sha: string, repo
   git(["remote", "set-url", "--push", "origin", PUSH_URL], repo);
 }
 
+/**
+ * Why `--change <path>` cannot be the changed file in the clone `repo`, or null. Only a regular
+ * file qualifies: appending to a symbolic link writes its target, and `git add` then stages the
+ * unchanged link, so the case commit has nothing in it.
+ */
+export function changeRefusal(repo: string, change: string): string | null {
+  let stat: ReturnType<typeof lstatSync>;
+  try {
+    stat = lstatSync(join(repo, change));
+  } catch {
+    return `--change ${change} does not exist in the commit`;
+  }
+  if (stat.isSymbolicLink()) return `--change ${change} is a symbolic link; name a regular file`;
+  if (!stat.isFile()) return `--change ${change} is not a regular file`;
+  return null;
+}
+
 /** Tags HEAD as the base, makes the case commit, tags it, and writes the push event file. */
 function prepareTagCase(
   git: Git,
-  exists: (path: string) => boolean,
   repo: string,
   work: string,
   tagCase: TagCase,
@@ -440,9 +465,7 @@ function prepareTagCase(
 ): string {
   git([...COMMIT_IDENTITY, "tag", BASE_TAG, "HEAD"], repo);
   if (tagCase === "changed") {
-    const target = join(repo, change);
-    if (!exists(target)) throw new Error(`${change} does not exist in the commit`);
-    appendFileSync(target, "\n");
+    appendFileSync(join(repo, change), "\n");
     git(["add", "--", change], repo);
     git([...COMMIT_IDENTITY, "commit", "--quiet", "-m", `act-local: change ${change}`], repo);
   } else {
@@ -517,15 +540,14 @@ async function runInWork(
 
   let eventFile: string | undefined;
   if (args.tagCase) {
+    const change = args.change ?? BUNDLED_LIST;
+    const refused = args.tagCase === "changed" ? changeRefusal(repo, change) : null;
+    if (refused) {
+      console.error(`act-local: ${refused}`);
+      return 2;
+    }
     try {
-      eventFile = prepareTagCase(
-        git,
-        deps.exists,
-        repo,
-        work,
-        args.tagCase,
-        args.change ?? BUNDLED_LIST
-      );
+      eventFile = prepareTagCase(git, repo, work, args.tagCase, change);
     } catch (error) {
       console.error(`act-local: could not make the tag case: ${(error as Error).message}`);
       return 1;

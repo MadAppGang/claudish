@@ -406,7 +406,7 @@ describe("runActLocal", () => {
   /** Fakes for a real run of the tag case, in a real temp dir under `root`. */
   function realRunDeps(
     root: string,
-    opts: { fetchByShaRefused?: boolean; fetchHead?: string } = {}
+    opts: { fetchByShaRefused?: boolean; fetchHead?: string; onInit?: (repo: string) => void } = {}
   ) {
     const gitCalls: { args: string[]; env: Record<string, string> | undefined }[] = [];
     // The git subcommand and its arguments, after any leading `-c key=value` pairs.
@@ -415,7 +415,7 @@ describe("runActLocal", () => {
       while (args[i] === "-c") i += 2;
       return args.slice(i);
     };
-    const seen: { env?: Record<string, string>; config?: string } = {};
+    const seen: { env?: Record<string, string>; config?: string; started?: boolean } = {};
     const deps: ActDeps = {
       cwd: "/w",
       env: {
@@ -431,6 +431,7 @@ describe("runActLocal", () => {
       git: (args, _cwd, env) => {
         gitCalls.push({ args, env });
         const [sub, ...rest] = command(args);
+        if (sub === "init") opts.onInit?.(rest[rest.length - 1] ?? "");
         if (sub === "rev-parse" && rest[0] === "--show-toplevel") return "/w";
         if (sub === "rev-parse" && rest[0] === "FETCH_HEAD") return opts.fetchHead ?? "abc123";
         if (sub === "rev-parse") return "abc123";
@@ -445,6 +446,7 @@ describe("runActLocal", () => {
       makeTemp: () => mkdtempSync(join(root, "work-")),
       remove: (p) => rmSync(p, { recursive: true, force: true }),
       spawnAct: async (_argv, _cwd, env) => {
+        seen.started = true;
         seen.env = env;
         seen.config = readFileSync(join(env.DOCKER_CONFIG ?? "", "config.json"), "utf8");
         return 0;
@@ -458,6 +460,62 @@ describe("runActLocal", () => {
     while (args[i] === "-c") i += 2;
     return args.slice(i);
   };
+
+  /** Makes the clone's working tree: CLAUDE.md, README.md and AGENTS.md as a symlink to CLAUDE.md. */
+  function linkedTree(repo: string): void {
+    mkdirSync(repo, { recursive: true });
+    writeFileSync(join(repo, "CLAUDE.md"), "rules\n");
+    writeFileSync(join(repo, "README.md"), "readme\n");
+    symlinkSync("CLAUDE.md", join(repo, "AGENTS.md"));
+    mkdirSync(join(repo, "docs"));
+  }
+
+  test("--change on a symlink exits 2 naming the path, writes nothing and starts no act", async () => {
+    const root = mkdtempSync(join(tmpdir(), "act-local-test-"));
+    let repo = "";
+    const { deps, seen } = realRunDeps(root, {
+      onInit: (r) => {
+        repo = r;
+        linkedTree(r);
+      },
+    });
+    deps.remove = () => {};
+    const errors: string[] = [];
+    const spy = spyOn(console, "error").mockImplementation((...a: unknown[]) => {
+      errors.push(a.join(" "));
+    });
+    try {
+      const run = ["--job", "bundled-list", "--tag-case", "changed", "--change", "AGENTS.md"];
+      expect(await runActLocal(run, deps)).toBe(2);
+      expect(seen.started).toBeUndefined();
+      expect(readFileSync(join(repo, "CLAUDE.md"), "utf8")).toBe("rules\n");
+      expect(errors.some((e) => e.includes("AGENTS.md") && e.includes("symbolic link"))).toBe(true);
+      expect(await runActLocal([...run.slice(0, -1), "docs"], deps)).toBe(2);
+    } finally {
+      spy.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("--change on a regular file appends a newline and runs act", async () => {
+    const root = mkdtempSync(join(tmpdir(), "act-local-test-"));
+    let repo = "";
+    const { deps, seen } = realRunDeps(root, {
+      onInit: (r) => {
+        repo = r;
+        linkedTree(r);
+      },
+    });
+    deps.remove = () => {};
+    try {
+      const run = ["--job", "bundled-list", "--tag-case", "changed", "--change", "README.md"];
+      expect(await runActLocal(run, deps)).toBe(0);
+      expect(seen.started).toBe(true);
+      expect(readFileSync(join(repo, "README.md"), "utf8")).toBe("readme\n\n");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 
   test("the clone holds HEAD and the merged v* tags only, never a whole-repository clone", async () => {
     const root = mkdtempSync(join(tmpdir(), "act-local-test-"));
