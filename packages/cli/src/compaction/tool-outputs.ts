@@ -33,6 +33,7 @@ import { basename, isAbsolute, relative, resolve, sep } from "node:path";
 import { ADVISOR_TOOL_NAME } from "../handlers/advisor-decorator.js";
 import { log } from "../logger.js";
 import { DEFAULT_COMPACTION_SETTINGS, type ToolOutputSettings } from "./config.js";
+import { lastConversationIndex } from "./conversation.js";
 import { isFilePrintCommand } from "./file-print.js";
 import type { CompactionCallResult, CompactionClient } from "./haiku-client.js";
 import { type CompactionStore, type ToolOutputRecord, toolOutputKey } from "./store.js";
@@ -139,7 +140,8 @@ export class ToolOutputCompactor {
     if (!messages) return summary;
     const { minTokens } = this.deps.settings;
     const tools = toolUsesOf(messages);
-    const lastIndex = messages.length - 1;
+    // An inline system message after the tool_results does not move the last message.
+    const lastIndex = lastConversationIndex(messages);
     const folders = this.sessionFolders(sessionId);
     const skipTools = new Set(
       this.deps.settings.skipTools ?? DEFAULT_COMPACTION_SETTINGS.toolOutputs.skipTools
