@@ -213,11 +213,6 @@ describe("a nightly part", () => {
 });
 
 describe("the Claude Code boot canary", () => {
-  const CANARY_WORKFLOW = readFileSync(
-    join(import.meta.dir, "..", ".github", "workflows", "boot-canary.yml"),
-    "utf8"
-  );
-
   test("no nightly part boots it", () => {
     for (let k = 1; k <= 7; k++) {
       const steps = planSteps({ ...PLAN_INPUT, tier: "weekly", part: { k, n: 7 } }).flatMap(
@@ -225,11 +220,6 @@ describe("the Claude Code boot canary", () => {
       );
       expect(steps.map((s) => s.name)).not.toContain(CANARY_STEP);
     }
-  });
-
-  test("boot-canary.yml starts no macOS runner: the gate is the macOS boot check", () => {
-    expect(CANARY_WORKFLOW).toMatch(/runs-on: ubuntu-latest/);
-    expect(CANARY_WORKFLOW).not.toMatch(/runs-on:.*(macos|matrix\.os)/);
   });
 
   test("the pin is the version file's one x.y.z line, as the darwin package of the arch", () => {

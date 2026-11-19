@@ -6,8 +6,8 @@
  *
  * Why (ai-docs/reports/pane-ui-independent-signals.md): the `--agent` label in the input box's top
  * rule broke every agent slot, though every Claude Code from 2.1.288 drew it. The fixtures never
- * booted a valid agent. This boots each shape: on Linux in boot-canary.yml (the pinned release and
- * npm's latest), on macOS in `bun run test:macos` (the pinned release).
+ * booted a valid agent. This boots each shape on macOS in `bun run test:macos` (the pinned
+ * release).
  *
  * Usage:
  *   bun scripts/boot-canary.ts [--bin <claude binary>] [--scenarios a,b] [--expect <json>] [--out <dir>]
