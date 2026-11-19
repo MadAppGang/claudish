@@ -1,6 +1,7 @@
 {
-  "$comment": "Which hermetic test files run on every pull request and in `bun run test:macos` (the essential tier), and which only in the weekly tier (the Linux weekly run and the Mac's nightly parts). A file in a slow category is essential only when it is listed below (at most 3 per category; a new file there is weekly until it is listed). A file in pinned is essential whatever its time. Any other file is essential unless ci-test-times.json measures it at heavySeconds or more. A file in macOnly runs only on darwin. ci-tests.ts reads this file; ai-docs/architecture/testing.md explains how to promote a file.",
+  "$comment": "Which hermetic test files run on every pull request and in `bun run test:macos` (the essential tier), and which only in the weekly tier (the Linux weekly run and the Mac's nightly parts). A file in a slow category is essential only when it is listed below (at most 3 per category; a new file there is weekly until it is listed). A file in pinned is essential whatever its time. Any other file is essential unless ci-test-times.json measures it at heavySeconds or more. A GitHub-hosted full run (a dispatched test.yml, weekly-tests.yml) takes the github tier: the essential files plus every weekly file measured under githubMaxSeconds; a longer weekly file runs only on the Mac. A file in macOnly runs only on darwin. ci-tests.ts reads this file; ai-docs/architecture/testing.md explains how to promote a file.",
   "heavySeconds": 2,
+  "githubMaxSeconds": 10,
   "pinned": [
     {
       "file": "src/auth/credential-file.test.ts",
