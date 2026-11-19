@@ -13,8 +13,9 @@
  *
  * The four turns run at the same time, each against its own endpoint, because
  * an episode is per endpoint: `beforeAll` starts them and each test awaits its
- * own. A run filtered to one test still starts all four, and `afterAll` waits
- * for every one of them before the proxy shuts down.
+ * own. A run filtered to one test still starts all four. `afterAll` shuts the
+ * proxy and the upstreams down first, which ends a turn still in flight by
+ * closing its connection, and only then waits for the four to settle.
  */
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
@@ -102,9 +103,9 @@ beforeAll(async () => {
 }, 60_000);
 
 afterAll(async () => {
-  if (turns) await Promise.allSettled(Object.values(turns));
   await proxy?.shutdown();
   for (const f of fixtures) f.stop();
+  if (turns) await Promise.allSettled(Object.values(turns));
   restoreEnv?.();
 });
 
