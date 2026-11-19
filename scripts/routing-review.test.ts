@@ -330,6 +330,28 @@ describe("runRoutingReview", () => {
   });
 });
 
+describe("the Keychain probe", () => {
+  test("is built from the child's environment, not the caller's", async () => {
+    const seen: Record<string, string>[] = [];
+    const { root, home, spawned, deps } = fakeReview({
+      keychainPresence: undefined,
+      keychainPresenceFor: (env) => {
+        seen.push(env);
+        return () => "absent";
+      },
+    });
+    deps.env = { HOME: home, PATH: "/usr/bin", CLAUDISH_KEYCHAIN_FILE: "/k.keychain-db" };
+    try {
+      expect(await runRoutingReview([], deps)).toBe(0);
+      expect(seen).toHaveLength(1);
+      expect(seen[0]).not.toHaveProperty("CLAUDISH_KEYCHAIN_FILE");
+      expect(seen[0]).toEqual(spawned[0]!.env);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("Claude Code's output", () => {
   const runs: [string, ReviewRun][] = [
     ["a PASS", { code: 0, stdout: PASS_STDOUT, timedOut: false }],

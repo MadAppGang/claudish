@@ -128,22 +128,48 @@ export type KeychainPresence = "found" | "absent" | "failed";
 const SECURITY_ITEM_NOT_FOUND = 44;
 
 /**
+ * The `security` arguments of one presence probe: `find-generic-password` without
+ * `-w`, followed by the keychain file `env.CLAUDISH_KEYCHAIN_FILE` names, if any.
+ * Only `env` is read.
+ */
+export function keychainPresenceArgs(service: string, env: NodeJS.ProcessEnv): string[] {
+  const args = ["find-generic-password", "-s", service];
+  const keychainFile = env.CLAUDISH_KEYCHAIN_FILE;
+  if (keychainFile) args.push(keychainFile);
+  return args;
+}
+
+/** What a finished `security` presence probe answered: 0 found, 44 absent, anything else failed. */
+export function keychainPresenceOf(result: {
+  status: number | null;
+  error?: unknown;
+}): KeychainPresence {
+  if (result.error) return "failed";
+  if (result.status === 0) return "found";
+  return result.status === SECURITY_ITEM_NOT_FOUND ? "absent" : "failed";
+}
+
+/**
  * Presence of any generic-password item under `service`, from its ATTRIBUTES:
  * `find-generic-password` without `-w` reads no item data, so it raises no
- * access dialog. Non-darwin: `absent`. `CLAUDISH_DISABLE_KEYCHAIN=1`: `failed`,
- * since the store was not asked. Honours `CLAUDISH_KEYCHAIN_FILE`.
+ * access dialog. Non-darwin: `absent`. `CLAUDISH_DISABLE_KEYCHAIN=1` in this
+ * process's environment or in `env`: `failed`, since the store was not asked.
+ * The keychain file comes from `env.CLAUDISH_KEYCHAIN_FILE` only, so a caller
+ * that probes for a child process passes the child's environment.
  */
-export function defaultKeychainPresence(service: string): KeychainPresence {
+export function defaultKeychainPresence(
+  service: string,
+  env: NodeJS.ProcessEnv = process.env
+): KeychainPresence {
   if (process.platform !== "darwin") return "absent";
-  if (process.env.CLAUDISH_DISABLE_KEYCHAIN === "1") return "failed";
-  const args = ["find-generic-password", "-s", service];
-  const keychainFile = process.env.CLAUDISH_KEYCHAIN_FILE;
-  if (keychainFile) args.push(keychainFile);
+  // The test guard is honoured from either environment.
+  if (process.env.CLAUDISH_DISABLE_KEYCHAIN === "1" || env.CLAUDISH_DISABLE_KEYCHAIN === "1") {
+    return "failed";
+  }
   try {
-    const res = spawnSync("security", args, { stdio: "ignore" });
-    if (res.error) return "failed";
-    if (res.status === 0) return "found";
-    return res.status === SECURITY_ITEM_NOT_FOUND ? "absent" : "failed";
+    return keychainPresenceOf(
+      spawnSync("security", keychainPresenceArgs(service, env), { stdio: "ignore" })
+    );
   } catch {
     return "failed";
   }

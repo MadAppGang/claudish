@@ -5,6 +5,8 @@ import {
   claudeCodeStartupCredential,
   hasClaudeCodeLogin,
   keychainLoginPresent,
+  keychainPresenceArgs,
+  keychainPresenceOf,
 } from "./claude-code-login.js";
 
 /** Runs the startup check over no files and records every Keychain service it asks about. */
@@ -132,5 +134,32 @@ describe("hasClaudeCodeLogin Keychain probe under a relative CLAUDE_CONFIG_DIR",
     );
     expect(services).toEqual(claudeCodeSecureStorageServices("-credentials", env, childCwd));
     expect(services).toContain(childService);
+  });
+});
+
+describe("the Keychain presence probe", () => {
+  test("names the keychain file only from the env it is given", () => {
+    expect(keychainPresenceArgs("svc", { CLAUDISH_KEYCHAIN_FILE: "/k" })).toEqual([
+      "find-generic-password",
+      "-s",
+      "svc",
+      "/k",
+    ]);
+    const before = process.env.CLAUDISH_KEYCHAIN_FILE;
+    process.env.CLAUDISH_KEYCHAIN_FILE = "/process-level.keychain";
+    try {
+      expect(keychainPresenceArgs("svc", {})).toEqual(["find-generic-password", "-s", "svc"]);
+    } finally {
+      if (before === undefined) delete process.env.CLAUDISH_KEYCHAIN_FILE;
+      else process.env.CLAUDISH_KEYCHAIN_FILE = before;
+    }
+  });
+
+  test("reads found, absent and failed from security's result", () => {
+    expect(keychainPresenceOf({ status: 0 })).toBe("found");
+    expect(keychainPresenceOf({ status: 44 })).toBe("absent");
+    expect(keychainPresenceOf({ status: 1 })).toBe("failed");
+    expect(keychainPresenceOf({ status: null })).toBe("failed");
+    expect(keychainPresenceOf({ status: 0, error: new Error("spawn failed") })).toBe("failed");
   });
 });
