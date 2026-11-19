@@ -148,6 +148,7 @@ describe("CP-3 — recovery completes the turn", () => {
     // A retry that drops the Authorization header turns an outage into a 401
     // storm the moment the network returns.
     const fixture = fixtureOf.body;
+    await turns.body;
     expect(fixture.connections.length).toBeGreaterThanOrEqual(2);
     const first = fixture.connections[0].headers.authorization;
     const success = fixture.connections[fixture.connections.length - 1].headers.authorization;
