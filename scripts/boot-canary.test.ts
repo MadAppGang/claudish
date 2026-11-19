@@ -14,7 +14,7 @@ function canary(...args: string[]): { status: number | null; stderr: string; out
     const run = spawnSync(
       process.execPath,
       [SCRIPT, "--bin", join(dir, "no-such-claude"), "--out", out, ...args],
-      { encoding: "utf8" }
+      { encoding: "utf8", env: process.env }
     );
     return { status: run.status, stderr: run.stderr, outMade: existsSync(out) };
   } finally {
