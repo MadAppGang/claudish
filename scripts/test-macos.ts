@@ -21,7 +21,7 @@
  *  2. the macos-bridge tests, `scripts/*.test.ts` and the Claude Code boot canary
  *     (scripts/boot-canary.ts: one boot per spawn shape, no credentials, no model call), under
  *     the same Bun. The canary boots the Claude Code .github/claude-code.version pins, fetched
- *     with `npm pack`. No GitHub workflow boots Claude Code on macOS: this step is that check;
+ *     with `npm pack`. No GitHub workflow boots Claude Code: this step is the only boot check;
  *  3. the blind hook tests and the Antigravity HTTP client tests, under the Bun the
  *     `blind-hooks` job pins (two blind tests fail on 1.3.10 because of bugs in Bun's test
  *     client);
@@ -609,9 +609,9 @@ export function reportedClaudeCodeVersion(stdout: string): string {
 }
 
 /**
- * Fetches the pinned Claude Code into `claude-code/` under this run's directory, as
- * boot-canary.yml does on a runner: `npm pack` of the per-platform package (the binary alone,
- * never the installer, never signed in), untar, and `--version` must print the pinned version.
+ * Fetches the pinned Claude Code into `claude-code/` under this run's directory: `npm pack` of
+ * the per-platform package (the binary alone, never the installer, never signed in), untar, and
+ * `--version` must print the pinned version.
  * The Mac's own Claude Code is never used or changed. Returns the binary's path.
  */
 export function installPinnedClaudeCode(pin: ClaudeCodePin, runDir: string): string {

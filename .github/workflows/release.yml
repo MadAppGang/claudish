@@ -126,16 +126,62 @@ jobs:
           name: magmux-${{ matrix.artifact }}
           path: packages/cli/native/magmux-*
 
-  # The publish waits on this job: a rulebook violation, an unreadable verdict or a
-  # bundled recommended list unchanged since the previous tag stops the release.
-  routing-review:
+  # The publish waits on this job: a bundled recommended list unchanged since the previous
+  # tag stops the release. The routing rulebook review runs on the Mac before the tag
+  # (`bun run review:routing`).
+  bundled-list:
+    name: refuse a stale bundled recommended list
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       contents: read
-    uses: ./.github/workflows/routing-review-release.yml
-    secrets: inherit
+    env:
+      BUNDLED_LIST: packages/cli/src/providers/bundled-recommended-list.json
+    steps:
+      - name: Check out the tag with its history
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Refuse a stale bundled recommended list
+        run: |
+          set -euo pipefail
+
+          case "$GITHUB_REF" in
+            refs/tags/v*) ;;
+            *)
+              echo "skipped: not a tag ref"
+              exit 0
+              ;;
+          esac
+
+          earlier=$(git tag --list 'v*' --merged "${GITHUB_REF_NAME}^")
+          if [ -z "$earlier" ]; then
+            echo "skipped: no earlier release tag"
+            exit 0
+          fi
+
+          # The nearest v* tag that is an ancestor of this one, which is not always
+          # the highest version number: a tag on another line can be higher.
+          prev=$(git describe --tags --abbrev=0 --match 'v*' "${GITHUB_REF_NAME}^")
+
+          # Exit 0 means unchanged, 1 means changed, anything else is git failing.
+          if git diff --quiet "$prev" "$GITHUB_REF_NAME" -- "$BUNDLED_LIST"; then
+            echo "::error::the bundled recommended list was not regenerated in this release's bump PR; run \`bun run --cwd packages/cli generate:bundled-list\`"
+            exit 1
+          else
+            status=$?
+            if [ "$status" -ne 1 ]; then
+              echo "::error::git diff failed with exit code $status"
+              exit "$status"
+            fi
+          fi
+          echo "bundled recommended list changed since $prev"
 
   release:
-    needs: [build, routing-review]
+    needs: [build, bundled-list]
     runs-on: ubuntu-latest
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
