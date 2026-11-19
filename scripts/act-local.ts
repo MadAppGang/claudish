@@ -440,10 +440,12 @@ function prepareClone(git: Git, cwd: string, toplevel: string, sha: string, repo
 
 /**
  * Why `--change <path>` cannot be the changed file in the clone `repo`, or null. Only a regular
- * file qualifies: appending to a symbolic link writes its target, and `git add` then stages the
- * unchanged link, so the case commit has nothing in it.
+ * file the commit tracks qualifies: an untracked path (`.git/config`) cannot be staged, and
+ * appending to a symbolic link writes its target while `git add` stages the unchanged link, so
+ * the case commit has nothing in it.
  */
-export function changeRefusal(repo: string, change: string): string | null {
+export function changeRefusal(repo: string, change: string, tracked: boolean): string | null {
+  if (!tracked) return `--change ${change} is not tracked in the commit`;
   let stat: ReturnType<typeof lstatSync>;
   try {
     stat = lstatSync(join(repo, change));
@@ -541,7 +543,9 @@ async function runInWork(
   let eventFile: string | undefined;
   if (args.tagCase) {
     const change = args.change ?? BUNDLED_LIST;
-    const refused = args.tagCase === "changed" ? changeRefusal(repo, change) : null;
+    // The clone has just checked out HEAD, so its index lists exactly the commit's paths.
+    const tracked = () => git(["ls-files", "--", change], repo).trim() !== "";
+    const refused = args.tagCase === "changed" ? changeRefusal(repo, change, tracked()) : null;
     if (refused) {
       console.error(`act-local: ${refused}`);
       return 2;

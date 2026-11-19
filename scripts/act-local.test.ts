@@ -406,7 +406,12 @@ describe("runActLocal", () => {
   /** Fakes for a real run of the tag case, in a real temp dir under `root`. */
   function realRunDeps(
     root: string,
-    opts: { fetchByShaRefused?: boolean; fetchHead?: string; onInit?: (repo: string) => void } = {}
+    opts: {
+      fetchByShaRefused?: boolean;
+      fetchHead?: string;
+      onInit?: (repo: string) => void;
+      untracked?: string[];
+    } = {}
   ) {
     const gitCalls: { args: string[]; env: Record<string, string> | undefined }[] = [];
     // The git subcommand and its arguments, after any leading `-c key=value` pairs.
@@ -437,6 +442,11 @@ describe("runActLocal", () => {
         if (sub === "rev-parse") return "abc123";
         // The source also has a side branch and a tag on it; git lists only merged tags.
         if (sub === "tag" && rest[0] === "--merged") return "v1.0.0\nv1.1.0";
+        // Every path is tracked unless the test lists it as untracked.
+        if (sub === "ls-files") {
+          const path = rest[rest.length - 1] ?? "";
+          return opts.untracked?.includes(path) ? "" : path;
+        }
         if (sub === "fetch" && rest.includes("abc123") && opts.fetchByShaRefused) {
           throw new Error("fatal: remote error: upload-pack: not our ref abc123");
         }
@@ -491,6 +501,35 @@ describe("runActLocal", () => {
       expect(readFileSync(join(repo, "CLAUDE.md"), "utf8")).toBe("rules\n");
       expect(errors.some((e) => e.includes("AGENTS.md") && e.includes("symbolic link"))).toBe(true);
       expect(await runActLocal([...run.slice(0, -1), "docs"], deps)).toBe(2);
+    } finally {
+      spy.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("--change on a file the commit does not track (.git/config) exits 2 and writes nothing", async () => {
+    const root = mkdtempSync(join(tmpdir(), "act-local-test-"));
+    let repo = "";
+    const { deps, seen } = realRunDeps(root, {
+      untracked: [".git/config"],
+      onInit: (r) => {
+        repo = r;
+        linkedTree(r);
+        mkdirSync(join(r, ".git"));
+        writeFileSync(join(r, ".git", "config"), "[core]\n");
+      },
+    });
+    deps.remove = () => {};
+    const errors: string[] = [];
+    const spy = spyOn(console, "error").mockImplementation((...a: unknown[]) => {
+      errors.push(a.join(" "));
+    });
+    try {
+      const run = ["--job", "bundled-list", "--tag-case", "changed", "--change", ".git/config"];
+      expect(await runActLocal(run, deps)).toBe(2);
+      expect(seen.started).toBeUndefined();
+      expect(readFileSync(join(repo, ".git", "config"), "utf8")).toBe("[core]\n");
+      expect(errors.some((e) => e.includes(".git/config") && e.includes("not tracked"))).toBe(true);
     } finally {
       spy.mockRestore();
       rmSync(root, { recursive: true, force: true });
