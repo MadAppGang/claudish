@@ -405,17 +405,25 @@ function defaultDeps(): ReviewDeps {
   };
 }
 
-/** Export the commit into a new directory under `tmpRoot`, minus agent files. */
+/**
+ * Export the commit into a new directory under `tmpRoot`, minus agent files. When any step
+ * fails, the directory, with its archive and partial tree, is removed before the error goes on.
+ */
 function exportTree(
   sha: string,
   deps: ReviewDeps
 ): { work: string; tree: string; removed: string[] } {
   const work = mkdtempSync(join(deps.tmpRoot, "claudish-routing-review-"));
-  const tree = join(work, "tree");
-  const tar = join(work, "src.tar");
-  deps.exportCommit(sha, tar, tree);
-  rmSync(tar, { force: true });
-  return { work, tree, removed: removeAgentFiles(tree) };
+  try {
+    const tree = join(work, "tree");
+    const tar = join(work, "src.tar");
+    deps.exportCommit(sha, tar, tree);
+    rmSync(tar, { force: true });
+    return { work, tree, removed: removeAgentFiles(tree) };
+  } catch (error) {
+    rmSync(work, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 interface Outcome {
@@ -483,7 +491,14 @@ export async function runRoutingReview(
     }
   }
 
-  const { work, tree, removed } = exportTree(sha, deps);
+  let exported: ReturnType<typeof exportTree>;
+  try {
+    exported = exportTree(sha, deps);
+  } catch (error) {
+    console.error(`routing-review: could not export ${sha}: ${(error as Error).message}`);
+    return 1;
+  }
+  const { work, tree, removed } = exported;
   console.error(
     `routing-review: reviewing ${sha} (${args.ref}); removed ${removed.length} agent files`
   );

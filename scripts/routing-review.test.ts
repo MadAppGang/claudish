@@ -331,6 +331,28 @@ describe("runRoutingReview", () => {
   });
 });
 
+describe("a failed export", () => {
+  test("removes the temp directory and its partial tree, exits 1 and spawns nothing", async () => {
+    const { root, spawned, deps } = fakeReview({
+      exportCommit: (_sha, tar, tree) => {
+        writeFileSync(tar, "partial");
+        mkdirSync(tree);
+        writeFileSync(join(tree, "half.ts"), "x");
+        throw new Error("tar: truncated archive");
+      },
+    });
+    const error = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(await runRoutingReview([], deps)).toBe(1);
+      expect(spawned).toHaveLength(0);
+      expect(workDirs(root)).toEqual([]);
+    } finally {
+      error.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("the review signs only with the Claude Code login", () => {
   /** Run once, capturing stderr; returns the exit code and what was printed. */
   async function refusal(setup: (r: ReturnType<typeof fakeReview>) => void) {
