@@ -234,13 +234,37 @@ function git(args: string[]): string {
   return execFileSync("git", args, { cwd: repositoryRoot, encoding: "utf8" }).trim();
 }
 
-async function runReview(
-  bin: string,
-  cwd: string
-): Promise<{ code: number | null; stdout: string; timedOut: boolean }> {
-  const child = Bun.spawn(reviewArgv(bin), {
+/** What one Claude Code run left behind. */
+export interface ReviewRun {
+  code: number | null;
+  stdout: string;
+  timedOut: boolean;
+}
+
+/** The outside world of one review; every member defaults to the real one. */
+export interface ReviewDeps {
+  /** The environment Claude Code's is built from. */
+  env: NodeJS.ProcessEnv;
+  /** The commit sha of a ref; throws when the ref names no commit. */
+  resolveCommit: (ref: string) => string;
+  /** Whether the working tree has uncommitted changes. */
+  workingTreeDirty: () => boolean;
+  /** Write the commit's files into `tree`, using `tar` as scratch space. */
+  exportCommit: (sha: string, tar: string, tree: string) => void;
+  /** The directory the review's own temp directory is made in. */
+  tmpRoot: string;
+  /** Start Claude Code and wait for it. */
+  spawnReview: (argv: string[], cwd: string, env: Record<string, string>) => Promise<ReviewRun>;
+}
+
+async function spawnClaude(
+  argv: string[],
+  cwd: string,
+  env: Record<string, string>
+): Promise<ReviewRun> {
+  const child = Bun.spawn(argv, {
     cwd,
-    env: reviewEnv(process.env),
+    env,
     stdin: "ignore",
     stdout: "pipe",
     stderr: "inherit",
@@ -259,14 +283,30 @@ async function runReview(
   return { code, stdout, timedOut };
 }
 
-/** Export the commit into a new directory under the system temp directory, minus agent files. */
-function exportTree(sha: string): { work: string; tree: string; removed: string[] } {
-  const work = mkdtempSync(join(tmpdir(), "claudish-routing-review-"));
+function defaultDeps(): ReviewDeps {
+  return {
+    env: process.env,
+    resolveCommit: (ref) => git(["rev-parse", "--verify", `${ref}^{commit}`]),
+    workingTreeDirty: () => git(["status", "--porcelain"]) !== "",
+    exportCommit: (sha, tar, tree) => {
+      git(["archive", "--format=tar", "-o", tar, sha]);
+      mkdirSync(tree);
+      execFileSync("tar", ["-xf", tar, "-C", tree]);
+    },
+    tmpRoot: tmpdir(),
+    spawnReview: spawnClaude,
+  };
+}
+
+/** Export the commit into a new directory under `tmpRoot`, minus agent files. */
+function exportTree(
+  sha: string,
+  deps: ReviewDeps
+): { work: string; tree: string; removed: string[] } {
+  const work = mkdtempSync(join(deps.tmpRoot, "claudish-routing-review-"));
   const tree = join(work, "tree");
   const tar = join(work, "src.tar");
-  git(["archive", "--format=tar", "-o", tar, sha]);
-  mkdirSync(tree);
-  execFileSync("tar", ["-xf", tar, "-C", tree]);
+  deps.exportCommit(sha, tar, tree);
   rmSync(tar, { force: true });
   return { work, tree, removed: removeAgentFiles(tree) };
 }
@@ -277,7 +317,7 @@ interface Outcome {
 }
 
 /** The exit code and result.json body of one finished review run. */
-function judge(run: { code: number | null; stdout: string; timedOut: boolean }): Outcome {
+function judge(run: ReviewRun): Outcome {
   if (run.timedOut || run.code !== 0) {
     const reason = run.timedOut
       ? `Claude Code did not finish within ${DEADLINE_MS / 60000} minutes`
@@ -299,8 +339,13 @@ function judge(run: { code: number | null; stdout: string; timedOut: boolean }):
   };
 }
 
-async function main(): Promise<number> {
-  const args = parseArgs(process.argv.slice(2));
+/** One review from its command-line arguments; returns the exit code. */
+export async function runRoutingReview(
+  argv: string[],
+  overrides: Partial<ReviewDeps> = {}
+): Promise<number> {
+  const deps: ReviewDeps = { ...defaultDeps(), ...overrides };
+  const args = parseArgs(argv);
   if (typeof args === "string") {
     console.error(`routing-review: ${args}`);
     console.error(
@@ -311,18 +356,18 @@ async function main(): Promise<number> {
 
   let sha: string;
   try {
-    sha = git(["rev-parse", "--verify", `${args.ref}^{commit}`]);
+    sha = deps.resolveCommit(args.ref);
   } catch {
     console.error(`routing-review: ${args.ref} is not a commit`);
     return 2;
   }
-  if (git(["status", "--porcelain"]) !== "") {
+  if (deps.workingTreeDirty()) {
     console.error(
       "routing-review: the working tree has uncommitted changes; they are NOT reviewed, only the commit is"
     );
   }
 
-  const { work, tree, removed } = exportTree(sha);
+  const { work, tree, removed } = exportTree(sha, deps);
   console.error(
     `routing-review: reviewing ${sha} (${args.ref}); removed ${removed.length} agent files`
   );
@@ -336,7 +381,7 @@ async function main(): Promise<number> {
 
   let outcome: Outcome;
   try {
-    outcome = judge(await runReview(args.bin, tree));
+    outcome = judge(await deps.spawnReview(reviewArgv(args.bin), tree, reviewEnv(deps.env)));
   } catch (error) {
     const reason = `Claude Code could not start: ${(error as Error).message}`;
     console.error(`routing-review: ${reason}`);
@@ -354,5 +399,5 @@ async function main(): Promise<number> {
 }
 
 if (import.meta.main) {
-  process.exit(await main());
+  process.exit(await runRoutingReview(process.argv.slice(2)));
 }

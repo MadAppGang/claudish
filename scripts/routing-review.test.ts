@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -11,8 +19,10 @@ import {
   removeAgentFiles,
   reviewArgv,
   reviewEnv,
+  runRoutingReview,
   structuredOutputOf,
 } from "./routing-review.ts";
+import type { ReviewDeps, ReviewRun } from "./routing-review.ts";
 
 const VIOLATION = { ruleId: "RB-4", file: "packages/cli/src/x.ts", line: 3, explanation: "why" };
 
@@ -229,5 +239,74 @@ describe("parseArgs", () => {
     });
     expect(typeof parseArgs(["--ref"])).toBe("string");
     expect(typeof parseArgs(["--nope"])).toBe("string");
+  });
+});
+
+const PASS_STDOUT = JSON.stringify({
+  type: "result",
+  structured_output: { verdict: "PASS", violations: [] },
+});
+
+/** A review whose commit lookup, export and Claude Code are fakes under one temp directory. */
+function fakeReview(overrides: Partial<ReviewDeps> = {}) {
+  const root = mkdtempSync(join(tmpdir(), "routing-review-run-"));
+  const spawned: { argv: string[]; cwd: string; env: Record<string, string> }[] = [];
+  const deps: Partial<ReviewDeps> = {
+    env: { HOME: join(root, "home"), PATH: "/usr/bin" },
+    resolveCommit: () => "abc123",
+    workingTreeDirty: () => false,
+    exportCommit: (_sha, _tar, tree) => {
+      mkdirSync(tree);
+      writeFileSync(join(tree, "CLAUDE.md"), "x");
+      writeFileSync(join(tree, "index.ts"), "x");
+    },
+    tmpRoot: root,
+    spawnReview: async (argv, cwd, env): Promise<ReviewRun> => {
+      spawned.push({ argv, cwd, env });
+      return { code: 0, stdout: PASS_STDOUT, timedOut: false };
+    },
+    ...overrides,
+  };
+  return { root, spawned, deps };
+}
+
+/** The review's own temp directories under `root`. */
+function workDirs(root: string): string[] {
+  return readdirSync(root).filter((name) => name.startsWith("claudish-routing-review-"));
+}
+
+describe("runRoutingReview", () => {
+  test("a PASS verdict exits 0, runs in the export, and records result.json", async () => {
+    const { root, spawned, deps } = fakeReview();
+    try {
+      expect(await runRoutingReview([], deps)).toBe(0);
+      expect(spawned).toHaveLength(1);
+      expect(spawned[0]!.argv).toEqual(reviewArgv("claude"));
+      const [work] = workDirs(root);
+      expect(spawned[0]!.cwd).toBe(join(root, work!, "tree"));
+      expect(existsSync(join(root, work!, "tree"))).toBe(false);
+      expect(JSON.parse(readFileSync(join(root, work!, "result.json"), "utf8"))).toMatchObject({
+        sha: "abc123",
+        ok: true,
+        verdict: "PASS",
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a ref that names no commit is a usage error and exports nothing", async () => {
+    const { root, spawned, deps } = fakeReview({
+      resolveCommit: () => {
+        throw new Error("no");
+      },
+    });
+    try {
+      expect(await runRoutingReview(["--ref", "nope"], deps)).toBe(2);
+      expect(spawned).toHaveLength(0);
+      expect(workDirs(root)).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
