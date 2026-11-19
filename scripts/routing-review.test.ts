@@ -10,7 +10,6 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { claudeCodeStartupCredential } from "../packages/cli/src/auth/claude-code-login.ts";
 import {
   REVIEW_MODEL,
   REVIEW_PROMPT,
@@ -243,14 +242,13 @@ describe("parseArgs", () => {
   });
 });
 
-/** Claude Code's startup credential read from `env`'s HOME only; the Keychain answers absent. */
-function homeOnlyStartup(env: NodeJS.ProcessEnv) {
-  return claudeCodeStartupCredential({ env, keychainPresence: () => "absent" });
+function writeCredentials(home: string, body: string) {
+  mkdirSync(join(home, ".claude"), { recursive: true });
+  writeFileSync(join(home, ".claude", ".credentials.json"), body);
 }
 
 function writeLogin(home: string) {
-  mkdirSync(join(home, ".claude"), { recursive: true });
-  writeFileSync(join(home, ".claude", ".credentials.json"), "{}");
+  writeCredentials(home, JSON.stringify({ claudeAiOauth: { accessToken: "test-oauth-token" } }));
 }
 
 function writeConsoleKey(home: string) {
@@ -271,8 +269,9 @@ function fakeReview(overrides: Partial<ReviewDeps> = {}) {
   const spawned: { argv: string[]; cwd: string; env: Record<string, string> }[] = [];
   const deps: Partial<ReviewDeps> = {
     env: { HOME: home, PATH: "/usr/bin" },
-    startupCredential: homeOnlyStartup,
-    settingsFiles: () => [join(root, "managed-settings.json")],
+    keychainPresence: () => "absent",
+    managedSettingsPath: join(root, "managed-settings.json"),
+    cwd: root,
     resolveCommit: () => "abc123",
     workingTreeDirty: () => false,
     exportCommit: (_sha, _tar, tree) => {
@@ -434,12 +433,128 @@ describe("the review signs only with the Claude Code login", () => {
     expect(printed).toContain("/login");
   });
 
-  test("a credential store that did not answer refuses", async () => {
-    const { code, review } = await refusal(({ deps }) => {
-      deps.startupCredential = () => ({ kind: "unknown" });
+  test("a Keychain that did not answer refuses", async () => {
+    const { code, printed, review } = await refusal(({ deps }) => {
+      deps.keychainPresence = () => "failed";
     });
     expect(code).toBe(1);
     expect(review.spawned).toHaveLength(0);
+    expect(printed).toContain("Keychain");
+  });
+
+  test("a claude.ai login AND a Console key in .claude.json refuses", async () => {
+    const { code, printed, review } = await refusal(({ home }) => writeConsoleKey(home));
+    expect(code).toBe(1);
+    expect(review.spawned).toHaveLength(0);
+    expect(printed).toContain(join(review.home, ".claude.json"));
+    expect(printed).not.toContain("test-console-key");
+  });
+
+  test("a claude.ai login AND an empty primaryApiKey refuses", async () => {
+    const { code, review } = await refusal(({ home }) => {
+      writeFileSync(join(home, ".claude.json"), JSON.stringify({ primaryApiKey: "" }));
+    });
+    expect(code).toBe(1);
+    expect(review.spawned).toHaveLength(0);
+  });
+
+  test("an unreadable .claude.json refuses", async () => {
+    const { code, printed, review } = await refusal(({ home }) => {
+      writeFileSync(join(home, ".claude.json"), "{not json");
+    });
+    expect(code).toBe(1);
+    expect(review.spawned).toHaveLength(0);
+    expect(printed).toContain(join(review.home, ".claude.json"));
+  });
+
+  test("a .claude.json without a Console key passes", async () => {
+    const { code } = await refusal(({ home }) => {
+      writeFileSync(join(home, ".claude.json"), JSON.stringify({ numStartups: 3 }));
+    });
+    expect(code).toBe(0);
+  });
+
+  test("a claude.ai login AND a Console key Keychain item refuses", async () => {
+    const { code, printed, review } = await refusal(({ deps }) => {
+      deps.keychainPresence = (service) => (service === "Claude Code" ? "found" : "absent");
+    });
+    expect(code).toBe(1);
+    expect(review.spawned).toHaveLength(0);
+    expect(printed).toContain("Keychain");
+  });
+
+  test("a claude.ai login in the Keychain alone passes", async () => {
+    const { code } = await refusal(({ home, deps }) => {
+      rmSync(join(home, ".claude"), { recursive: true, force: true });
+      deps.keychainPresence = (service) =>
+        service === "Claude Code-credentials" ? "found" : "absent";
+    });
+    expect(code).toBe(0);
+  });
+
+  const notALogin: [string, string][] = [
+    ["{}", "{}"],
+    ["an empty accessToken", JSON.stringify({ claudeAiOauth: { accessToken: "" } })],
+    ["no accessToken", JSON.stringify({ claudeAiOauth: {} })],
+    ["text that is not JSON", "{not json"],
+  ];
+  for (const [name, body] of notALogin) {
+    test(`a .credentials.json holding ${name} is no login and refuses`, async () => {
+      const { code, printed, review } = await refusal(({ home }) => writeCredentials(home, body));
+      expect(code).toBe(1);
+      expect(review.spawned).toHaveLength(0);
+      expect(printed).toContain(join(review.home, ".claude", ".credentials.json"));
+    });
+  }
+
+  const managedRoutes: [string, string][] = [
+    ["forceLoginMethod console", JSON.stringify({ forceLoginMethod: "console" })],
+    ["an empty apiKeyHelper", JSON.stringify({ apiKeyHelper: "" })],
+  ];
+  for (const [name, body] of managedRoutes) {
+    test(`managed-settings.json with ${name} refuses`, async () => {
+      const { code, printed, review } = await refusal(({ root }) => {
+        writeFileSync(join(root, "managed-settings.json"), body);
+      });
+      expect(code).toBe(1);
+      expect(review.spawned).toHaveLength(0);
+      expect(printed).toContain(join(review.root, "managed-settings.json"));
+    });
+  }
+
+  test("managed-settings.json with forceLoginMethod claudeai passes", async () => {
+    const { code } = await refusal(({ root }) => {
+      writeFileSync(
+        join(root, "managed-settings.json"),
+        JSON.stringify({ forceLoginMethod: "claudeai" })
+      );
+    });
+    expect(code).toBe(0);
+  });
+
+  const dropIns: [string, string][] = [
+    ["an apiKeyHelper", JSON.stringify({ apiKeyHelper: "/bin/echo" })],
+    ["forceLoginMethod console", JSON.stringify({ forceLoginMethod: "console" })],
+    ["unreadable JSON", "{not json"],
+  ];
+  for (const [name, body] of dropIns) {
+    test(`a managed-settings.d file with ${name} refuses`, async () => {
+      const { code, printed, review } = await refusal(({ root }) => {
+        mkdirSync(join(root, "managed-settings.d"));
+        writeFileSync(join(root, "managed-settings.d", "10-policy.json"), body);
+      });
+      expect(code).toBe(1);
+      expect(review.spawned).toHaveLength(0);
+      expect(printed).toContain(join(review.root, "managed-settings.d", "10-policy.json"));
+    });
+  }
+
+  test("a managed-settings.d file with no API-key route passes", async () => {
+    const { code } = await refusal(({ root }) => {
+      mkdirSync(join(root, "managed-settings.d"));
+      writeFileSync(join(root, "managed-settings.d", "10-policy.json"), "{}");
+    });
+    expect(code).toBe(0);
   });
 
   const managed: [string, string][] = [

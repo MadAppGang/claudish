@@ -152,11 +152,14 @@ downloads or runs Claude Code: `scripts/boot-canary.ts`, `scripts/routing-review
 `.claude.json` from it, and runs `claude -p` there on the user's Claude Code login with
 `--safe-mode`, `--strict-mcp-config`, `--setting-sources project` and only the Read,
 Glob and Grep tools. Uncommitted edits are never reviewed (it warns when there are any).
-It signs only with the claude.ai login: before the export it asks, by presence, which
-credential Claude Code would start with, and refuses (exit 1, nothing started) on a stored
-Console key, no login, a credential store that did not answer, or a managed settings file
-that sets an `apiKeyHelper` or an Anthropic credential or base URL in its `env`. The
-refusal names the store, never a value.
+It signs only with the claude.ai login. Before the export it refuses (exit 1, nothing
+started) unless a claude.ai login is present (an OAuth access token in `.credentials.json`
+or the Keychain login item) AND no API-key route exists: `primaryApiKey` in `.claude.json`,
+the Console key Keychain item, or an `apiKeyHelper`, a `forceLoginMethod` other than
+`claudeai`, or an Anthropic credential or base URL in the `env` of `managed-settings.json` or
+any file in `managed-settings.d/`. A store that is present but empty, unreadable or not
+answering refuses too, so a Mac holding both a login and a Console key must remove the key.
+The refusal names the store, never a value.
 It prints the verdict and each violation, writes `result.json` beside the export, and keeps
 Claude Code's own JSON output there as `claude-output.json` (turns, cost, model).
 Exit 0 is PASS; exit 1 is FAIL, an unreadable verdict, or Claude Code failing or

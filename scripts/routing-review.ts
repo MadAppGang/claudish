@@ -16,11 +16,13 @@
  * it reads only an API key, never the login.
  *
  * The review is signed only with the user's claude.ai login, never an Anthropic API key. Before
- * anything is exported it asks, by presence, which credential Claude Code would start with
- * (`claudeCodeStartupCredential`), and refuses when that is a stored Console key, when no login
- * exists, when a store did not answer, or when the managed settings file (the one settings layer
- * loaded from outside the export) sets an `apiKeyHelper` or an Anthropic credential, base URL or
- * cloud provider in its `env`. A refusal names the store, never a value.
+ * anything is exported it refuses unless a claude.ai login is present (an OAuth access token in
+ * `.credentials.json`, or the Keychain login item) AND no API-key route exists: an Anthropic key
+ * in the environment, `primaryApiKey` in `.claude.json`, the Console key Keychain item, or an
+ * `apiKeyHelper`, a `forceLoginMethod` other than `claudeai`, or an Anthropic credential, base URL
+ * or cloud provider in the `env` of the managed settings file or any file in `managed-settings.d/`
+ * (the settings layers loaded from outside the export). A store that is present but empty,
+ * unreadable or not answering refuses too. A refusal names the store, never a value.
  *
  * Usage:
  *   bun scripts/routing-review.ts [--ref <rev>] [--bin <claude>] [--dry-run]
@@ -41,10 +43,15 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import {
-  type ClaudeCodeStartupCredential,
-  claudeCodeStartupCredential,
+  claudeCodeConfigDir,
+  claudeCodeGlobalConfigPath,
+  claudeCodeSecureStorageServices,
+} from "../packages/cli/src/auth/claude-code-facts.ts";
+import {
+  type KeychainPresence,
+  defaultKeychainPresence,
 } from "../packages/cli/src/auth/claude-code-login.ts";
 
 export const REVIEW_PROMPT = `Review this commit against the routing rulebook at
@@ -270,63 +277,131 @@ const SETTINGS_ENV_CREDENTIALS = [
   "CLAUDE_CODE_USE_VERTEX",
 ];
 
-/** What a settings layer sets that would sign the review with something other than the login. */
-function settingsCredential(text: string): string | undefined {
-  let parsed: unknown;
+const LOGIN_ADVICE = "run `claude` and `/login` with your Claude account";
+
+/** The parsed JSON object in `path`; undefined when the file is absent; "unreadable" otherwise. */
+function jsonObjectAt(path: string): Record<string, unknown> | undefined | "unreadable" {
+  if (!existsSync(path)) return undefined;
   try {
-    parsed = JSON.parse(text);
+    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return "unreadable";
+    return parsed as Record<string, unknown>;
   } catch {
-    return "cannot be parsed";
+    return "unreadable";
   }
-  if (parsed === null || typeof parsed !== "object") return "is not a JSON object";
-  const settings = parsed as { apiKeyHelper?: unknown; env?: unknown };
-  if (typeof settings.apiKeyHelper === "string" && settings.apiKeyHelper.trim()) {
-    return "sets apiKeyHelper";
+}
+
+/** The API-key route a managed settings file opens, by key presence only. */
+function settingsRoute(path: string): string | undefined {
+  const settings = jsonObjectAt(path);
+  if (settings === undefined) return undefined;
+  if (settings === "unreadable") return `the settings file ${path} cannot be read`;
+  if ("apiKeyHelper" in settings) return `the settings file ${path} sets apiKeyHelper`;
+  if ("forceLoginMethod" in settings && settings.forceLoginMethod !== "claudeai") {
+    return `the settings file ${path} sets forceLoginMethod to a login other than claudeai`;
   }
   const env =
     settings.env !== null && typeof settings.env === "object"
       ? (settings.env as Record<string, unknown>)
       : {};
-  const named = SETTINGS_ENV_CREDENTIALS.find(
-    (name) => typeof env[name] === "string" && (env[name] as string).trim() !== ""
-  );
-  return named ? `sets ${named} in its env` : undefined;
+  const named = SETTINGS_ENV_CREDENTIALS.find((name) => name in env);
+  return named ? `the settings file ${path} sets ${named} in its env` : undefined;
+}
+
+/** The managed settings file and every file in its `managed-settings.d/` drop-in directory. */
+function managedSettingsFiles(path: string): string[] | string {
+  const dropIns = join(dirname(path), "managed-settings.d");
+  if (!existsSync(dropIns)) return [path];
+  try {
+    const names = readdirSync(dropIns).sort();
+    return [path, ...names.map((name) => join(dropIns, name))];
+  } catch {
+    return `the managed settings directory ${dropIns} cannot be read`;
+  }
+}
+
+/** `found` at the first Keychain service present; `failed` when none is and one did not answer. */
+function keychainAny(
+  services: readonly string[],
+  presence: (service: string) => KeychainPresence
+): KeychainPresence {
+  let failed = false;
+  for (const service of new Set(services)) {
+    const answer = presence(service);
+    if (answer === "found") return "found";
+    if (answer === "failed") failed = true;
+  }
+  return failed ? "failed" : "absent";
 }
 
 /**
  * Why the review may not start, or undefined when Claude Code would sign it with the user's
- * claude.ai login. Presence only: a store is named, a value is never read out or printed. A store
- * that did not answer refuses too.
+ * claude.ai login. One fail-closed rule: a claude.ai login must be present AND no API-key route
+ * may exist anywhere Claude Code loads one from (the environment, the managed settings file and
+ * its drop-ins, `primaryApiKey` in `.claude.json`, the Console key Keychain item). A store that is
+ * present but empty, unreadable or not answering refuses too. Presence only: a store is named,
+ * a value is never kept, printed or compared.
  */
 export function credentialRefusal(
   childEnv: Record<string, string>,
-  deps: Pick<ReviewDeps, "startupCredential" | "settingsFiles">
+  deps: CredentialDeps
 ): string | undefined {
   for (const name of ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]) {
-    if (childEnv[name]) return `Claude Code's environment holds ${name}`;
+    if (name in childEnv) return `Claude Code's environment holds ${name}`;
   }
-  for (const file of deps.settingsFiles()) {
-    if (!existsSync(file)) continue;
-    let text: string;
-    try {
-      text = readFileSync(file, "utf8");
-    } catch {
-      return `the settings file ${file} cannot be read`;
-    }
-    const found = settingsCredential(text);
-    if (found) return `the settings file ${file} ${found}`;
+  const files = managedSettingsFiles(deps.managedSettingsPath);
+  if (typeof files === "string") return files;
+  for (const file of files) {
+    const route = settingsRoute(file);
+    if (route) return route;
   }
-  const startup = deps.startupCredential(childEnv);
-  switch (startup.kind) {
-    case "login":
-      return undefined;
-    case "api-key":
-      return `Claude Code would sign with the Console API key stored in ${startup.where}, not a claude.ai login; run \`claude\` and \`/login\` with your Claude account`;
-    case "none":
-      return "Claude Code has no login; run `claude` and `/login` with your Claude account";
-    default:
-      return "a Claude Code credential store did not answer, so the login cannot be confirmed";
+  return consoleKeyRefusal(childEnv, deps) ?? loginRefusal(childEnv, deps);
+}
+
+type CredentialDeps = Pick<ReviewDeps, "keychainPresence" | "managedSettingsPath" | "cwd">;
+
+/** A stored Console key, in `.claude.json` or the Keychain, by presence. */
+function consoleKeyRefusal(
+  childEnv: Record<string, string>,
+  deps: CredentialDeps
+): string | undefined {
+  const configPath = claudeCodeGlobalConfigPath(childEnv, deps.cwd);
+  const config = jsonObjectAt(configPath);
+  if (config === "unreadable") return `${configPath} cannot be read`;
+  if (config && "primaryApiKey" in config) {
+    return `${configPath} holds a Console API key (primaryApiKey); remove it, then ${LOGIN_ADVICE}`;
   }
+  const consoleItem = keychainAny(
+    claudeCodeSecureStorageServices("", childEnv, deps.cwd),
+    deps.keychainPresence
+  );
+  if (consoleItem === "found") {
+    return `the macOS Keychain holds a Claude Code Console API key item; remove it, then ${LOGIN_ADVICE}`;
+  }
+  if (consoleItem === "failed") return "the macOS Keychain did not answer for the Console key item";
+  return undefined;
+}
+
+/** A claude.ai login: an OAuth access token in `.credentials.json`, or the Keychain login item. */
+function loginRefusal(childEnv: Record<string, string>, deps: CredentialDeps): string | undefined {
+  const credentialsPath = join(claudeCodeConfigDir(childEnv, deps.cwd), ".credentials.json");
+  const credentials = jsonObjectAt(credentialsPath);
+  if (credentials !== undefined) {
+    const oauth = credentials === "unreadable" ? undefined : credentials.claudeAiOauth;
+    const token =
+      oauth !== null && typeof oauth === "object"
+        ? (oauth as Record<string, unknown>).accessToken
+        : undefined;
+    if (typeof token === "string" && token !== "") return undefined;
+    return `${credentialsPath} holds no claude.ai login; ${LOGIN_ADVICE}`;
+  }
+  const loginItem = keychainAny(
+    claudeCodeSecureStorageServices("-credentials", childEnv, deps.cwd),
+    deps.keychainPresence
+  );
+  if (loginItem === "found") return undefined;
+  if (loginItem === "failed") return "the macOS Keychain did not answer for the login item";
+  return `Claude Code has no login; ${LOGIN_ADVICE}`;
 }
 
 const repositoryRoot = resolve(import.meta.dir, "..");
@@ -356,10 +431,12 @@ export interface ReviewDeps {
   tmpRoot: string;
   /** Start Claude Code and wait for it. */
   spawnReview: (argv: string[], cwd: string, env: Record<string, string>) => Promise<ReviewRun>;
-  /** The credential Claude Code would start with in `env`, by presence. */
-  startupCredential: (env: NodeJS.ProcessEnv) => ClaudeCodeStartupCredential;
-  /** The settings files Claude Code loads for the review. */
-  settingsFiles: () => string[];
+  /** Whether a macOS Keychain item exists under a service name; reads attributes, never data. */
+  keychainPresence: (service: string) => KeychainPresence;
+  /** Claude Code's managed settings file; its `managed-settings.d/` sits beside it. */
+  managedSettingsPath: string;
+  /** The directory Claude Code's config directory is resolved against. */
+  cwd: string;
 }
 
 async function spawnClaude(
@@ -400,8 +477,9 @@ function defaultDeps(): ReviewDeps {
     },
     tmpRoot: tmpdir(),
     spawnReview: spawnClaude,
-    startupCredential: (env) => claudeCodeStartupCredential({ env }),
-    settingsFiles: () => [managedSettingsPath()],
+    keychainPresence: defaultKeychainPresence,
+    managedSettingsPath: managedSettingsPath(),
+    cwd: repositoryRoot,
   };
 }
 
