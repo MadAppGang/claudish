@@ -10,6 +10,13 @@
  *
  * Trap T-3 is the one this file exists for: every "it retried at 5s/10s/30s"
  * assertion in the suite passes on a feature that can never actually finish.
+ *
+ * The four turns run at the same time, each against its own endpoint, because
+ * an episode is per endpoint: `beforeAll` starts them and each test awaits the
+ * turn it checks (the body test and the credential test check the same turn).
+ * A run filtered to one test still starts all four. `afterAll` shuts the
+ * proxy and the upstreams down first, which ends a turn still in flight by
+ * closing its connection, and only then waits for the four to settle.
  */
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
@@ -41,6 +48,22 @@ const SCENARIOS = [
 const ports: Record<string, number> = {};
 const fixtureOf: Record<string, RawFixture> = {};
 
+// ~200 KB of distinctive payload plus a tool_result block. A body consumed
+// by attempt 1 and replayed empty satisfies every timing assertion in this
+// suite and delivers garbage to the model.
+const filler = "REPLAY-MARKER-".repeat(14_000); // ≈ 196 KB
+const content = [
+  { type: "text", text: `head ${filler} tail` },
+  {
+    type: "tool_result",
+    tool_use_id: "toolu_blackbox_1",
+    content: "TOOL-RESULT-SENTINEL",
+  },
+];
+
+type Turn = ReturnType<typeof postMessage>;
+let turns: { recovers: Turn; body: Turn; stream: Turn; never: Turn };
+
 beforeAll(async () => {
   restoreEnv = envSnapshot(["API_TIMEOUT_MS", "CLAUDISH_RECOVERY"]);
   process.env.API_TIMEOUT_MS = String(API_TIMEOUT_MS);
@@ -63,18 +86,34 @@ beforeAll(async () => {
       SCENARIOS.map((name) => ({ name: `ep-${name}`, port: ports[name], model: `m-${name}` }))
     )
   );
+
+  turns = {
+    recovers: postMessage(proxy.url, { model: "ep-recovers@m-recovers" }),
+    body: postMessage(proxy.url, {
+      model: "ep-body@m-body",
+      content,
+    }),
+    stream: postMessage(proxy.url, {
+      model: "ep-stream@m-stream",
+      stream: true,
+    }),
+    never: postMessage(proxy.url, { model: "ep-never@m-never" }),
+  };
+  // A turn that rejects before its test awaits it is reported by that test.
+  for (const turn of Object.values(turns)) void turn.catch(() => {});
 }, 60_000);
 
 afterAll(async () => {
   await proxy?.shutdown();
   for (const f of fixtures) f.stop();
+  if (turns) await Promise.allSettled(Object.values(turns));
   restoreEnv?.();
 });
 
 describe("CP-3 — recovery completes the turn", () => {
   test("the upstream comes back mid-ladder and the client gets 200 with the real answer", async () => {
     const fixture = fixtureOf.recovers;
-    const result = await postMessage(proxy.url, { model: "ep-recovers@m-recovers" });
+    const result = await turns.recovers;
 
     expect(result.status).toBe(200);
     expect(result.body).toContain("RECOVERED-ANSWER-RECOVERS");
@@ -89,24 +128,8 @@ describe("CP-3 — recovery completes the turn", () => {
   }, 60_000);
 
   test("the request BODY is replayed intact on the successful attempt", async () => {
-    // ~200 KB of distinctive payload plus a tool_result block. A body consumed
-    // by attempt 1 and replayed empty satisfies every timing assertion in this
-    // suite and delivers garbage to the model.
-    const filler = "REPLAY-MARKER-".repeat(14_000); // ≈ 196 KB
-    const content = [
-      { type: "text", text: `head ${filler} tail` },
-      {
-        type: "tool_result",
-        tool_use_id: "toolu_blackbox_1",
-        content: "TOOL-RESULT-SENTINEL",
-      },
-    ];
-
     const fixture = fixtureOf.body;
-    const result = await postMessage(proxy.url, {
-      model: "ep-body@m-body",
-      content,
-    });
+    const result = await turns.body;
 
     expect(result.status).toBe(200);
     expect(fixture.connections.length).toBeGreaterThanOrEqual(2);
@@ -126,6 +149,7 @@ describe("CP-3 — recovery completes the turn", () => {
     // A retry that drops the Authorization header turns an outage into a 401
     // storm the moment the network returns.
     const fixture = fixtureOf.body;
+    await turns.body;
     expect(fixture.connections.length).toBeGreaterThanOrEqual(2);
     const first = fixture.connections[0].headers.authorization;
     const success = fixture.connections[fixture.connections.length - 1].headers.authorization;
@@ -135,10 +159,7 @@ describe("CP-3 — recovery completes the turn", () => {
 
   test("a recovered streaming turn is a well-formed Claude SSE stream", async () => {
     const fixture = fixtureOf.stream;
-    const result = await postMessage(proxy.url, {
-      model: "ep-stream@m-stream",
-      stream: true,
-    });
+    const result = await turns.stream;
 
     expect(result.status).toBe(200);
     expect(result.headers.get("content-type")).toContain("text/event-stream");
@@ -159,7 +180,7 @@ describe("CP-3 — recovery completes the turn", () => {
 
   test("an upstream that never returns produces exactly one exhaustion answer", async () => {
     const fixture = fixtureOf.never;
-    const result = await postMessage(proxy.url, { model: "ep-never@m-never" });
+    const result = await turns.never;
 
     expect(result.status).toBeGreaterThanOrEqual(400);
     expect(fixture.connections.length).toBeGreaterThanOrEqual(2);

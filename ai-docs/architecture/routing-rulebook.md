@@ -366,7 +366,7 @@ notice naming how the spent hop and the next hop each bill, and the provider's o
   `handlers/shared/auth-failure.ts`.
 - **Check:** `handlers/shared/hop-decision.test.ts`,
   `handlers/fallback-handler.credential-advance.test.ts` (G1, G2, G5),
-  `handlers/composed-handler-accounts-2a.test.ts` (E17-backstop).
+  `handlers/composed-handler-accounts-2a-reauth.test.ts` (E17-backstop).
 
 ## Changing a rule
 

@@ -129,7 +129,9 @@ journal, the first persist, and V9 could not have been produced.
 Session evidence: `ai-docs/sessions/dev-feature-multi-subscription-20260912-000000-a1b2/tests/test-plan.md`,
 sections "Phase 2a tests", "Phase 2a tests — pass 2" and "Phase 2a stale-test updates". The session
 directory is gitignored; this table is the durable summary. Paths are under `packages/cli/src/`.
-File keys: **H** `handlers/composed-handler-accounts-2a.test.ts` (138 tests), **M**
+File keys: **H** the three files `handlers/composed-handler-accounts-2a-sites.test.ts`,
+`handlers/composed-handler-accounts-2a-reauth.test.ts` and
+`handlers/composed-handler-accounts-2a-rotation.test.ts` (145 tests: 83, 35 and 27), **M**
 `auth/accounts/management-2a.test.ts` (27), **O2** `auth/accounts/outcomes-pass2.test.ts` (17),
 **Q2** `auth/quota/sources/codex-accounts-pass2.test.ts` (5), **PB**
 `auth/credentials/codex-pinned-baseline-2a.test.ts` (8, removed before the v14.5.0 merge; see V16), **L**

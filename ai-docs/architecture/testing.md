@@ -49,26 +49,29 @@ every file it discovers from it and from `ci-test-times.json`:
 - **A pinned file** (`pinned` in `test-tiers.json`, outside every slow category) is essential
   whatever its time. The list holds the tests of the CLAUDE.md "fails SILENTLY" invariants that
   the 2 s rule would move to weekly: the credential-file reload tests (credential-file,
-  grok-oauth.reload, kimi-oauth.reload, devin-credentials.reload), the `requireOAuth` latch
-  (`composed-handler-accounts-2a`, 46 s) and the metered-hop guard (`v14-merge-fixes`). A file
-  inside a slow category is refused there: its category's essential list decides it.
+  grok-oauth.reload, kimi-oauth.reload, devin-credentials.reload), the Codex pool request-path
+  tests, which hold the `requireOAuth` latch and are three files over one child-process harness
+  (`composed-handler-accounts-2a-sites`, 19 s; `-reauth`, 21 s; `-rotation`, 18 s), and the
+  metered-hop guard (`v14-merge-fixes`). A file inside a slow category is refused there: its
+  category's essential list decides it.
 - **Any other file** is essential unless `ci-test-times.json` measures it at `heavySeconds`
-  (**2 s**) or more. A file the table has not measured is essential. The threshold sits in a gap
-  of the measured data (2.2 s, then 1.8 s): at 2 s it moves 18 files, 104 of the 133 measured
-  seconds outside the slow categories, among them `recovery/magmux-ui.test.ts` (23.7 s),
-  `mcp-shutdown.e2e.test.ts` (15.9 s) and `handlers/stream-head-unreachable.test.ts` (12 s).
+  (**2 s**) or more. A file the table has not measured is essential. On the timing
+  table of 2026-11-19 the rule moves 47 files, 330.8 of the 472.5 measured seconds outside the
+  slow categories, among them `claude-runner-exit-code.test.ts` (62.5 s),
+  `recovery/magmux-ui.test.ts` (25.5 s) and `providers/routing-setups.test.ts` (24.4 s). The
+  measured files nearest to the threshold are at 2.0 s (weekly) and 1.6 s (essential).
 - **A macOS-only file** (`macOnly` in `test-tiers.json`) takes its tier by the rules above, and
   `ci-tests.ts` drops it from every tier when it runs off darwin (`forPlatform`). The list holds
   the four Antigravity files that exercise the shared Antigravity token store, which refuses on
   Linux by design; the first Linux `rest` run failed 57 tests in exactly those files. On a Mac
   nothing is dropped.
 
-On the timing table of 2026-11-17, on darwin, the essential tier is 634 files (idle 4, pane 16,
-rest 614), the full tier 809 and the weekly tier 175; on Linux the four macOS-only files leave
-610 essential rest files. The table times only some of them: 335 essential files have no entry, and the
-planner (`--plan`, `--list` and the slicing of `--run`) weighs each such file 1 s. Its seconds
+On the timing table of 2026-11-19, on darwin, the essential tier is 640 files (idle 4, pane 16,
+rest 620), the full tier 819 and the weekly tier 179; on Linux the four macOS-only files leave
+616 essential rest files. The table times nearly all of them: 9 essential files have no entry, and
+the planner (`--plan`, `--list` and the slicing of `--run`) weighs each such file 1 s. Its seconds
 are weights that balance slices, not a wall-time estimate: `--list` shows the essential `rest` at
-363 s, 333 of them those 1 s weights.
+151 s, 9 of them those 1 s weights.
 
 A local essential run (`bun run test:macos`, 2026-11-17, commit bfb5720f, load about 45 on an
 18-core Mac, before the gate sliced `rest`) measured: the hermetic step 432 s wall; `rest`, 634
@@ -104,11 +107,23 @@ heavy. Refresh it from a full-tier junit (`weekly-tests.yml` uploads one per idl
 slice; the Mac's nightly parts upload none, so pane times come from a dispatched `test.yml`), and read
 `--list` before and after.
 
+**A divided or new heavy file needs a two-step refresh**, because the latest full-tier junit does
+not hold it yet: pass that junit first, then a local junit of each such file (`bun test <file>
+--reporter=junit --reporter-outfile=<path>`), since a later report wins. Until its entry exists
+the file weighs 1 s and its slice runs long. The next full-tier junit replaces the local figure.
+
+**The pull-request `rest` job has 6 slices** (`test.yml`, and `weekly-tests.yml` with the same
+matrix). The essential `rest` files weigh 151 s, 25 s a slice. Add a slice when
+`bun scripts/ci-tests.ts --plan rest@6 --tier essential` shows a slice above 28 s: change the
+matrix and the `/6` of the run line in both workflows, which `scripts/test-tier-workflows.test.ts`
+compares. A slice cannot be lighter than its heaviest file, so a file above 28 s is divided
+instead.
+
 **Where the tiers run:**
 
 | Run | Tier | Where its result shows |
 |---|---|---|
-| `test.yml` on pull_request and push | essential (Linux idle slices, Linux rest slices) | the PR checks |
+| `test.yml` on pull_request and push | essential (3 Linux idle slices, 6 Linux rest slices) | the PR checks |
 | `test.yml` on workflow_dispatch | full (Linux idle and rest slices, and the macOS runners) | the run |
 | `bun run test:macos` | essential: `ci-tests.ts --tier essential` over every group (idle, pane, rest), sliced, plus macos-bridge, `scripts/*.test.ts` and the Antigravity client tests | its summary |
 | `bun run test:macos --full` | full: `ci-tests.ts --tier full` over every group, sliced, and adds the blind hook tests and S1 hook loading | its summary |
