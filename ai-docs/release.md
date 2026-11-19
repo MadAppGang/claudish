@@ -257,8 +257,10 @@ How it keeps a run local and free of secrets:
   job containers, and `--rm` removes them.
 - act's environment passes only PATH, USER, LANG, TMPDIR and DOCKER_CONTEXT
   from the caller. HOME and XDG_CONFIG_HOME are new empty dirs, so act reads no
-  user config. DOCKER_HOST and DOCKER_CONFIG name the caller's Docker. No token
-  (GITHUB_TOKEN, GH_TOKEN, NPM_TOKEN, ANTHROPIC_*) reaches act.
+  user config. DOCKER_HOST names the caller's Docker. DOCKER_CONFIG is a new
+  dir holding only a `config.json` of `{}`, so act reads no registry credential,
+  even when it pulls an image that is not present. No token (GITHUB_TOKEN,
+  GH_TOKEN, NPM_TOKEN, ANTHROPIC_*) reaches act.
 - The run stops before act starts when an actrc exists at `~/.actrc`,
   `~/.config/act/actrc`, `~/Library/Application Support/act/actrc` or the
   clone's `.actrc`: an actrc can add `-s` flags.

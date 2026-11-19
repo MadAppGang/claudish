@@ -20,8 +20,11 @@
  *   `--secret`, `--var`, `--env` or `--input`. `--container-daemon-socket -` keeps the Docker
  *   socket out of the job containers, `--rm` removes them.
  * - act's environment is an allowlist (PATH, USER, LANG, TMPDIR, DOCKER_CONTEXT); HOME and
- *   XDG_CONFIG_HOME are new empty dirs, so act reads no user actrc. DOCKER_HOST and DOCKER_CONFIG
- *   point at the caller's Docker.
+ *   XDG_CONFIG_HOME are new empty dirs, so act reads no user actrc. DOCKER_HOST names the
+ *   caller's Docker endpoint. DOCKER_CONFIG is a new dir holding only a `config.json` of `{}`, so
+ *   act reads no registry credential, even when it pulls an image that is not present.
+ * - Every git subprocess runs with no GIT_* variable, so a caller's GIT_DIR or GIT_WORK_TREE
+ *   cannot point the clone's commands at the source repository.
  * - Any actrc in the user's or the clone's config locations stops the run (one could add `-s`).
  * - A real run is allowed only for a job in RUNNABLE_JOBS. `--list` and `--dry-run` (act's own
  *   dry run: plans the steps, starts no container) take any job, or the whole workflow.
@@ -203,6 +206,7 @@ export interface ActEnvDirs {
   home: string;
   xdgConfigHome: string;
   dockerHost: string;
+  /** A dir of the run's own (`writeEmptyDockerConfig`), never the caller's `~/.docker`. */
   dockerConfig: string;
 }
 
@@ -257,12 +261,34 @@ export function tagEvent(tag: string): { ref: string } {
   return { ref: `refs/tags/${tag}` };
 }
 
+/**
+ * The environment of every git subprocess: the caller's, without any GIT_* variable. A GIT_DIR or
+ * GIT_WORK_TREE set by the caller would point the clone's checkout, tag and remote commands at
+ * the source repository instead of the temp clone.
+ */
+export function gitEnv(env: Record<string, string | undefined>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (value !== undefined && !key.startsWith("GIT_")) out[key] = value;
+  }
+  return out;
+}
+
+/**
+ * Makes `dir` act's Docker config: a `config.json` holding `{}`, so act finds no registry
+ * credential when it pulls an image that is not present (`--pull=false` does not stop that pull).
+ */
+export function writeEmptyDockerConfig(dir: string): void {
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "config.json"), "{}\n");
+}
+
 export interface ActDeps {
   cwd: string;
   env: Record<string, string | undefined>;
   realHome: string;
-  /** Runs git in `cwd` and returns its stdout; throws on a non-zero exit. */
-  git: (args: string[], cwd: string) => string;
+  /** Runs git in `cwd` with exactly `env` and returns its stdout; throws on a non-zero exit. */
+  git: (args: string[], cwd: string, env: Record<string, string>) => string;
   exists: (path: string) => boolean;
   makeTemp: () => string;
   remove: (path: string) => void;
@@ -270,9 +296,13 @@ export interface ActDeps {
   spawnAct: (argv: string[], cwd: string, env: Record<string, string>) => Promise<number>;
 }
 
-function defaultGit(args: string[], cwd: string): string {
+/** git with the scrubbed environment already bound; every git call of a run goes through one. */
+type Git = (args: string[], cwd: string) => string;
+
+function defaultGit(args: string[], cwd: string, env: Record<string, string>): string {
   return execFileSync("git", args, {
     cwd,
+    env,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   }).trim();
@@ -331,35 +361,36 @@ function defaultDeps(): ActDeps {
 }
 
 /** Clones the toplevel at `sha` into `repo` and points its remote at GitHub with pushes disabled. */
-function prepareClone(deps: ActDeps, toplevel: string, sha: string, repo: string): void {
-  deps.git(["clone", "--quiet", "--no-hardlinks", toplevel, repo], deps.cwd);
-  deps.git(["checkout", "--quiet", "--detach", sha], repo);
-  deps.git(["remote", "set-url", "origin", ORIGIN_URL], repo);
-  deps.git(["remote", "set-url", "--push", "origin", PUSH_URL], repo);
+function prepareClone(git: Git, cwd: string, toplevel: string, sha: string, repo: string): void {
+  git(["clone", "--quiet", "--no-hardlinks", toplevel, repo], cwd);
+  git(["checkout", "--quiet", "--detach", sha], repo);
+  git(["remote", "set-url", "origin", ORIGIN_URL], repo);
+  git(["remote", "set-url", "--push", "origin", PUSH_URL], repo);
 }
 
 /** Tags HEAD as the base, makes the case commit, tags it, and writes the push event file. */
 function prepareTagCase(
-  deps: ActDeps,
+  git: Git,
+  exists: (path: string) => boolean,
   repo: string,
   work: string,
   tagCase: TagCase,
   change: string
 ): string {
-  deps.git([...COMMIT_IDENTITY, "tag", BASE_TAG, "HEAD"], repo);
+  git([...COMMIT_IDENTITY, "tag", BASE_TAG, "HEAD"], repo);
   if (tagCase === "changed") {
     const target = join(repo, change);
-    if (!deps.exists(target)) throw new Error(`${change} does not exist in the commit`);
+    if (!exists(target)) throw new Error(`${change} does not exist in the commit`);
     appendFileSync(target, "\n");
-    deps.git(["add", "--", change], repo);
-    deps.git([...COMMIT_IDENTITY, "commit", "--quiet", "-m", `act-local: change ${change}`], repo);
+    git(["add", "--", change], repo);
+    git([...COMMIT_IDENTITY, "commit", "--quiet", "-m", `act-local: change ${change}`], repo);
   } else {
-    deps.git(
+    git(
       [...COMMIT_IDENTITY, "commit", "--quiet", "--allow-empty", "-m", "act-local: no change"],
       repo
     );
   }
-  deps.git([...COMMIT_IDENTITY, "tag", CASE_TAG, "HEAD"], repo);
+  git([...COMMIT_IDENTITY, "tag", CASE_TAG, "HEAD"], repo);
   const eventFile = join(work, "event.json");
   writeFileSync(eventFile, `${JSON.stringify(tagEvent(CASE_TAG))}\n`);
   return eventFile;
@@ -369,16 +400,18 @@ interface WorkLayout {
   repo: string;
   home: string;
   xdgConfigHome: string;
+  dockerConfig: string;
   files: { secretFile: string; varFile: string; envFile: string; inputFile: string };
 }
 
-/** Makes the empty HOME, XDG_CONFIG_HOME and the four empty files act is pointed at. */
+/** Makes the empty HOME, XDG_CONFIG_HOME, Docker config and the four empty files act is pointed at. */
 function layoutWork(work: string): WorkLayout {
   const empty = join(work, "empty");
   const layout: WorkLayout = {
     repo: join(work, "repo"),
     home: join(work, "home"),
     xdgConfigHome: join(work, "xdg-config"),
+    dockerConfig: join(work, "docker-config"),
     files: {
       secretFile: join(empty, "secrets"),
       varFile: join(empty, "vars"),
@@ -388,6 +421,7 @@ function layoutWork(work: string): WorkLayout {
   };
   for (const dir of [layout.home, layout.xdgConfigHome, empty]) mkdirSync(dir, { recursive: true });
   for (const file of Object.values(layout.files)) writeFileSync(file, "");
+  writeEmptyDockerConfig(layout.dockerConfig);
   return layout;
 }
 
@@ -395,12 +429,13 @@ function layoutWork(work: string): WorkLayout {
 async function runInWork(
   args: ActArgs,
   deps: ActDeps,
+  git: Git,
   source: { toplevel: string; sha: string },
   work: string
 ): Promise<number> {
-  const { repo, home, xdgConfigHome, files } = layoutWork(work);
+  const { repo, home, xdgConfigHome, dockerConfig, files } = layoutWork(work);
   try {
-    prepareClone(deps, source.toplevel, source.sha, repo);
+    prepareClone(git, deps.cwd, source.toplevel, source.sha, repo);
   } catch (error) {
     console.error(`act-local: could not clone ${source.toplevel}: ${(error as Error).message}`);
     return 1;
@@ -422,7 +457,14 @@ async function runInWork(
   let eventFile: string | undefined;
   if (args.tagCase) {
     try {
-      eventFile = prepareTagCase(deps, repo, work, args.tagCase, args.change ?? BUNDLED_LIST);
+      eventFile = prepareTagCase(
+        git,
+        deps.exists,
+        repo,
+        work,
+        args.tagCase,
+        args.change ?? BUNDLED_LIST
+      );
     } catch (error) {
       console.error(`act-local: could not make the tag case: ${(error as Error).message}`);
       return 1;
@@ -438,7 +480,7 @@ async function runInWork(
     home,
     xdgConfigHome,
     dockerHost: dockerHostFor(deps.env, deps.realHome, deps.exists),
-    dockerConfig: deps.env.DOCKER_CONFIG || join(deps.realHome, ".docker"),
+    dockerConfig,
   });
   console.error(`act-local: act ${actArgs.join(" ")}`);
 
@@ -466,13 +508,15 @@ export async function runActLocal(argv: string[], deps: ActDeps = defaultDeps())
     return 2;
   }
 
+  const scrubbed = gitEnv(deps.env);
+  const git: Git = (gitArgs, cwd) => deps.git(gitArgs, cwd, scrubbed);
   let source: { toplevel: string; sha: string };
   try {
     source = {
-      toplevel: deps.git(["rev-parse", "--show-toplevel"], deps.cwd),
-      sha: deps.git(["rev-parse", "HEAD"], deps.cwd),
+      toplevel: git(["rev-parse", "--show-toplevel"], deps.cwd),
+      sha: git(["rev-parse", "HEAD"], deps.cwd),
     };
-    if (deps.git(["status", "--porcelain"], deps.cwd) !== "") {
+    if (git(["status", "--porcelain"], deps.cwd) !== "") {
       console.error(
         "act-local: the working tree has uncommitted changes; they are NOT in the run, only the commit is"
       );
@@ -484,7 +528,7 @@ export async function runActLocal(argv: string[], deps: ActDeps = defaultDeps())
 
   const work = deps.makeTemp();
   try {
-    return await runInWork(args, deps, source, work);
+    return await runInWork(args, deps, git, source, work);
   } finally {
     if (args.keep) console.error(`act-local: kept ${work}`);
     else deps.remove(work);

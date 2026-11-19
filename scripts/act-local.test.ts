@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   BASE_TAG,
   CASE_TAG,
@@ -9,10 +12,12 @@ import {
   actEnv,
   actrcPaths,
   dockerHostFor,
+  gitEnv,
   parseArgs,
   runActLocal,
   runRefusal,
   tagEvent,
+  writeEmptyDockerConfig,
 } from "./act-local.ts";
 import type { ActArgs, ActDeps, ActMode } from "./act-local.ts";
 
@@ -214,7 +219,7 @@ describe("actEnv", () => {
     home: "/t/home",
     xdgConfigHome: "/t/xdg-config",
     dockerHost: "unix:///Users/jack/.docker/run/docker.sock",
-    dockerConfig: "/Users/jack/.docker",
+    dockerConfig: "/t/docker-config",
   };
 
   test("only the allowlist passes, and secrets stay out", () => {
@@ -254,7 +259,8 @@ describe("actEnv", () => {
     expect(env.HOME).toBe("/t/home");
     expect(env.XDG_CONFIG_HOME).toBe("/t/xdg-config");
     expect(env.DOCKER_HOST).toBe(dirs.dockerHost);
-    expect(env.DOCKER_CONFIG).toBe("/Users/jack/.docker");
+    expect(env.DOCKER_CONFIG).toBe("/t/docker-config");
+    expect(env.DOCKER_CONFIG).not.toBe("/Users/jack/.docker");
   });
 
   test("an unset allowlisted variable is not invented", () => {
@@ -299,6 +305,34 @@ describe("actrcPaths", () => {
   });
 });
 
+describe("gitEnv", () => {
+  test("removes every GIT_* variable and keeps the rest", () => {
+    const env = gitEnv({
+      PATH: "/usr/bin",
+      HOME: "/Users/jack",
+      GIT_DIR: "/src/.git",
+      GIT_WORK_TREE: "/src",
+      GIT_INDEX_FILE: "/src/.git/index",
+      GIT_COMMON_DIR: "/src/.git",
+      GIT_CONFIG_GLOBAL: "/x",
+    });
+    expect(env).toEqual({ PATH: "/usr/bin", HOME: "/Users/jack" });
+  });
+});
+
+describe("writeEmptyDockerConfig", () => {
+  test("makes the dir with a config.json holding {} and nothing else", () => {
+    const root = mkdtempSync(join(tmpdir(), "act-local-test-"));
+    try {
+      const dir = join(root, "docker-config");
+      writeEmptyDockerConfig(dir);
+      expect(JSON.parse(readFileSync(join(dir, "config.json"), "utf8"))).toEqual({});
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("tagEvent", () => {
   test("a push event for the tag ref", () => {
     expect(tagEvent(CASE_TAG)).toEqual({ ref: `refs/tags/${CASE_TAG}` });
@@ -334,6 +368,74 @@ describe("runActLocal", () => {
     const { deps, started } = fakeDeps();
     expect(await runActLocal(["--job", "publish-npm"], deps)).toBe(2);
     expect(started).toEqual([]);
+  });
+
+  /** Fakes for a real run of the tag case, in a real temp dir under `root`. */
+  function realRunDeps(root: string) {
+    const gitCalls: { args: string[]; env: Record<string, string> | undefined }[] = [];
+    const seen: { env?: Record<string, string>; config?: string } = {};
+    const deps: ActDeps = {
+      cwd: "/w",
+      env: {
+        PATH: "/bin",
+        HOME: "/Users/jack",
+        DOCKER_CONFIG: "/Users/jack/.docker",
+        GIT_DIR: "/w/.git",
+        GIT_WORK_TREE: "/w",
+        GIT_INDEX_FILE: "/w/.git/index",
+        GIT_COMMON_DIR: "/w/.git",
+      },
+      realHome: "/Users/jack",
+      git: (args, _cwd, env) => {
+        gitCalls.push({ args, env });
+        if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return "/w";
+        if (args[0] === "rev-parse") return "abc123";
+        return "";
+      },
+      exists: (p) => p.endsWith(join(".github", "workflows", "release.yml")),
+      makeTemp: () => mkdtempSync(join(root, "work-")),
+      remove: (p) => rmSync(p, { recursive: true, force: true }),
+      spawnAct: async (_argv, _cwd, env) => {
+        seen.env = env;
+        seen.config = readFileSync(join(env.DOCKER_CONFIG ?? "", "config.json"), "utf8");
+        return 0;
+      },
+    };
+    return { deps, gitCalls, seen };
+  }
+  const TAG_RUN = ["--job", "bundled-list", "--tag-case", "unchanged"];
+
+  test("every git call of a real run runs with no GIT_* variable", async () => {
+    const root = mkdtempSync(join(tmpdir(), "act-local-test-"));
+    const { deps, gitCalls } = realRunDeps(root);
+    try {
+      expect(await runActLocal(TAG_RUN, deps)).toBe(0);
+      // rev-parse x2, status, clone, checkout, remote x2, tag, commit, tag
+      expect(gitCalls.length).toBe(10);
+      for (const call of gitCalls) {
+        expect(call.env).toEqual({
+          PATH: "/bin",
+          HOME: "/Users/jack",
+          DOCKER_CONFIG: "/Users/jack/.docker",
+        });
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("act gets a new DOCKER_CONFIG in the run's temp dir holding {}, never the caller's", async () => {
+    const root = mkdtempSync(join(tmpdir(), "act-local-test-"));
+    const { deps, seen } = realRunDeps(root);
+    try {
+      expect(await runActLocal(TAG_RUN, deps)).toBe(0);
+      const dockerConfig = seen.env?.DOCKER_CONFIG ?? "";
+      expect(dockerConfig.startsWith(`${root}/work-`)).toBe(true);
+      expect(dockerConfig).not.toBe("/Users/jack/.docker");
+      expect(JSON.parse(seen.config ?? "")).toEqual({});
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test("a usage error exits 2 and starts nothing", async () => {
