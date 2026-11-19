@@ -52,12 +52,12 @@ every file it discovers from it and from `ci-test-times.json`:
   `src/recovery-contract/` and `src/hooks/` (`hooks/session/` and `hooks/s1-probe/` included).
   Each lists at most **3** files. A new file there is weekly until someone lists it.
   **One exception:** test.yml's `hooks-loading` job runs `bun test packages/cli/src/hooks/s1-probe/`
-  on every pull request and push (its Linux rows; the macOS rows on dispatch), outside the tiers.
+  on every pull request and push (on both Linux architectures), outside the tiers.
   An unlisted S1 file is weekly in `ci-tests.ts` and in `bun run test:macos`, yet runs on every
   pull request there.
 - **`src/hooks/blind/` is not in `ci-tests.ts` at all**: its discovery excludes that directory,
-  which runs under its own Bun in its own gates, `bun run test:macos --full` and test.yml's
-  `blind-hooks` job (on dispatch). A blind file therefore has no tier and cannot be listed in
+  which runs under its own Bun (`BLIND_BUN` in `scripts/test-macos.ts`) in `bun run test:macos
+  --full` and the last nightly part, never on GitHub. A blind file therefore has no tier and cannot be listed in
   `test-tiers.json`: `validateTiers` reports it as not a test file.
 - **A pinned file** (`pinned` in `test-tiers.json`, outside every slow category) is essential
   whatever its time. The list holds the tests of the CLAUDE.md "fails SILENTLY" invariants that
@@ -148,7 +148,7 @@ file above the budget is made faster or divided instead.
 | Run | Tier | Where its result shows |
 |---|---|---|
 | `test.yml` on pull_request and push | essential (3 Linux idle jobs, 6 Linux rest jobs of 3 slices) | the PR checks |
-| `test.yml` on workflow_dispatch | github (the same Linux jobs), and the macOS runners | the run |
+| `test.yml` on workflow_dispatch | github (the same Linux jobs; no job runs on macOS) | the run |
 | `bun run test:macos` | essential: `ci-tests.ts --tier essential` over every group (idle, pane, rest), sliced, plus macos-bridge, `scripts/*.test.ts`, the Claude Code boot canary (`scripts/boot-canary.ts` on the pinned Claude Code) and the Antigravity client tests | its summary |
 | `bun run test:macos --full` | full: `ci-tests.ts --tier full` over every group, sliced, and adds the blind hook tests and S1 hook loading | its summary |
 | `weekly-tests.yml`, Sunday 11:00 UTC (03:00 PST) | github: the scripts, the idle and rest slices (the same slices as test.yml's Linux jobs; a test keeps the two in step) and the Linux S1 rows | GitHub mails the owner on a failed scheduled run; the run opens (or comments on) one issue titled "Weekly full test run failed" with its URL |
@@ -159,10 +159,9 @@ file above the budget is made faster or divided instead.
 Both local gates run the idle group too, although `test.yml` runs it on Linux: without it a weekly
 `src/recovery-contract/` file would run in no gate a release owner starts. The gate cuts each
 group into slices, one concurrent `bun test` process each (`GATE_SLICES` in
-`scripts/test-macos.ts`): idle in 3 (test.yml's idle shards), pane in 6 (test.yml's `hermetic`
-runners) and rest in 8, 17 processes on an 18-core Mac. In the local run above, `rest` as one
+`scripts/test-macos.ts`): idle in 3 (test.yml's idle shards), pane in 6 and rest in 8, 17 processes on an 18-core Mac. In the local run above, `rest` as one
 process was the whole 432 s of the hermetic step, against at most 76 s for a pane slice; in 8
-slices each is near 54 s. test.yml's macOS runners still run `rest` whole.
+slices each is near 54 s.
 Each slice gets `--max-concurrency=max(1, floor(cores * 2 / slices))` (`sliceConcurrency`, cores
 from `os.availableParallelism()`), so the 17 slices together run about twice the core count of
 tests at once: 2 per slice on an 18-core Mac. With a fixed 8 per slice (up to 136 concurrent tests
@@ -632,10 +631,9 @@ process group, and no socket, pane record or launcher directory in the root. Tha
 what proves the reap; a green suite without it would hide a REPL left billing.
 
 **A missing magmux is "not checked", never a cause.** Without magmux these suites skip with
-`magmux not installed — not checked` (the gated-diagnostic rule above). CI installs the release
-pinned in `.github/magmux.env` (`.github/actions/install-magmux`, sha-256 checked) in `test.yml`'s
-macOS jobs, which run only on manual dispatch (`gh workflow run Tests --ref <branch>`); pull
-requests run no pane suite. Before a release tag their essential files run on a Mac with
+`magmux not installed — not checked` (the gated-diagnostic rule above). No GitHub workflow runs
+a pane suite. Before a release tag their essential files run on a Mac, against the release
+pinned in `.github/magmux.env` (sha-256 checked), with
 `bun run test:macos` (`scripts/test-macos.ts`; `--full` and the weekly macOS run take every pane
 file, see "Test tiers" above), which fails rather than skips when it finds no magmux, because a
 pane suite that skipped everything is green on nothing.

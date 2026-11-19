@@ -165,14 +165,60 @@ describe("test.yml", () => {
     expect(heavy).toEqual([]);
   });
 
-  test("the dispatched macOS hermetic runners run the full tier", () => {
-    const block = jobBlock(yml, "hermetic");
-    expect(block).toContain("if: github.event_name == 'workflow_dispatch'");
-    const runs = ciTestsRuns(block);
-    expect(runs).toHaveLength(1);
-    expect(runs[0]).toContain("--tier full");
+  test("no job runs on a GitHub macOS runner: the macOS suites run on the owner's Mac", () => {
+    expect(macRunners(yml)).toEqual([]);
+  });
+
+  test("a job is found on macOS whether runs-on names the runner or a matrix list", () => {
+    const sample = [
+      "jobs:",
+      "  plain:",
+      "    runs-on: macos-latest",
+      "  listed:",
+      "    runs-on: ${{ matrix.os }}",
+      "    strategy:",
+      "      matrix:",
+      "        os: [ubuntu-latest, macos-15-intel]",
+      "  computed:",
+      "    runs-on: ${{ matrix.os }}",
+      "    strategy:",
+      "      matrix:",
+      `        os: \${{ fromJSON('["ubuntu-latest"]') }}`,
+      "  linux:",
+      "    runs-on: ubuntu-latest",
+    ].join("\n");
+    expect(macRunners(sample)).toEqual([
+      "plain: macos-latest",
+      "listed: macos-15-intel",
+      "computed: ${{ matrix.os }} (not a fixed runner list)",
+    ]);
   });
 });
+
+/**
+ * Every job of a workflow that may run on macOS, as `job: runner`. A runs-on that a matrix
+ * expression computes is listed too: a fixed list is the only one a test can read.
+ */
+function macRunners(workflow: string): string[] {
+  // biome-ignore lint/suspicious/noExplicitAny: a parsed workflow is untyped YAML
+  const jobs = (Bun.YAML.parse(workflow) as any).jobs as Record<string, any>;
+  const found: string[] = [];
+  for (const [name, job] of Object.entries(jobs)) {
+    const runsOn = String(job["runs-on"]);
+    const key = /^\$\{\{\s*matrix\.([\w-]+)\s*\}\}$/.exec(runsOn)?.[1];
+    if (!key) {
+      if (/macos/i.test(runsOn)) found.push(`${name}: ${runsOn}`);
+      continue;
+    }
+    const values = job.strategy?.matrix?.[key];
+    if (!Array.isArray(values)) {
+      found.push(`${name}: ${runsOn} (not a fixed runner list)`);
+      continue;
+    }
+    for (const v of values.map(String)) if (/macos/i.test(v)) found.push(`${name}: ${v}`);
+  }
+  return found;
+}
 
 describe("weekly-tests.yml", () => {
   const text = read("weekly-tests.yml");

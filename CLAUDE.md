@@ -283,8 +283,8 @@ the tag is the gate: everything must be green before it leaves the machine.
 essential tier) on the release commit; `bun scripts/weekly-macos-tests.ts --check`: every
 one of the 7 nightly parts green within the last 7 days; and `bun run review:routing` on the
 release commit, a PASS verdict. No GitHub workflow installs, downloads or runs Claude Code
-(`scripts/no-claude-code-in-ci.test.ts`); it runs only on this Mac. Pull requests do not run the macOS
-suites; CI runs them only on manual dispatch (`gh workflow run Tests --ref <branch>`). A part
+(`scripts/no-claude-code-in-ci.test.ts`); it runs only on this Mac. No GitHub workflow runs the macOS
+suites (`scripts/test-tier-workflows.test.ts` fails on a macOS runner). A part
 missing, red or older than 7 days is run by hand (`bun scripts/weekly-macos-tests.ts --part
 <k>`), one part at a time and never beside another heavy run: two concurrent runs on this Mac
 fail pane tests on 5 s timeouts. A red run stops the tag even when the cause is machine load:

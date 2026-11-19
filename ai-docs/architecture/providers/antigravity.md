@@ -737,8 +737,8 @@ through the transport's optional `fetch` member.
   abort before the response never rejects, a socket timeout never fires, and the chunked call did
   not complete against a raw socket. There the request goes to `fetch` and the head is the
   runtime's, as it was before this client. 1.4.0 is the oldest Bun measured to work, not a known
-  boundary; versions between were not measured, and a prerelease of 1.4.0 counts as older. The hermetic jobs skip the client's tests on
-  1.3.10 and the Bun 1.4.0 job in `test.yml` runs them.
+  boundary; versions between were not measured, and a prerelease of 1.4.0 counts as older. The pinned 1.3.10 skips the client's tests,
+  and `bun run test:macos` runs them under `BLIND_BUN` (1.4.0, `scripts/test-macos.ts`).
 - What `fetch` did for its callers and `node:http` does not, the client does itself. A connection
   silent for `ANTIGRAVITY_IDLE_TIMEOUT_MS` (five minutes, the runtime's own idle limit) fails with
   `ETIMEDOUT`, and so does a request whose response head has not arrived in that time (the socket
