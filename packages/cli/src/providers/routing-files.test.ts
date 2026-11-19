@@ -108,6 +108,8 @@ type WorkflowStep = {
   run?: string;
   env?: Record<string, string>;
   with?: Record<string, unknown>;
+  "working-directory"?: string;
+  "continue-on-error"?: boolean | string;
 };
 function forkGuard() {
   const repo = resolve(import.meta.dir, "../../../..");
@@ -335,5 +337,85 @@ describe("R4.2 RB-16 RB-27: routing review filter is complete", () => {
     expect(routingReasons(source, "ts").length).toBeGreaterThan(0);
     expect(matches(path, ["packages/cli/src/providers/**"])).toBe(false);
     expect(matches(path, ["packages/cli/src/**"])).toBe(true);
+  });
+});
+
+describe("routing rulebook review executable", () => {
+  function reviewSteps() {
+    const repo = resolve(import.meta.dir, "../../../..");
+    const workflow = Bun.YAML.parse(
+      readFileSync(join(repo, ".github/workflows/routing-rulebook.yml"), "utf8")
+    ) as { jobs: { review: { steps: WorkflowStep[] } } };
+    return workflow.jobs.review.steps;
+  }
+
+  function installStep() {
+    const step = reviewSteps().find((entry) => entry.id === "claude");
+    if (!step) throw new Error("review job has no claude step");
+    return step;
+  }
+
+  test("review uses the executable path from the claude step", () => {
+    const review = reviewSteps().find((step) => step.id === "review");
+    expect(review?.with?.path_to_claude_code_executable).toBe(
+      expression("steps.claude.outputs.path")
+    );
+  });
+
+  test("claude step precedes the review step in the same job", () => {
+    const steps = reviewSteps();
+    const installIndex = steps.findIndex((step) => step.id === "claude");
+    const reviewIndex = steps.findIndex((step) => step.id === "review");
+
+    expect(installIndex).toBeGreaterThanOrEqual(0);
+    expect(reviewIndex).toBeGreaterThan(installIndex);
+  });
+
+  test("claude step runs under the same condition as the review step", () => {
+    const review = reviewSteps().find((step) => step.id === "review");
+    expect(review?.if).toBeDefined();
+    expect(installStep().if).toBe(review?.if);
+  });
+
+  test("claude step installs the exact pinned version", () => {
+    const step = installStep();
+    expect(String(step.env?.CLAUDE_CODE_VERSION)).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(step.run).toMatch(
+      /\bnpm[ \t]+install\b[^\n]*[ \t]"?@anthropic-ai\/claude-code@\$CLAUDE_CODE_VERSION\b/
+    );
+    expect(step.run).not.toContain("@latest");
+  });
+
+  test("claude step does not reference credentials", () => {
+    const step = installStep();
+    for (const value of [...Object.values(step.env ?? {}), step.run ?? ""]) {
+      expect(String(value)).not.toMatch(/secrets\.|github\.token/);
+    }
+  });
+
+  test("claude step runs in the runner temporary directory", () => {
+    expect(installStep()["working-directory"]).toBe(expression("runner.temp"));
+  });
+
+  test("claude step limits npm install to 30 seconds and allows install scripts", () => {
+    const script = installStep().run ?? "";
+    const installs = [...script.matchAll(/\bnpm[ \t]+install\b/g)];
+    const boundedInstalls = [...script.matchAll(/\btimeout[ \t]+(\d+)s?[ \t]+npm[ \t]+install\b/g)];
+
+    expect(installs.length).toBeGreaterThan(0);
+    expect(boundedInstalls).toHaveLength(installs.length);
+    for (const [, seconds] of boundedInstalls) {
+      expect(Number(seconds)).toBeGreaterThan(0);
+      expect(Number(seconds)).toBeLessThanOrEqual(30);
+    }
+    expect(script).not.toContain("--ignore-scripts");
+  });
+
+  test("claude step writes the path output without continuing on error", () => {
+    const step = installStep();
+    expect(String(step["continue-on-error"])).not.toBe("true");
+    expect(step.run).toMatch(
+      /\b(?:echo|printf)[ \t]+[^\n]*\bpath=[^\n]*>>?[ \t]*"?\$GITHUB_OUTPUT\b/
+    );
   });
 });
