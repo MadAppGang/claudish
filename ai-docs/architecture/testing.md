@@ -55,10 +55,11 @@ every file it discovers from it and from `ci-test-times.json`:
   metered-hop guard (`v14-merge-fixes`). A file inside a slow category is refused there: its
   category's essential list decides it.
 - **Any other file** is essential unless `ci-test-times.json` measures it at `heavySeconds`
-  (**2 s**) or more. A file the table has not measured is essential. The threshold sits in a gap
-  of the measured data (2.2 s, then 1.8 s): at 2 s it moves 18 files, 104 of the 133 measured
-  seconds outside the slow categories, among them `recovery/magmux-ui.test.ts` (23.7 s),
-  `mcp-shutdown.e2e.test.ts` (15.9 s) and `handlers/stream-head-unreachable.test.ts` (12 s).
+  (**2 s**) or more. A file the table has not measured is essential. On the timing
+  table of 2026-11-19 the rule moves 47 files, 330.8 of the 472.5 measured seconds outside the
+  slow categories, among them `claude-runner-exit-code.test.ts` (62.5 s),
+  `recovery/magmux-ui.test.ts` (25.5 s) and `providers/routing-setups.test.ts` (24.4 s). The
+  measured files nearest to the threshold are at 2.0 s (weekly) and 1.6 s (essential).
 - **A macOS-only file** (`macOnly` in `test-tiers.json`) takes its tier by the rules above, and
   `ci-tests.ts` drops it from every tier when it runs off darwin (`forPlatform`). The list holds
   the four Antigravity files that exercise the shared Antigravity token store, which refuses on
