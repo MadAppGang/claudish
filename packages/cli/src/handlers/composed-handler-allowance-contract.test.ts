@@ -8,7 +8,7 @@ import { join, resolve } from "node:path";
 // existing E19 loopback setup, not evidence of a live vendor's behavior.
 const src = resolve(import.meta.dir, "..");
 const setup = readFileSync(
-  join(import.meta.dir, "composed-handler-accounts-2a.harness.ts"),
+  join(import.meta.dir, "test-helpers", "composed-handler-accounts-2a.ts"),
   "utf8"
 );
 const original = setup.match(/const program = String.raw`([\s\S]*?)`;/)![1]!;

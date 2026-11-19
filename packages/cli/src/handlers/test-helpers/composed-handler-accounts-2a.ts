@@ -1,6 +1,6 @@
 /**
  * The child program and its runner for the Codex pool request-path tests
- * (`composed-handler-accounts-2a-*.test.ts`). `run(scenario)` starts `program` in a child
+ * (`../composed-handler-accounts-2a-*.test.ts`). `run(scenario)` starts `program` in a child
  * process with a temporary HOME, scripted loopback servers for the token host, the
  * subscription API and the metered API, and returns the one RESULT line the child prints.
  */
@@ -9,7 +9,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-const src = resolve(import.meta.dir, "..");
+const src = resolve(import.meta.dir, "../..");
 
 // Scripted loopback replies verify Phase 2a wiring, not vendor captures or D8.
 const program = String.raw`

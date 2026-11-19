@@ -2,10 +2,10 @@
  * Codex pool request path: credential rejection and the token host. Terminal rejections (E9),
  * disabled accounts (E11), refused metered signing (E17), an unreachable or failing token host
  * (E12, E13) and a parameter rewrite (E16). Each test runs one scenario of the child program in
- * `composed-handler-accounts-2a.harness.ts`.
+ * `test-helpers/composed-handler-accounts-2a.ts`.
  */
 import { expect, test } from "bun:test";
-import { run } from "./composed-handler-accounts-2a.harness.js";
+import { run } from "./test-helpers/composed-handler-accounts-2a.js";
 
 for (const name of ["NeedsReauthError", "NoUsableAccountError", "MeteredEscapeError"]) {
   test(`E9 ${name} on explicit cx@ still stops after terminal rejection`, async () => {

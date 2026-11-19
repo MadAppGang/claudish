@@ -2,12 +2,12 @@
  * Codex pool request path: quota rotation between accounts. Interleaved turns (E18), usage
  * capture (E19), quota and non-quota refusals (E5, E1 to E4, E7), forced re-signs that keep the
  * selected account (E14, E15, R2), stream quota (S1) and code mode (R1). Each test runs one
- * scenario of the child program in `composed-handler-accounts-2a.harness.ts`.
+ * scenario of the child program in `test-helpers/composed-handler-accounts-2a.ts`.
  */
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { assertFlagship, run, src } from "./composed-handler-accounts-2a.harness.js";
+import { assertFlagship, run, src } from "./test-helpers/composed-handler-accounts-2a.js";
 
 test("E18 one transport keeps interleaved A/B artifacts, pins, contexts and forced-sign budgets separate", async () => {
   const { result, stderr } = await run("E18-interleaved");

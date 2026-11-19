@@ -2,10 +2,10 @@
  * Codex pool request path: failures at the auth sites. An account-list read failure (E10) and
  * a refresh, account-list or persist failure at each of the five sites (E8) are classified
  * without billing. Each test runs one scenario of the child program in
- * `composed-handler-accounts-2a.harness.ts`.
+ * `test-helpers/composed-handler-accounts-2a.ts`.
  */
 import { expect, test } from "bun:test";
-import { run } from "./composed-handler-accounts-2a.harness.js";
+import { run } from "./test-helpers/composed-handler-accounts-2a.js";
 
 for (const source of ["config", "legacy"]) {
   for (const code of ["EACCES", "EMFILE", "EIO"]) {
