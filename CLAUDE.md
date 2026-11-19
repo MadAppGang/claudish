@@ -227,7 +227,9 @@ negative case: if you are about to type one of those words, stop and use the lef
   part also writes `RED-<date>-part<k>.json` (date, part, commit, failing tests, log) for triage
   and a notification. `weekly-tests.yml` runs the `idle` and `rest` groups of the github tier on
   Linux on Sunday 11:00 UTC, without their `macOnly` files. The github tier is the essential
-  files plus every weekly file measured under `githubMaxSeconds` or not measured yet, so no Linux GitHub job holds a file that alone takes it past a minute. Promoting a test: `testing.md`.
+  files plus every weekly file measured under `githubMaxSeconds` or not measured yet; weekly
+  files measured at `githubMaxSeconds` or more run only on this Mac. The tier does not cap a
+  job's wall time: the target is every GitHub job under 50 s. Promoting a test: `testing.md`.
 - `bun run typecheck`, `bun run lint`, `bun run format`
 - `claudish --probe <model>` shows the adapter composition; `--debug` writes a log to `logs/`.
 - Model syntax is `provider@model[:concurrency]` (`google@gemini-2.0-flash`, `ollama@llama3.2:3`); a bare name routes by a matching user routing rule, else by the chain gathered from the cloud models catalog and the accounts' dynamic models catalogs. Prefix meanings: `routing.md`.
