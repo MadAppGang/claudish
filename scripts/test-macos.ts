@@ -7,7 +7,7 @@
  *   bun run test:macos --dry-run   # print what a run would fetch and run; fetch and run nothing
  *
  * The default is the essential tier (packages/cli/scripts/test-tiers.json): steps 0-2 with
- * `--tier essential`, and step 3's Antigravity HTTP client tests. The blind hook tests and the S1
+ * `--tier essential`, and step 3's Antigravity HTTP client tests. A nightly part runs no step 2. The blind hook tests and the S1
  * hook loading tests are hook files outside the hooks category's essential list, so `--full` runs
  * them, and so does the last nightly part, `--part 7/7` (scripts/weekly-macos-tests.ts). `--full` runs what
  * test.yml's dispatched macOS jobs run, which no pull request runs, and the idle group its Linux
@@ -18,7 +18,10 @@
  *  1. every hermetic group, sliced (`ci-tests.ts --run idle@1/3,…,pane@1/6,…,rest@1/8,…
  *     --tier <tier>`, `GATE_RUNS`: test.yml's idle shards and pane slices, and `rest` in 8, in
  *     one call), under the Bun the `hermetic` job pins;
- *  2. the macos-bridge tests and `scripts/*.test.ts`, under the same Bun;
+ *  2. the macos-bridge tests, `scripts/*.test.ts` and the Claude Code boot canary
+ *     (scripts/boot-canary.ts: one boot per spawn shape, no credentials, no model call), under
+ *     the same Bun. The canary boots the Claude Code .github/claude-code.version pins, fetched
+ *     with `npm pack`. No GitHub workflow boots Claude Code on macOS: this step is that check;
  *  3. the blind hook tests and the Antigravity HTTP client tests, under the Bun the
  *     `blind-hooks` job pins (two blind tests fail on 1.3.10 because of bugs in Bun's test
  *     client);
@@ -64,6 +67,7 @@ import {
 import { availableParallelism, constants as osConstants, tmpdir } from "node:os";
 import { join } from "node:path";
 import { findMagmuxCandidates } from "../packages/cli/src/launcher/magmux-binary.ts";
+import { removeCanaryOutput } from "./boot-canary.output.ts";
 
 const ROOT = join(import.meta.dir, "..");
 const CLI = join(ROOT, "packages", "cli");
@@ -71,6 +75,7 @@ const WORKFLOW = join(ROOT, ".github", "workflows", "test.yml");
 const RELEASE_WORKFLOW = join(ROOT, ".github", "workflows", "release.yml");
 const MAGMUX_ENV = join(ROOT, ".github", "magmux.env");
 const PANE_LAUNCH = join(CLI, "src", "pane", "pane-launch.ts");
+const CLAUDE_CODE_VERSION = join(ROOT, ".github", "claude-code.version");
 
 /** The suites of test.yml's three `hermetic` runners. */
 export const HERMETIC_RUNS = "pane@1/6,pane@2/6,pane@3/6,pane@4/6,pane@5/6,pane@6/6,rest";
@@ -218,6 +223,8 @@ export interface StepGroup {
   steps: Step[];
 }
 
+export const CANARY_STEP = "Claude Code boot canary";
+
 /**
  * Every step of one tier, grouped by the Bun it runs under; a Bun with no step in the tier is
  * left out, so it is never fetched. Pure, so `--dry-run` prints the steps a run runs, with
@@ -229,6 +236,8 @@ export function planSteps(p: {
   blind: PlannedBun;
   release: PlannedBun;
   scriptTests: string[];
+  /** The pinned Claude Code binary the boot canary boots, and where it writes what it read. */
+  canary: { claude: string; out: string };
   tier: GateTier;
   /** A nightly part of the weekly tier; see `partSteps`. */
   part?: Part;
@@ -278,6 +287,20 @@ export function planSteps(p: {
           name: "script tests",
           cwd: p.root,
           args: [p.hermetic.exe, NO_ENV_FILE, "test", ...p.scriptTests],
+        },
+        {
+          // Starts `magmux` by name: the pinned one, first on the step's PATH.
+          name: CANARY_STEP,
+          cwd: p.root,
+          args: [
+            p.hermetic.exe,
+            NO_ENV_FILE,
+            "scripts/boot-canary.ts",
+            "--bin",
+            p.canary.claude,
+            "--out",
+            p.canary.out,
+          ],
         },
       ],
     },
@@ -554,6 +577,74 @@ export function installPinnedMagmux(pin: MagmuxPin, runDir: string): string {
   return binDir;
 }
 
+/** The Claude Code release .github/claude-code.version pins, as its package for one darwin arch. */
+export interface ClaudeCodePin {
+  version: string;
+  pkg: string;
+}
+
+/** Fails closed: a file that is not exactly one `x.y.z` line throws. */
+export function parseClaudeCodePin(versionFile: string, arch: "arm64" | "x64"): ClaudeCodePin {
+  const version = versionFile.trim();
+  if (!/^\d+\.\d+\.\d+$/.test(version)) {
+    throw new Error("no x.y.z version in .github/claude-code.version");
+  }
+  return { version, pkg: `@anthropic-ai/claude-code-darwin-${arch}` };
+}
+
+export function claudeCodePinOfThisMac(): ClaudeCodePin {
+  if (process.arch !== "arm64" && process.arch !== "x64") {
+    fail(`no Claude Code darwin package for arch ${process.arch}`);
+  }
+  try {
+    return parseClaudeCodePin(readFileSync(CLAUDE_CODE_VERSION, "utf8"), process.arch);
+  } catch (err) {
+    fail((err as Error).message);
+  }
+}
+
+/** The version `claude --version` printed: its whole first token, so `2.1.296-beta.1` is not `2.1.296`. */
+export function reportedClaudeCodeVersion(stdout: string): string {
+  return stdout.trim().split(/\s+/)[0] ?? "";
+}
+
+/**
+ * Fetches the pinned Claude Code into `claude-code/` under this run's directory, as
+ * boot-canary.yml does on a runner: `npm pack` of the per-platform package (the binary alone,
+ * never the installer, never signed in), untar, and `--version` must print the pinned version.
+ * The Mac's own Claude Code is never used or changed. Returns the binary's path.
+ */
+export function installPinnedClaudeCode(pin: ClaudeCodePin, runDir: string): string {
+  const dir = join(runDir, "claude-code");
+  mkdirSync(dir);
+  const spec = `${pin.pkg}@${pin.version}`;
+  const pack = spawnSync("npm", ["pack", spec, "--silent"], {
+    cwd: dir,
+    encoding: "utf8",
+    env: { ...process.env },
+  });
+  const archive = pack.stdout?.trim().split("\n").pop() ?? "";
+  if (pack.status !== 0 || !archive.endsWith(".tgz") || !existsSync(join(dir, archive))) {
+    fail(`npm pack ${spec} failed:\n${pack.stderr ?? pack.error?.message ?? ""}`);
+  }
+  const tar = spawnSync("tar", ["xzf", join(dir, archive), "-C", dir], {
+    encoding: "utf8",
+    env: { ...process.env },
+  });
+  const exe = join(dir, "package", "claude");
+  if (tar.status !== 0 || !existsSync(exe)) {
+    fail(`could not unpack ${exe} from ${spec}:\n${tar.stderr ?? ""}`);
+  }
+  chmodSync(exe, 0o755);
+  const version = spawnSync(exe, ["--version"], { encoding: "utf8", env: { ...process.env } });
+  if (version.status !== 0 || reportedClaudeCodeVersion(version.stdout ?? "") !== pin.version) {
+    fail(
+      `${exe} --version printed ${JSON.stringify(version.stdout?.trim() ?? "")}, not ${pin.version}`
+    );
+  }
+  return exe;
+}
+
 /** True when the step's Bun runs a package script (`bun --no-env-file run build:cli`). */
 export function runsPackageScript(step: Pick<Step, "args">): boolean {
   return step.args.slice(1).find((arg) => !arg.startsWith("-")) === "run";
@@ -674,6 +765,14 @@ if (import.meta.main) {
   const { dryRun, tier, part } = args;
   if (process.platform !== "darwin") fail(`runs on macOS only, not ${process.platform}`);
 
+  // What the canary read (one screen per spawn shape, results.json) outlives the run directory,
+  // so a red canary can be read after the gate exits. Every run but a nightly part has the canary
+  // step. Such a run removes those files, and no other file there, before it reads a pin or
+  // fetches anything: a run that stops there never reaches the step, and what an earlier run
+  // read must not stay at the path this run names. A `--dry-run` removes nothing.
+  const canaryOut = join(tmpdir(), "claudish-boot-canary");
+  if (!part && !dryRun) removeCanaryOutput(canaryOut);
+
   const workflow = readFileSync(WORKFLOW, "utf8");
   const hermeticPin = bunPinOf(workflow, "hermetic");
   const blindPin = bunPinOf(workflow, "blind-hooks");
@@ -686,19 +785,23 @@ if (import.meta.main) {
   const scriptTests = [...new Bun.Glob("scripts/*.test.ts").scanSync({ cwd: ROOT })]
     .sort()
     .map((f) => `./${f}`);
-  const planFor = (exeOf: (version: string) => string) =>
+  const planFor = (exeOf: (version: string) => string, claude = "") =>
     planSteps({
       root: ROOT,
       hermetic: { version: hermeticPin, exe: exeOf(hermeticPin) },
       blind: { version: blindPin, exe: exeOf(blindPin) },
       release: { version: releaseBunVersion, exe: exeOf(releaseBunVersion) },
       scriptTests,
+      canary: { claude, out: canaryOut },
       tier,
       part,
     });
-  // Only the Buns this tier runs a step under are fetched.
-  const versions = [...new Set(planFor(() => "").map((g) => g.bun.version))];
+  // Only the Buns this tier runs a step under are fetched, and Claude Code only for the canary.
+  const unfetched = planFor(() => "");
+  const versions = [...new Set(unfetched.map((g) => g.bun.version))];
+  const bootsClaudeCode = unfetched.some((g) => g.steps.some((s) => s.name === CANARY_STEP));
   const magmuxPin = magmuxPinOfThisMac();
+  const claudePin = bootsClaudeCode ? claudeCodePinOfThisMac() : undefined;
 
   if (dryRun) {
     // Fetches nothing: the executables are placeholders for what a run would fetch.
@@ -707,8 +810,15 @@ if (import.meta.main) {
     console.log(
       `[test:macos] would download magmux ${magmuxPin.tag} (${magmuxPin.asset}, sha256 ${magmuxPin.sha256}) with gh into a new temp directory, first on PATH`
     );
+    if (claudePin)
+      console.log(
+        `[test:macos] would fetch Claude Code ${claudePin.version} (${claudePin.pkg}) with npm pack into a new temp directory`
+      );
     console.log(`[test:macos] tier ${tier}`);
-    const plan = planFor((version) => `<bun@${version}>`);
+    const plan = planFor(
+      (version) => `<bun@${version}>`,
+      claudePin ? `<claude@${claudePin.version}>` : ""
+    );
     for (const { steps } of plan)
       for (const s of steps) {
         const env = runsPackageScript(s) ? `BUN_OPTIONS=${NO_ENV_FILE} ` : "";
@@ -736,13 +846,15 @@ if (import.meta.main) {
 
   const magmuxDir = installPinnedMagmux(magmuxPin, runDir);
   const buns = new Map(versions.map((v) => [v, pinnedBun(v, runDir)] as const));
-  const groups = planFor((version) => buns.get(version)?.exe ?? "");
+  const claude = claudePin ? installPinnedClaudeCode(claudePin, runDir) : "";
+  const groups = planFor((version) => buns.get(version)?.exe ?? "", claude);
   const binDirOf = new Map([...buns].map(([v, bun]) => [v, bun.dir] as const));
 
   console.log(`[test:macos] tier ${tier}`);
   console.log(`[test:macos] magmux ${magmuxPin.tag}: ${join(magmuxDir, "magmux")}`);
   for (const [version, bun] of buns)
     console.log(`[test:macos] bun@${version}: Bun ${bun.resolved}, ${bun.exe}`);
+  if (claudePin) console.log(`[test:macos] Claude Code ${claudePin.version}: ${claude}`);
 
   const steps = groups.flatMap(({ bun, steps }) => steps.map((step) => ({ ...step, bun })));
   const results = await runSteps(steps, async (step) => {

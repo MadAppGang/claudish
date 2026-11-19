@@ -6,10 +6,16 @@
  *
  * Why (ai-docs/reports/pane-ui-independent-signals.md): the `--agent` label in the input box's top
  * rule broke every agent slot, though every Claude Code from 2.1.288 drew it. The fixtures never
- * booted a valid agent. This boots each shape against each new release, on macOS and Linux.
+ * booted a valid agent. This boots each shape: on Linux in boot-canary.yml (the pinned release and
+ * npm's latest), on macOS in `bun run test:macos` (the pinned release).
  *
  * Usage:
  *   bun scripts/boot-canary.ts [--bin <claude binary>] [--scenarios a,b] [--expect <json>] [--out <dir>]
+ *                              [--jobs <n>]
+ * `--jobs` is how many scenarios boot at once (default: all of them, so the wait for the screens
+ * is one boot deadline at most; setup and teardown are outside it); 1 boots them one after another.
+ * `--out` (default `canary-out`) is the canary's own directory: every run replaces `results.json`
+ * and each `<scenario>.screen.txt` in it, and leaves any other file there.
  * Exit 0 when every scenario reads as expected, 1 on any mismatch, 2 on a usage error.
  */
 
@@ -42,20 +48,8 @@ import {
   emptyScreen,
 } from "../packages/cli/src/pane/screen-model.js";
 import { SessionRegistry } from "../packages/cli/src/pane/session-registry.js";
-
-const SCENARIOS = [
-  "boot",
-  "agent",
-  "badagent",
-  "onboarding",
-  "trust",
-  "apikey",
-  "bypass",
-  "mcp",
-  "settingserr",
-  "nokey",
-] as const;
-type Scenario = (typeof SCENARIOS)[number];
+import { SCENARIOS, type Scenario, removeCanaryOutput } from "./boot-canary.output.js";
+import { runPool } from "./run-pool.js";
 
 /** What one boot read as. `boot` is `repl`, `booting`, `dialog:<name>`, `choice` or `exited`. */
 interface Reading {
@@ -69,14 +63,18 @@ const MAX_MS = 25_000;
 /** A boot is read once the screen has been static this long (the logo animates for ~10 s). */
 const QUIET_MS = 4_000;
 
-function arg(name: string): string | undefined {
-  const i = process.argv.indexOf(name);
-  return i >= 0 ? process.argv[i + 1] : undefined;
-}
-
 function usage(msg: string): never {
   console.error(`boot-canary: ${msg}`);
   process.exit(2);
+}
+
+/** The value after `name`, `undefined` when the flag is not given. A flag with no value is a usage error. */
+function arg(name: string): string | undefined {
+  const i = process.argv.indexOf(name);
+  if (i < 0) return undefined;
+  const value = process.argv[i + 1];
+  if (value === undefined || value.startsWith("--")) usage(`${name} needs a value`);
+  return value;
 }
 
 function claudeBinary(): string {
@@ -287,14 +285,26 @@ async function runScenario(
 }
 
 async function main(): Promise<void> {
+  // every flag is read before the binary runs or a directory is made
+  const wanted = (arg("--scenarios") ?? SCENARIOS.join(",")).split(",").map((s) => s.trim());
+  for (const [i, s] of wanted.entries()) {
+    if (!SCENARIOS.includes(s as Scenario)) usage(`unknown scenario ${s}`);
+    // a scenario's world directory, socket and reading are keyed by its name
+    if (wanted.indexOf(s) !== i) usage(`scenario ${s} is named twice`);
+  }
+  // a boot is mostly a wait for a quiet screen, so every scenario boots at once by default
+  const jobs = Number(arg("--jobs") ?? wanted.length);
+  if (!Number.isInteger(jobs) || jobs < 1) usage("--jobs takes a whole number, 1 or more");
+  const expectPath = arg("--expect") ?? join(import.meta.dir, "boot-canary.expect.json");
+  const outDir = resolve(arg("--out") ?? "canary-out");
   const bin = claudeBinary();
+  // a run that throws before the report is written leaves no report, so the report of an earlier
+  // run must not stay in its place; the same holds for the screen of every scenario, named in
+  // this run or not. A usage error exits above this line and removes nothing.
+  removeCanaryOutput(outDir);
   const version =
     execFileSync(bin, ["--version"], { encoding: "utf8" }).trim().split(/\s/)[0] ?? "unknown";
-  const wanted = (arg("--scenarios") ?? SCENARIOS.join(",")).split(",").map((s) => s.trim());
-  for (const s of wanted) if (!SCENARIOS.includes(s as Scenario)) usage(`unknown scenario ${s}`);
-  const expectPath = arg("--expect") ?? join(import.meta.dir, "boot-canary.expect.json");
   const expected = JSON.parse(readFileSync(expectPath, "utf8")) as Record<string, Partial<Reading>>;
-  const outDir = resolve(arg("--out") ?? "canary-out");
   mkdirSync(outDir, { recursive: true });
   // macOS caps a socket path at 104 bytes: a short directory under /tmp, never $TMPDIR
   const sockDir = mkdtempSync(join(process.platform === "darwin" ? "/tmp" : tmpdir(), "ccanary-"));
@@ -303,8 +313,14 @@ async function main(): Promise<void> {
   const results: Record<string, Reading & { ok: boolean }> = {};
   let failed = 0;
   try {
-    for (const s of wanted as Scenario[]) {
-      const r = await runScenario(s, bin, version, sockDir, outDir);
+    // every scenario has its own world, magmux and socket, so `jobs` of them boot side by side
+    const scenarios = wanted as Scenario[];
+    // the pool waits for every worker before a throw leaves: each scenario closes its own magmux
+    const readings = await runPool(scenarios, jobs, (s) =>
+      runScenario(s, bin, version, sockDir, outDir)
+    );
+    for (const [i, s] of scenarios.entries()) {
+      const r = readings[i] as Reading;
       const want = expected[s] ?? {};
       const ok = (Object.keys(want) as (keyof Reading)[]).every((k) => want[k] === r[k]);
       if (!ok) failed++;

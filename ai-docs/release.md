@@ -124,11 +124,20 @@ PR that also fails on a clean export of `origin/main` is not the release's, but
 it is still a red gate: make the test hermetic (seed the catalog; disable and
 reset the warm) and re-run, rather than tag over it.
 
-`boot-canary.yml` also runs on PRs that touch `pane/` and every 6 hours: it boots
-each spawn shape against the Claude Code pinned in `.github/claude-code.version`
-(blocking cell) and npm's latest (non-blocking). It is not part of `release.yml`.
-A red pinned cell means the pane boot reader no longer matches Claude Code —
-fix that before releasing, the same as a red `test.yml`.
+`boot-canary.yml` also runs on PRs that touch `pane/` and every 6 hours, on Linux
+runners only: it boots each spawn shape against the Claude Code pinned in
+`.github/claude-code.version` (blocking cell) and npm's latest (non-blocking). The
+scenarios all boot at once (`--jobs`), and a job that runs longer than 1 minute fails
+(`timeout-minutes: 1`); the wait for a runner is outside that limit. It is not part
+of `release.yml`. A red pinned cell whose "Boot every spawn shape" step failed blocks
+a release, the same as a red `test.yml`. Read the step's lines: a scenario that booted
+and read differently means the pane boot reader no longer matches Claude Code, and a
+scenario that did not boot or connect is a failed start. Fix the first, and re-run the
+job for the second. A cell that failed in a setup step or at the 1-minute limit did not
+test the reader: read the failed step, then re-run the job. The macOS boot
+of the pinned version is the "Claude Code boot canary" step of `bun run test:macos`
+(both tiers, no nightly part): the gate fetches that Claude Code with `npm pack` and
+never uses the Mac's own.
 
 npm publishing uses OIDC trusted publishing, so no `NPM_TOKEN` exists and nothing
 can be published from a developer machine. `HOMEBREW_TAP_TOKEN` is the only

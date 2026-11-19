@@ -9,6 +9,12 @@ name: Claude Code boot canary
 # `pinned` is the version claudish was last verified on (.github/claude-code.version) and blocks;
 # `latest` is npm's current release and only warns, so a new Claude Code release is caught within
 # 6 hours without turning unrelated PRs red.
+#
+# Linux only, and the scenarios all boot at once (--jobs in scripts/boot-canary.ts), so the wait
+# for the screens is one 25 s boot deadline at most; setup and teardown are outside that deadline.
+# A job that runs longer than 1 minute fails (timeout-minutes); the wait for a runner is outside
+# that limit. The macOS boot of the pinned version is a step of `bun run test:macos`
+# (scripts/test-macos.ts).
 
 on:
   schedule:
@@ -19,6 +25,7 @@ on:
       - "packages/cli/src/pane/**"
       - "packages/cli/src/claude-runner.ts"
       - "scripts/boot-canary.*"
+      - "scripts/run-pool.ts"
       - ".github/claude-code.version"
       - ".github/magmux.env"
       - ".github/workflows/boot-canary.yml"
@@ -31,11 +38,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
         cc: [pinned, latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     continue-on-error: ${{ matrix.cc == 'latest' }}
-    timeout-minutes: 15
+    timeout-minutes: 1
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
@@ -56,7 +62,6 @@ jobs:
           set -a; . .github/magmux.env; set +a
           case "$RUNNER_OS-$RUNNER_ARCH" in
             (Linux-X64) A=linux_amd64 ;; (Linux-ARM64) A=linux_arm64 ;;
-            (macOS-ARM64) A=darwin_arm64 ;; (macOS-X64) A=darwin_amd64 ;;
             (*) echo "unsupported runner $RUNNER_OS-$RUNNER_ARCH"; exit 1 ;;
           esac
           ASSET="magmux_${A}.tar.gz"
@@ -73,7 +78,7 @@ jobs:
           if [ "${{ matrix.cc }}" = pinned ]; then V=$(cat .github/claude-code.version); else V=$(npm view @anthropic-ai/claude-code version); fi
           case "$RUNNER_OS-$RUNNER_ARCH" in
             (Linux-X64) P=linux-x64 ;; (Linux-ARM64) P=linux-arm64 ;;
-            (macOS-ARM64) P=darwin-arm64 ;; (macOS-X64) P=darwin-x64 ;;
+            (*) echo "unsupported runner $RUNNER_OS-$RUNNER_ARCH"; exit 1 ;;
           esac
           D="$RUNNER_TEMP/cc"; mkdir -p "$D"; cd "$D"
           npm pack "@anthropic-ai/claude-code-$P@$V" --silent
@@ -90,5 +95,5 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: canary-${{ matrix.os }}-${{ matrix.cc }}
+          name: canary-${{ matrix.cc }}
           path: canary-out/

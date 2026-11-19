@@ -1364,5 +1364,5 @@ verb is unknown would send every mod into the unsupported state for nothing. Eve
 | `pane/contract.ts` | the frozen mod contract v1 |
 | `auth/accounts/allowance-report-schema.ts`, `auth/accounts/allowance-status-golden.ts` | the `allowance` capability's answer schema (`claudish.allowance.v1`) and its golden answers |
 | `pane/session-registry.ts` | the child's session-registry record, by session id (telemetry) |
-| `scripts/boot-canary.ts` | boot every spawn shape against one Claude Code binary; `.github/workflows/boot-canary.yml` runs it per release on macOS and Linux |
+| `scripts/boot-canary.ts` | boot every spawn shape against one Claude Code binary; `.github/workflows/boot-canary.yml` runs it on Linux (the pinned release and npm's latest), `bun run test:macos` on macOS (the pinned release) |
 | `scripts/pane-drive.ts` | drive one session from the command line (`--fake <scenario>` for the hermetic fake) |

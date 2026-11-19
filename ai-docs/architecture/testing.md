@@ -125,7 +125,7 @@ instead.
 |---|---|---|
 | `test.yml` on pull_request and push | essential (3 Linux idle slices, 6 Linux rest slices) | the PR checks |
 | `test.yml` on workflow_dispatch | full (Linux idle and rest slices, and the macOS runners) | the run |
-| `bun run test:macos` | essential: `ci-tests.ts --tier essential` over every group (idle, pane, rest), sliced, plus macos-bridge, `scripts/*.test.ts` and the Antigravity client tests | its summary |
+| `bun run test:macos` | essential: `ci-tests.ts --tier essential` over every group (idle, pane, rest), sliced, plus macos-bridge, `scripts/*.test.ts`, the Claude Code boot canary (`scripts/boot-canary.ts` on the pinned Claude Code) and the Antigravity client tests | its summary |
 | `bun run test:macos --full` | full: `ci-tests.ts --tier full` over every group, sliced, and adds the blind hook tests and S1 hook loading | its summary |
 | `weekly-tests.yml`, Sunday 11:00 UTC (03:00 PST) | full: the scripts, the idle and rest slices (the same slices as test.yml's Linux jobs; a test keeps the two in step) and the Linux S1 rows | GitHub mails the owner on a failed scheduled run; the run opens (or comments on) one issue titled "Weekly full test run failed" with its URL |
 | `scripts/weekly-macos-tests.ts` under launchd, every day 03:00 local | `test:macos --part <k>/7` on origin's main: the k-th of 7 slices of every group on the weekly tier (full minus essential); part 7 adds the blind hook tests and S1 hook loading | `~/Library/Logs/claudish-weekly-tests/<UTC date>-part<k>.log` and `part<k>.json`; a red part writes `RED-<UTC date>-part<k>.json` and a notification naming it |
