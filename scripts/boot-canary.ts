@@ -48,6 +48,7 @@ import {
   emptyScreen,
 } from "../packages/cli/src/pane/screen-model.js";
 import { SessionRegistry } from "../packages/cli/src/pane/session-registry.js";
+import { runPool } from "./run-pool.js";
 
 const SCENARIOS = [
   "boot",
@@ -328,21 +329,12 @@ async function main(): Promise<void> {
   try {
     // every scenario has its own world, magmux and socket, so `jobs` of them boot side by side
     const scenarios = wanted as Scenario[];
-    const readings = new Map<Scenario, Reading>();
-    let next = 0;
-    const worker = async (): Promise<void> => {
-      while (next < scenarios.length) {
-        const s = scenarios[next++] as Scenario;
-        readings.set(s, await runScenario(s, bin, version, sockDir, outDir));
-      }
-    };
-    // wait for every worker before a throw leaves: each scenario closes its own magmux
-    const ended = await Promise.allSettled(
-      Array.from({ length: Math.min(jobs, scenarios.length) }, worker)
+    // the pool waits for every worker before a throw leaves: each scenario closes its own magmux
+    const readings = await runPool(scenarios, jobs, (s) =>
+      runScenario(s, bin, version, sockDir, outDir)
     );
-    for (const e of ended) if (e.status === "rejected") throw e.reason;
-    for (const s of scenarios) {
-      const r = readings.get(s) as Reading;
+    for (const [i, s] of scenarios.entries()) {
+      const r = readings[i] as Reading;
       const want = expected[s] ?? {};
       const ok = (Object.keys(want) as (keyof Reading)[]).every((k) => want[k] === r[k]);
       if (!ok) failed++;

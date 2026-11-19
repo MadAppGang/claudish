@@ -25,6 +25,7 @@ on:
       - "packages/cli/src/pane/**"
       - "packages/cli/src/claude-runner.ts"
       - "scripts/boot-canary.*"
+      - "scripts/run-pool.ts"
       - ".github/claude-code.version"
       - ".github/magmux.env"
       - ".github/workflows/boot-canary.yml"
