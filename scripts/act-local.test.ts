@@ -536,6 +536,39 @@ describe("runActLocal", () => {
     }
   });
 
+  test("--change through a symlinked directory exits 2 and leaves the file outside unchanged", async () => {
+    const root = mkdtempSync(join(tmpdir(), "act-local-test-"));
+    const outside = join(root, "outside");
+    mkdirSync(outside);
+    writeFileSync(join(outside, "secret.txt"), "keep\n");
+    // git tracks only the link `escape`; `git ls-files -- escape/secret.txt` prints nothing.
+    const { deps, seen } = realRunDeps(root, {
+      untracked: ["escape/secret.txt"],
+      onInit: (r) => {
+        linkedTree(r);
+        symlinkSync(outside, join(r, "escape"));
+      },
+    });
+    deps.remove = () => {};
+    const spy = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const run = [
+        "--job",
+        "bundled-list",
+        "--tag-case",
+        "changed",
+        "--change",
+        "escape/secret.txt",
+      ];
+      expect(await runActLocal(run, deps)).toBe(2);
+      expect(seen.started).toBeUndefined();
+      expect(readFileSync(join(outside, "secret.txt"), "utf8")).toBe("keep\n");
+    } finally {
+      spy.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("--change on a regular file appends a newline and runs act", async () => {
     const root = mkdtempSync(join(tmpdir(), "act-local-test-"));
     let repo = "";
