@@ -15,10 +15,10 @@ import { discover, groupOf } from "../packages/cli/scripts/ci-tests.ts";
 import { SCENARIOS, removeCanaryOutput } from "./boot-canary.output.ts";
 import {
   ADVISORY_PART,
+  BLIND_BUN,
   CANARY_STEP,
   GATE_RUNS,
   GATE_SLICE_COUNT,
-  HERMETIC_RUNS,
   LATEST_CANARY_STEP,
   NO_ENV_FILE,
   advisoryResults,
@@ -465,9 +465,16 @@ describe("no step loads a .env file", () => {
 });
 
 describe("test:macos reads its Buns from test.yml", () => {
-  test("the hermetic and blind-hooks jobs each pin an exact Bun", () => {
-    expect(bunPinOf(WORKFLOW, "hermetic")).toMatch(/^\d+\.\d+\.\d+$/);
-    expect(bunPinOf(WORKFLOW, "blind-hooks")).toMatch(/^\d+\.\d+\.\d+$/);
+  test("the rest job pins an exact Bun, and the blind Bun is an exact version", () => {
+    expect(bunPinOf(WORKFLOW, "rest")).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(BLIND_BUN).toMatch(/^\d+\.\d+\.\d+$/);
+  });
+
+  test("no Bun is read from a macOS job of test.yml", () => {
+    const source = readFileSync(join(import.meta.dir, "test-macos.ts"), "utf8");
+    expect(source).not.toContain('bunPinOf(workflow, "hermetic")');
+    expect(source).not.toContain('bunPinOf(workflow, "blind-hooks")');
+    expect(source).toContain('bunPinOf(workflow, "rest")');
   });
 
   test("a pin is read from its own job, not the next one", () => {
@@ -503,11 +510,6 @@ describe("test:macos reads its Buns from test.yml", () => {
       "    steps: []",
     ].join("\n");
     expect(bunPinOf(yml, "a")).toBe("1.2.3");
-  });
-
-  test("the hermetic runs are the slices test.yml's hermetic runners run", () => {
-    const runs = [...WORKFLOW.matchAll(/^\s+runs: (\S+)$/gm)].map((m) => m[1]).join(",");
-    expect(runs).toBe(HERMETIC_RUNS);
   });
 });
 
@@ -675,15 +677,6 @@ describe("removeCanaryOutput", () => {
   });
 });
 
-describe("compareVersions", () => {
-  test("orders dotted numbers numerically", () => {
-
-    expect(compareVersions("0.19.0", "0.19.0")).toBe(0);
-    expect(compareVersions("0.9.0", "0.19.0")).toBe(-1);
-    expect(compareVersions("0.20.0", "0.19.0")).toBe(1);
-  });
-});
-
 describe("canaryOutputDir", () => {
   test("each run gets a new empty directory of its own", () => {
     const root = tempDir();
@@ -719,5 +712,13 @@ describe("canaryOutputDir", () => {
     expect(runsCanary(planSteps({ ...PLAN_INPUT, tier: "full" }))).toBe(true);
     expect(runsCanary(part(ADVISORY_PART))).toBe(true);
     for (const k of [2, 3, 4, 5, 6, 7]) expect(runsCanary(part(k))).toBe(false);
+  });
+});
+
+describe("compareVersions", () => {
+  test("orders dotted numbers numerically", () => {
+    expect(compareVersions("0.19.0", "0.19.0")).toBe(0);
+    expect(compareVersions("0.9.0", "0.19.0")).toBe(-1);
+    expect(compareVersions("0.20.0", "0.19.0")).toBe(1);
   });
 });
