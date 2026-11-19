@@ -20,19 +20,30 @@ name: Tests
 # billable live suite. Live coverage belongs in smoke-test.yml, which is
 # manually dispatched and holds the secrets on purpose.
 #
-# WHAT RUNS ON WHICH TRIGGER: pull_request and push to main run the Linux jobs (typecheck, lint,
-# scripts, idle, rest, the Linux rows of hooks-loading, darwin-binaries). The macOS jobs (hermetic, blind-hooks, the macOS
-# rows of hooks-loading) run only on a manual dispatch: `gh workflow run Tests --ref
-# <branch>`. Before a release tag the macOS suites run on a Mac with `bun run test:macos`
-# (scripts/test-macos.ts).
+# WHAT RUNS ON WHICH TRIGGER: every trigger runs the same Linux jobs (typecheck, lint, scripts,
+# idle, rest, hooks-loading, darwin-binaries); a manual dispatch changes only the tier. No job
+# runs on macOS. The macOS suites (pane, the macOS-only rest files, the blind hook tests, S1
+# hook loading on a Mac) run on the owner's Mac: `bun run test:macos` before a release tag
+# (scripts/test-macos.ts) and the nightly parts (scripts/weekly-macos-tests.ts).
 #
 # WHICH TIER: ci-tests.ts selects files by tier (packages/cli/scripts/test-tiers.json). A pull
 # request and a push run the ESSENTIAL tier of the idle and rest slices: at most three listed
 # files per slow category, whatever their time, the pinned files, and, outside the slow
 # categories, no other file measured at the data file's heavySeconds or more. A manual dispatch
-# runs the FULL tier everywhere. The rest is the WEEKLY tier: weekly-tests.yml runs the Linux
-# full tier on Sunday, and scripts/weekly-macos-tests.ts runs one weekly-tier part a night on
-# the owner's Mac.
+# runs the GITHUB tier on Linux: the essential files plus every weekly file measured under the
+# data file's githubMaxSeconds (10 s) or not measured yet, so that no Linux job holds a file
+# that alone takes it past a minute. weekly-tests.yml runs the same github tier on Sunday. The rest is the WEEKLY tier, and
+# scripts/weekly-macos-tests.ts runs one weekly-tier part a night on the owner's Mac, the files
+# the github tier leaves out (recovery-ladder 67 s, claude-runner-exit-code 62.5 s, ...)
+# included.
+#
+# THE TIME BUDGET (a target): every job of this workflow well under 50 s, every run under a
+# minute. A long check moves to the Mac (`bun run test:macos`, the nightly parts); a timeout is
+# never raised to make room. scripts/test-tier-workflows.test.ts checks the planned slices only:
+# it fails when a slice's recorded test seconds pass 22 s, or when a job names a macOS runner.
+# It cannot see setup (10-20 s a job), queueing behind other runs (20 Linux jobs at once on the
+# account), or a file's load time that ci-test-times.json records as 0 s. Read real job times
+# with `gh run view <id> --json jobs`.
 
 on:
   pull_request:
@@ -51,22 +62,20 @@ jobs:
   # long as its slowest slice, not as long as the whole suite (about 25 minutes run whole).
   # packages/cli/scripts/ci-tests.ts owns the file list, the groups, the tiers and the slices;
   # the slices are balanced by scripts/ci-test-times.json (refresh it from the junit of a
-  # full-tier run, the weekly ones included: `bun scripts/ci-tests.ts --update-times
-  # junit-*.xml`). The same table decides which files are heavy, so a refresh can move a file
-  # between tiers.
+  # dispatched or weekly run: `bun scripts/ci-tests.ts --update-times junit-*.xml`). The same
+  # table decides which files are heavy, so a refresh can move a file between tiers.
   #
   # WHERE EACH GROUP RUNS, measured on PR #328 (run 39545203694):
   # - idle (recovery ladders, the grok refresh ceiling) passes 54/54 on ubuntu and is CPU-idle,
   #   so it runs there, in three slices.
-  # - pane (real magmux panes) stays on macOS: on ubuntu-latest it fails 23 tests. It runs on a
-  #   manual dispatch and in the local gate (`bun run test:macos`), not on every PR.
-  # - rest also runs on Linux, in the rest job below, in six slices, on every PR. The files written for the
+  # - pane (real magmux panes) stays on macOS: on ubuntu-latest it fails 23 tests. It runs on
+  #   the owner's Mac (`bun run test:macos`, the nightly parts), never on GitHub.
+  # - rest also runs on Linux, in the rest job below, on every PR: 6 jobs, each running 3 of
+  #   18 slices as concurrent processes. The files written for the
   #   darwin-only shared Antigravity token store are listed in test-tiers.json's macOnly, and
   #   ci-tests.ts drops them off darwin.
-  # The org is on the free plan: 5 macOS jobs at once across every repo, against 20 Linux
-  # ones. So macOS runs two pane runners with three slices each as concurrent processes (the
-  # pane slices mostly wait on magmux's fixed send windows, not on CPU), and rest on a third:
-  # beside three pane slices on 3 vCPUs its 352-file load pushed pane timing bounds over.
+  # The org is on the free plan: 20 Linux jobs at once across every repo, so rest runs three
+  # slices per job rather than more jobs, which would queue.
   #
   # Every bun is the PINNED 1.3.10, not `latest`. Measured on run 31174096977: a newer bun's
   # `bun install` REWRITES packages/cli/package.json (expanding the `files` array), which
@@ -119,8 +128,7 @@ jobs:
 
   # scripts/*.test.ts (the release scripts, the test gates, repo invariants such as spawn env
   # and retired terms) and release-files.test.ts read files and run portable shell: nothing in
-  # them needs a Mac, so every trigger runs them here. The dispatched macOS rest runner and
-  # `bun run test:macos` run them too.
+  # them needs a Mac, so every trigger runs them here. `bun run test:macos` runs them too.
   scripts:
     name: script and release-file tests
     runs-on: ubuntu-latest
@@ -161,7 +169,7 @@ jobs:
       - run: bun install --frozen-lockfile
       - name: Tests
         working-directory: packages/cli
-        run: bun scripts/ci-tests.ts --run idle@${{ matrix.slice }}/3 --tier ${{ github.event_name == 'workflow_dispatch' && 'full' || 'essential' }} -- --reporter=junit --reporter-outfile=junit-{label}.xml
+        run: bun scripts/ci-tests.ts --run idle@${{ matrix.slice }}/3 --tier ${{ github.event_name == 'workflow_dispatch' && 'github' || 'essential' }} -- --reporter=junit --reporter-outfile=junit-{label}.xml
         timeout-minutes: 10
       - uses: actions/upload-artifact@v5
         if: always()
@@ -169,13 +177,30 @@ jobs:
           name: junit-idle-${{ matrix.slice }}
           path: packages/cli/junit-*.xml
 
+  # Each job runs three slices of 18 as concurrent `bun test` processes (ci-tests.ts prefixes
+  # each output line with its slice). A test file runs in one process on one core, and the
+  # public repository's ubuntu-latest runner has 4 vCPUs, so three slices take about as long as
+  # one. Job k runs slices k, k+6 and k+12: the planner gives slices 1-3 the heaviest files
+  # (the pinned Codex pool tests, about 20 s each), so no job holds two of them.
   rest:
-    name: hermetic · rest ${{ matrix.slice }}/6
+    name: hermetic · rest ${{ matrix.job }}/6
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        slice: [1, 2, 3, 4, 5, 6]
+        include:
+          - job: 1
+            slices: rest@1/18,rest@7/18,rest@13/18
+          - job: 2
+            slices: rest@2/18,rest@8/18,rest@14/18
+          - job: 3
+            slices: rest@3/18,rest@9/18,rest@15/18
+          - job: 4
+            slices: rest@4/18,rest@10/18,rest@16/18
+          - job: 5
+            slices: rest@5/18,rest@11/18,rest@17/18
+          - job: 6
+            slices: rest@6/18,rest@12/18,rest@18/18
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       CLAUDISH_SKIP_LIVE_E2E: "1"
@@ -188,118 +213,27 @@ jobs:
       - run: bun install --frozen-lockfile
       - name: Tests
         working-directory: packages/cli
-        run: bun scripts/ci-tests.ts --run rest@${{ matrix.slice }}/6 --tier ${{ github.event_name == 'workflow_dispatch' && 'full' || 'essential' }} -- --reporter=junit --reporter-outfile=junit-{label}.xml
+        run: bun scripts/ci-tests.ts --run ${{ matrix.slices }} --tier ${{ github.event_name == 'workflow_dispatch' && 'github' || 'essential' }} -- --reporter=junit --reporter-outfile=junit-{label}.xml
         timeout-minutes: 15
       - uses: actions/upload-artifact@v5
         if: always()
         with:
-          name: junit-rest-${{ matrix.slice }}
+          name: junit-rest-${{ matrix.job }}
           path: packages/cli/junit-*.xml
-
-  hermetic:
-    name: hermetic · macOS ${{ matrix.runner }}/3
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: macos-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: 1
-            runs: pane@1/6,pane@2/6,pane@3/6
-          - runner: 2
-            runs: pane@4/6,pane@5/6,pane@6/6
-          - runner: 3
-            runs: rest
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-      CLAUDISH_SKIP_LIVE_E2E: "1"
-      CLAUDISH_DISABLE_CATALOG_WARM: "1"
-    steps:
-      - uses: actions/checkout@v5
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: "1.3.10"
-      - run: bun install --frozen-lockfile
-      # The pane suites run against the SAME magmux the release ships (.github/magmux.env).
-      - uses: ./.github/actions/install-magmux
-        with:
-          token: ${{ github.token }}
-      # --max-concurrency bounds each process's concurrent tests (Bun's default is 20). The
-      # runner has 3 vCPUs and runs several processes: at 20, pane-hooks' concurrent describes
-      # boot 20 panes beside the other slices and miss their settle bounds (run 39547642291).
-      - name: Tests (${{ matrix.runs }})
-        working-directory: packages/cli
-        run: bun scripts/ci-tests.ts --run ${{ matrix.runs }} --tier full -- --max-concurrency=8 --reporter=junit --reporter-outfile=junit-{label}.xml
-        timeout-minutes: 15
-      - name: macos-bridge and script tests
-        if: matrix.runner == 3
-        run: |
-          bun run --cwd packages/macos-bridge test
-          bun test ./scripts/*.test.ts
-        timeout-minutes: 5
-      - uses: actions/upload-artifact@v5
-        if: always()
-        with:
-          name: junit-macos-${{ matrix.runner }}
-          path: packages/cli/junit-*.xml
-
-  # The blind hook tests, on Bun 1.4.0 instead of the pinned 1.3.10. Two of them
-  # fail on 1.3.10 because of bugs in Bun's TEST client, not in claudish, and pass
-  # 20 of 20 on 1.4.0 (reproduced on 1.3.10 with no claudish code in the loop):
-  # C-17, a fetch reader.cancel() that never closes the connection, and X-12, a
-  # paused-then-resumed node:child_process reader that drops every byte. The
-  # blind TYPECHECK stays in the typecheck job, under the pinned Bun. This job does
-  # not lint, so a newer bun rewriting packages/cli/package.json on install does
-  # not matter here. It runs on macOS, so on a manual dispatch only.
-  blind-hooks:
-    name: blind hook tests · bun 1.4.0
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: macos-latest
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-    steps:
-      - uses: actions/checkout@v5
-
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: "1.4.0"
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
-      # Same pinned magmux as the hermetic jobs, so the blind tests run in the same environment.
-      - uses: ./.github/actions/install-magmux
-        with:
-          token: ${{ github.token }}
-
-      - name: Blind hook tests
-        working-directory: packages/cli
-        run: bun test src/hooks/blind
-        timeout-minutes: 15
-        env:
-          CLAUDISH_SKIP_LIVE_E2E: "1"
-
-      # The Antigravity HTTP client is used only where node:http writes the head it
-      # is given (Bun 1.4.0 and later), so the pinned 1.3.10 skips these tests.
-      - name: Antigravity HTTP client tests
-        working-directory: packages/cli
-        run: bun test src/providers/transport/antigravity-fetch.test.ts
-        timeout-minutes: 5
 
   # S1: a user hook module (.ts type import, .ts value import through the
   # Bun.plugin virtual module, .js) loads from a `--target bun` bundle and from a
-  # `--compile` binary. The hermetic jobs run the same test on macOS with
-  # the pinned 1.3.10; this job runs it on every OS/arch release.yml builds a
-  # binary for, with the Bun release.yml builds with (`latest`), because that is
-  # the binary magus installs. The test imports no dependency, so there is no
-  # `bun install` (and no package.json rewrite by a newer bun). The macOS rows run on a
-  # manual dispatch only; the Linux rows run on every trigger.
+  # `--compile` binary. This job runs it on both Linux architectures release.yml builds a
+  # binary for, with the Bun release.yml builds with (`latest`), because that is the binary
+  # magus installs; `bun run test:macos --full` and the last nightly part run it on the Mac.
+  # The test imports no dependency, so there is no `bun install` (and no package.json
+  # rewrite by a newer bun).
   hooks-loading:
     name: hook module loading · ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '["macos-latest","macos-15-intel","ubuntu-latest","ubuntu-24.04-arm"]' || '["ubuntu-latest","ubuntu-24.04-arm"]') }}
+        os: ["ubuntu-latest", "ubuntu-24.04-arm"]
     runs-on: ${{ matrix.os }}
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true

@@ -3,17 +3,20 @@
  * runner for them.
  *
  *   bun scripts/ci-tests.ts --list
- *   bun scripts/ci-tests.ts --plan pane@6 [--tier essential|weekly|full]
- *   bun scripts/ci-tests.ts --run pane@1/6,pane@2/6,rest [--tier essential|weekly|full] [-- <bun test args>]
+ *   bun scripts/ci-tests.ts --plan pane@6 [--tier essential|weekly|full|github]
+ *   bun scripts/ci-tests.ts --run pane@1/6,pane@2/6,rest [--tier essential|weekly|full|github] [-- <bun test args>]
  *   bun scripts/ci-tests.ts --update-times <junit.xml>…
  *   bun scripts/ci-tests.ts --local <junit.xml> [-- <bun test args>]
  *
- * Three tiers. `full` is every file. `essential` (the default of `--plan` and `--run`) is what a
+ * Four tiers. `full` is every file. `essential` (the default of `--plan` and `--run`) is what a
  * pull request and `bun run test:macos` run: test-tiers.json names at most three files for each
  * slow category, and every other file of a slow category is weekly; a `pinned` file is essential;
  * any other file outside the slow categories is essential unless ci-test-times.json measures it
  * at the data file's `heavySeconds` or more. `weekly` is `full` minus `essential`: the Mac's
- * nightly parts use it, and the Linux weekly run uses `full`. Off darwin, every tier drops the
+ * nightly parts use it. `github` is what a GitHub-hosted full run takes (a dispatched test.yml,
+ * weekly-tests.yml): `essential` plus every weekly file measured under `githubMaxSeconds` or
+ * not measured yet (weighed at 1 s), so no Linux GitHub job holds a file that alone would take
+ * it past a minute. Off darwin, every tier drops the
  * data file's `macOnly` files. A data file with no `slow` array, a category
  * without a non-empty `category` or `prefix`, a prefix that matches no test file, a missing file,
  * a file twice, more than three files for one category, a category twice, or a prefix twice or
@@ -35,7 +38,8 @@
  * and keeps a bare `bun test`'s file order. `./` paths run in argument order instead, and a few
  * suites share process state across files, so a new order is a new suite.
  *
- * src/hooks/blind is not here: it runs under Bun 1.4.0 in its own job (test.yml).
+ * src/hooks/blind is not here: it runs under its own Bun in `bun run test:macos --full` and the
+ * last nightly part (scripts/test-macos.ts).
  */
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve as resolvePath } from "node:path";
@@ -97,8 +101,14 @@ function byGroup(files: string[]): Map<string, string[]> {
   return out;
 }
 
-/** `weekly` is `full` minus `essential`: the files the nightly parts run. */
-export const TIER_NAMES = ["essential", "weekly", "full"] as const;
+/**
+ * `weekly` is `full` minus `essential`: the files the nightly parts run. `github` is what a
+ * GitHub-hosted full run takes (a dispatched test.yml and weekly-tests.yml): `essential` plus
+ * every weekly file measured under the data file's `githubMaxSeconds` or not measured yet (a
+ * file the table lacks weighs 1 s and is kept). A file it leaves out is
+ * weekly by construction, so the Mac's nightly parts and `test:macos --full` still run it.
+ */
+export const TIER_NAMES = ["essential", "weekly", "full", "github"] as const;
 export type Tier = (typeof TIER_NAMES)[number];
 export const MAX_ESSENTIAL_PER_CATEGORY = 3;
 
@@ -106,6 +116,12 @@ export const MAX_ESSENTIAL_PER_CATEGORY = 3;
 export interface TierData {
   /** A file outside the slow categories measured at this many seconds or more is weekly. */
   heavySeconds: number;
+  /**
+   * A weekly file measured at this many seconds or more runs in no Linux GitHub job: the
+   * `github` tier leaves it out, and the Mac's nightly parts and `test:macos --full` run it.
+   * Absent, the `github` tier is `full`.
+   */
+  githubMaxSeconds?: number;
   slow: SlowCategory[];
   /** Files outside the slow categories that stay essential whatever their measured time. */
   pinned?: TierEntry[];
@@ -164,6 +180,12 @@ export function filesInTier(
   times: Record<string, number>
 ): string[] {
   if (tier === "full") return files;
+  if (tier === "github") {
+    const cap = data.githubMaxSeconds ?? Number.POSITIVE_INFINITY;
+    return files.filter(
+      (f) => tierOf(f, data, times) === "essential" || (times[f] ?? UNMEASURED_SECONDS) < cap
+    );
+  }
   return files.filter((f) => tierOf(f, data, times) === tier);
 }
 
@@ -187,6 +209,16 @@ export function validateTiers(data: TierData, known: string[]): string[] {
     !(data.heavySeconds > 0)
   ) {
     errors.push(`heavySeconds must be a positive number of seconds, not ${data.heavySeconds}`);
+  }
+  if (
+    data.githubMaxSeconds !== undefined &&
+    (typeof data.githubMaxSeconds !== "number" ||
+      !Number.isFinite(data.githubMaxSeconds) ||
+      !(data.githubMaxSeconds > 0))
+  ) {
+    errors.push(
+      `githubMaxSeconds must be a positive number of seconds, not ${data.githubMaxSeconds}`
+    );
   }
   // A malformed list or category would crash the checks below (and tierOf), so stop at the shape.
   if (!Array.isArray(data.slow)) {
@@ -526,7 +558,7 @@ async function run(
 }
 
 const USAGE =
-  "usage: ci-tests.ts --list | --plan <group>@<n> [--tier essential|weekly|full] | --run <group|group@i/n>[,…] [--tier essential|weekly|full] [-- <bun test args>] | --update-times <junit.xml>… | --local <junit.xml> [-- <bun test args>]";
+  "usage: ci-tests.ts --list | --plan <group>@<n> [--tier essential|weekly|full|github] | --run <group|group@i/n>[,…] [--tier essential|weekly|full|github] [-- <bun test args>] | --update-times <junit.xml>… | --local <junit.xml> [-- <bun test args>]";
 
 /** `--tier <name>` taken out of our own arguments; `essential` when absent. */
 function takeTier(own: string[]): { tier: Tier; rest: string[] } {
@@ -563,8 +595,9 @@ if (import.meta.main) {
     const data = checkedTiers();
     for (const [name, files] of all) {
       const essential = filesInTier(files, "essential", data, times);
+      const github = filesInTier(files, "github", data, times);
       console.log(
-        `${name}\tfull ${files.length} files, ${weigh(files).toFixed(0)} s\tessential ${essential.length} files, ${weigh(essential).toFixed(0)} s`
+        `${name}\tfull ${files.length} files, ${weigh(files).toFixed(0)} s\tessential ${essential.length} files, ${weigh(essential).toFixed(0)} s\tgithub ${github.length} files, ${weigh(github).toFixed(0)} s`
       );
     }
   } else if (command === "--plan" && value) {

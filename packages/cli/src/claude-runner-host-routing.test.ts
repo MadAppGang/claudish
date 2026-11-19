@@ -18,6 +18,12 @@ async function childEnvFor(
   const dir = mkdtempSync(join(root, "case-"));
   const home = join(dir, "home");
   mkdirSync(home);
+  // The user holds a Claude login, as a native Claude role needs: claudish refuses a Claude
+  // subscription launch whose Claude Code has none. Only the file's presence is checked. With no
+  // file, macOS answers `unknown` (the disabled Keychain did not answer) and the launch goes on,
+  // while Linux answers `none` and refuses it.
+  mkdirSync(join(home, ".claude"));
+  writeFileSync(join(home, ".claude", ".credentials.json"), "{}");
   const out = join(dir, "env.json");
   const standIn = join(dir, "claude");
   writeFileSync(

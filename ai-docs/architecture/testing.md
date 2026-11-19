@@ -26,9 +26,25 @@ still runs alone. CI does not use this script; its jobs write their own junit th
 ## Test tiers: essential on every run, everything once a week
 
 Every pull request and the pre-tag gate (`bun run test:macos`) run the **essential** tier. The
-**full** tier (every file) runs on Linux every Sunday (`weekly-tests.yml`) and on a manual dispatch
-of `test.yml`. The **weekly** tier (full minus essential) runs on the owner's Mac, one of 7 parts a
-night. `bun run test` and `test:safe` stay a plain `bun test` of every file.
+**full** tier (every file) runs in `bun run test:macos --full`. The **weekly** tier (full minus
+essential) runs on the owner's Mac, one of 7 parts a night. The **github** tier runs on Linux
+every Sunday (`weekly-tests.yml`) and on a manual dispatch of `test.yml`: the essential files
+plus every weekly file measured under `githubMaxSeconds` (10 s) in `test-tiers.json`, or not
+measured yet (a file `ci-test-times.json` lacks weighs 1 s and is kept). `bun run
+test` and `test:safe` stay a plain `bun test` of every file.
+
+**Why the github tier exists: the target is every Linux GitHub job well under 50 s.** The guard
+in `scripts/test-tier-workflows.test.ts` checks planned slice weights (22 s of recorded test
+time), not job time: setup, queueing behind other runs and load time recorded as 0 s are outside
+it, so real times come from `gh run view <id> --json jobs`. Jack's rule
+(2026-11-19): a GitHub workflow run takes under 1 minute, aim 50 s; long validation runs on the
+Mac, which has no limit, and a timeout is never raised to make room. A slice cannot be lighter
+than its heaviest file, and a job adds 10-20 s of setup, so a file such as
+`recovery-ladder-blackbox` (67.1 s) or `claude-runner-exit-code` (62.5 s) cannot run in a GitHub
+job at all. The github tier leaves out every weekly file at `githubMaxSeconds` or more. Such a
+file is weekly by construction, so the nightly parts and `test:macos --full` still run it
+(`ci-tests.test.ts` checks that). On the timing table of 2026-11-19 it leaves out 6 `idle` files
+(254 s) and 6 `rest` files (138 s).
 
 **The data file is `packages/cli/scripts/test-tiers.json`.** `ci-tests.ts` derives the tier of
 every file it discovers from it and from `ci-test-times.json`:
@@ -39,12 +55,12 @@ every file it discovers from it and from `ci-test-times.json`:
   `src/recovery-contract/` and `src/hooks/` (`hooks/session/` and `hooks/s1-probe/` included).
   Each lists at most **3** files. A new file there is weekly until someone lists it.
   **One exception:** test.yml's `hooks-loading` job runs `bun test packages/cli/src/hooks/s1-probe/`
-  on every pull request and push (its Linux rows; the macOS rows on dispatch), outside the tiers.
+  on every pull request and push (on both Linux architectures), outside the tiers.
   An unlisted S1 file is weekly in `ci-tests.ts` and in `bun run test:macos`, yet runs on every
   pull request there.
 - **`src/hooks/blind/` is not in `ci-tests.ts` at all**: its discovery excludes that directory,
-  which runs under its own Bun in its own gates, `bun run test:macos --full` and test.yml's
-  `blind-hooks` job (on dispatch). A blind file therefore has no tier and cannot be listed in
+  which runs under its own Bun (`BLIND_BUN` in `scripts/test-macos.ts`) in `bun run test:macos
+  --full` and the last nightly part, never on GitHub. A blind file therefore has no tier and cannot be listed in
   `test-tiers.json`: `validateTiers` reports it as not a test file.
 - **A pinned file** (`pinned` in `test-tiers.json`, outside every slow category) is essential
   whatever its time. The list holds the tests of the CLAUDE.md "fails SILENTLY" invariants that
@@ -93,7 +109,7 @@ silent invariants in `CLAUDE.md`. The data file carries a `guards` line for each
 `test-tiers.json`; when the category already lists three, replace the one whose failure class the
 new file covers better. Write `guards` as the failure the file catches. A file outside the slow
 categories needs no entry: it becomes essential once it measures under the threshold. Check with
-`bun scripts/ci-tests.ts --plan pane@6 --tier essential` (and `--list`, which shows both tiers per
+`bun scripts/ci-tests.ts --plan pane@6 --tier essential` (and `--list`, which shows the full, essential and github tiers per
 group). `ci-tests.test.ts` fails when the data file has no `slow` array, a category without a
 non-empty string `category` or `prefix`, a prefix that matches no test file (a misspelt prefix
 would leave its whole directory essential), a file that does not exist, a file
@@ -103,31 +119,42 @@ takes the first category it matches, so a second block would be ignored), and
 `--plan`, `--run` and `--list` refuse such a file.
 
 **Refreshing `ci-test-times.json` can move a file between tiers**, because it also decides what is
-heavy. Refresh it from a full-tier junit (`weekly-tests.yml` uploads one per idle and rest
-slice; the Mac's nightly parts upload none, so pane times come from a dispatched `test.yml`), and read
-`--list` before and after.
+heavy. Refresh it from a github-tier junit (`weekly-tests.yml` uploads one per idle and rest
+job), and read `--list` before and after. That junit holds no file the github tier leaves out,
+and `--update-times` keeps an entry no report names, so such a file keeps its last figure. The
+Mac's nightly parts upload no junit, so a left-out file that got faster, and every pane file,
+take a local junit (`bun test <file> --reporter=junit --reporter-outfile=<path>`).
 
-**A divided or new heavy file needs a two-step refresh**, because the latest full-tier junit does
-not hold it yet: pass that junit first, then a local junit of each such file (`bun test <file>
---reporter=junit --reporter-outfile=<path>`), since a later report wins. Until its entry exists
-the file weighs 1 s and its slice runs long. The next full-tier junit replaces the local figure.
+**A divided or new heavy file needs a two-step refresh**, because the latest junit does
+not hold it yet: pass that junit first, then a local junit of each such file, since a later
+report wins. Until its entry exists the file weighs 1 s and its slice runs long. The next
+github-tier junit replaces the local figure.
 
-**The pull-request `rest` job has 6 slices** (`test.yml`, and `weekly-tests.yml` with the same
-matrix). The essential `rest` files weigh 151 s, 25 s a slice. Add a slice when
-`bun scripts/ci-tests.ts --plan rest@6 --tier essential` shows a slice above 28 s: change the
-matrix and the `/6` of the run line in both workflows, which `scripts/test-tier-workflows.test.ts`
-compares. A slice cannot be lighter than its heaviest file, so a file above 28 s is divided
-instead.
+**The `rest` job is 6 jobs of 3 slices each, 18 slices in all** (`test.yml`, and
+`weekly-tests.yml` with the same matrix). Each job runs its 3 slices as concurrent `bun test`
+processes. A test file runs in one process, on one core, and the public repository's
+`ubuntu-latest` runner has 4 vCPUs, so 3 slices take about as long as 1. More jobs were the
+other way, and a worse one: the org's free plan runs 20 Linux jobs at once across every repo,
+and a pull request already started 16, so extra jobs queue and the run gets longer. Job k runs
+slices k, k+6 and k+12. The planner gives slices 1-3 the heaviest files first (the pinned
+`composed-handler-accounts-2a-*` tests, 17.7-20.6 s), so no job holds two of them.
+
+On the timing table of 2026-11-19 the essential `rest` files weigh 151 s and the github-tier ones
+324 s, about 18 s a slice. `scripts/test-tier-workflows.test.ts` fails when any slice of a GitHub
+job, essential or github tier, weighs more than 22 s (`SLICE_BUDGET_SECONDS`). When it fails,
+add jobs or slices, keeping the matrix of both workflows equal (the same test compares them),
+or lower `githubMaxSeconds`. A slice cannot be lighter than its heaviest file, so an essential
+file above the budget is made faster or divided instead.
 
 **Where the tiers run:**
 
 | Run | Tier | Where its result shows |
 |---|---|---|
-| `test.yml` on pull_request and push | essential (3 Linux idle slices, 6 Linux rest slices) | the PR checks |
-| `test.yml` on workflow_dispatch | full (Linux idle and rest slices, and the macOS runners) | the run |
+| `test.yml` on pull_request and push | essential (3 Linux idle jobs, 6 Linux rest jobs of 3 slices) | the PR checks |
+| `test.yml` on workflow_dispatch | github (the same Linux jobs; no job runs on macOS) | the run |
 | `bun run test:macos` | essential: `ci-tests.ts --tier essential` over every group (idle, pane, rest), sliced, plus macos-bridge, `scripts/*.test.ts`, the Claude Code boot canary (`scripts/boot-canary.ts` on the pinned Claude Code) and the Antigravity client tests | its summary |
 | `bun run test:macos --full` | full: `ci-tests.ts --tier full` over every group, sliced, and adds the blind hook tests and S1 hook loading | its summary |
-| `weekly-tests.yml`, Sunday 11:00 UTC (03:00 PST) | full: the scripts, the idle and rest slices (the same slices as test.yml's Linux jobs; a test keeps the two in step) and the Linux S1 rows | GitHub mails the owner on a failed scheduled run; the run opens (or comments on) one issue titled "Weekly full test run failed" with its URL |
+| `weekly-tests.yml`, Sunday 11:00 UTC (03:00 PST) | github: the scripts, the idle and rest slices (the same slices as test.yml's Linux jobs; a test keeps the two in step) and the Linux S1 rows | GitHub mails the owner on a failed scheduled run; the run opens (or comments on) one issue titled "Weekly full test run failed" with its URL |
 | `scripts/weekly-macos-tests.ts` under launchd, every day 03:00 local | `test:macos --part <k>/7` on origin's main: the k-th of 7 slices of every group on the weekly tier (full minus essential); part 7 adds the blind hook tests and S1 hook loading | `~/Library/Logs/claudish-weekly-tests/<UTC date>-part<k>.log` and `part<k>.json`; a red part writes `RED-<UTC date>-part<k>.json` and a notification naming it |
 | `bun scripts/weekly-macos-tests.ts --check` | none: reads the `part<k>.json` files | exit 0 only when all 7 parts are green within 7 days (the release gate's nightly half) |
 | `bun run review:routing` | none: the routing rulebook review of the release commit, a local `claude -p` on the user's own login over a `git archive` export | its exit code (0 only on PASS) and the `result.json` and `claude-output.json` paths it prints |
@@ -135,10 +162,9 @@ instead.
 Both local gates run the idle group too, although `test.yml` runs it on Linux: without it a weekly
 `src/recovery-contract/` file would run in no gate a release owner starts. The gate cuts each
 group into slices, one concurrent `bun test` process each (`GATE_SLICES` in
-`scripts/test-macos.ts`): idle in 3 (test.yml's idle shards), pane in 6 (test.yml's `hermetic`
-runners) and rest in 8, 17 processes on an 18-core Mac. In the local run above, `rest` as one
+`scripts/test-macos.ts`): idle in 3 (test.yml's idle shards), pane in 6 and rest in 8, 17 processes on an 18-core Mac. In the local run above, `rest` as one
 process was the whole 432 s of the hermetic step, against at most 76 s for a pane slice; in 8
-slices each is near 54 s. test.yml's macOS runners still run `rest` whole.
+slices each is near 54 s.
 Each slice gets `--max-concurrency=max(1, floor(cores * 2 / slices))` (`sliceConcurrency`, cores
 from `os.availableParallelism()`), so the 17 slices together run about twice the core count of
 tests at once: 2 per slice on an 18-core Mac. With a fixed 8 per slice (up to 136 concurrent tests
@@ -608,10 +634,9 @@ process group, and no socket, pane record or launcher directory in the root. Tha
 what proves the reap; a green suite without it would hide a REPL left billing.
 
 **A missing magmux is "not checked", never a cause.** Without magmux these suites skip with
-`magmux not installed — not checked` (the gated-diagnostic rule above). CI installs the release
-pinned in `.github/magmux.env` (`.github/actions/install-magmux`, sha-256 checked) in `test.yml`'s
-macOS jobs, which run only on manual dispatch (`gh workflow run Tests --ref <branch>`); pull
-requests run no pane suite. Before a release tag their essential files run on a Mac with
+`magmux not installed — not checked` (the gated-diagnostic rule above). No GitHub workflow runs
+a pane suite. Before a release tag their essential files run on a Mac, against the release
+pinned in `.github/magmux.env` (sha-256 checked), with
 `bun run test:macos` (`scripts/test-macos.ts`; `--full` and the weekly macOS run take every pane
 file, see "Test tiers" above), which fails rather than skips when it finds no magmux, because a
 pane suite that skipped everything is green on nothing.

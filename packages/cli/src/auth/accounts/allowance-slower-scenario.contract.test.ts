@@ -27,6 +27,23 @@ let accountsDir: string;
 let oldAccounts: string | undefined;
 let serial = 0;
 
+/**
+ * `value` with every non-integer number rounded to 12 significant digits. The baseline was
+ * recorded on macOS; Linux's math library answers `Math.exp` and `Math.log` a few units in the
+ * last place apart (p10 0.004881256552964599 on macOS, ...593 on Linux), so the report is
+ * compared at a precision both reproduce.
+ */
+function roundFloats(value: unknown): unknown {
+  if (typeof value === "number") {
+    return Number.isInteger(value) ? value : Number(value.toPrecision(12));
+  }
+  if (Array.isArray(value)) return value.map(roundFloats);
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, roundFloats(v)]));
+  }
+  return value;
+}
+
 function window(usedFraction: number, resetAt: number) {
   return {
     key: "len:10080",
@@ -264,7 +281,7 @@ describe("MTL-298 slower scenario black-box contract", () => {
     seed();
     const current = await report();
     delete current.trajectory.slower;
-    expect<unknown>(current).toEqual(baseline);
+    expect(roundFloats(current)).toEqual(roundFloats(baseline));
   }, 30000);
 
   test("C7 no evidence produces empty slower switches and blocked runs", async () => {

@@ -99,6 +99,57 @@ describe("tier derivation", () => {
     expect([...essential, ...weekly].sort()).toEqual([...files].sort());
   });
 
+  test("the github tier is the essential tier plus every weekly file measured under githubMaxSeconds", () => {
+    const data: TierData = {
+      ...DATA,
+      githubMaxSeconds: 10,
+      pinned: [{ file: "src/guard.test.ts", guards: "a credential reload" }],
+    };
+    const files = [
+      "src/a.test.ts",
+      "src/guard.test.ts",
+      "src/long.test.ts",
+      "src/mid.test.ts",
+      "src/pane/a.test.ts",
+      "src/pane/b.test.ts",
+      "src/pane/c.test.ts",
+    ];
+    const times = {
+      "src/guard.test.ts": 21,
+      "src/long.test.ts": 10,
+      "src/mid.test.ts": 9.9,
+      "src/pane/a.test.ts": 40,
+      "src/pane/b.test.ts": 3,
+      "src/pane/c.test.ts": 60,
+    };
+    expect(filesInTier(files, "github", data, times)).toEqual([
+      "src/a.test.ts",
+      "src/guard.test.ts",
+      "src/mid.test.ts",
+      "src/pane/a.test.ts",
+      "src/pane/b.test.ts",
+    ]);
+  });
+
+  test("every file the github tier leaves out is weekly, so the Mac's nightly parts run it", () => {
+    const data = loadTiers();
+    const times = JSON.parse(
+      readFileSync(join(import.meta.dir, "ci-test-times.json"), "utf8")
+    ) as Record<string, number>;
+    const files = discover();
+    const github = new Set(filesInTier(files, "github", data, times));
+    const weekly = new Set(filesInTier(files, "weekly", data, times));
+    const left = files.filter((f) => !github.has(f));
+    expect(left.length).toBeGreaterThan(0);
+    expect(left.filter((f) => !weekly.has(f))).toEqual([]);
+  });
+
+  test("with no githubMaxSeconds the github tier is the full tier", () => {
+    const files = ["src/a.test.ts", "src/pane/b.test.ts", "src/z.test.ts"];
+    const times = { "src/z.test.ts": 500 };
+    expect(filesInTier(files, "github", DATA, times)).toEqual(files);
+  });
+
   test("the full tier is every file; the essential tier keeps discovery order", () => {
     const files = ["src/a.test.ts", "src/pane/a.test.ts", "src/pane/b.test.ts", "src/z.test.ts"];
     const times = { "src/z.test.ts": 5 };
@@ -389,6 +440,20 @@ describe("validateTiers", () => {
     const errors = validateTiers(data, known).join("\n");
     expect(errors).toContain("heavySeconds");
     expect(errors).toContain("src/pane/a.test.ts has no guards text");
+  });
+
+  test("a githubMaxSeconds that is not a positive finite number is an error", () => {
+    for (const githubMaxSeconds of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, "10"]) {
+      const data = { heavySeconds: 2, slow: [], githubMaxSeconds } as unknown as TierData;
+      expect(validateTiers(data, known).join("\n")).toContain(
+        "githubMaxSeconds must be a positive number"
+      );
+    }
+    expect(validateTiers({ heavySeconds: 2, slow: [], githubMaxSeconds: 10 }, known)).toEqual([]);
+  });
+
+  test("the tracked test-tiers.json sets githubMaxSeconds", () => {
+    expect(loadTiers().githubMaxSeconds).toBeGreaterThan(0);
   });
 
   test("the credential-file and metered-billing guard tests are pinned essential", () => {

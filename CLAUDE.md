@@ -225,8 +225,9 @@ negative case: if you are about to type one of those words, stop and use the lef
   <k>/7`) under launchd, installed with `bun scripts/install-weekly-macos-tests.ts`
   (`--uninstall`). Each part writes `~/Library/Logs/claudish-weekly-tests/part<k>.json`; a red
   part also writes `RED-<date>-part<k>.json` (date, part, commit, failing tests, log) for triage
-  and a notification. `weekly-tests.yml` runs the Linux full tier on Sunday 11:00 UTC. Promoting
-  a test: `testing.md`.
+  and a notification. `weekly-tests.yml` runs the Linux github tier on Sunday 11:00 UTC: the
+  essential files plus every weekly file measured under `githubMaxSeconds` or not measured
+  yet, so no Linux GitHub job holds a file that alone takes it past a minute. Promoting a test: `testing.md`.
 - `bun run typecheck`, `bun run lint`, `bun run format`
 - `claudish --probe <model>` shows the adapter composition; `--debug` writes a log to `logs/`.
 - Model syntax is `provider@model[:concurrency]` (`google@gemini-2.0-flash`, `ollama@llama3.2:3`); a bare name routes by a matching user routing rule, else by the chain gathered from the cloud models catalog and the accounts' dynamic models catalogs. Prefix meanings: `routing.md`.
@@ -282,8 +283,8 @@ the tag is the gate: everything must be green before it leaves the machine.
 essential tier) on the release commit; `bun scripts/weekly-macos-tests.ts --check`: every
 one of the 7 nightly parts green within the last 7 days; and `bun run review:routing` on the
 release commit, a PASS verdict. No GitHub workflow installs, downloads or runs Claude Code
-(`scripts/no-claude-code-in-ci.test.ts`); it runs only on this Mac. Pull requests do not run the macOS
-suites; CI runs them only on manual dispatch (`gh workflow run Tests --ref <branch>`). A part
+(`scripts/no-claude-code-in-ci.test.ts`); it runs only on this Mac. No GitHub workflow runs the macOS
+suites (`scripts/test-tier-workflows.test.ts` fails on a macOS runner). A part
 missing, red or older than 7 days is run by hand (`bun scripts/weekly-macos-tests.ts --part
 <k>`), one part at a time and never beside another heavy run: two concurrent runs on this Mac
 fail pane tests on 5 s timeouts. A red run stops the tag even when the cause is machine load:
