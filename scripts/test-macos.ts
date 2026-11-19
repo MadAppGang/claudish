@@ -602,6 +602,11 @@ export function claudeCodePinOfThisMac(): ClaudeCodePin {
   }
 }
 
+/** The version `claude --version` printed: its whole first token, so `2.1.296-beta.1` is not `2.1.296`. */
+export function reportedClaudeCodeVersion(stdout: string): string {
+  return stdout.trim().split(/\s+/)[0] ?? "";
+}
+
 /**
  * Fetches the pinned Claude Code into `claude-code/` under this run's directory, as
  * boot-canary.yml does on a runner: `npm pack` of the per-platform package (the binary alone,
@@ -631,8 +636,7 @@ export function installPinnedClaudeCode(pin: ClaudeCodePin, runDir: string): str
   }
   chmodSync(exe, 0o755);
   const version = spawnSync(exe, ["--version"], { encoding: "utf8", env: { ...process.env } });
-  const have = version.stdout?.match(/(\d+\.\d+\.\d+)/)?.[1];
-  if (version.status !== 0 || have !== pin.version) {
+  if (version.status !== 0 || reportedClaudeCodeVersion(version.stdout ?? "") !== pin.version) {
     fail(
       `${exe} --version printed ${JSON.stringify(version.stdout?.trim() ?? "")}, not ${pin.version}`
     );

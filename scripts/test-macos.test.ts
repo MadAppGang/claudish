@@ -25,6 +25,7 @@ import {
   parseGateArgs,
   parseMagmuxPin,
   planSteps,
+  reportedClaudeCodeVersion,
   runSteps,
   runsPackageScript,
   sliceConcurrency,
@@ -242,6 +243,13 @@ describe("the Claude Code boot canary", () => {
     for (const bad of ["", "latest", "2.1", "v2.1.296", "2.1.296\n2.1.297", "2.1.296 --tag x"]) {
       expect(() => parseClaudeCodePin(bad, "arm64")).toThrow(/claude-code\.version/);
     }
+  });
+
+  test("the fetched binary's version is the whole first token of --version", () => {
+    expect(reportedClaudeCodeVersion("2.1.296 (Claude Code)\n")).toBe("2.1.296");
+    // a prerelease of the pinned number is another version
+    expect(reportedClaudeCodeVersion("2.1.296-beta.1 (Claude Code)\n")).toBe("2.1.296-beta.1");
+    expect(reportedClaudeCodeVersion("")).toBe("");
   });
 });
 
