@@ -23,7 +23,8 @@
  * ignored ones (node_modules) are kept. In `<home>/Library/Logs/claudish-weekly-tests/`:
  *
  * - `<UTC date>-part<k>.log`: every command's output;
- * - `part<k>.json`: the latest result of part k (`PartResult`), green or red;
+ * - `part<k>.json`: the latest result of part k (`PartResult`), green or red, with the results
+ *   of the part's advisory steps (`advisory`), which never make it red;
  * - `RED-<UTC date>-part<k>.json`: written by a red run, with the date, the part, the commit,
  *   the failing tests and the log path. A later green run never deletes it: triage deletes it
  *   once the failures are filed. A red run also shows a macOS notification naming the marker.
@@ -46,6 +47,7 @@ import {
   readdirSync,
   realpathSync,
   renameSync,
+  rmSync,
   writeFileSync,
   writeSync,
 } from "node:fs";
@@ -173,6 +175,14 @@ export function cloneReady(paths: WeeklyPaths, home: string, nowMs: number = Dat
   return false;
 }
 
+/**
+ * `<logDir>/part<k>.advisory.json`: the advisory steps' results `test:macos --advisory-out`
+ * writes, copied into `part<k>.json` as `advisory`. `readPartResults` never reads it as a part.
+ */
+export function advisoryPathFor(logDir: string, part: number): string {
+  return join(logDir, `part${part}.advisory.json`);
+}
+
 /** The clone (first run only), its update to origin's main, the install and one part. */
 export function weeklyCommands(p: {
   paths: WeeklyPaths;
@@ -193,7 +203,16 @@ export function weeklyCommands(p: {
     {
       name: `test:macos --part ${part}`,
       cwd: repo,
-      argv: [p.bun, "--no-env-file", "run", "test:macos", "--part", part],
+      argv: [
+        p.bun,
+        "--no-env-file",
+        "run",
+        "test:macos",
+        "--part",
+        part,
+        "--advisory-out",
+        advisoryPathFor(p.paths.logDir, p.part),
+      ],
     },
   ];
 }
@@ -241,6 +260,11 @@ export interface PartResult {
    * run killed meanwhile (SIGTERM, a reboot) leaves it: a red part that did not finish.
    */
   finished?: false;
+  /**
+   * The part's advisory steps, as `test:macos --advisory-out` wrote them. A red one changes
+   * neither `pass` nor the RED marker. Absent when the run wrote no advisory results.
+   */
+  advisory?: unknown;
 }
 
 function isPartResult(r: unknown, part: number): r is PartResult {
@@ -436,6 +460,15 @@ function runPart(p: {
   }
 }
 
+/** The advisory results a run wrote, or undefined when it wrote none or they do not parse. */
+function readAdvisory(path: string): unknown {
+  try {
+    return JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return undefined;
+  }
+}
+
 /** Writes `part<k>.json`; returns the error text when it cannot, so the caller still reports. */
 function writePartResult(logDir: string, result: PartResult): string | undefined {
   try {
@@ -495,6 +528,9 @@ export async function runWeekly(opts: {
   // Before any command: a run killed from here on leaves a red, unfinished result, never the
   // previous green. A failure to write it is not fatal; the final write reports its own.
   writePartResult(paths.logDir, { ...resultOf(false, null), finished: false });
+  // An earlier run's advisory results must not be recorded as this run's.
+  const advisoryPath = advisoryPathFor(paths.logDir, part);
+  rmSync(advisoryPath, { force: true });
   let pass = false;
   let failed: { failing: string[]; logError?: string } = { failing: [] };
   let fd: number | undefined;
@@ -514,7 +550,9 @@ export async function runWeekly(opts: {
     if (fd !== undefined) closeSync(fd);
   }
   const commit = revParse(paths.repoDir);
-  const result = resultOf(pass, commit);
+  const advisory = readAdvisory(advisoryPath);
+  const result =
+    advisory === undefined ? resultOf(pass, commit) : { ...resultOf(pass, commit), advisory };
   const resultError = writePartResult(paths.logDir, result);
   if (pass && resultError === undefined) return 0;
   // A green run whose result could not be written is reported too: the gate still reads the

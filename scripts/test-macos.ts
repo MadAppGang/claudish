@@ -9,7 +9,9 @@
  * The default is the essential tier (packages/cli/scripts/test-tiers.json): steps 0-2 with
  * `--tier essential`, and step 3's Antigravity HTTP client tests. A nightly part runs no step 2. The blind hook tests and the S1
  * hook loading tests are hook files outside the hooks category's essential list, so `--full` runs
- * them, and so does the last nightly part, `--part 7/7` (scripts/weekly-macos-tests.ts). `--full` runs what
+ * them, and so does the last nightly part, `--part 7/7` (scripts/weekly-macos-tests.ts). Nightly part
+ * `ADVISORY_PART` also boots npm's `latest` Claude Code (`LATEST_CANARY_STEP`), an advisory step:
+ * a red result is reported and written to `--advisory-out <file>`, and never makes the run red. `--full` runs what
  * test.yml's dispatched macOS jobs run, which no pull request runs, and the idle group its Linux
  * jobs run:
  *
@@ -63,6 +65,7 @@ import {
   readFileSync,
   rmSync,
   symlinkSync,
+  writeFileSync,
 } from "node:fs";
 import { availableParallelism, constants as osConstants, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -129,12 +132,25 @@ export interface GateArgs {
   dryRun: boolean;
   tier: GateTier;
   part?: Part;
+  /** Where the advisory steps' results go as JSON (`advisoryResults`); the nightly part reads it. */
+  advisoryOut?: string;
 }
 
-const GATE_USAGE = "usage: test:macos [--full | --part <k>/<n>] [--dry-run]";
+const GATE_USAGE =
+  "usage: test:macos [--full | --part <k>/<n>] [--dry-run] [--advisory-out <file>]";
 
 /** The gate's own flags. Anything else is refused, so a misspelt `--full` never runs less. */
 export function parseGateArgs(argv: string[]): GateArgs {
+  const outAt = argv.indexOf("--advisory-out");
+  if (outAt === -1) return parseTierArgs(argv);
+  const advisoryOut = argv[outAt + 1];
+  if (!advisoryOut || advisoryOut.startsWith("-"))
+    throw new Error(`--advisory-out needs a file; ${GATE_USAGE}`);
+  const args = parseTierArgs([...argv.slice(0, outAt), ...argv.slice(outAt + 2)]);
+  return { ...args, advisoryOut };
+}
+
+function parseTierArgs(argv: string[]): GateArgs {
   const at = argv.indexOf("--part");
   const own = at === -1 ? argv : [...argv.slice(0, at), ...argv.slice(at + 2)];
   const unknown = own.filter((a) => a !== "--dry-run" && a !== "--full");
@@ -210,6 +226,8 @@ export interface Step {
   args: string[];
   /** A failure here makes every later step meaningless, so the gate stops. */
   stopOnFailure?: boolean;
+  /** Its result is reported (`advisoryResults`) and never makes the gate red (`gateRed`). */
+  advisory?: true;
 }
 
 /** One Bun the gate runs steps under: the version asked of bunx, and its executable. */
@@ -224,6 +242,14 @@ export interface StepGroup {
 }
 
 export const CANARY_STEP = "Claude Code boot canary";
+
+/**
+ * The boot canary on npm's `latest` Claude Code (scripts/boot-canary-latest.ts), an advisory step
+ * of one nightly part, `ADVISORY_PART`: it warns of a Claude Code release that breaks a spawn
+ * shape before the pin moves to it, and a red result never fails the part.
+ */
+export const LATEST_CANARY_STEP = "Claude Code boot canary, npm latest";
+export const ADVISORY_PART = 1;
 
 /**
  * Every step of one tier, grouped by the Bun it runs under; a Bun with no step in the tier is
@@ -351,13 +377,15 @@ export function planSteps(p: {
  * files the essential tier leaves out), as three concurrent processes. The essential gate on the
  * release commit runs the rest of the full tier: the essential files, macos-bridge, the script
  * tests and the Antigravity HTTP client tests. The last part also runs the two suites only
- * `--full` runs otherwise: the blind hook tests and S1 hook loading.
+ * `--full` runs otherwise: the blind hook tests and S1 hook loading. Part `ADVISORY_PART` also
+ * runs the advisory `LATEST_CANARY_STEP`.
  */
 function partSteps(p: {
   root: string;
   hermetic: PlannedBun;
   blind: PlannedBun;
   release: PlannedBun;
+  canary: { out: string };
   part: Part;
   cores?: number;
 }): StepGroup[] {
@@ -392,6 +420,23 @@ function partSteps(p: {
             `--max-concurrency=${maxConcurrency}`,
           ],
         },
+        ...(p.part.k === ADVISORY_PART
+          ? [
+              {
+                // Starts `magmux` by name: the pinned one, first on the step's PATH.
+                name: LATEST_CANARY_STEP,
+                cwd: p.root,
+                args: [
+                  p.hermetic.exe,
+                  NO_ENV_FILE,
+                  "scripts/boot-canary-latest.ts",
+                  "--out",
+                  `${p.canary.out}-latest`,
+                ],
+                advisory: true as const,
+              },
+            ]
+          : []),
       ],
     },
     {
@@ -755,6 +800,25 @@ export async function runSteps<S extends { name: string; stopOnFailure?: boolean
   return results;
 }
 
+type Planned = { name: string; advisory?: true };
+type Ran = { name: string; code: number };
+
+/** Red when a step did not run, or a step that is not advisory ended non-zero. */
+export function gateRed(steps: readonly Planned[], results: readonly Ran[]): boolean {
+  if (results.length < steps.length) return true;
+  return results.some((r, i) => r.code !== 0 && !steps[i]?.advisory);
+}
+
+/** The result of every advisory step that ran, as `--advisory-out` writes it. */
+export function advisoryResults(
+  steps: readonly Planned[],
+  results: readonly Ran[]
+): { name: string; pass: boolean; code: number }[] {
+  return results
+    .filter((_, i) => steps[i]?.advisory)
+    .map((r) => ({ name: r.name, pass: r.code === 0, code: r.code }));
+}
+
 if (import.meta.main) {
   let args: GateArgs;
   try {
@@ -873,13 +937,23 @@ if (import.meta.main) {
   });
 
   console.log("\n[test:macos] summary");
-  for (const r of results) console.log(`  ${r.code === 0 ? "PASS" : "FAIL"}  ${r.name}`);
+  results.forEach((r, i) => {
+    const verdict = r.code === 0 ? "PASS" : "FAIL";
+    const label = steps[i]?.advisory ? `ADVISORY ${verdict}` : verdict;
+    console.log(`  ${label}  ${r.name}`);
+  });
   for (const s of steps.slice(results.length)) console.log(`  SKIP  ${s.name}`);
+  if (args.advisoryOut) {
+    writeFileSync(
+      args.advisoryOut,
+      `${JSON.stringify(advisoryResults(steps, results), null, 2)}\n`
+    );
+  }
   if (interrupted) {
     console.log(`[test:macos] stopped by ${interrupted}: do not tag.`);
     process.exit(128 + (osConstants.signals[interrupted] ?? 0));
   }
-  const red = results.length < steps.length || results.some((r) => r.code !== 0);
+  const red = gateRed(steps, results);
   if (red)
     console.log("[test:macos] RED: do not tag. Rerun once the Mac is quiet if it was loaded.");
   process.exit(red ? 1 : 0);

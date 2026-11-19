@@ -272,7 +272,16 @@ describe("weeklyCommands", () => {
       ["git", "reset", "--hard", "origin/main"],
       ["git", "clean", "-ffd"],
       ["/bin/bun", "--no-env-file", "install", "--frozen-lockfile"],
-      ["/bin/bun", "--no-env-file", "run", "test:macos", "--part", "2/7"],
+      [
+        "/bin/bun",
+        "--no-env-file",
+        "run",
+        "test:macos",
+        "--part",
+        "2/7",
+        "--advisory-out",
+        join(paths.logDir, "part2.advisory.json"),
+      ],
     ]);
     for (const c of cmds) expect(c.cwd).toBe(paths.repoDir);
     // git never gets a path that could point it at another checkout
@@ -324,7 +333,7 @@ describe("runWeekly", () => {
     const r = recorder();
     expect(await run(home, r)).toBe(0);
     expect(r.ran[0]?.name).toBe("clone");
-    expect(r.ran.at(-1)?.argv.slice(-3)).toEqual(["test:macos", "--part", "3/7"]);
+    expect(r.ran.at(-1)?.argv.slice(-5, -2)).toEqual(["test:macos", "--part", "3/7"]);
     expect(r.notified).toEqual([]);
     const logPath = join(logs(home), "2026-11-22-part3.log");
     expect(readFileSync(logPath, "utf8")).toContain(`output of ${testStep}`);
@@ -356,7 +365,36 @@ describe("runWeekly", () => {
     }
     const r = recorder();
     await runWeekly({ home, now, repoUrl: REPO_URL, bun: "/bin/bun", ...r });
-    expect(r.ran.at(-1)?.argv.slice(-3)).toEqual(["test:macos", "--part", "3/7"]);
+    expect(r.ran.at(-1)?.argv.slice(-5, -2)).toEqual(["test:macos", "--part", "3/7"]);
+  });
+
+  test("a red advisory step is recorded in the part result, writes no RED marker and does not fail the part", async () => {
+    const home = tempHome();
+    const r = recorder();
+    const advisory = [{ name: "Claude Code boot canary, npm latest", pass: false, code: 1 }];
+    const exec = (cmd: Command, logFd: number) => {
+      const code = r.exec(cmd, logFd);
+      if (cmd.name === testStep) {
+        const file = cmd.argv[cmd.argv.indexOf("--advisory-out") + 1] as string;
+        writeFileSync(file, JSON.stringify(advisory));
+      }
+      return code;
+    };
+    expect(await run(home, { ...r, exec })).toBe(0);
+    const result = JSON.parse(readFileSync(join(logs(home), "part3.json"), "utf8"));
+    expect(result.pass).toBe(true);
+    expect(result.advisory).toEqual(advisory);
+    expect(readdirSync(logs(home)).filter((f) => f.startsWith("RED-"))).toEqual([]);
+    expect(r.notified).toEqual([]);
+  });
+
+  test("an advisory file left by an earlier run is not recorded again", async () => {
+    const home = tempHome();
+    mkdirSync(logs(home), { recursive: true });
+    writeFileSync(join(logs(home), "part3.advisory.json"), "[]");
+    expect(await run(home, recorder())).toBe(0);
+    const result = JSON.parse(readFileSync(join(logs(home), "part3.json"), "utf8"));
+    expect(result.advisory).toBeUndefined();
   });
 
   test("a clone directory with no .git, left by a killed clone, is moved aside and cloned again", async () => {

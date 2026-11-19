@@ -13,14 +13,18 @@ import { join } from "node:path";
 import { discover, groupOf } from "../packages/cli/scripts/ci-tests.ts";
 import { SCENARIOS, removeCanaryOutput } from "./boot-canary.output.ts";
 import {
+  ADVISORY_PART,
   CANARY_STEP,
   GATE_RUNS,
   GATE_SLICE_COUNT,
   HERMETIC_RUNS,
+  LATEST_CANARY_STEP,
   NO_ENV_FILE,
+  advisoryResults,
   bunPinOf,
   bunVersionOf,
   compareVersions,
+  gateRed,
   launchArgv,
   parseClaudeCodePin,
   parseGateArgs,
@@ -200,6 +204,56 @@ describe("a nightly part", () => {
     expect(args[args.indexOf("--run") + 1]).toBe("idle@3/7,pane@3/7,rest@3/7");
     expect(args[args.indexOf("--tier") + 1]).toBe("weekly");
     expect(args).toContain(`--max-concurrency=${sliceConcurrency(18, 3)}`);
+  });
+
+  test("exactly one part runs the advisory boot canary on npm's latest Claude Code", () => {
+    const withIt = [1, 2, 3, 4, 5, 6, 7].filter((k) =>
+      partSteps(k).some((s) => s.name === LATEST_CANARY_STEP)
+    );
+    expect(withIt).toEqual([ADVISORY_PART]);
+    const step = partSteps(ADVISORY_PART).find((s) => s.name === LATEST_CANARY_STEP);
+    expect(step?.advisory).toBe(true);
+    expect(step?.args).toEqual([
+      PLAN_INPUT.hermetic.exe,
+      NO_ENV_FILE,
+      "scripts/boot-canary-latest.ts",
+      "--out",
+      `${PLAN_INPUT.canary.out}-latest`,
+    ]);
+  });
+
+  test("a red advisory step does not make the gate red; any other red step does", () => {
+    const steps = [{ name: "a" }, { name: "b", advisory: true as const }];
+    expect(
+      gateRed(steps, [
+        { name: "a", code: 0 },
+        { name: "b", code: 1 },
+      ])
+    ).toBe(false);
+    expect(
+      gateRed(steps, [
+        { name: "a", code: 1 },
+        { name: "b", code: 0 },
+      ])
+    ).toBe(true);
+    // a step that never ran is red, advisory or not
+    expect(gateRed(steps, [{ name: "a", code: 0 }])).toBe(true);
+    expect(
+      advisoryResults(steps, [
+        { name: "a", code: 0 },
+        { name: "b", code: 1 },
+      ])
+    ).toEqual([{ name: "b", pass: false, code: 1 }]);
+  });
+
+  test("--advisory-out names the file the advisory results go to", () => {
+    expect(parseGateArgs(["--part", "1/7", "--advisory-out", "/l/a.json"])).toEqual({
+      dryRun: false,
+      tier: "weekly",
+      part: { k: 1, n: 7 },
+      advisoryOut: "/l/a.json",
+    });
+    expect(() => parseGateArgs(["--part", "1/7", "--advisory-out"])).toThrow(/--advisory-out/);
   });
 
   test("the last part also runs the blind hook tests and S1 hook loading", () => {
