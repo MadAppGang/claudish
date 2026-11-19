@@ -3,8 +3,9 @@
  * tag ever reaches GitHub.
  *
  * act cannot run in a worktree (its `.git` is a file pointing outside the tree), so the script
- * clones the toplevel of the current directory into a new temp dir and checks out the current
- * HEAD commit there. Uncommitted edits are not in the run; the script warns when the working tree
+ * builds a new repository in a temp dir holding only the current HEAD commit and the v* tags
+ * merged into it, fetched from the toplevel of the current directory, and checks HEAD out there.
+ * No other branch, tag or object of the source is in it, so none reaches the job container. Uncommitted edits are not in the run; the script warns when the working tree
  * has any. The clone's `origin` fetch URL is the GitHub repository (act names the repository from
  * it) and its push URL is the literal `push-disabled-by-act-local`, so nothing in the clone can
  * push anywhere.
@@ -24,7 +25,10 @@
  *   caller's Docker endpoint. DOCKER_CONFIG is a new dir holding only a `config.json` of `{}`, so
  *   act reads no registry credential, even when it pulls an image that is not present.
  * - Every git subprocess runs with no GIT_* variable, so a caller's GIT_DIR or GIT_WORK_TREE
- *   cannot point the clone's commands at the source repository.
+ *   cannot point the clone's commands at the source repository, and with
+ *   `-c core.hooksPath=/dev/null` (`git init` also with `--template=`), so no hook of the
+ *   caller's runs.
+ * - SIGINT, SIGTERM and SIGHUP reach act; the temp dir is removed once act has exited.
  * - Any actrc in the user's or the clone's config locations stops the run (one could add `-s`).
  * - A real run is allowed only for a job in RUNNABLE_JOBS. `--list` and `--dry-run` (act's own
  *   dry run: plans the steps, starts no container) take any job, or the whole workflow.
@@ -59,6 +63,9 @@ export const BUNDLED_LIST = "packages/cli/src/providers/bundled-recommended-list
 
 /** Caller variables act may see; everything else, every token included, stays out. */
 export const ENV_ALLOWLIST = ["PATH", "USER", "LANG", "TMPDIR", "DOCKER_CONTEXT"] as const;
+
+/** Leads every git call: no hook of the caller's (core.hooksPath) runs in the source or the clone. */
+const NO_HOOKS = ["-c", "core.hooksPath=/dev/null"];
 
 const COMMIT_IDENTITY = [
   "-c",
@@ -363,11 +370,40 @@ function defaultDeps(): ActDeps {
   };
 }
 
-/** Clones the toplevel at `sha` into `repo` and points its remote at GitHub with pushes disabled. */
+/**
+ * Builds `repo` from the toplevel's commit `sha` and the v* tags merged into it, nothing else:
+ * no other branch, tag or object of the source reaches the job container, where any of them
+ * could be read. `git init --template=` copies no hook from a template dir. A fetch by sha the
+ * local transport refuses falls back to the source's HEAD, which must then be `sha`. The remote
+ * is pointed at GitHub (act names the repository from it) with pushes disabled.
+ */
 function prepareClone(git: Git, cwd: string, toplevel: string, sha: string, repo: string): void {
-  git(["clone", "--quiet", "--no-hardlinks", toplevel, repo], cwd);
+  git(["init", "--quiet", "--template=", repo], cwd);
+  try {
+    git(["fetch", "--quiet", "--no-tags", toplevel, sha], repo);
+  } catch {
+    git(["fetch", "--quiet", "--no-tags", toplevel, "HEAD"], repo);
+    const fetched = git(["rev-parse", "FETCH_HEAD"], repo);
+    if (fetched !== sha) throw new Error(`the source's HEAD is ${fetched}, not ${sha}`);
+  }
+  const tags = git(["tag", "--merged", sha, "--list", "v*"], cwd)
+    .split("\n")
+    .map((t) => t.trim())
+    .filter((t) => t !== "");
+  if (tags.length > 0) {
+    git(
+      [
+        "fetch",
+        "--quiet",
+        "--no-tags",
+        toplevel,
+        ...tags.map((t) => `refs/tags/${t}:refs/tags/${t}`),
+      ],
+      repo
+    );
+  }
   git(["checkout", "--quiet", "--detach", sha], repo);
-  git(["remote", "set-url", "origin", ORIGIN_URL], repo);
+  git(["remote", "add", "origin", ORIGIN_URL], repo);
   git(["remote", "set-url", "--push", "origin", PUSH_URL], repo);
 }
 
@@ -512,7 +548,7 @@ export async function runActLocal(argv: string[], deps: ActDeps = defaultDeps())
   }
 
   const scrubbed = gitEnv(deps.env);
-  const git: Git = (gitArgs, cwd) => deps.git(gitArgs, cwd, scrubbed);
+  const git: Git = (gitArgs, cwd) => deps.git([...NO_HOOKS, ...gitArgs], cwd, scrubbed);
   let source: { toplevel: string; sha: string };
   try {
     source = {

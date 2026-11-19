@@ -248,9 +248,14 @@ another file under `.github/workflows` for `--list` and `--dry-run`.
 
 How it keeps a run local and free of secrets:
 
-- act runs in a temp clone of the repository at the current commit, never in
-  the worktree. The test tags and commits exist only in that clone. Its `origin`
-  push URL is `push-disabled-by-act-local`. The temp dir is removed at exit.
+- act runs in a temp repository that holds only the current commit and the
+  `v*` tags merged into it, never in the worktree. No other branch, tag or
+  object of the source is in it. The test tags and commits exist only there.
+  Its `origin` push URL is `push-disabled-by-act-local`. The temp dir is
+  removed at exit.
+- Every git command runs with no `GIT_*` variable and with
+  `core.hooksPath=/dev/null`, and `git init` uses an empty template, so no
+  git hook of the caller's runs.
 - act gets empty `--secret-file`, `--var-file`, `--env-file` and
   `--input-file` files, and never `-s`, `--secret`, `--var`, `--env` or
   `--input`. `--container-daemon-socket -` keeps the Docker socket out of the

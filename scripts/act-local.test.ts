@@ -378,8 +378,17 @@ describe("runActLocal", () => {
   });
 
   /** Fakes for a real run of the tag case, in a real temp dir under `root`. */
-  function realRunDeps(root: string) {
+  function realRunDeps(
+    root: string,
+    opts: { fetchByShaRefused?: boolean; fetchHead?: string } = {}
+  ) {
     const gitCalls: { args: string[]; env: Record<string, string> | undefined }[] = [];
+    // The git subcommand and its arguments, after any leading `-c key=value` pairs.
+    const command = (args: string[]): string[] => {
+      let i = 0;
+      while (args[i] === "-c") i += 2;
+      return args.slice(i);
+    };
     const seen: { env?: Record<string, string>; config?: string } = {};
     const deps: ActDeps = {
       cwd: "/w",
@@ -395,8 +404,15 @@ describe("runActLocal", () => {
       realHome: "/Users/jack",
       git: (args, _cwd, env) => {
         gitCalls.push({ args, env });
-        if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return "/w";
-        if (args[0] === "rev-parse") return "abc123";
+        const [sub, ...rest] = command(args);
+        if (sub === "rev-parse" && rest[0] === "--show-toplevel") return "/w";
+        if (sub === "rev-parse" && rest[0] === "FETCH_HEAD") return opts.fetchHead ?? "abc123";
+        if (sub === "rev-parse") return "abc123";
+        // The source also has a side branch and a tag on it; git lists only merged tags.
+        if (sub === "tag" && rest[0] === "--merged") return "v1.0.0\nv1.1.0";
+        if (sub === "fetch" && rest.includes("abc123") && opts.fetchByShaRefused) {
+          throw new Error("fatal: remote error: upload-pack: not our ref abc123");
+        }
         return "";
       },
       exists: (p) => p.endsWith(join(".github", "workflows", "release.yml")),
@@ -411,14 +427,82 @@ describe("runActLocal", () => {
     return { deps, gitCalls, seen };
   }
   const TAG_RUN = ["--job", "bundled-list", "--tag-case", "unchanged"];
+  const sub = (args: string[]) => {
+    let i = 0;
+    while (args[i] === "-c") i += 2;
+    return args.slice(i);
+  };
+
+  test("the clone holds HEAD and the merged v* tags only, never a whole-repository clone", async () => {
+    const root = mkdtempSync(join(tmpdir(), "act-local-test-"));
+    const { deps, gitCalls } = realRunDeps(root);
+    try {
+      expect(await runActLocal(TAG_RUN, deps)).toBe(0);
+      const commands = gitCalls.map((c) => sub(c.args));
+      expect(commands.some((c) => c[0] === "clone")).toBe(false);
+      const init = commands.find((c) => c[0] === "init");
+      expect(init).toContain("--template=");
+      const fetches = commands.filter((c) => c[0] === "fetch");
+      expect(fetches).toHaveLength(2);
+      expect(fetches[0]).toEqual(["fetch", "--quiet", "--no-tags", "/w", "abc123"]);
+      expect(fetches[1]).toEqual([
+        "fetch",
+        "--quiet",
+        "--no-tags",
+        "/w",
+        "refs/tags/v1.0.0:refs/tags/v1.0.0",
+        "refs/tags/v1.1.0:refs/tags/v1.1.0",
+      ]);
+      const merged = commands.find((c) => c[0] === "tag" && c[1] === "--merged");
+      expect(merged).toEqual(["tag", "--merged", "abc123", "--list", "v*"]);
+      for (const c of commands) {
+        for (const word of c) {
+          expect(word.includes("refs/heads")).toBe(false);
+          expect(word.includes("side")).toBe(false);
+          expect(word === "--all" || word === "--mirror" || word === "--tags").toBe(false);
+        }
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a refused fetch by sha falls back to the source's HEAD and checks FETCH_HEAD", async () => {
+    const root = mkdtempSync(join(tmpdir(), "act-local-test-"));
+    const ok = realRunDeps(root, { fetchByShaRefused: true });
+    const moved = realRunDeps(root, { fetchByShaRefused: true, fetchHead: "def456" });
+    try {
+      expect(await runActLocal(TAG_RUN, ok.deps)).toBe(0);
+      const commands = ok.gitCalls.map((c) => sub(c.args));
+      expect(commands).toContainEqual(["fetch", "--quiet", "--no-tags", "/w", "HEAD"]);
+      expect(commands).toContainEqual(["rev-parse", "FETCH_HEAD"]);
+      expect(await runActLocal(TAG_RUN, moved.deps)).toBe(1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("every git call of a real run disables the caller's hooks", async () => {
+    const root = mkdtempSync(join(tmpdir(), "act-local-test-"));
+    const { deps, gitCalls } = realRunDeps(root);
+    try {
+      expect(await runActLocal(TAG_RUN, deps)).toBe(0);
+      for (const call of gitCalls) {
+        expect(call.args.slice(0, 2)).toEqual(["-c", "core.hooksPath=/dev/null"]);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 
   test("every git call of a real run runs with no GIT_* variable", async () => {
     const root = mkdtempSync(join(tmpdir(), "act-local-test-"));
     const { deps, gitCalls } = realRunDeps(root);
     try {
       expect(await runActLocal(TAG_RUN, deps)).toBe(0);
-      // rev-parse x2, status, clone, checkout, remote x2, tag, commit, tag
-      expect(gitCalls.length).toBe(10);
+      // rev-parse x2, status, init, fetch, tag --merged, fetch tags, checkout, remote x2,
+      // tag, commit, tag
+      expect(gitCalls.length).toBe(13);
       for (const call of gitCalls) {
         expect(call.env).toEqual({
           PATH: "/bin",
