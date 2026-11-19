@@ -317,7 +317,7 @@ jobs:
             node -e "const p=require('./package.json'); p.version='${VERSION}'; require('fs').writeFileSync('package.json', JSON.stringify(p,null,2))"
 
             echo "Publishing @claudish/${name} v${VERSION}..."
-            npm publish --access public --provenance || echo "Failed to publish @claudish/${name} (may already exist)"
+            bun ../../scripts/publish-npm-package.ts .
             cd ../..
           done
 
@@ -368,7 +368,7 @@ jobs:
           rm -f "$TARBALL"
 
       - name: Publish to npm
-        run: cd packages/cli && npm publish --access public --provenance
+        run: bun scripts/publish-npm-package.ts packages/cli
 
   update-homebrew:
     needs: release
