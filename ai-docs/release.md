@@ -139,9 +139,11 @@ bumped to it.
 `scripts/no-claude-code-in-ci.test.ts` (in test.yml's `scripts` job on every pull
 request) parses every workflow and fails on `anthropics/claude-code-action`, an
 `@anthropic-ai/claude-code` package, the `ANTHROPIC_API_KEY` or
-`CLAUDE_CODE_OAUTH_TOKEN` secret, a `claude` command, or a step that starts
-`scripts/boot-canary.ts` or `scripts/routing-review.ts`. Claude Code runs only on the
-Mac, on the owner's own login.
+`CLAUDE_CODE_OAUTH_TOKEN` secret, a `claude` command (also inside a quoted
+`bash`/`sh`/`zsh`/`dash -c` or `eval` string), or a step that starts a script that
+downloads or runs Claude Code: `scripts/boot-canary.ts`, `scripts/routing-review.ts`,
+`scripts/test-macos.ts`, `scripts/weekly-macos-tests.ts`, `bun run test:macos` or
+`bun run review:routing`. Claude Code runs only on the Mac, on the owner's own login.
 
 **The routing rulebook review is `bun run review:routing`, on the release commit.**
 `scripts/routing-review.ts` exports the committed ref (default `HEAD`) with

@@ -27,8 +27,15 @@ interface Finding {
 const ACTION = /anthropics\/claude-code-action/;
 const PACKAGE = "@anthropic-ai/claude-code";
 const SECRETS = /secrets\.(ANTHROPIC_API_KEY|CLAUDE_CODE_OAUTH_TOKEN)\b/;
-// The local scripts that spawn Claude Code; a workflow that starts one runs it.
-const SCRIPTS = /(\bscripts\/(boot-canary|routing-review)\.ts\b|\breview:routing\b)/;
+// The local scripts that download, boot or run Claude Code, and the package scripts that start
+// them; a workflow that starts one runs it.
+const SCRIPTS =
+  /(\bscripts\/(boot-canary|routing-review|test-macos|weekly-macos-tests)\.ts\b|\b(review:routing|test:macos)(?![\w:-]))/;
+// Shells whose `-c` argument is itself a command line.
+const SHELLS = new Set(["bash", "sh", "zsh", "dash"]);
+// `<shell> [options] -c '<command line>'` and `eval '<command line>'`, quoted.
+const NESTED_COMMAND =
+  /(?:^|[\s;&|(])(?:(?:bash|sh|zsh|dash)\s+(?:-\w+\s+)*-\w*c\w*|eval)\s+(['"])(.*?)\1/g;
 // Words that come before the command word without being the command.
 const WRAPPERS = new Set([
   "sudo",
@@ -37,6 +44,7 @@ const WRAPPERS = new Set([
   "exec",
   "command",
   "env",
+  "eval",
   "time",
   "nohup",
   "!",
@@ -71,6 +79,15 @@ function commandWord(segment: string): string | undefined {
       i++;
       continue;
     }
+    // `bash -c <command line>`: the command line's first word is the command.
+    if (SHELLS.has(word)) {
+      let j = i + 1;
+      while (j < words.length && /^-\w+$/.test(words[j]) && !/^-\w*c\w*$/.test(words[j])) j++;
+      if (j < words.length && /^-\w*c\w*$/.test(words[j])) {
+        i = j + 1;
+        continue;
+      }
+    }
     if (word === "timeout") {
       i++;
       while (i < words.length && words[i].startsWith("-")) {
@@ -88,12 +105,18 @@ function stripShellComment(line: string): string {
   return line.replace(/(^|\s)#.*$/, "");
 }
 
-function runsClaude(run: string): string | undefined {
+function runsClaude(run: string, depth = 0): string | undefined {
   for (const line of run.split("\n")) {
     const code = stripShellComment(line);
     for (const segment of code.split(/&&|\|\||;|\||\$\(|`/)) {
       const word = commandWord(segment);
       if (word === "claude" || word?.endsWith("/claude")) return line;
+    }
+    // A quoted `-c` or `eval` argument is a command line of its own; parse it as one.
+    if (depth < 3) {
+      for (const match of code.matchAll(NESTED_COMMAND)) {
+        if (runsClaude(match[2], depth + 1) !== undefined) return line;
+      }
     }
   }
   return undefined;
@@ -236,6 +259,33 @@ describe("the detector finds each kind", () => {
       stepYaml("run: bun run review:routing"),
       "claude-code-script",
     ],
+    ["the macOS gate package script", stepYaml("run: bun run test:macos"), "claude-code-script"],
+    [
+      "the macOS gate package script with flags",
+      stepYaml("run: bun run test:macos --full"),
+      "claude-code-script",
+    ],
+    ["the macOS gate script", stepYaml("run: bun scripts/test-macos.ts"), "claude-code-script"],
+    [
+      "the nightly part runner",
+      stepYaml("run: bun scripts/weekly-macos-tests.ts --part 1/7"),
+      "claude-code-script",
+    ],
+    ["claude inside bash -c", stepYaml("run: bash -c 'claude -p hi'"), "claude-command"],
+    ["claude inside sh -c", stepYaml('run: sh -c "echo x && claude"'), "claude-command"],
+    ["claude inside zsh -lc", stepYaml("run: zsh -lc 'FOO=1 claude --version'"), "claude-command"],
+    [
+      "claude inside dash -c with an option first",
+      stepYaml("run: dash -e -c 'cd /tmp; claude -p x'"),
+      "claude-command",
+    ],
+    ["claude after eval", stepYaml("run: eval claude -p hi"), "claude-command"],
+    ["claude in an eval string", stepYaml('run: eval "claude -p hi"'), "claude-command"],
+    [
+      "claude in bash -c inside eval",
+      stepYaml("run: eval \"bash -c 'claude -p hi'\""),
+      "claude-command",
+    ],
   ];
 
   for (const [name, yaml, kind] of cases) {
@@ -254,6 +304,19 @@ describe("the detector leaves clean workflows alone", () => {
     ["claude as an argument", stepYaml('run: echo "claude"')],
     ["a path that only contains claude", stepYaml("run: ls packages/claude-thing")],
     ["a test run named for the canary", stepYaml("run: bun test scripts/boot-canary.test.ts")],
+    ["the macOS gate's own tests", stepYaml("run: bun test scripts/test-macos.test.ts")],
+    [
+      "the nightly runner's own tests",
+      stepYaml("run: bun test scripts/weekly-macos-tests.test.ts"),
+    ],
+    [
+      "the nightly installer",
+      stepYaml("run: bun scripts/install-weekly-macos-tests.ts --uninstall"),
+    ],
+    ["another package script", stepYaml("run: bun run test:macos-bridge")],
+    ["bash -c without claude", stepYaml("run: bash -c 'echo claude'")],
+    ["bash running a script file", stepYaml("run: bash scripts/check.sh claude")],
+    ["eval without claude", stepYaml('run: eval "echo claude"')],
   ];
 
   for (const [name, yaml] of clean) {
