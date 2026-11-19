@@ -361,8 +361,10 @@ kept downloading the LATEST release of `MadAppGang/magmux`. Since `7563ab21`
 platform, `release.yml` refuses a pin below `MIN_MAGMUX_VERSION` and verifies each
 download, and the pane suites run against the same pin in `bun run test:macos` on this
 Mac (no GitHub workflow runs them) — MCP slots run in
-magmux panes, so the magmux that ships must be the one that was tested, and a new
-magmux release must not change what an existing claudish tag ships. A missing asset
+magmux panes, so the release ships the pinned magmux tag whose Darwin asset for this
+Mac's architecture the pane suites tested (the other platform assets are pinned by
+checksum, not tested), and a new magmux release must not change what an existing
+claudish tag ships. A missing asset
 or checksum mismatch BLOCKS the release before anything publishes. Bump the pin
 deliberately (tag and all four sums together) after `bun run test:macos --full` passes on it.
 
