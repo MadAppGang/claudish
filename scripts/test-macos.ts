@@ -451,7 +451,7 @@ function partSteps(p: {
                   NO_ENV_FILE,
                   "scripts/boot-canary-latest.ts",
                   "--out",
-                  `${p.canary.out}-latest`,
+                  join(p.canary.out, "latest"),
                 ],
                 advisory: true as const,
               },

@@ -221,8 +221,15 @@ describe("a nightly part", () => {
       NO_ENV_FILE,
       "scripts/boot-canary-latest.ts",
       "--out",
-      `${PLAN_INPUT.canary.out}-latest`,
+      join(PLAN_INPUT.canary.out, "latest"),
     ]);
+  });
+
+  test("the advisory canary writes inside the canary directory the gate reserved and prints", () => {
+    const step = partSteps(ADVISORY_PART).find((s) => s.name === LATEST_CANARY_STEP);
+    const args = step?.args ?? [];
+    const out = args[args.indexOf("--out") + 1] ?? "";
+    expect(out.startsWith(`${PLAN_INPUT.canary.out}/`)).toBe(true);
   });
 
   test("a red advisory step does not make the gate red; any other red step does", () => {

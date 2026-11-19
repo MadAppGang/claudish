@@ -142,7 +142,7 @@ No workflow file runs a canary.
 
 Each run writes its canary output (`results.json` and one screen per spawn shape) to a
 new temp directory of its own. The gate prints its path as `canary output: <dir>`, and
-the advisory step writes to `<dir>-latest`. The gate does not remove these directories;
+the advisory step writes to `<dir>/latest`. The gate does not remove these directories;
 macOS removes old files in `$TMPDIR`.
 
 **No GitHub workflow installs, downloads or runs Claude Code.**
