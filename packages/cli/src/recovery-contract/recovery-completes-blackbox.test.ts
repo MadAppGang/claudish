@@ -12,8 +12,9 @@
  * assertion in the suite passes on a feature that can never actually finish.
  *
  * The four turns run at the same time, each against its own endpoint, because
- * an episode is per endpoint: `beforeAll` starts them and each test awaits its
- * own. A run filtered to one test still starts all four. `afterAll` shuts the
+ * an episode is per endpoint: `beforeAll` starts them and each test awaits the
+ * turn it checks (the body test and the credential test check the same turn).
+ * A run filtered to one test still starts all four. `afterAll` shuts the
  * proxy and the upstreams down first, which ends a turn still in flight by
  * closing its connection, and only then waits for the four to settle.
  */
