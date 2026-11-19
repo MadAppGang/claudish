@@ -202,7 +202,9 @@ negative case: if you are about to type one of those words, stop and use the lef
 - `bun run test` — full suite. `bun run test:safe` — same, guarded against touching the real config.
 - `bun run test:macos` — the macOS gate (`scripts/test-macos.ts`), on the ESSENTIAL tier: idle,
   pane and rest through `ci-tests.ts --tier essential` (sliced: idle 3, pane 6, rest 8),
-  macos-bridge, `scripts/*.test.ts` and `antigravity-fetch.test.ts`, each under the Bun its
+  macos-bridge, `scripts/*.test.ts`, the Claude Code boot canary (`scripts/boot-canary.ts` on
+  the Claude Code `.github/claude-code.version` pins, fetched with `npm pack`; boot-canary.yml
+  boots it on Linux only) and `antigravity-fetch.test.ts`, each under the Bun its
   test.yml job pins, fetched with `bunx`, after `build:cli`. `--full` runs everything: the full
   tier of idle, pane and rest, plus the blind hook tests and hooks-loading's `src/hooks/s1-probe/`
   under release.yml's Bun `latest`. The pane suites run against `.github/magmux.env`'s magmux, downloaded with `gh`

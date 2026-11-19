@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { discover, groupOf } from "../packages/cli/scripts/ci-tests.ts";
 import {
+  CANARY_STEP,
   GATE_RUNS,
   GATE_SLICE_COUNT,
   HERMETIC_RUNS,
@@ -20,6 +21,7 @@ import {
   bunVersionOf,
   compareVersions,
   launchArgv,
+  parseClaudeCodePin,
   parseGateArgs,
   parseMagmuxPin,
   planSteps,
@@ -46,6 +48,7 @@ const PLAN_INPUT = {
   blind: { version: "1.4.0", exe: "/b/1.4.0/bun" },
   release: { version: "latest", exe: "/b/latest/bun" },
   scriptTests: ["./scripts/a.test.ts"],
+  canary: { claude: "/cc/claude", out: "/out/canary" },
 };
 const STEPS = planSteps({ ...PLAN_INPUT, tier: "full" }).flatMap((g) => g.steps);
 const ESSENTIAL = planSteps({ ...PLAN_INPUT, tier: "essential" });
@@ -132,14 +135,31 @@ describe("tiers", () => {
       `hermetic ${GATE_RUNS}`,
       "macos-bridge tests",
       "script tests",
+      CANARY_STEP,
       "Antigravity HTTP client tests",
     ]);
     expect(STEPS.map((s) => s.name)).toEqual([
-      ...names.slice(0, 4),
+      ...names.slice(0, 5),
       "blind hook tests",
-      names[4],
+      names[5],
       "S1 hook loading",
     ]);
+  });
+
+  test("both tiers boot the given Claude Code under the hermetic Bun, from the repo root", () => {
+    for (const plan of [STEPS, ESSENTIAL.flatMap((g) => g.steps)]) {
+      const canary = plan.find((s) => s.name === CANARY_STEP);
+      expect(canary?.cwd).toBe("/repo");
+      expect(canary?.args).toEqual([
+        "/b/1.3.10/bun",
+        NO_ENV_FILE,
+        "scripts/boot-canary.ts",
+        "--bin",
+        "/cc/claude",
+        "--out",
+        "/out/canary",
+      ]);
+    }
   });
 
   test("the essential gate plans no step under the release Bun, so it fetches none", () => {
@@ -187,6 +207,41 @@ describe("a nightly part", () => {
       "blind hook tests",
       "S1 hook loading",
     ]);
+  });
+});
+
+describe("the Claude Code boot canary", () => {
+  const CANARY_WORKFLOW = readFileSync(
+    join(import.meta.dir, "..", ".github", "workflows", "boot-canary.yml"),
+    "utf8"
+  );
+
+  test("no nightly part boots it", () => {
+    for (let k = 1; k <= 7; k++) {
+      const steps = planSteps({ ...PLAN_INPUT, tier: "weekly", part: { k, n: 7 } }).flatMap(
+        (g) => g.steps
+      );
+      expect(steps.map((s) => s.name)).not.toContain(CANARY_STEP);
+    }
+  });
+
+  test("boot-canary.yml starts no macOS runner: the gate is the macOS boot check", () => {
+    expect(CANARY_WORKFLOW).toMatch(/runs-on: ubuntu-latest/);
+    expect(CANARY_WORKFLOW).not.toMatch(/runs-on:.*(macos|matrix\.os)/);
+  });
+
+  test("the pin is the version file's one x.y.z line, as the darwin package of the arch", () => {
+    expect(parseClaudeCodePin("2.1.296\n", "arm64")).toEqual({
+      version: "2.1.296",
+      pkg: "@anthropic-ai/claude-code-darwin-arm64",
+    });
+    expect(parseClaudeCodePin("2.1.296", "x64").pkg).toBe("@anthropic-ai/claude-code-darwin-x64");
+  });
+
+  test("a version file that is not one x.y.z line is refused", () => {
+    for (const bad of ["", "latest", "2.1", "v2.1.296", "2.1.296\n2.1.297", "2.1.296 --tag x"]) {
+      expect(() => parseClaudeCodePin(bad, "arm64")).toThrow(/claude-code\.version/);
+    }
   });
 });
 
