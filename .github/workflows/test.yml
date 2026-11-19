@@ -20,7 +20,7 @@ name: Tests
 # billable live suite. Live coverage belongs in smoke-test.yml, which is
 # manually dispatched and holds the secrets on purpose.
 #
-# WHAT RUNS ON WHICH TRIGGER: pull_request and push to main run the Linux jobs (static,
+# WHAT RUNS ON WHICH TRIGGER: pull_request and push to main run the Linux jobs (typecheck, lint,
 # scripts, idle, rest, the Linux rows of hooks-loading, darwin-binaries). The macOS jobs (hermetic, blind-hooks, the macOS
 # rows of hooks-loading) run only on a manual dispatch: `gh workflow run Tests --ref
 # <branch>`. Before a release tag the macOS suites run on a Mac with `bun run test:macos`
@@ -83,8 +83,10 @@ jobs:
   # no-route in run 39550893135. Every test that needs a warm sets its own env; the rest
   # group passes 5318/5318 with this set. Other live calls (provider model lists, codeium)
   # remain and are tracked separately.
-  static:
-    name: typecheck · lint
+  # Typecheck and lint are two jobs so that they run at the same time: each takes as long as
+  # its own check, not as long as both.
+  typecheck:
+    name: typecheck
     runs-on: ubuntu-latest
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -97,6 +99,19 @@ jobs:
       - run: bun install --frozen-lockfile
       - name: Typecheck
         run: bun run typecheck
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.10"
+      # Root install — `workspaces: ["packages/*"]`, so this covers cli AND macos-bridge.
+      - run: bun install --frozen-lockfile
       # Fails on ERRORS only. The ~800 warnings (noExplicitAny,
       # noExcessiveCognitiveComplexity) are pre-existing style debt, which biome exits 0 for.
       - name: Lint
@@ -233,7 +248,7 @@ jobs:
   # 20 of 20 on 1.4.0 (reproduced on 1.3.10 with no claudish code in the loop):
   # C-17, a fetch reader.cancel() that never closes the connection, and X-12, a
   # paused-then-resumed node:child_process reader that drops every byte. The
-  # blind TYPECHECK stays in the static job, under the pinned Bun. This job does
+  # blind TYPECHECK stays in the typecheck job, under the pinned Bun. This job does
   # not lint, so a newer bun rewriting packages/cli/package.json on install does
   # not matter here. It runs on macOS, so on a manual dispatch only.
   blind-hooks:
