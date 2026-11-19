@@ -127,7 +127,8 @@ reset the warm) and re-run, rather than tag over it.
 `boot-canary.yml` also runs on PRs that touch `pane/` and every 6 hours, on Linux
 runners only: it boots each spawn shape against the Claude Code pinned in
 `.github/claude-code.version` (blocking cell) and npm's latest (non-blocking). The
-scenarios boot 5 at a time (`--jobs`), so a run ends in under a minute. It is not part
+scenarios all boot at once (`--jobs`), and a job that runs longer than 1 minute fails
+(`timeout-minutes: 1`); the wait for a runner is outside that limit. It is not part
 of `release.yml`. A red pinned cell means the pane boot reader no longer matches
 Claude Code — fix that before releasing, the same as a red `test.yml`. The macOS boot
 of the pinned version is the "Claude Code boot canary" step of `bun run test:macos`
