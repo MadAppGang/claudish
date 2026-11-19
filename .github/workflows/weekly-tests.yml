@@ -1,14 +1,15 @@
 name: Weekly full tests
 
-# The GITHUB tier of every test a Linux runner can run, once a week, in under a minute.
+# The idle and rest slices of the GITHUB tier on Linux, once a week. The target is every job
+# under 50 s; the tier does not cap a job's wall time.
 #
 # Pull requests run the essential tier (packages/cli/scripts/test-tiers.json, ci-tests.ts
 # `--tier essential`): at most three listed files per slow category, whatever their time, the
 # pinned files, and, outside the slow categories, no other file measured at the data file's
-# heavySeconds or more. This run adds every weekly file measured under the data file's
-# githubMaxSeconds or not measured yet (`--tier github`), so a weekly test that broke is found
-# within a week rather than at the next release. A longer weekly file would take its job past a
-# minute, so no Linux job here runs it: the owner's Mac does, one weekly-tier part a night
+# heavySeconds or more. This run adds, in the idle and rest groups and without macOnly files,
+# every weekly file measured under the data file's githubMaxSeconds or not measured yet
+# (`--tier github`). No Linux job here runs a weekly file measured
+# at githubMaxSeconds or more: the owner's Mac does, one weekly-tier part a night
 # (scripts/weekly-macos-tests.ts), with the macOS suites (pane, the macOS-only rest files, the
 # blind hook tests).
 #
