@@ -17,6 +17,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { removeCanaryOutput } from "./boot-canary.output.ts";
 import { NO_ENV_FILE, installPinnedClaudeCode, parseClaudeCodePin } from "./test-macos.ts";
 
 function fail(message: string): never {
@@ -30,13 +31,17 @@ if (import.meta.main) {
   if (!out || process.argv.length !== 4) fail("usage: boot-canary-latest.ts --out <dir>");
   if (process.arch !== "arm64" && process.arch !== "x64")
     fail(`no Claude Code darwin package for arch ${process.arch}`);
+  // A run that fails before the boot must not leave an earlier run's screens at `--out`.
+  removeCanaryOutput(resolve(out));
 
   const view = spawnSync("npm", ["view", "@anthropic-ai/claude-code@latest", "version"], {
     encoding: "utf8",
     env: { ...process.env },
   });
   if (view.status !== 0)
-    fail(`npm view @anthropic-ai/claude-code@latest failed:\n${view.stderr ?? ""}`);
+    fail(
+      `npm view @anthropic-ai/claude-code@latest failed:\n${view.error?.message ?? view.stderr ?? ""}`
+    );
   let pin: ReturnType<typeof parseClaudeCodePin>;
   try {
     pin = parseClaudeCodePin(view.stdout ?? "", process.arch);
