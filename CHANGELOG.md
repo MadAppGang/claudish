@@ -2,6 +2,22 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.28.3] - 2026-11-19
+
+### Bug Fixes
+
+- match claudish's own Error: and Fatal error: exit lines *(team)* ([`99f2c19`](https://github.com/MadAppGang/claudish/commit/99f2c19dc40cbda524877f32066383fc44471693))
+- keep the old child_exited detail for an alternate-screen exit *(team)* ([`e5b2c6b`](https://github.com/MadAppGang/claudish/commit/e5b2c6b19bde917aceeb041cd290eb522e9ffb20))
+- name the child's Error: line in a child_exited reason *(team)* ([`54dd2f3`](https://github.com/MadAppGang/claudish/commit/54dd2f3630ca69effd43ee83a348f029ff106e50))
+
+### Documentation
+
+- update CHANGELOG.md for v14.28.2([`cd1977b`](https://github.com/MadAppGang/claudish/commit/cd1977b9549a10aec5d014aca88caf1840edb958))
+
+### Performance
+
+- read the process table once per pane watcher check *(pane)* ([`666abb2`](https://github.com/MadAppGang/claudish/commit/666abb228238fce73adb1a24a0b297d1d06a25d6))
+
 ## [14.28.2] - 2026-11-18
 
 ### Bug Fixes
