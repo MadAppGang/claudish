@@ -1120,128 +1120,6 @@
           ]
         }
       },
-      "gpt-6-astra": {
-        "code_review": {
-          "basis": "owner_choice",
-          "effort": "xhigh",
-          "sendableOn": [
-            {
-              "encoding": "request_parameter",
-              "externalModelId": "gpt-6-astra",
-              "routeId": "openai",
-              "routeProfileId": "codex-subscription"
-            }
-          ]
-        },
-        "debugging": {
-          "basis": "vendor_guidance",
-          "effort": "high",
-          "sendableOn": [
-            {
-              "encoding": "request_parameter",
-              "externalModelId": "gpt-6-astra",
-              "routeId": "openai",
-              "routeProfileId": "codex-subscription"
-            }
-          ]
-        },
-        "frontend_ui": {
-          "basis": "owner_choice",
-          "effort": "xhigh",
-          "sendableOn": [
-            {
-              "encoding": "request_parameter",
-              "externalModelId": "gpt-6-astra",
-              "routeId": "openai",
-              "routeProfileId": "codex-subscription"
-            }
-          ]
-        },
-        "implementation": {
-          "basis": "benchmark_knee",
-          "effort": "xhigh",
-          "sendableOn": [
-            {
-              "encoding": "request_parameter",
-              "externalModelId": "gpt-6-astra",
-              "routeId": "openai",
-              "routeProfileId": "codex-subscription"
-            }
-          ]
-        },
-        "long_context": {
-          "basis": "benchmark_knee",
-          "effort": "low",
-          "sendableOn": [
-            {
-              "encoding": "request_parameter",
-              "externalModelId": "gpt-6-astra",
-              "routeId": "openai",
-              "routeProfileId": "codex-subscription"
-            }
-          ]
-        },
-        "planning": {
-          "basis": "benchmark_knee",
-          "effort": "max",
-          "sendableOn": [
-            {
-              "encoding": "request_parameter",
-              "externalModelId": "gpt-6-astra",
-              "routeId": "openai",
-              "routeProfileId": "codex-subscription"
-            }
-          ]
-        },
-        "quick_edit": {
-          "basis": "vendor_guidance",
-          "effort": "low",
-          "sendableOn": [
-            {
-              "encoding": "request_parameter",
-              "externalModelId": "gpt-6-astra",
-              "routeId": "openai",
-              "routeProfileId": "codex-subscription"
-            }
-          ]
-        },
-        "research": {
-          "basis": "benchmark_knee",
-          "effort": "xhigh",
-          "sendableOn": [
-            {
-              "encoding": "request_parameter",
-              "externalModelId": "gpt-6-astra",
-              "routeId": "openai",
-              "routeProfileId": "codex-subscription"
-            }
-          ]
-        },
-        "terminal_ops": {
-          "basis": "benchmark_knee",
-          "effort": "max",
-          "sendableOn": [
-            {
-              "encoding": "request_parameter",
-              "externalModelId": "gpt-6-astra",
-              "routeId": "openai",
-              "routeProfileId": "codex-subscription"
-            }
-          ]
-        },
-        "tool_automation": {
-          "basis": "benchmark_knee",
-          "effort": "xhigh",
-          "sendableOn": [
-            {
-              "encoding": "request_parameter",
-              "externalModelId": "gpt-6-astra",
-              "routeId": "openai",
-              "routeProfileId": "codex-subscription"
-            }
-          ]
-        }
-      },
       "gpt-6-luna": {
         "code_review": {
           "basis": "vendor_guidance",
@@ -1370,140 +1248,6 @@
             {
               "encoding": "request_parameter",
               "externalModelId": "gpt-6-luna",
-              "routeId": "openai",
-              "routeProfileId": "codex-subscription"
-            }
-          ]
-        }
-      },
-      "gpt-6.1-sol": {
-        "code_review": {
-          "basis": "vendor_guidance",
-          "effort": "xhigh",
-          "sendableOn": [
-            {
-              "encoding": "request_parameter",
-              "externalModelId": "gpt-6.1-sol",
-              "routeId": "openai",
-              "routeProfileId": "codex-subscription"
-            }
-          ]
-        },
-        "debugging": {
-          "basis": "vendor_guidance",
-          "effort": "high",
-          "sendableOn": [
-            {
-              "encoding": "request_parameter",
-              "externalModelId": "gpt-6.1-sol",
-              "routeId": "openai",
-              "routeProfileId": "codex-subscription"
-            }
-          ]
-        },
-        "default": {
-          "basis": "vendor_default",
-          "effort": "medium",
-          "sendableOn": [
-            {
-              "encoding": "request_parameter",
-              "externalModelId": "gpt-6.1-sol",
-              "routeId": "openai",
-              "routeProfileId": "codex-subscription"
-            }
-          ]
-        },
-        "frontend_ui": {
-          "basis": "owner_choice",
-          "effort": "high",
-          "sendableOn": [
-            {
-              "encoding": "request_parameter",
-              "externalModelId": "gpt-6.1-sol",
-              "routeId": "openai",
-              "routeProfileId": "codex-subscription"
-            }
-          ]
-        },
-        "implementation": {
-          "basis": "benchmark_knee",
-          "effort": "max",
-          "sendableOn": [
-            {
-              "encoding": "request_parameter",
-              "externalModelId": "gpt-6.1-sol",
-              "routeId": "openai",
-              "routeProfileId": "codex-subscription"
-            }
-          ]
-        },
-        "long_context": {
-          "basis": "benchmark_knee",
-          "effort": "low",
-          "sendableOn": [
-            {
-              "encoding": "request_parameter",
-              "externalModelId": "gpt-6.1-sol",
-              "routeId": "openai",
-              "routeProfileId": "codex-subscription"
-            }
-          ]
-        },
-        "planning": {
-          "basis": "benchmark_knee",
-          "effort": "max",
-          "sendableOn": [
-            {
-              "encoding": "request_parameter",
-              "externalModelId": "gpt-6.1-sol",
-              "routeId": "openai",
-              "routeProfileId": "codex-subscription"
-            }
-          ]
-        },
-        "quick_edit": {
-          "basis": "vendor_guidance",
-          "effort": "low",
-          "sendableOn": [
-            {
-              "encoding": "request_parameter",
-              "externalModelId": "gpt-6.1-sol",
-              "routeId": "openai",
-              "routeProfileId": "codex-subscription"
-            }
-          ]
-        },
-        "research": {
-          "basis": "benchmark_knee",
-          "effort": "max",
-          "sendableOn": [
-            {
-              "encoding": "request_parameter",
-              "externalModelId": "gpt-6.1-sol",
-              "routeId": "openai",
-              "routeProfileId": "codex-subscription"
-            }
-          ]
-        },
-        "terminal_ops": {
-          "basis": "benchmark_knee",
-          "effort": "xhigh",
-          "sendableOn": [
-            {
-              "encoding": "request_parameter",
-              "externalModelId": "gpt-6.1-sol",
-              "routeId": "openai",
-              "routeProfileId": "codex-subscription"
-            }
-          ]
-        },
-        "tool_automation": {
-          "basis": "benchmark_knee",
-          "effort": "high",
-          "sendableOn": [
-            {
-              "encoding": "request_parameter",
-              "externalModelId": "gpt-6.1-sol",
               "routeId": "openai",
               "routeProfileId": "codex-subscription"
             }
@@ -2351,7 +2095,7 @@
         }
       }
     },
-    "fetchedAt": "2026-11-18T00:24:40.501Z",
+    "fetchedAt": "2026-11-19T03:05:24.302Z",
     "format": 1,
     "recommendations": {
       "contractVersion": 3,
@@ -2361,7 +2105,7 @@
           "tier": "flagship"
         },
         {
-          "modelId": "gpt-6.1-sol",
+          "modelId": "gpt-6.2-sol",
           "tier": "flagship"
         },
         {
@@ -2453,15 +2197,15 @@
           "tier": "luxury"
         },
         {
-          "modelId": "gpt-6-astra",
+          "modelId": "gpt-6.2-astra",
           "tier": "luxury"
         }
       ],
-      "generationId": "g-20261117161737898-2452723c"
+      "generationId": "g-20261118161838470-f3b90f5e"
     },
     "source": "https://us-central1-claudish-6da10.cloudfunctions.net"
   },
-  "catalogGenerationId": "g-20261117161737898-2452723c",
+  "catalogGenerationId": "g-20261118161838470-f3b90f5e",
   "entries": [
     {
       "aggregators": [
@@ -3035,9 +2779,9 @@
       ],
       "aliases": [
         "anthropic/claude-opus-5.5",
-        "claude-opus-5-5-medium",
-        "claude-opus-5-5-high",
         "claude-opus-5-5-low",
+        "claude-opus-5-5-high",
+        "claude-opus-5-5-medium",
         "claude-opus-5-5-max",
         "claude-opus-5-5-xhigh"
       ],
@@ -3228,9 +2972,9 @@
       "aliases": [
         "anthropic/claude-sonnet-5.5",
         "claude-sonnet-5.5",
-        "claude-sonnet-5-5-high",
         "claude-sonnet-5-5-medium",
         "claude-sonnet-5-5-low",
+        "claude-sonnet-5-5-high",
         "claude-sonnet-5-5-max",
         "claude-sonnet-5-5-xhigh"
       ],
@@ -3493,8 +3237,8 @@
       ],
       "aliases": [
         "google/gemini-4-argon",
-        "gemini-4-argon-high",
         "gemini-4-argon-medium",
+        "gemini-4-argon-high",
         "gemini-4-argon-low"
       ],
       "contextWindow": 1048576,
@@ -3648,9 +3392,9 @@
       ],
       "aliases": [
         "google/gemini-4-carbon",
-        "gemini-4-carbon-high",
+        "gemini-4-carbon-low",
         "gemini-4-carbon-medium",
-        "gemini-4-carbon-low"
+        "gemini-4-carbon-high"
       ],
       "contextWindow": 1048576,
       "contractVersion": 3,
@@ -3803,10 +3547,10 @@
       ],
       "aliases": [
         "google/gemini-4-hydrogen",
-        "gemini-4-hydrogen-medium",
-        "gemini-4-hydrogen-low",
+        "gemini-4-hydrogen-high",
         "gemini-4-hydrogen-xhigh",
-        "gemini-4-hydrogen-high"
+        "gemini-4-hydrogen-low",
+        "gemini-4-hydrogen-medium"
       ],
       "contextWindow": 1048576,
       "contractVersion": 3,
@@ -4207,7 +3951,6 @@
         "z-ai/glm-5.3-flash",
         "zai-org/GLM-5.3-Flash",
         "accounts/fireworks/models/glm-5p3-flash",
-        "glm-5.3-flash-free",
         "glm-5.3-flash-el",
         "GLM-5.3-Flash",
         "glm-5-3-flash-high",
@@ -4260,261 +4003,6 @@
       "supportsVision": true,
       "tokenParam": "max_tokens",
       "videoInput": true,
-      "videoOutput": false
-    },
-    {
-      "aggregators": [
-        {
-          "externalModelId": "gpt-6-astra",
-          "reasoning": {
-            "mode": {
-              "status": "rejected"
-            },
-            "request": {
-              "status": "unknown"
-            }
-          },
-          "route": {
-            "routeId": "openai",
-            "routeProfileId": "codex-subscription"
-          },
-          "routeStatus": "mapped",
-          "sourceProviderId": "openai-codex",
-          "wire": {
-            "api": "responses",
-            "evidence": [],
-            "reasoning": {
-              "disable": {
-                "status": "not_applicable"
-              },
-              "effort": {
-                "default": "medium",
-                "path": "/reasoning/effort",
-                "values": {
-                  "high": "high",
-                  "low": "low",
-                  "max": "max",
-                  "medium": "medium",
-                  "xhigh": "xhigh"
-                }
-              },
-              "enable": {
-                "status": "not_applicable"
-              },
-              "mode": {
-                "path": "/reasoning/mode",
-                "status": "rejected"
-              },
-              "status": "supported"
-            },
-            "speed": {
-              "access": "open",
-              "default": "standard",
-              "echo": {
-                "status": "not_applicable"
-              },
-              "headers": [],
-              "path": "/service_tier",
-              "status": "supported",
-              "values": {
-                "fast": "priority"
-              }
-            },
-            "status": "known",
-            "tokenParam": "max_output_tokens",
-            "toolsWithReasoning": "ok"
-          }
-        },
-        {
-          "externalModelId": "gpt-6-astra",
-          "pricing": {
-            "cachedRead": 1,
-            "cachedWrite": 12.5,
-            "input": 10,
-            "output": 50,
-            "type": "flat"
-          },
-          "reasoning": {
-            "mode": {
-              "default": "standard",
-              "status": "supported",
-              "values": [
-                "standard",
-                "pro"
-              ]
-            },
-            "request": {
-              "api": "responses",
-              "effort": {
-                "path": "/reasoning/effort",
-                "values": {
-                  "high": "high",
-                  "low": "low",
-                  "max": "max",
-                  "medium": "medium",
-                  "xhigh": "xhigh"
-                }
-              },
-              "status": "supported"
-            }
-          },
-          "route": {
-            "routeId": "openai",
-            "routeProfileId": "direct-api"
-          },
-          "routeStatus": "mapped",
-          "sourceProviderId": "openai",
-          "wire": {
-            "api": "responses",
-            "evidence": [],
-            "reasoning": {
-              "disable": {
-                "status": "not_applicable"
-              },
-              "effort": {
-                "default": {
-                  "status": "unknown"
-                },
-                "path": "/reasoning/effort",
-                "values": {
-                  "high": "high",
-                  "low": "low",
-                  "max": "max",
-                  "medium": "medium",
-                  "xhigh": "xhigh"
-                }
-              },
-              "enable": {
-                "status": "not_applicable"
-              },
-              "mode": {
-                "access": "open",
-                "default": "standard",
-                "echo": "/reasoning/mode",
-                "headers": [],
-                "path": "/reasoning/mode",
-                "status": "supported",
-                "values": {
-                  "pro": "pro",
-                  "standard": "standard"
-                }
-              },
-              "status": "supported"
-            },
-            "speed": {
-              "access": "open",
-              "default": "standard",
-              "echo": "/service_tier",
-              "headers": [],
-              "path": "/service_tier",
-              "status": "supported",
-              "values": {
-                "fast": "priority",
-                "flex": "flex",
-                "standard": "default"
-              }
-            },
-            "status": "known",
-            "tokenParam": "max_output_tokens",
-            "toolsWithReasoning": "ok"
-          }
-        }
-      ],
-      "aliases": [
-        "openai/gpt-6-astra",
-        "gpt-6-astra-high",
-        "gpt-6-astra-low",
-        "gpt-6-astra-max",
-        "gpt-6-astra-medium",
-        "gpt-6-astra-xhigh"
-      ],
-      "contextWindow": 1050000,
-      "contractVersion": 3,
-      "displayName": "GPT-6 Astra",
-      "endpoints": {
-        "openai": {
-          "api": "responses",
-          "toolsWithReasoning": "ok"
-        }
-      },
-      "inputModalities": [
-        "image",
-        "text"
-      ],
-      "maxOutputTokens": 128000,
-      "modelId": "gpt-6-astra",
-      "outputModalities": [
-        "text"
-      ],
-      "provider": "openai",
-      "reasoning": {
-        "control": "effort",
-        "defaultEffort": "medium",
-        "efforts": [
-          "max",
-          "xhigh",
-          "high",
-          "medium",
-          "low"
-        ],
-        "mandatory": true,
-        "supported": true
-      },
-      "releaseDate": "2026-09-03",
-      "status": "active",
-      "subscriptionPlanIds": [
-        "cognition-devin",
-        "llm-gateway-devpass",
-        "openai-codex"
-      ],
-      "supportsTools": true,
-      "supportsVision": true,
-      "tokenParam": "max_output_tokens",
-      "videoInput": false,
-      "videoOutput": false
-    },
-    {
-      "aggregators": [],
-      "aliases": [
-        "openai/gpt-6-astra-pro"
-      ],
-      "contextWindow": 1050000,
-      "contractVersion": 3,
-      "displayName": "GPT-6 Astra Pro",
-      "inputModalities": [
-        "file",
-        "image",
-        "text"
-      ],
-      "modelId": "gpt-6-astra-pro",
-      "outputModalities": [
-        "text"
-      ],
-      "provider": "openai",
-      "reasoning": {
-        "control": "effort",
-        "defaultEffort": "medium",
-        "efforts": [
-          "max",
-          "xhigh",
-          "high",
-          "medium",
-          "low"
-        ],
-        "mandatory": true,
-        "supported": true
-      },
-      "releaseDate": "2026-09-03",
-      "routeVariant": {
-        "baseModelId": "gpt-6-astra",
-        "kind": "provider-preset",
-        "preset": "reasoning.mode=pro",
-        "provider": "openrouter"
-      },
-      "status": "active",
-      "supportsTools": true,
-      "supportsVision": true,
-      "videoInput": false,
       "videoOutput": false
     },
     {
@@ -4595,12 +4083,7 @@
           },
           "reasoning": {
             "mode": {
-              "default": "standard",
-              "status": "supported",
-              "values": [
-                "standard",
-                "pro"
-              ]
+              "status": "unknown"
             },
             "request": {
               "api": "responses",
@@ -4657,31 +4140,12 @@
                 "status": "not_applicable"
               },
               "mode": {
-                "access": "open",
-                "default": "standard",
-                "echo": "/reasoning/mode",
-                "headers": [],
-                "path": "/reasoning/mode",
-                "status": "supported",
-                "values": {
-                  "pro": "pro",
-                  "standard": "standard"
-                }
+                "status": "unknown"
               },
               "status": "supported"
             },
             "speed": {
-              "access": "open",
-              "default": "standard",
-              "echo": "/service_tier",
-              "headers": [],
-              "path": "/service_tier",
-              "status": "supported",
-              "values": {
-                "fast": "priority",
-                "flex": "flex",
-                "standard": "default"
-              }
+              "status": "unknown"
             },
             "status": "known",
             "tokenParam": "max_output_tokens",
@@ -4793,250 +4257,6 @@
     {
       "aggregators": [
         {
-          "externalModelId": "gpt-6.1-sol",
-          "reasoning": {
-            "mode": {
-              "status": "rejected"
-            },
-            "request": {
-              "status": "unknown"
-            }
-          },
-          "route": {
-            "routeId": "openai",
-            "routeProfileId": "codex-subscription"
-          },
-          "routeStatus": "mapped",
-          "sourceProviderId": "openai-codex",
-          "wire": {
-            "api": "responses",
-            "evidence": [],
-            "reasoning": {
-              "disable": {
-                "status": "not_applicable"
-              },
-              "effort": {
-                "default": "low",
-                "path": "/reasoning/effort",
-                "values": {
-                  "high": "high",
-                  "low": "low",
-                  "max": "max",
-                  "medium": "medium",
-                  "xhigh": "xhigh"
-                }
-              },
-              "enable": {
-                "status": "not_applicable"
-              },
-              "mode": {
-                "path": "/reasoning/mode",
-                "status": "rejected"
-              },
-              "status": "supported"
-            },
-            "speed": {
-              "status": "unknown"
-            },
-            "status": "known",
-            "tokenParam": "max_output_tokens",
-            "toolsWithReasoning": "ok"
-          }
-        },
-        {
-          "externalModelId": "gpt-6.1-sol",
-          "pricing": {
-            "cachedRead": 0.1,
-            "cachedWrite": 2.5,
-            "input": 2,
-            "output": 10,
-            "type": "flat"
-          },
-          "reasoning": {
-            "mode": {
-              "default": "standard",
-              "status": "supported",
-              "values": [
-                "standard",
-                "pro"
-              ]
-            },
-            "request": {
-              "api": "responses",
-              "effort": {
-                "default": "medium",
-                "path": "/reasoning/effort",
-                "values": {
-                  "high": "high",
-                  "low": "low",
-                  "max": "max",
-                  "medium": "medium",
-                  "xhigh": "xhigh"
-                }
-              },
-              "status": "supported"
-            }
-          },
-          "route": {
-            "routeId": "openai",
-            "routeProfileId": "direct-api"
-          },
-          "routeStatus": "mapped",
-          "sourceProviderId": "openai",
-          "wire": {
-            "api": "responses",
-            "evidence": [],
-            "reasoning": {
-              "disable": {
-                "status": "not_applicable"
-              },
-              "effort": {
-                "default": "medium",
-                "path": "/reasoning/effort",
-                "values": {
-                  "high": "high",
-                  "low": "low",
-                  "max": "max",
-                  "medium": "medium",
-                  "xhigh": "xhigh"
-                }
-              },
-              "enable": {
-                "status": "not_applicable"
-              },
-              "mode": {
-                "access": "open",
-                "default": "standard",
-                "echo": "/reasoning/mode",
-                "headers": [],
-                "path": "/reasoning/mode",
-                "status": "supported",
-                "values": {
-                  "pro": "pro",
-                  "standard": "standard"
-                }
-              },
-              "status": "supported"
-            },
-            "speed": {
-              "access": "open",
-              "default": "standard",
-              "echo": "/service_tier",
-              "headers": [],
-              "path": "/service_tier",
-              "status": "supported",
-              "values": {
-                "fast": "priority",
-                "flex": "flex",
-                "standard": "default"
-              }
-            },
-            "status": "known",
-            "tokenParam": "max_output_tokens",
-            "toolsWithReasoning": "ok"
-          }
-        }
-      ],
-      "aliases": [
-        "openai/gpt-6.1-sol",
-        "gpt-6-1-sol-high",
-        "gpt-6-1-sol-low",
-        "gpt-6-1-sol-max",
-        "gpt-6-1-sol-medium",
-        "gpt-6-1-sol-xhigh"
-      ],
-      "contextWindow": 1050000,
-      "contractVersion": 3,
-      "displayName": "GPT-6.1 Sol",
-      "endpoints": {
-        "openai": {
-          "api": "responses",
-          "toolsWithReasoning": "ok"
-        }
-      },
-      "inputModalities": [
-        "image",
-        "text"
-      ],
-      "maxOutputTokens": 128000,
-      "modelId": "gpt-6.1-sol",
-      "outputModalities": [
-        "text"
-      ],
-      "provider": "openai",
-      "reasoning": {
-        "control": "effort",
-        "defaultEffort": "medium",
-        "efforts": [
-          "max",
-          "xhigh",
-          "high",
-          "medium",
-          "low"
-        ],
-        "mandatory": true,
-        "supported": true
-      },
-      "releaseDate": "2026-09-29",
-      "status": "active",
-      "subscriptionPlanIds": [
-        "cognition-devin",
-        "llm-gateway-devpass",
-        "openai-codex"
-      ],
-      "supportsTools": true,
-      "supportsVision": true,
-      "tokenParam": "max_output_tokens",
-      "videoInput": false,
-      "videoOutput": false
-    },
-    {
-      "aggregators": [],
-      "aliases": [
-        "openai/gpt-6.1-sol-pro"
-      ],
-      "contextWindow": 1050000,
-      "contractVersion": 3,
-      "displayName": "GPT-6.1 Sol Pro",
-      "inputModalities": [
-        "file",
-        "image",
-        "text"
-      ],
-      "modelId": "gpt-6.1-sol-pro",
-      "outputModalities": [
-        "text"
-      ],
-      "provider": "openai",
-      "reasoning": {
-        "control": "effort",
-        "defaultEffort": "medium",
-        "efforts": [
-          "max",
-          "xhigh",
-          "high",
-          "medium",
-          "low"
-        ],
-        "mandatory": true,
-        "supported": true
-      },
-      "releaseDate": "2026-09-29",
-      "routeVariant": {
-        "baseModelId": "gpt-6.1-sol",
-        "kind": "provider-preset",
-        "preset": "reasoning.mode=pro",
-        "provider": "openrouter"
-      },
-      "status": "active",
-      "supportsTools": true,
-      "supportsVision": true,
-      "videoInput": false,
-      "videoOutput": false
-    },
-    {
-      "aggregators": [
-        {
           "externalModelId": "gpt-6.1-terra",
           "reasoning": {
             "mode": {
@@ -5112,12 +4332,7 @@
           },
           "reasoning": {
             "mode": {
-              "default": "standard",
-              "status": "supported",
-              "values": [
-                "standard",
-                "pro"
-              ]
+              "status": "unknown"
             },
             "request": {
               "api": "responses",
@@ -5174,16 +4389,7 @@
                 "status": "not_applicable"
               },
               "mode": {
-                "access": "open",
-                "default": "standard",
-                "echo": "/reasoning/mode",
-                "headers": [],
-                "path": "/reasoning/mode",
-                "status": "supported",
-                "values": {
-                  "pro": "pro",
-                  "standard": "standard"
-                }
+                "status": "unknown"
               },
               "status": "supported"
             },
@@ -5284,6 +4490,322 @@
       "releaseDate": "2026-10-26",
       "routeVariant": {
         "baseModelId": "gpt-6.1-terra",
+        "kind": "provider-preset",
+        "preset": "reasoning.mode=pro",
+        "provider": "openrouter"
+      },
+      "status": "active",
+      "supportsTools": true,
+      "supportsVision": true,
+      "videoInput": false,
+      "videoOutput": false
+    },
+    {
+      "aggregators": [
+        {
+          "externalModelId": "gpt-6.2-astra",
+          "reasoning": {
+            "request": {
+              "status": "unknown"
+            }
+          },
+          "route": {
+            "routeId": "openai",
+            "routeProfileId": "codex-subscription"
+          },
+          "routeStatus": "mapped",
+          "sourceProviderId": "openai-codex",
+          "wire": {
+            "api": "responses",
+            "evidence": [],
+            "reasoning": {
+              "status": "unknown"
+            },
+            "speed": {
+              "status": "unknown"
+            },
+            "status": "known",
+            "tokenParam": {
+              "status": "unknown"
+            },
+            "toolsWithReasoning": {
+              "status": "unknown"
+            }
+          }
+        },
+        {
+          "externalModelId": "gpt-6.2-astra",
+          "pricing": {
+            "cachedRead": 0.4,
+            "cachedWrite": 10,
+            "input": 8,
+            "output": 40,
+            "type": "flat"
+          },
+          "reasoning": {
+            "request": {
+              "status": "unknown"
+            }
+          },
+          "route": {
+            "routeId": "openai",
+            "routeProfileId": "direct-api"
+          },
+          "routeStatus": "mapped",
+          "sourceProviderId": "openai",
+          "wire": {
+            "api": "responses",
+            "evidence": [],
+            "reasoning": {
+              "status": "unknown"
+            },
+            "speed": {
+              "status": "unknown"
+            },
+            "status": "known",
+            "tokenParam": "max_output_tokens",
+            "toolsWithReasoning": {
+              "status": "unknown"
+            }
+          }
+        }
+      ],
+      "aliases": [
+        "openai/gpt-6.2-astra"
+      ],
+      "contextWindow": 1050000,
+      "contractVersion": 3,
+      "displayName": "GPT-6.2 Astra",
+      "endpoints": {
+        "openai": {
+          "api": "responses"
+        }
+      },
+      "inputModalities": [
+        "image",
+        "text"
+      ],
+      "maxOutputTokens": 128000,
+      "modelId": "gpt-6.2-astra",
+      "outputModalities": [
+        "text"
+      ],
+      "provider": "openai",
+      "reasoning": {
+        "control": "effort",
+        "defaultEffort": "medium",
+        "efforts": [
+          "max",
+          "xhigh",
+          "high",
+          "medium",
+          "low"
+        ],
+        "mandatory": true,
+        "supported": true
+      },
+      "status": "active",
+      "subscriptionPlanIds": [
+        "llm-gateway-devpass",
+        "openai-codex"
+      ],
+      "supportsTools": true,
+      "supportsVision": true,
+      "tokenParam": "max_output_tokens",
+      "videoInput": false,
+      "videoOutput": false
+    },
+    {
+      "aggregators": [],
+      "aliases": [
+        "openai/gpt-6.2-astra-pro"
+      ],
+      "contextWindow": 1050000,
+      "contractVersion": 3,
+      "displayName": "GPT-6.2 Astra Pro",
+      "inputModalities": [
+        "file",
+        "image",
+        "text"
+      ],
+      "modelId": "gpt-6.2-astra-pro",
+      "outputModalities": [
+        "text"
+      ],
+      "provider": "openai",
+      "reasoning": {
+        "control": "effort",
+        "defaultEffort": "medium",
+        "efforts": [
+          "max",
+          "xhigh",
+          "high",
+          "medium",
+          "low"
+        ],
+        "mandatory": true,
+        "supported": true
+      },
+      "routeVariant": {
+        "baseModelId": "gpt-6.2-astra",
+        "kind": "provider-preset",
+        "preset": "reasoning.mode=pro",
+        "provider": "openrouter"
+      },
+      "status": "active",
+      "supportsTools": true,
+      "supportsVision": true,
+      "videoInput": false,
+      "videoOutput": false
+    },
+    {
+      "aggregators": [
+        {
+          "externalModelId": "gpt-6.2-sol",
+          "reasoning": {
+            "request": {
+              "status": "unknown"
+            }
+          },
+          "route": {
+            "routeId": "openai",
+            "routeProfileId": "codex-subscription"
+          },
+          "routeStatus": "mapped",
+          "sourceProviderId": "openai-codex",
+          "wire": {
+            "api": "responses",
+            "evidence": [],
+            "reasoning": {
+              "status": "unknown"
+            },
+            "speed": {
+              "status": "unknown"
+            },
+            "status": "known",
+            "tokenParam": {
+              "status": "unknown"
+            },
+            "toolsWithReasoning": {
+              "status": "unknown"
+            }
+          }
+        },
+        {
+          "externalModelId": "gpt-6.2-sol",
+          "pricing": {
+            "cachedRead": 0.1,
+            "cachedWrite": 2.5,
+            "input": 2,
+            "output": 10,
+            "type": "flat"
+          },
+          "reasoning": {
+            "request": {
+              "status": "unknown"
+            }
+          },
+          "route": {
+            "routeId": "openai",
+            "routeProfileId": "direct-api"
+          },
+          "routeStatus": "mapped",
+          "sourceProviderId": "openai",
+          "wire": {
+            "api": "responses",
+            "evidence": [],
+            "reasoning": {
+              "status": "unknown"
+            },
+            "speed": {
+              "status": "unknown"
+            },
+            "status": "known",
+            "tokenParam": "max_output_tokens",
+            "toolsWithReasoning": {
+              "status": "unknown"
+            }
+          }
+        }
+      ],
+      "aliases": [
+        "openai/gpt-6.2-sol"
+      ],
+      "contextWindow": 1050000,
+      "contractVersion": 3,
+      "displayName": "GPT-6.2 Sol",
+      "endpoints": {
+        "openai": {
+          "api": "responses"
+        }
+      },
+      "inputModalities": [
+        "image",
+        "text"
+      ],
+      "maxOutputTokens": 128000,
+      "modelId": "gpt-6.2-sol",
+      "outputModalities": [
+        "text"
+      ],
+      "provider": "openai",
+      "reasoning": {
+        "control": "effort",
+        "defaultEffort": "medium",
+        "efforts": [
+          "max",
+          "xhigh",
+          "high",
+          "medium",
+          "low"
+        ],
+        "mandatory": true,
+        "supported": true
+      },
+      "status": "active",
+      "subscriptionPlanIds": [
+        "llm-gateway-devpass",
+        "openai-codex"
+      ],
+      "supportsTools": true,
+      "supportsVision": true,
+      "tokenParam": "max_output_tokens",
+      "videoInput": false,
+      "videoOutput": false
+    },
+    {
+      "aggregators": [],
+      "aliases": [
+        "openai/gpt-6.2-sol-pro"
+      ],
+      "contextWindow": 1050000,
+      "contractVersion": 3,
+      "displayName": "GPT-6.2 Sol Pro",
+      "inputModalities": [
+        "file",
+        "image",
+        "text"
+      ],
+      "modelId": "gpt-6.2-sol-pro",
+      "outputModalities": [
+        "text"
+      ],
+      "provider": "openai",
+      "reasoning": {
+        "control": "effort",
+        "defaultEffort": "medium",
+        "efforts": [
+          "max",
+          "xhigh",
+          "high",
+          "medium",
+          "low"
+        ],
+        "mandatory": true,
+        "supported": true
+      },
+      "routeVariant": {
+        "baseModelId": "gpt-6.2-sol",
         "kind": "provider-preset",
         "preset": "reasoning.mode=pro",
         "provider": "openrouter"
@@ -6406,7 +5928,7 @@
       ],
       "provider": "qwen",
       "reasoning": {
-        "control": "effort",
+        "control": "unknown",
         "defaultEffort": "xhigh",
         "efforts": [
           "xhigh",
@@ -6478,7 +6000,7 @@
       "supportsVision": true
     }
   ],
-  "lastUpdated": "2026-11-17T16:17:37.898Z",
+  "lastUpdated": "2026-11-18T16:18:38.470Z",
   "models": [],
   "plans": [
     {
@@ -6957,56 +6479,6 @@
           "sourceText": "GLM-5.3 Max"
         },
         {
-          "externalModelId": "gpt-6-1-sol-high",
-          "kind": "provider_model",
-          "provider": "cognition",
-          "resolution": {
-            "modelId": "gpt-6.1-sol",
-            "status": "mapped"
-          },
-          "sourceText": "GPT-6.1 Sol High Thinking"
-        },
-        {
-          "externalModelId": "gpt-6-1-sol-low",
-          "kind": "provider_model",
-          "provider": "cognition",
-          "resolution": {
-            "modelId": "gpt-6.1-sol",
-            "status": "mapped"
-          },
-          "sourceText": "GPT-6.1 Sol Low Thinking"
-        },
-        {
-          "externalModelId": "gpt-6-1-sol-max",
-          "kind": "provider_model",
-          "provider": "cognition",
-          "resolution": {
-            "modelId": "gpt-6.1-sol",
-            "status": "mapped"
-          },
-          "sourceText": "GPT-6.1 Sol Max Thinking"
-        },
-        {
-          "externalModelId": "gpt-6-1-sol-medium",
-          "kind": "provider_model",
-          "provider": "cognition",
-          "resolution": {
-            "modelId": "gpt-6.1-sol",
-            "status": "mapped"
-          },
-          "sourceText": "GPT-6.1 Sol Medium Thinking"
-        },
-        {
-          "externalModelId": "gpt-6-1-sol-xhigh",
-          "kind": "provider_model",
-          "provider": "cognition",
-          "resolution": {
-            "modelId": "gpt-6.1-sol",
-            "status": "mapped"
-          },
-          "sourceText": "GPT-6.1 Sol XHigh Thinking"
-        },
-        {
           "externalModelId": "gpt-6-1-terra-high",
           "kind": "provider_model",
           "provider": "cognition",
@@ -7055,56 +6527,6 @@
             "status": "mapped"
           },
           "sourceText": "GPT-6.1 Terra XHigh Thinking"
-        },
-        {
-          "externalModelId": "gpt-6-astra-high",
-          "kind": "provider_model",
-          "provider": "cognition",
-          "resolution": {
-            "modelId": "gpt-6-astra",
-            "status": "mapped"
-          },
-          "sourceText": "GPT-6 Astra High Thinking"
-        },
-        {
-          "externalModelId": "gpt-6-astra-low",
-          "kind": "provider_model",
-          "provider": "cognition",
-          "resolution": {
-            "modelId": "gpt-6-astra",
-            "status": "mapped"
-          },
-          "sourceText": "GPT-6 Astra Low Thinking"
-        },
-        {
-          "externalModelId": "gpt-6-astra-max",
-          "kind": "provider_model",
-          "provider": "cognition",
-          "resolution": {
-            "modelId": "gpt-6-astra",
-            "status": "mapped"
-          },
-          "sourceText": "GPT-6 Astra Max Thinking"
-        },
-        {
-          "externalModelId": "gpt-6-astra-medium",
-          "kind": "provider_model",
-          "provider": "cognition",
-          "resolution": {
-            "modelId": "gpt-6-astra",
-            "status": "mapped"
-          },
-          "sourceText": "GPT-6 Astra Medium Thinking"
-        },
-        {
-          "externalModelId": "gpt-6-astra-xhigh",
-          "kind": "provider_model",
-          "provider": "cognition",
-          "resolution": {
-            "modelId": "gpt-6-astra",
-            "status": "mapped"
-          },
-          "sourceText": "GPT-6 Astra XHigh Thinking"
         },
         {
           "externalModelId": "gpt-6-luna-high",
@@ -7229,24 +6651,44 @@
       "id": "google-antigravity",
       "inclusions": [
         {
-          "externalModelId": "gemini-4-hydrogen-medium",
+          "externalModelId": "gemini-4-hydrogen-high",
           "kind": "provider_model",
           "provider": "antigravity",
           "resolution": {
             "modelId": "gemini-4-hydrogen",
             "status": "mapped"
           },
-          "sourceText": "gemini-4-hydrogen-medium"
+          "sourceText": "gemini-4-hydrogen-high"
         },
         {
-          "externalModelId": "claude-opus-5-5-medium",
+          "externalModelId": "gemini-4-hydrogen-xhigh",
+          "kind": "provider_model",
+          "provider": "antigravity",
+          "resolution": {
+            "modelId": "gemini-4-hydrogen",
+            "status": "mapped"
+          },
+          "sourceText": "gemini-4-hydrogen-xhigh"
+        },
+        {
+          "externalModelId": "claude-opus-5-5-low",
           "kind": "provider_model",
           "provider": "antigravity",
           "resolution": {
             "modelId": "claude-opus-5-5",
             "status": "mapped"
           },
-          "sourceText": "claude-opus-5-5-medium"
+          "sourceText": "claude-opus-5-5-low"
+        },
+        {
+          "externalModelId": "gemini-4-argon-medium",
+          "kind": "provider_model",
+          "provider": "antigravity",
+          "resolution": {
+            "modelId": "gemini-4-argon",
+            "status": "mapped"
+          },
+          "sourceText": "gemini-4-argon-medium"
         },
         {
           "externalModelId": "gemini-4-hydrogen-low",
@@ -7259,6 +6701,56 @@
           "sourceText": "gemini-4-hydrogen-low"
         },
         {
+          "externalModelId": "claude-sonnet-5-5-medium",
+          "kind": "provider_model",
+          "provider": "antigravity",
+          "resolution": {
+            "modelId": "claude-sonnet-5-5",
+            "status": "mapped"
+          },
+          "sourceText": "claude-sonnet-5-5-medium"
+        },
+        {
+          "externalModelId": "gemini-4-hydrogen-medium",
+          "kind": "provider_model",
+          "provider": "antigravity",
+          "resolution": {
+            "modelId": "gemini-4-hydrogen",
+            "status": "mapped"
+          },
+          "sourceText": "gemini-4-hydrogen-medium"
+        },
+        {
+          "externalModelId": "gemini-4-carbon-low",
+          "kind": "provider_model",
+          "provider": "antigravity",
+          "resolution": {
+            "modelId": "gemini-4-carbon",
+            "status": "mapped"
+          },
+          "sourceText": "gemini-4-carbon-low"
+        },
+        {
+          "externalModelId": "gemini-4-carbon-medium",
+          "kind": "provider_model",
+          "provider": "antigravity",
+          "resolution": {
+            "modelId": "gemini-4-carbon",
+            "status": "mapped"
+          },
+          "sourceText": "gemini-4-carbon-medium"
+        },
+        {
+          "externalModelId": "claude-sonnet-5-5-low",
+          "kind": "provider_model",
+          "provider": "antigravity",
+          "resolution": {
+            "modelId": "claude-sonnet-5-5",
+            "status": "mapped"
+          },
+          "sourceText": "claude-sonnet-5-5-low"
+        },
+        {
           "externalModelId": "gemini-4-argon-high",
           "kind": "provider_model",
           "provider": "antigravity",
@@ -7267,6 +6759,26 @@
             "status": "mapped"
           },
           "sourceText": "gemini-4-argon-high"
+        },
+        {
+          "externalModelId": "gemini-4-carbon-high",
+          "kind": "provider_model",
+          "provider": "antigravity",
+          "resolution": {
+            "modelId": "gemini-4-carbon",
+            "status": "mapped"
+          },
+          "sourceText": "gemini-4-carbon-high"
+        },
+        {
+          "externalModelId": "gemini-4-argon-low",
+          "kind": "provider_model",
+          "provider": "antigravity",
+          "resolution": {
+            "modelId": "gemini-4-argon",
+            "status": "mapped"
+          },
+          "sourceText": "gemini-4-argon-low"
         },
         {
           "externalModelId": "claude-opus-5-5-high",
@@ -7289,104 +6801,14 @@
           "sourceText": "claude-sonnet-5-5-high"
         },
         {
-          "externalModelId": "gemini-4-carbon-high",
-          "kind": "provider_model",
-          "provider": "antigravity",
-          "resolution": {
-            "modelId": "gemini-4-carbon",
-            "status": "mapped"
-          },
-          "sourceText": "gemini-4-carbon-high"
-        },
-        {
-          "externalModelId": "gemini-4-argon-medium",
-          "kind": "provider_model",
-          "provider": "antigravity",
-          "resolution": {
-            "modelId": "gemini-4-argon",
-            "status": "mapped"
-          },
-          "sourceText": "gemini-4-argon-medium"
-        },
-        {
-          "externalModelId": "claude-sonnet-5-5-medium",
-          "kind": "provider_model",
-          "provider": "antigravity",
-          "resolution": {
-            "modelId": "claude-sonnet-5-5",
-            "status": "mapped"
-          },
-          "sourceText": "claude-sonnet-5-5-medium"
-        },
-        {
-          "externalModelId": "claude-sonnet-5-5-low",
-          "kind": "provider_model",
-          "provider": "antigravity",
-          "resolution": {
-            "modelId": "claude-sonnet-5-5",
-            "status": "mapped"
-          },
-          "sourceText": "claude-sonnet-5-5-low"
-        },
-        {
-          "externalModelId": "gemini-4-hydrogen-xhigh",
-          "kind": "provider_model",
-          "provider": "antigravity",
-          "resolution": {
-            "modelId": "gemini-4-hydrogen",
-            "status": "mapped"
-          },
-          "sourceText": "gemini-4-hydrogen-xhigh"
-        },
-        {
-          "externalModelId": "gemini-4-carbon-medium",
-          "kind": "provider_model",
-          "provider": "antigravity",
-          "resolution": {
-            "modelId": "gemini-4-carbon",
-            "status": "mapped"
-          },
-          "sourceText": "gemini-4-carbon-medium"
-        },
-        {
-          "externalModelId": "claude-opus-5-5-low",
+          "externalModelId": "claude-opus-5-5-medium",
           "kind": "provider_model",
           "provider": "antigravity",
           "resolution": {
             "modelId": "claude-opus-5-5",
             "status": "mapped"
           },
-          "sourceText": "claude-opus-5-5-low"
-        },
-        {
-          "externalModelId": "gemini-4-argon-low",
-          "kind": "provider_model",
-          "provider": "antigravity",
-          "resolution": {
-            "modelId": "gemini-4-argon",
-            "status": "mapped"
-          },
-          "sourceText": "gemini-4-argon-low"
-        },
-        {
-          "externalModelId": "gemini-4-carbon-low",
-          "kind": "provider_model",
-          "provider": "antigravity",
-          "resolution": {
-            "modelId": "gemini-4-carbon",
-            "status": "mapped"
-          },
-          "sourceText": "gemini-4-carbon-low"
-        },
-        {
-          "externalModelId": "gemini-4-hydrogen-high",
-          "kind": "provider_model",
-          "provider": "antigravity",
-          "resolution": {
-            "modelId": "gemini-4-hydrogen",
-            "status": "mapped"
-          },
-          "sourceText": "gemini-4-hydrogen-high"
+          "sourceText": "claude-opus-5-5-medium"
         }
       ],
       "modelDiscovery": "client",
@@ -7425,26 +6847,6 @@
       "id": "llm-gateway-devpass",
       "inclusions": [
         {
-          "externalModelId": "gpt-6-astra",
-          "kind": "provider_model",
-          "provider": "llmgateway",
-          "resolution": {
-            "modelId": "gpt-6-astra",
-            "status": "mapped"
-          },
-          "sourceText": "gpt-6-astra"
-        },
-        {
-          "externalModelId": "gpt-6.1-sol",
-          "kind": "provider_model",
-          "provider": "llmgateway",
-          "resolution": {
-            "modelId": "gpt-6.1-sol",
-            "status": "mapped"
-          },
-          "sourceText": "gpt-6.1-sol"
-        },
-        {
           "externalModelId": "gpt-6.1-terra",
           "kind": "provider_model",
           "provider": "llmgateway",
@@ -7453,6 +6855,26 @@
             "status": "mapped"
           },
           "sourceText": "gpt-6.1-terra"
+        },
+        {
+          "externalModelId": "gpt-6.2-sol",
+          "kind": "provider_model",
+          "provider": "llmgateway",
+          "resolution": {
+            "modelId": "gpt-6.2-sol",
+            "status": "mapped"
+          },
+          "sourceText": "gpt-6.2-sol"
+        },
+        {
+          "externalModelId": "gpt-6.2-astra",
+          "kind": "provider_model",
+          "provider": "llmgateway",
+          "resolution": {
+            "modelId": "gpt-6.2-astra",
+            "status": "mapped"
+          },
+          "sourceText": "gpt-6.2-astra"
         },
         {
           "externalModelId": "gpt-6-luna",
@@ -7730,26 +7152,6 @@
           "sourceText": "glm-5.3-flash"
         },
         {
-          "externalModelId": "minimax-m3.1-flash",
-          "kind": "provider_model",
-          "provider": "ollamacloud",
-          "resolution": {
-            "modelId": "minimax-m3.1-flash",
-            "status": "mapped"
-          },
-          "sourceText": "minimax-m3.1-flash"
-        },
-        {
-          "externalModelId": "mimo-v2.6-pro",
-          "kind": "provider_model",
-          "provider": "ollamacloud",
-          "resolution": {
-            "modelId": "mimo-v2.6-pro",
-            "status": "mapped"
-          },
-          "sourceText": "mimo-v2.6-pro"
-        },
-        {
           "externalModelId": "deepseek-v4.1-flash",
           "kind": "provider_model",
           "provider": "ollamacloud",
@@ -7758,6 +7160,26 @@
             "status": "mapped"
           },
           "sourceText": "deepseek-v4.1-flash"
+        },
+        {
+          "externalModelId": "mimo-v2.6-flash",
+          "kind": "provider_model",
+          "provider": "ollamacloud",
+          "resolution": {
+            "modelId": "mimo-v2.6-flash",
+            "status": "mapped"
+          },
+          "sourceText": "mimo-v2.6-flash"
+        },
+        {
+          "externalModelId": "minimax-m3.1-flash",
+          "kind": "provider_model",
+          "provider": "ollamacloud",
+          "resolution": {
+            "modelId": "minimax-m3.1-flash",
+            "status": "mapped"
+          },
+          "sourceText": "minimax-m3.1-flash"
         },
         {
           "externalModelId": "glm-5.3",
@@ -7770,14 +7192,14 @@
           "sourceText": "glm-5.3"
         },
         {
-          "externalModelId": "mimo-v2.6-flash",
+          "externalModelId": "mimo-v2.6-pro",
           "kind": "provider_model",
           "provider": "ollamacloud",
           "resolution": {
-            "modelId": "mimo-v2.6-flash",
+            "modelId": "mimo-v2.6-pro",
             "status": "mapped"
           },
-          "sourceText": "mimo-v2.6-flash"
+          "sourceText": "mimo-v2.6-pro"
         },
         {
           "externalModelId": "kimi-k3.1-pro",
@@ -7803,16 +7225,6 @@
       "id": "openai-codex",
       "inclusions": [
         {
-          "externalModelId": "gpt-6-astra",
-          "kind": "provider_model",
-          "provider": "openai",
-          "resolution": {
-            "modelId": "gpt-6-astra",
-            "status": "mapped"
-          },
-          "sourceText": "gpt-6-astra"
-        },
-        {
           "externalModelId": "gpt-6-luna",
           "kind": "provider_model",
           "provider": "openai",
@@ -7823,16 +7235,6 @@
           "sourceText": "gpt-6-luna"
         },
         {
-          "externalModelId": "gpt-6.1-sol",
-          "kind": "provider_model",
-          "provider": "openai",
-          "resolution": {
-            "modelId": "gpt-6.1-sol",
-            "status": "mapped"
-          },
-          "sourceText": "gpt-6.1-sol"
-        },
-        {
           "externalModelId": "gpt-6.1-terra",
           "kind": "provider_model",
           "provider": "openai",
@@ -7841,6 +7243,26 @@
             "status": "mapped"
           },
           "sourceText": "gpt-6.1-terra"
+        },
+        {
+          "externalModelId": "gpt-6.2-astra",
+          "kind": "provider_model",
+          "provider": "openai",
+          "resolution": {
+            "modelId": "gpt-6.2-astra",
+            "status": "mapped"
+          },
+          "sourceText": "gpt-6.2-astra"
+        },
+        {
+          "externalModelId": "gpt-6.2-sol",
+          "kind": "provider_model",
+          "provider": "openai",
+          "resolution": {
+            "modelId": "gpt-6.2-sol",
+            "status": "mapped"
+          },
+          "sourceText": "gpt-6.2-sol"
         }
       ],
       "modelDiscovery": "hybrid",
@@ -8042,7 +7464,7 @@
     }
   ],
   "routeRegistry": {
-    "generationId": "g-20261117161737898-2452723c",
+    "generationId": "g-20261118161838470-f3b90f5e",
     "registry": {
       "contractVersion": 3,
       "registryVersion": "3.7.0",
