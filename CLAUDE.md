@@ -10,7 +10,7 @@ lives in `ROADMAP.md`.
 ## Where the rationale lives — all files below are in `ai-docs/architecture/`
 
 - `routing.md` — `provider@model` syntax, every provider prefix, why MCP tools remove an unrequested `provider@` (`user_required_provider`) and refuse a bare name outside the recommended list (`unknown_model` / `not_recommended`, `user_required_model`), catalog-gathered route candidates and their tier order, `defaultProvider` as the fallback position, the derived picker provider list, `SUBSCRIPTION_PROVIDERS`, local models; a Claude model's two routes, the Claude subscription (`claude@`, a bare Claude name) and the Claude API (`anthropic@`/`a@`/`api@`), and the display-only comparison routes `--probe` lists for a bare Claude name
-- `routing-rulebook.md` — the numbered routing rules (RB-1 to RB-31), each with the files it polices and the test that tells its cases apart. The CI routing review reads it. Read before changing how any setup builds a chain
+- `routing-rulebook.md` — the numbered routing rules (RB-1 to RB-31), each with the files it polices and the test that tells its cases apart. The release routing review (`bun run review:routing`) reads it. Read before changing how any setup builds a chain
 - `wire.md` — every request built from the connection's catalog `wire` + route registry (no model-name rules anywhere); clamp / borrow-and-drop / try-in-turn; the first-run refusal trap; `+pro` vs the `+` chain separator; custom endpoints' declared wire; recommended effort (the efforts sidecar, shown by MCP `list_models`; a call with no effort answers `needs_effort`; the calling agent passes one effort per model); speed: `#<speed>`, Claude Code `/fast` and its two launch gates, the Codex `service_tier` from the account's `/models` (step 5s); read before touching `connection-*.ts`, `wire-*.ts`, step 5w, or any limit/reasoning field
 - `adapters.md` — Layers 1–3, stream parsers, error classification and retry, the 400 remap, why Gemini tool schemas need `items` on every array; Codex zero-delta tool calls, the `parallel` wrapper, the Responses leg/turn split with in-turn retry and the 150 s stall guard, and the non-streamed SSE-error contract (`x-claudish-stream-failure`); the signing-value registry (exact-value redaction of the credentials a request signed with, its leases and the sink table) and an internal call's abort signal and every reach point; who signs a native request (`NativeSigning`: `inbound`, `login-only` and its 401, `launch-key`) and the Claude API meter; the identity scrub (step 2a: which injected text loses Claude Code's identity, which never changes, the real-Claude exception, Antigravity's own header), the system-prompt passages Antigravity's server answers 429 to (step 2a', with the replay measurement), the `antigravity` tool-name alias (step 2b), inline system messages kept at their position (step 2c) and a `ToolSearch` result's `tool_reference` sent as a sentence (step 2d). Read before adding any log or client-body sink of upstream text, or touching `anthropic-forward.ts`, `native-handler.ts`, `identity-filter.ts`, `provider-refused-text.ts`, `tool-name-alias.ts`, `inline-system.ts` or `tool-reference-text.ts`
 - `code-mode.md` — `--code-mode` for `openai-codex`: one `exec` tool running JavaScript in a QuickJS sandbox, nested calls relayed as `tool_use` blocks; the decision order, lite/classic shapes and the lite → classic fallback, step 5r resume and tombstones, the input builder, store byte caps, and the sandbox limits (a 32 MiB heap limit does NOT bound wasm memory). Read before editing `code-mode/`, step 5d/5r, or the leg parser's exec handling
@@ -203,13 +203,18 @@ negative case: if you are about to type one of those words, stop and use the lef
 - `bun run test:macos` — the macOS gate (`scripts/test-macos.ts`), on the ESSENTIAL tier: idle,
   pane and rest through `ci-tests.ts --tier essential` (sliced: idle 3, pane 6, rest 8),
   macos-bridge, `scripts/*.test.ts`, the Claude Code boot canary (`scripts/boot-canary.ts` on
-  the Claude Code `.github/claude-code.version` pins, fetched with `npm pack`; boot-canary.yml
-  boots it on Linux only) and `antigravity-fetch.test.ts`, each under the Bun its
+  the Claude Code `.github/claude-code.version` pins, fetched with `npm pack`; the only
+  Claude Code boot check) and `antigravity-fetch.test.ts`, each under the Bun its
   test.yml job pins, fetched with `bunx`, after `build:cli`. `--full` runs everything: the full
   tier of idle, pane and rest, plus the blind hook tests and hooks-loading's `src/hooks/s1-probe/`
   under release.yml's Bun `latest`. The pane suites run against `.github/magmux.env`'s magmux, downloaded with `gh`
   (signed in), checked against the pinned sum and version, first on PATH; the Mac's own magmux is
   never used. Needs network. `--dry-run` prints what it would fetch and run, and fetches nothing.
+- `bun run review:routing` — the routing rulebook review (`scripts/routing-review.ts`): a
+  `git archive` export of `--ref` (default `HEAD`; uncommitted edits are never reviewed), agent
+  files removed, read by `claude -p --safe-mode` on your own Claude Code login. Exit 0 PASS, 1
+  FAIL or unreadable, 2 usage; prints the `result.json` path. `--dry-run` prints the argv and
+  starts nothing. A paid model call: run it on the release commit, or on a routing branch.
 - Tiers: `packages/cli/scripts/test-tiers.json` lists at most 3 essential files per slow category
   (`pane/`, `mcp-session/`, `mcp-blackbox/`, `team*`, `recovery-contract/`, `hooks/`); every
   other file of those is weekly, and any other file measured at `heavySeconds` (2 s) or more is
@@ -273,9 +278,11 @@ measurement). The thesaurus applies. No narrative or rhetorical framing.
 generates `CHANGELOG.md` with `git cliff`, and publishes over OIDC. It runs NO test suite, so
 the tag is the gate: everything must be green before it leaves the machine.
 
-**The release gate has two halves, both green before the tag:** `bun run test:macos` (the
-essential tier) on the release commit, and `bun scripts/weekly-macos-tests.ts --check`: every
-one of the 7 nightly parts green within the last 7 days. Pull requests do not run the macOS
+**The release gate has three parts, all green before the tag:** `bun run test:macos` (the
+essential tier) on the release commit; `bun scripts/weekly-macos-tests.ts --check`: every
+one of the 7 nightly parts green within the last 7 days; and `bun run review:routing` on the
+release commit, a PASS verdict. No GitHub workflow installs, downloads or runs Claude Code
+(`scripts/no-claude-code-in-ci.test.ts`); it runs only on this Mac. Pull requests do not run the macOS
 suites; CI runs them only on manual dispatch (`gh workflow run Tests --ref <branch>`). A part
 missing, red or older than 7 days is run by hand (`bun scripts/weekly-macos-tests.ts --part
 <k>`), one part at a time and never beside another heavy run: two concurrent runs on this Mac
