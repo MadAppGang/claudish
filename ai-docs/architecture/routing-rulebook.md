@@ -370,8 +370,7 @@ notice naming how the spent hop and the next hop each bill, and the provider's o
 
 ## Changing a rule
 
-The CI review reads this file from the PR's base. A PR that changes a rule and its code together
-carries the label `routing-rule-change`; the review job then reads this file from HEAD, prints the
-diff of this file first in the job summary, and the human approval covers it. The label counts only
-when it is on the PR now and its MOST RECENT `labeled` event has an actor whose repository
-permission is `write`, `maintain` or `admin`. A PR that changes only this file needs no label.
+The review is `bun run review:routing` (`scripts/routing-review.ts`), and it reads this file from
+the commit it reviews: the release commit, or a routing branch's head when its author runs it
+before merge. A rule and its code therefore change together, in one commit or one PR. The diff of
+this file is part of that PR, and the human approval of the PR covers the rule change.
