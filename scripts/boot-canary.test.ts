@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -21,6 +21,25 @@ function canary(...args: string[]): { status: number | null; stderr: string; out
     rmSync(dir, { recursive: true, force: true });
   }
 }
+
+test("a run that fails leaves no report of an earlier run", () => {
+  const dir = mkdtempSync(join(tmpdir(), "canary-stale-"));
+  const out = join(dir, "out");
+  const report = join(out, "results.json");
+  try {
+    mkdirSync(out);
+    writeFileSync(report, '{"version":"0.0.0","results":{}}\n');
+    const run = spawnSync(
+      process.execPath,
+      [SCRIPT, "--bin", join(dir, "no-such-claude"), "--out", out, "--scenarios", "boot"],
+      { encoding: "utf8", env: process.env }
+    );
+    expect(run.status).not.toBe(0);
+    expect(existsSync(report)).toBe(false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 describe("boot-canary usage errors exit 2 before anything boots", () => {
   test("a scenario named twice", () => {
