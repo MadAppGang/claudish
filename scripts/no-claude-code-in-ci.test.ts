@@ -40,7 +40,7 @@ const SCRIPTS =
 const SHELLS = new Set(["bash", "sh", "zsh", "dash"]);
 // `<shell> [options] -c '<command line>'` and `eval '<command line>'`, quoted.
 const NESTED_COMMAND =
-  /(?:^|[\s;&|(])(?:(?:bash|sh|zsh|dash)\s+(?:-\w+\s+)*-\w*c\w*|eval)\s+(['"])(.*?)\1/g;
+  /(?:^|[\s;&|(])(?:(?:\S*\/)?(?:bash|sh|zsh|dash)\s+(?:-\w+\s+)*-\w*c\w*|eval)\s+(['"])(.*?)\1/g;
 // Words that come before the command word without being the command.
 const WRAPPERS = new Set([
   "sudo",
@@ -48,7 +48,6 @@ const WRAPPERS = new Set([
   "bunx",
   "exec",
   "command",
-  "env",
   "eval",
   "time",
   "nohup",
@@ -64,6 +63,7 @@ const WRAPPERS = new Set([
   "(",
 ]);
 const TIMEOUT_OPTIONS_WITH_VALUE = new Set(["-k", "-s", "--kill-after", "--signal"]);
+const ENV_OPTIONS_WITH_VALUE = new Set(["-u", "--unset", "-C", "--chdir"]);
 
 function clip(text: string): string {
   const one = text.trim().replace(/\s+/g, " ");
@@ -75,33 +75,43 @@ function unquote(word: string): string {
 }
 
 /** The command word of one simple command, after assignments and wrappers. */
+/** The index after the options starting at `i`; an option in `withValue` also takes the next word. */
+function skipOptions(words: string[], i: number, withValue: Set<string>): number {
+  let j = i;
+  while (j < words.length && words[j].startsWith("-")) j += withValue.has(words[j]) ? 2 : 1;
+  return j;
+}
+
+/** Where the command starts after `bash -c` (index past `-c`), or undefined for no `-c`. */
+function afterShellCommandOption(words: string[], i: number): number | undefined {
+  let j = i + 1;
+  while (j < words.length && /^-\w+$/.test(words[j]) && !/^-\w*c\w*$/.test(words[j])) j++;
+  return j < words.length && /^-\w*c\w*$/.test(words[j]) ? j + 1 : undefined;
+}
+
+/**
+ * The command word of one simple command, after assignments and wrappers, as a path's basename:
+ * `/bin/bash`, `/usr/bin/env` and `/usr/local/bin/claude` read as `bash`, `env` and `claude`.
+ */
 function commandWord(segment: string): string | undefined {
   const words = segment.trim().split(/\s+/).filter(Boolean);
   let i = 0;
   while (i < words.length) {
-    const word = words[i];
-    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(word) || WRAPPERS.has(word)) {
+    const word = unquote(words[i].replace(/^\(+/, ""));
+    const base = word.split("/").pop() ?? word;
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(word) || WRAPPERS.has(base)) {
       i++;
-      continue;
+    } else if (base === "env") {
+      // `env [-i] [-u NAME] [-S] [NAME=value]... command`; `-S`'s string is the command line.
+      i = skipOptions(words, i + 1, ENV_OPTIONS_WITH_VALUE);
+    } else if (SHELLS.has(base) && afterShellCommandOption(words, i) !== undefined) {
+      // `bash -c <command line>`: the command line's first word is the command.
+      i = afterShellCommandOption(words, i) as number;
+    } else if (base === "timeout") {
+      i = skipOptions(words, i + 1, TIMEOUT_OPTIONS_WITH_VALUE) + 1; // past the duration
+    } else {
+      return base;
     }
-    // `bash -c <command line>`: the command line's first word is the command.
-    if (SHELLS.has(word)) {
-      let j = i + 1;
-      while (j < words.length && /^-\w+$/.test(words[j]) && !/^-\w*c\w*$/.test(words[j])) j++;
-      if (j < words.length && /^-\w*c\w*$/.test(words[j])) {
-        i = j + 1;
-        continue;
-      }
-    }
-    if (word === "timeout") {
-      i++;
-      while (i < words.length && words[i].startsWith("-")) {
-        i += TIMEOUT_OPTIONS_WITH_VALUE.has(words[i]) ? 2 : 1;
-      }
-      i++; // the duration
-      continue;
-    }
-    return unquote(word.replace(/^\(+/, ""));
   }
   return undefined;
 }
@@ -324,6 +334,17 @@ describe("the detector finds each kind", () => {
       stepYaml("run: eval \"bash -c 'claude -p hi'\""),
       "claude-command",
     ],
+    ["claude inside /bin/bash -c", stepYaml("run: /bin/bash -c 'claude -p hi'"), "claude-command"],
+    ["claude after /usr/bin/env", stepYaml("run: /usr/bin/env claude --version"), "claude-command"],
+    ["claude by its full path", stepYaml("run: /usr/local/bin/claude -p hi"), "claude-command"],
+    [
+      "claude after env -i and an assignment",
+      stepYaml("run: env -i PATH=/usr/local/bin:/usr/bin claude --version"),
+      "claude-command",
+    ],
+    ["claude after env -u NAME", stepYaml("run: env -u HOME claude -p hi"), "claude-command"],
+    ["claude in an env -S string", stepYaml("run: env -S 'claude -p hi'"), "claude-command"],
+    ["claude after /usr/bin/sudo", stepYaml("run: /usr/bin/sudo claude -p hi"), "claude-command"],
   ];
 
   for (const [name, yaml, kind] of cases) {
@@ -373,6 +394,11 @@ describe("the detector leaves clean workflows alone", () => {
     ["bash -c without claude", stepYaml("run: bash -c 'echo claude'")],
     ["bash running a script file", stepYaml("run: bash scripts/check.sh claude")],
     ["eval without claude", stepYaml('run: eval "echo claude"')],
+    ["/usr/bin/env running another program", stepYaml("run: /usr/bin/env node claude.js")],
+    ["env -i running echo", stepYaml("run: env -i PATH=/usr/bin echo claude")],
+    ["env -u NAME running another program", stepYaml("run: env -u claude node x.js")],
+    ["/bin/bash running a script file", stepYaml("run: /bin/bash scripts/check.sh claude")],
+    ["a program in a directory named for claude", stepYaml("run: /opt/claude/bin/run --x")],
   ];
 
   for (const [name, yaml] of clean) {
