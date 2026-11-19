@@ -92,28 +92,35 @@ function candidate(
 }
 
 describe("--probe explanation JSON", () => {
-  test("uses the new source union and the route() chain order", () => {
-    const keys = {
-      OPENAI_API_KEY: "stage6-openai",
-      OPENROUTER_API_KEY: "stage6-openrouter",
-    };
-    const catalog = sandboxedProbe("cat-found", keys);
-    const userRule = sandboxedProbe("rule-mix", keys);
-    const explicit = sandboxedProbe("openai@cat-found", keys);
-    const vendorQualified = sandboxedProbe("anthropic/claude-opus-5", keys);
-    const native = sandboxedProbe("claude-opus-5", keys);
+  // One CLI spawn per test: each spawn takes up to a second on a loaded runner, so five in
+  // one test can pass the default 5 s limit.
+  const bothKeys = {
+    OPENAI_API_KEY: "stage6-openai",
+    OPENROUTER_API_KEY: "stage6-openrouter",
+  };
 
+  test("a catalog name routes in the route() chain order", () => {
+    const catalog = sandboxedProbe("cat-found", bothKeys);
     expect(catalog.routingSource).toBe("catalog");
     expect(catalog.chain.map((entry) => entry.provider)).toEqual(["openai", "openrouter"]);
     expect(catalog.dropped).toEqual([]);
+  });
 
+  test("a user rule keeps its own provider order", () => {
+    const userRule = sandboxedProbe("rule-mix", bothKeys);
     expect(userRule.routingSource).toBe("user-rule");
     expect(userRule.chain.map((entry) => entry.provider)).toEqual(["openrouter", "openai"]);
+  });
 
+  test("an explicit provider@model is the whole chain", () => {
+    const explicit = sandboxedProbe("openai@cat-found", bothKeys);
     expect(explicit).toMatchObject({ routingSource: "explicit", isExplicit: true });
     expect(explicit.chain).toHaveLength(1);
     expect(explicit.chain[0]).toMatchObject({ provider: "openai", wireId: "cat-found" });
+  });
 
+  test("a vendor-qualified name is explicit on OpenRouter", () => {
+    const vendorQualified = sandboxedProbe("anthropic/claude-opus-5", bothKeys);
     expect(vendorQualified).toMatchObject({ routingSource: "explicit", isExplicit: true });
     expect(vendorQualified.chain).toEqual([
       expect.objectContaining({
@@ -122,7 +129,10 @@ describe("--probe explanation JSON", () => {
         wireId: "anthropic/claude-opus-5",
       }),
     ]);
+  });
 
+  test("a bare Claude name routes native and lists the Claude API for comparison", () => {
+    const native = sandboxedProbe("claude-opus-5", bothKeys);
     expect(native.routingSource).toBe("native");
     expect(native.chain).toEqual([
       expect.objectContaining({
