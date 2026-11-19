@@ -1,3 +1,4 @@
+import { heapStats } from "bun:jsc";
 import { afterAll, describe, expect, test } from "bun:test";
 import {
   closeSync,
@@ -250,11 +251,16 @@ describe("large conversation streaming", () => {
 
     const fileSize = statSync(file).size;
     expect(fileSize).toBeGreaterThan(39 * 1024 * 1024);
-    if (typeof Bun.gc === "function") Bun.gc(true);
-    const heapBefore = process.memoryUsage().heapUsed;
+    // The live heap after a full collection, from `heapStats().heapSize`. Bun 1.3's
+    // `process.memoryUsage().heapUsed` is the size recorded at the last EDEN collection:
+    // `Bun.gc(true)` does not update it, and an eden collection counts every promoted dead
+    // chunk as live. After an eden collection in the middle of this read, it can report
+    // tens of MB of dead chunks as a heap delta that nothing holds.
+    Bun.gc(true);
+    const heapBefore = heapStats().heapSize;
     const conversation = readConversation(file);
-    if (typeof Bun.gc === "function") Bun.gc(true);
-    const heapAfter = process.memoryUsage().heapUsed;
+    Bun.gc(true);
+    const heapAfter = heapStats().heapSize;
     const heapDelta = Math.max(0, heapAfter - heapBefore);
 
     expect(conversation.turns).toEqual(expected);
