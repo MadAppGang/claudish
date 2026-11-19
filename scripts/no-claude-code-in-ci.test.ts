@@ -26,7 +26,12 @@ interface Finding {
 
 const ACTION = /anthropics\/claude-code-action/;
 const PACKAGE = "@anthropic-ai/claude-code";
-const SECRETS = /secrets\.(ANTHROPIC_API_KEY|CLAUDE_CODE_OAUTH_TOKEN)\b/;
+// `secrets.NAME` or `secrets['NAME']` / `secrets["NAME"]`, any case: GitHub contexts are
+// case-insensitive.
+const SECRETS =
+  /\bsecrets\s*(?:\.\s*(?:ANTHROPIC_API_KEY|CLAUDE_CODE_OAUTH_TOKEN)\b|\[\s*(['"])(?:ANTHROPIC_API_KEY|CLAUDE_CODE_OAUTH_TOKEN)\1\s*\])/i;
+// A `${{ }}` expression: GitHub expands it before the shell runs, shell comments included.
+const EXPRESSION = /\$\{\{[\s\S]*?\}\}/g;
 // The local scripts that download, boot or run Claude Code, and the package scripts that start
 // them; a workflow that starts one runs it.
 const SCRIPTS =
@@ -135,8 +140,11 @@ function claudeCodeFindings(file: string, yamlText: string): Finding[] {
   const visit = (value: unknown, where: string, key: string | undefined) => {
     if (typeof value === "string") {
       if (key === "uses" && ACTION.test(value)) add(where, "claude-code-action", value);
-      if (value.includes(PACKAGE)) add(where, "claude-code-package", value);
-      if (SECRETS.test(value)) add(where, "anthropic-secret", value);
+      // In a `run:` the shell sees only its code; GitHub sees only its `${{ }}` expressions.
+      const shellCode = key === "run" ? runCode(value) : value;
+      const evaluated = key === "run" ? (value.match(EXPRESSION) ?? []).join("\n") : value;
+      if (shellCode.includes(PACKAGE)) add(where, "claude-code-package", value);
+      if (SECRETS.test(evaluated)) add(where, "anthropic-secret", value);
       if (key === "run") {
         const line = runsClaude(value);
         if (line !== undefined) add(where, "claude-command", line);
@@ -259,6 +267,36 @@ describe("the detector finds each kind", () => {
       stepYaml("run: bun run review:routing"),
       "claude-code-script",
     ],
+    [
+      "the API key by bracket access",
+      stepYaml("run: echo\n        env:\n          K: ${{ secrets['ANTHROPIC_API_KEY'] }}"),
+      "anthropic-secret",
+    ],
+    [
+      "the API key by bracket access with spaces and double quotes",
+      stepYaml('run: echo\n        env:\n          K: ${{ secrets[ "ANTHROPIC_API_KEY" ] }}'),
+      "anthropic-secret",
+    ],
+    [
+      "the API key in lower case",
+      stepYaml("run: echo\n        env:\n          K: ${{ secrets.anthropic_api_key }}"),
+      "anthropic-secret",
+    ],
+    [
+      "the OAuth token in mixed case by bracket access",
+      stepYaml("run: echo\n        env:\n          K: ${{ SECRETS['Claude_Code_OAuth_Token'] }}"),
+      "anthropic-secret",
+    ],
+    [
+      "the API key in an if condition",
+      stepYaml("run: echo\n        if: secrets.ANTHROPIC_API_KEY != ''"),
+      "anthropic-secret",
+    ],
+    [
+      "the API key in an expression inside a shell comment",
+      stepYaml("run: |\n          echo ok # ${{ secrets.ANTHROPIC_API_KEY }}"),
+      "anthropic-secret",
+    ],
     ["the macOS gate package script", stepYaml("run: bun run test:macos"), "claude-code-script"],
     [
       "the macOS gate package script with flags",
@@ -304,6 +342,24 @@ describe("the detector leaves clean workflows alone", () => {
     ["claude as an argument", stepYaml('run: echo "claude"')],
     ["a path that only contains claude", stepYaml("run: ls packages/claude-thing")],
     ["a test run named for the canary", stepYaml("run: bun test scripts/boot-canary.test.ts")],
+    [
+      "the package named in a trailing shell comment",
+      stepYaml("run: 'echo ok # do not install @anthropic-ai/claude-code'"),
+    ],
+    [
+      "the package named in a shell comment line",
+      stepYaml(
+        "run: |\n          # Never install @anthropic-ai/claude-code here.\n          echo ok"
+      ),
+    ],
+    [
+      "the secret's name as shell text, outside an expression",
+      stepYaml('run: echo "secrets.ANTHROPIC_API_KEY is not used here"'),
+    ],
+    [
+      "another secret by bracket access",
+      stepYaml("run: echo\n        env:\n          K: ${{ secrets['OPENROUTER_API_KEY'] }}"),
+    ],
     ["the macOS gate's own tests", stepYaml("run: bun test scripts/test-macos.test.ts")],
     [
       "the nightly runner's own tests",
