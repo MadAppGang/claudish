@@ -27,10 +27,24 @@ import {
 export type KeychainCredentialProbe = (env?: NodeJS.ProcessEnv, cwd?: string) => boolean;
 
 // Startup-only memo (at most a couple of evaluations per launch), keyed by the
-// SERVICE NAMES probed so a changed CLAUDE_CONFIG_DIR is not answered from the
-// previous directory's result. Tests inject their own probe, so this stays
-// inert there.
+// SERVICE NAMES probed and the keychain file asked, so a changed
+// CLAUDE_CONFIG_DIR or CLAUDISH_KEYCHAIN_FILE is not answered from the previous
+// one's result. Tests inject their own probe, so this stays inert there.
 const macosKeychainAnthropicMemo = new Map<string, boolean>();
+
+/** The memo key of {@link defaultKeychainAnthropicProbe}: the services and the keychain file. */
+export function keychainAnthropicMemoKey(env: NodeJS.ProcessEnv, cwd: string): string {
+  const services = claudeCodeSecureStorageServices("-credentials", env, cwd).join("|");
+  return `${services}\n${env.CLAUDISH_KEYCHAIN_FILE ?? ""}`;
+}
+
+/** `presence` bound to `env`, so each service is asked about in the env the caller was given. */
+export function keychainPresenceIn(
+  env: NodeJS.ProcessEnv,
+  presence: (service: string, env: NodeJS.ProcessEnv) => KeychainPresence
+): (service: string) => KeychainPresence {
+  return (service) => presence(service, env);
+}
 
 /**
  * Existence-only probe for Claude Code's macOS login-Keychain OAuth item.
@@ -65,12 +79,12 @@ export const defaultKeychainAnthropicProbe: KeychainCredentialProbe = (
     return false;
   }
 
-  const memoKey = claudeCodeSecureStorageServices("-credentials", env, cwd).join("|");
+  const memoKey = keychainAnthropicMemoKey(env, cwd);
   const memoized = macosKeychainAnthropicMemo.get(memoKey);
   if (memoized !== undefined) return memoized;
   // Existence only: `defaultKeychainPresence` runs `find-generic-password`
   // WITHOUT `-w` and honours `CLAUDISH_KEYCHAIN_FILE`.
-  const found = keychainLoginPresent(env, defaultKeychainPresence, cwd);
+  const found = keychainLoginPresent(env, keychainPresenceIn(env, defaultKeychainPresence), cwd);
   macosKeychainAnthropicMemo.set(memoKey, found);
   return found;
 };
@@ -218,7 +232,7 @@ export function claudeCodeStartupCredential(
   const cwd = deps.cwd ?? process.cwd();
   const fileExists = deps.fileExists ?? existsSync;
   const readFile = deps.readFile ?? ((path: string) => readFileSync(path, "utf-8"));
-  const presence = deps.keychainPresence ?? defaultKeychainPresence;
+  const presence = deps.keychainPresence ?? keychainPresenceIn(env, defaultKeychainPresence);
 
   const token = env.CLAUDE_CODE_OAUTH_TOKEN;
   if (typeof token === "string" && token.trim().length > 0) return { kind: "login" };

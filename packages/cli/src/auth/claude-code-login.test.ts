@@ -1,11 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { claudeCodeSecureStorageServices } from "./claude-code-facts.js";
 import {
   claudeCodeStartupCredential,
   hasClaudeCodeLogin,
+  keychainAnthropicMemoKey,
   keychainLoginPresent,
   keychainPresenceArgs,
+  keychainPresenceIn,
   keychainPresenceOf,
 } from "./claude-code-login.js";
 
@@ -161,5 +165,52 @@ describe("the Keychain presence probe", () => {
     expect(keychainPresenceOf({ status: 1 })).toBe("failed");
     expect(keychainPresenceOf({ status: null })).toBe("failed");
     expect(keychainPresenceOf({ status: 0, error: new Error("spawn failed") })).toBe("failed");
+  });
+});
+
+describe("the default Keychain probes read the env they are given", () => {
+  test("keychainPresenceIn hands every service the given env, never process.env", () => {
+    const env = { CLAUDISH_KEYCHAIN_FILE: "/given.keychain" };
+    const seen: { service: string; env: NodeJS.ProcessEnv | undefined }[] = [];
+    const presence = keychainPresenceIn(env, (service, e) => {
+      seen.push({ service, env: e });
+      return "absent";
+    });
+    expect(presence("svc-a")).toBe("absent");
+    expect(presence("svc-b")).toBe("absent");
+    expect(seen).toEqual([
+      { service: "svc-a", env },
+      { service: "svc-b", env },
+    ]);
+  });
+
+  test("no default path passes defaultKeychainPresence unbound", () => {
+    // A bare `defaultKeychainPresence` value is called with one argument and reads process.env.
+    const source = readFileSync(join(import.meta.dir, "claude-code-login.ts"), "utf8");
+    const code = source
+      .split("\n")
+      .filter((line) => !/^\s*(\/\/|\*|\/\*\*)/.test(line))
+      .join("\n");
+    const bare = [...code.matchAll(/defaultKeychainPresence(?!\s*\()/g)]
+      .map((m) => code.slice(Math.max(0, (m.index ?? 0) - 40), (m.index ?? 0) + 30))
+      .filter((around) => !around.includes("keychainPresenceIn(env, defaultKeychainPresence)"));
+    expect(bare).toEqual([]);
+    expect(code).toContain("keychainPresenceIn(env, defaultKeychainPresence)");
+  });
+});
+
+describe("the picker's Keychain probe memo", () => {
+  test("two keychain files give two memo entries", () => {
+    const a = keychainAnthropicMemoKey({ CLAUDISH_KEYCHAIN_FILE: "/a.keychain" }, "/w");
+    const b = keychainAnthropicMemoKey({ CLAUDISH_KEYCHAIN_FILE: "/b.keychain" }, "/w");
+    const none = keychainAnthropicMemoKey({}, "/w");
+    expect(new Set([a, b, none]).size).toBe(3);
+    expect(keychainAnthropicMemoKey({ CLAUDISH_KEYCHAIN_FILE: "/a.keychain" }, "/w")).toBe(a);
+  });
+
+  test("a changed config dir still gives another entry", () => {
+    expect(keychainAnthropicMemoKey({ CLAUDE_CONFIG_DIR: "/c1" }, "/w")).not.toBe(
+      keychainAnthropicMemoKey({ CLAUDE_CONFIG_DIR: "/c2" }, "/w")
+    );
   });
 });
