@@ -43,7 +43,7 @@
 
 import { execFileSync, spawn } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { homedir, constants as osConstants, tmpdir } from "node:os";
 import { isAbsolute, join, normalize } from "node:path";
 
 export const RUNNABLE_JOBS: Record<string, readonly string[]> = {
@@ -308,8 +308,11 @@ function defaultGit(args: string[], cwd: string, env: Record<string, string>): s
   }).trim();
 }
 
+/** The signals passed on to act, which runs in its own process group and sees none itself. */
+export const FORWARDED_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+
 /**
- * Starts act in its own process group and forwards SIGINT and SIGTERM to it, then waits for it
+ * Starts act in its own process group and forwards FORWARDED_SIGNALS to it, then waits for it
  * to exit, so the caller's cleanup runs after act has removed its containers.
  */
 function defaultSpawnAct(
@@ -327,7 +330,7 @@ function defaultSpawnAct(
     const forward = (sig: NodeJS.Signals) => () => {
       child.kill(sig);
     };
-    const handlers = (["SIGINT", "SIGTERM"] as const).map((sig) => {
+    const handlers = FORWARDED_SIGNALS.map((sig) => {
       const handler = forward(sig);
       process.on(sig, handler);
       return [sig, handler] as const;
@@ -342,7 +345,7 @@ function defaultSpawnAct(
     child.on("close", (code, signal) => {
       detach();
       if (code !== null) resolve(code);
-      else resolve(128 + (signal === "SIGINT" ? 2 : signal === "SIGTERM" ? 15 : 1));
+      else resolve(128 + ((signal && osConstants.signals[signal]) || 1));
     });
   });
 }

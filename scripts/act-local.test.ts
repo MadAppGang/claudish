@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   BASE_TAG,
   CASE_TAG,
+  FORWARDED_SIGNALS,
   IMAGE,
   PUSH_URL,
   RUNNABLE_JOBS,
@@ -330,6 +331,12 @@ describe("writeEmptyDockerConfig", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("FORWARDED_SIGNALS", () => {
+  test("act gets SIGINT, SIGTERM and SIGHUP (a closed terminal)", () => {
+    expect([...FORWARDED_SIGNALS].sort()).toEqual(["SIGHUP", "SIGINT", "SIGTERM"]);
   });
 });
 

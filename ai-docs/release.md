@@ -265,8 +265,8 @@ How it keeps a run local and free of secrets:
   `~/.config/act/actrc`, `~/Library/Application Support/act/actrc` or the
   clone's `.actrc`: an actrc can add `-s` flags.
 - A real run is allowed only for a job in `RUNNABLE_JOBS`. Any other job exits 2
-  and act never starts. Ctrl-C reaches act, and the temp dir is removed after
-  act exits.
+  and act never starts. Ctrl-C, SIGTERM and a closed terminal (SIGHUP) reach
+  act, and the temp dir is removed after act exits.
 
 Which `release.yml` jobs can run:
 
