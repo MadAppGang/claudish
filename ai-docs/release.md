@@ -71,8 +71,9 @@ the gate: everything must be green before the tag leaves the machine.
 three, whatever their time; the `pinned` files, whatever their time; and, outside the slow
 categories, no other file measured at 2 s or more); `bun run test:macos --full` runs
 the FULL tier. A dispatch of `test.yml` and `weekly-tests.yml` run the GITHUB tier: the
-essential files plus every weekly file measured under `githubMaxSeconds` or not measured,
-so every GitHub job stays under 50 s. The WEEKLY tier (full minus essential) runs on the owner's Mac in 7
+essential files plus every weekly file measured under `githubMaxSeconds` or not measured.
+It leaves the slow files to this Mac, toward the target of every GitHub job under 50 s; it
+does not cap a job's wall time (`ai-docs/architecture/testing.md`). The WEEKLY tier (full minus essential) runs on the owner's Mac in 7
 nightly parts, one a night at 03:00 local: `scripts/weekly-macos-tests.ts` under launchd
 runs `bun run test:macos --part <k>/7` on origin's main, k being the part with no result or
 the oldest result, and writes
