@@ -48,6 +48,33 @@ test("a run that fails leaves no report and no screen of an earlier run", () => 
   }
 });
 
+test("a usage error keeps the report and the screens of an earlier run", () => {
+  const dir = mkdtempSync(join(tmpdir(), "canary-kept-"));
+  const out = join(dir, "out");
+  const report = join(out, "results.json");
+  const screen = join(out, "boot.screen.txt");
+  try {
+    mkdirSync(out);
+    writeFileSync(report, '{"version":"0.0.0","results":{}}\n');
+    writeFileSync(screen, "an earlier screen\n");
+    // `--bin` is the last flag read, and it has no value
+    const run = spawnSync(
+      process.execPath,
+      [SCRIPT, "--out", out, "--scenarios", "boot", "--bin"],
+      {
+        encoding: "utf8",
+        env: process.env,
+      }
+    );
+    expect(run.stderr).toContain("--bin needs a value");
+    expect(run.status).toBe(2);
+    expect(existsSync(report)).toBe(true);
+    expect(existsSync(screen)).toBe(true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 describe("boot-canary usage errors exit 2 before anything boots", () => {
   test("a scenario named twice", () => {
     const run = canary("--scenarios", "boot,agent,boot", "--jobs", "2");

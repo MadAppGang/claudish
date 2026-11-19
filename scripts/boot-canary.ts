@@ -14,6 +14,8 @@
  *                              [--jobs <n>]
  * `--jobs` is how many scenarios boot at once (default: all of them, so the wait for the screens
  * is one boot deadline at most; setup and teardown are outside it); 1 boots them one after another.
+ * `--out` (default `canary-out`) is the canary's own directory: every run replaces `results.json`
+ * and each `<scenario>.screen.txt` in it, and leaves any other file there.
  * Exit 0 when every scenario reads as expected, 1 on any mismatch, 2 on a usage error.
  */
 
@@ -307,11 +309,12 @@ async function main(): Promise<void> {
   if (!Number.isInteger(jobs) || jobs < 1) usage("--jobs takes a whole number, 1 or more");
   const expectPath = arg("--expect") ?? join(import.meta.dir, "boot-canary.expect.json");
   const outDir = resolve(arg("--out") ?? "canary-out");
-  // a run that fails writes no report, so the report of an earlier run must not stay in its place;
-  // the same holds for the screen of every scenario, named in this run or not
+  const bin = claudeBinary();
+  // a run that throws before the report is written leaves no report, so the report of an earlier
+  // run must not stay in its place; the same holds for the screen of every scenario, named in
+  // this run or not. A usage error exits above this line and removes nothing.
   rmSync(join(outDir, "results.json"), { force: true });
   for (const s of SCENARIOS) rmSync(join(outDir, `${s}.screen.txt`), { force: true });
-  const bin = claudeBinary();
   const version =
     execFileSync(bin, ["--version"], { encoding: "utf8" }).trim().split(/\s/)[0] ?? "unknown";
   const expected = JSON.parse(readFileSync(expectPath, "utf8")) as Record<string, Partial<Reading>>;
