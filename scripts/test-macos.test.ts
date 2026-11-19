@@ -25,6 +25,7 @@ import {
   parseGateArgs,
   parseMagmuxPin,
   planSteps,
+  removeCanaryOutput,
   reportedClaudeCodeVersion,
   runSteps,
   runsPackageScript,
@@ -597,6 +598,32 @@ describe("--dry-run", () => {
       }
     }
   );
+});
+
+describe("removeCanaryOutput", () => {
+  test("removes the report and the screens, and keeps every other file", () => {
+    const dir = tempDir();
+    try {
+      writeFileSync(join(dir, "results.json"), "{}\n");
+      writeFileSync(join(dir, "plain.screen.txt"), "screen\n");
+      writeFileSync(join(dir, "notes.txt"), "mine\n");
+      mkdirSync(join(dir, "kept"));
+      removeCanaryOutput(dir);
+      expect(existsSync(join(dir, "results.json"))).toBe(false);
+      expect(existsSync(join(dir, "plain.screen.txt"))).toBe(false);
+      expect(readFileSync(join(dir, "notes.txt"), "utf8")).toBe("mine\n");
+      expect(existsSync(join(dir, "kept"))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("does nothing when the directory does not exist", () => {
+    const dir = tempDir();
+    rmSync(dir, { recursive: true, force: true });
+    removeCanaryOutput(dir);
+    expect(existsSync(dir)).toBe(false);
+  });
 });
 
 describe("compareVersions", () => {
