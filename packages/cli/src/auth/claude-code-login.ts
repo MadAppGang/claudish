@@ -27,10 +27,24 @@ import {
 export type KeychainCredentialProbe = (env?: NodeJS.ProcessEnv, cwd?: string) => boolean;
 
 // Startup-only memo (at most a couple of evaluations per launch), keyed by the
-// SERVICE NAMES probed so a changed CLAUDE_CONFIG_DIR is not answered from the
-// previous directory's result. Tests inject their own probe, so this stays
-// inert there.
+// SERVICE NAMES probed and the keychain file asked, so a changed
+// CLAUDE_CONFIG_DIR or CLAUDISH_KEYCHAIN_FILE is not answered from the previous
+// one's result. Tests inject their own probe, so this stays inert there.
 const macosKeychainAnthropicMemo = new Map<string, boolean>();
+
+/** The memo key of {@link defaultKeychainAnthropicProbe}: the services and the keychain file. */
+export function keychainAnthropicMemoKey(env: NodeJS.ProcessEnv, cwd: string): string {
+  const services = claudeCodeSecureStorageServices("-credentials", env, cwd).join("|");
+  return `${services}\n${env.CLAUDISH_KEYCHAIN_FILE ?? ""}`;
+}
+
+/** `presence` bound to `env`, so each service is asked about in the env the caller was given. */
+export function keychainPresenceIn(
+  env: NodeJS.ProcessEnv,
+  presence: (service: string, env: NodeJS.ProcessEnv) => KeychainPresence
+): (service: string) => KeychainPresence {
+  return (service) => presence(service, env);
+}
 
 /**
  * Existence-only probe for Claude Code's macOS login-Keychain OAuth item.
@@ -65,12 +79,12 @@ export const defaultKeychainAnthropicProbe: KeychainCredentialProbe = (
     return false;
   }
 
-  const memoKey = claudeCodeSecureStorageServices("-credentials", env, cwd).join("|");
+  const memoKey = keychainAnthropicMemoKey(env, cwd);
   const memoized = macosKeychainAnthropicMemo.get(memoKey);
   if (memoized !== undefined) return memoized;
   // Existence only: `defaultKeychainPresence` runs `find-generic-password`
   // WITHOUT `-w` and honours `CLAUDISH_KEYCHAIN_FILE`.
-  const found = keychainLoginPresent(env, defaultKeychainPresence, cwd);
+  const found = keychainLoginPresent(env, keychainPresenceIn(env, defaultKeychainPresence), cwd);
   macosKeychainAnthropicMemo.set(memoKey, found);
   return found;
 };
@@ -128,22 +142,48 @@ export type KeychainPresence = "found" | "absent" | "failed";
 const SECURITY_ITEM_NOT_FOUND = 44;
 
 /**
+ * The `security` arguments of one presence probe: `find-generic-password` without
+ * `-w`, followed by the keychain file `env.CLAUDISH_KEYCHAIN_FILE` names, if any.
+ * Only `env` is read.
+ */
+export function keychainPresenceArgs(service: string, env: NodeJS.ProcessEnv): string[] {
+  const args = ["find-generic-password", "-s", service];
+  const keychainFile = env.CLAUDISH_KEYCHAIN_FILE;
+  if (keychainFile) args.push(keychainFile);
+  return args;
+}
+
+/** What a finished `security` presence probe answered: 0 found, 44 absent, anything else failed. */
+export function keychainPresenceOf(result: {
+  status: number | null;
+  error?: unknown;
+}): KeychainPresence {
+  if (result.error) return "failed";
+  if (result.status === 0) return "found";
+  return result.status === SECURITY_ITEM_NOT_FOUND ? "absent" : "failed";
+}
+
+/**
  * Presence of any generic-password item under `service`, from its ATTRIBUTES:
  * `find-generic-password` without `-w` reads no item data, so it raises no
- * access dialog. Non-darwin: `absent`. `CLAUDISH_DISABLE_KEYCHAIN=1`: `failed`,
- * since the store was not asked. Honours `CLAUDISH_KEYCHAIN_FILE`.
+ * access dialog. Non-darwin: `absent`. `CLAUDISH_DISABLE_KEYCHAIN=1` in this
+ * process's environment or in `env`: `failed`, since the store was not asked.
+ * The keychain file comes from `env.CLAUDISH_KEYCHAIN_FILE` only, so a caller
+ * that probes for a child process passes the child's environment.
  */
-export function defaultKeychainPresence(service: string): KeychainPresence {
+export function defaultKeychainPresence(
+  service: string,
+  env: NodeJS.ProcessEnv = process.env
+): KeychainPresence {
   if (process.platform !== "darwin") return "absent";
-  if (process.env.CLAUDISH_DISABLE_KEYCHAIN === "1") return "failed";
-  const args = ["find-generic-password", "-s", service];
-  const keychainFile = process.env.CLAUDISH_KEYCHAIN_FILE;
-  if (keychainFile) args.push(keychainFile);
+  // The test guard is honoured from either environment.
+  if (process.env.CLAUDISH_DISABLE_KEYCHAIN === "1" || env.CLAUDISH_DISABLE_KEYCHAIN === "1") {
+    return "failed";
+  }
   try {
-    const res = spawnSync("security", args, { stdio: "ignore" });
-    if (res.error) return "failed";
-    if (res.status === 0) return "found";
-    return res.status === SECURITY_ITEM_NOT_FOUND ? "absent" : "failed";
+    return keychainPresenceOf(
+      spawnSync("security", keychainPresenceArgs(service, env), { stdio: "ignore" })
+    );
   } catch {
     return "failed";
   }
@@ -192,7 +232,7 @@ export function claudeCodeStartupCredential(
   const cwd = deps.cwd ?? process.cwd();
   const fileExists = deps.fileExists ?? existsSync;
   const readFile = deps.readFile ?? ((path: string) => readFileSync(path, "utf-8"));
-  const presence = deps.keychainPresence ?? defaultKeychainPresence;
+  const presence = deps.keychainPresence ?? keychainPresenceIn(env, defaultKeychainPresence);
 
   const token = env.CLAUDE_CODE_OAUTH_TOKEN;
   if (typeof token === "string" && token.trim().length > 0) return { kind: "login" };

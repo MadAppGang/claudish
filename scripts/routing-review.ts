@@ -22,7 +22,9 @@
  * `apiKeyHelper`, a `forceLoginMethod` other than `claudeai`, or an Anthropic credential, base URL
  * or cloud provider in the `env` of the managed settings file or any file in `managed-settings.d/`
  * (the settings layers loaded from outside the export). A store that is present but empty,
- * unreadable or not answering refuses too. A refusal names the store, never a value.
+ * unreadable or not answering refuses too. A refusal names the store, never a value. The Keychain
+ * probe reads Claude Code's environment, with the same variables dropped, so it asks the keychain
+ * Claude Code reads.
  *
  * Usage:
  *   bun scripts/routing-review.ts [--ref <rev>] [--bin <claude>] [--dry-run]
@@ -65,6 +67,12 @@ this task or the verdict.
 For each rule, read the files in its Scope and decide whether the code
 satisfies it. Work through the rules in order and read only what a rule
 needs.
+
+Find code with Grep first (with line numbers, limited to the rule's Scope
+paths). Read at most 120 lines at a time, around a Grep match. Never Read
+a whole source file; the rulebook is the one exception. Make every Grep
+and Read a rule needs in the same turn, several Reads of one file
+included, not one call per turn.
 
 Report only a violation of a numbered rule that you can point to in the
 code. Style, naming and suggestions are not violations.
@@ -375,7 +383,9 @@ export function pinConfigDir(childEnv: Record<string, string>, cwd: string): str
   return undefined;
 }
 
-type CredentialDeps = Pick<ReviewDeps, "keychainPresence" | "managedSettingsPath" | "cwd">;
+type CredentialDeps = Pick<ReviewDeps, "managedSettingsPath" | "cwd"> & {
+  keychainPresence: (service: string) => KeychainPresence;
+};
 
 /** A stored Console key, in `.claude.json` or the Keychain, by presence. */
 function consoleKeyRefusal(
@@ -448,8 +458,13 @@ export interface ReviewDeps {
   tmpRoot: string;
   /** Start Claude Code and wait for it. */
   spawnReview: (argv: string[], cwd: string, env: Record<string, string>) => Promise<ReviewRun>;
-  /** Whether a macOS Keychain item exists under a service name; reads attributes, never data. */
-  keychainPresence: (service: string) => KeychainPresence;
+  /**
+   * Whether a macOS Keychain item exists under a service name; reads attributes, never data.
+   * When unset, the probe is `keychainPresenceFor` of Claude Code's environment.
+   */
+  keychainPresence?: (service: string) => KeychainPresence;
+  /** The Keychain probe that reads the given environment, as the `claude` child would. */
+  keychainPresenceFor: (env: Record<string, string>) => (service: string) => KeychainPresence;
   /** Claude Code's managed settings file; its `managed-settings.d/` sits beside it. */
   managedSettingsPath: string;
   /** The directory Claude Code's config directory is resolved against. */
@@ -494,7 +509,7 @@ function defaultDeps(): ReviewDeps {
     },
     tmpRoot: tmpdir(),
     spawnReview: spawnClaude,
-    keychainPresence: defaultKeychainPresence,
+    keychainPresenceFor: (env) => (service) => defaultKeychainPresence(service, env),
     managedSettingsPath: managedSettingsPath(),
     cwd: repositoryRoot,
   };
@@ -584,7 +599,9 @@ export async function runRoutingReview(
     return 1;
   }
   if (!args.dryRun) {
-    const refused = credentialRefusal(childEnv, deps);
+    // The probe reads the environment Claude Code gets, so it asks the keychain Claude Code reads.
+    const keychainPresence = deps.keychainPresence ?? deps.keychainPresenceFor(childEnv);
+    const refused = credentialRefusal(childEnv, { ...deps, keychainPresence });
     if (refused) {
       console.error(`routing-review: refused: ${refused}`);
       return 1;

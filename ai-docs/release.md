@@ -125,15 +125,25 @@ PR that also fails on a clean export of `origin/main` is not the release's, but
 it is still a red gate: make the test hermetic (seed the catalog; disable and
 reset the warm) and re-run, rather than tag over it.
 
-The only Claude Code boot check is the "Claude Code boot canary" step of
-`bun run test:macos` (both tiers, no nightly part). It boots each spawn shape against the
-Claude Code pinned in `.github/claude-code.version`, fetched with `npm pack` (the
+The Claude Code boot check that gates a release is the "Claude Code boot canary" step of
+`bun run test:macos` (the essential and the full tier). It boots each spawn shape against
+the Claude Code pinned in `.github/claude-code.version`, fetched with `npm pack` (the
 per-platform package; the Mac's own Claude Code is never used), with every scenario
 booting at once (`--jobs`). Read the step's lines: a scenario that booted and read
 differently means the pane boot reader no longer matches Claude Code, and a scenario that
 did not boot or connect is a failed start. Fix the first, and rerun the gate for the
-second. npm's newest Claude Code is booted only once `.github/claude-code.version` is
-bumped to it.
+second.
+
+Nightly part 1 (`bun run test:macos --part 1/7`) also boots npm's `latest` Claude Code,
+with `scripts/boot-canary-latest.ts`. This step is advisory. The summary shows it as
+`ADVISORY PASS` or `ADVISORY FAIL`, and it never makes the gate red. An `ADVISORY FAIL`
+tells you that a new Claude Code release breaks a spawn shape before the pin moves to it.
+No workflow file runs a canary.
+
+Each run writes its canary output (`results.json` and one screen per spawn shape) to a
+new temp directory of its own. The gate prints its path as `canary output: <dir>`, and
+the advisory step writes to `<dir>/latest`. The gate does not remove these directories;
+macOS removes old files in `$TMPDIR`.
 
 **No GitHub workflow installs, downloads or runs Claude Code.**
 `scripts/no-claude-code-in-ci.test.ts` (in test.yml's `scripts` job on every pull
@@ -142,8 +152,8 @@ request) parses every workflow and fails on `anthropics/claude-code-action`, an
 (`claude.ai/install`, `downloads.claude.ai`, a `claude-code` release URL), the `ANTHROPIC_API_KEY` or
 `CLAUDE_CODE_OAUTH_TOKEN` secret, a `claude` command (also inside a quoted
 `bash`/`sh`/`zsh`/`dash -c` or `eval` string), or a step that starts a script that
-downloads or runs Claude Code: `scripts/boot-canary.ts`, `scripts/routing-review.ts`,
-`scripts/test-macos.ts`, `scripts/weekly-macos-tests.ts`, `bun run test:macos` or
+downloads or runs Claude Code: `scripts/boot-canary.ts`, `scripts/boot-canary-latest.ts`,
+`scripts/routing-review.ts`, `scripts/test-macos.ts`, `scripts/weekly-macos-tests.ts`, `bun run test:macos` or
 `bun run review:routing`. Claude Code runs only on the Mac, on the owner's own login.
 
 **The routing rulebook review is `bun run review:routing`, on the release commit.**
@@ -212,6 +222,72 @@ summary and the log grep disagreed with the job's conclusion:
   so its own failures appear only on the next run.
 - A release PR can get no `pull_request` run while main moves
   (`mergeable: UNKNOWN`). Merging main into the release branch starts one.
+
+### Run a workflow job locally with act
+
+`bun run act:local` (`scripts/act-local.ts`) runs a `release.yml` job on this Mac
+with `act`, in Docker, so a job can be tried before the tag. It needs Docker
+running and the image `catthehacker/ubuntu:act-latest` already pulled (it runs
+with `--pull=false`). It runs the committed HEAD; uncommitted edits are not in
+the run, and the script warns when there are any.
+
+```
+bun scripts/act-local.ts --job bundled-list --tag-case changed    # exit 0: "bundled recommended list changed since v0.0.0-act.base"
+bun scripts/act-local.ts --job bundled-list --tag-case unchanged  # exit 1: "::error::the bundled recommended list was not regenerated ..."
+bun scripts/act-local.ts --list                                   # act's job list for release.yml
+bun scripts/act-local.ts --dry-run [--job <id>]                   # act -n: plans every step, starts no container
+```
+
+`--tag-case` simulates a `v*` tag push: in the clone, HEAD is tagged
+`v0.0.0-act.base`, one commit is added (`changed` appends a newline to the bundled
+recommended list, or to the `--change <path>` file; `unchanged` is an empty
+commit) and tagged `v0.0.0-act.tag`, and act gets a push event for that tag. The
+exit code is act's own; 2 is a usage error or a refused job, 1 a setup failure.
+`--keep` keeps the temp dir and prints its path. `--workflow <file>` picks
+another file under `.github/workflows` for `--list` and `--dry-run`.
+
+How it keeps a run local and free of secrets:
+
+- act runs in a temp repository that holds only the current commit and the
+  `v*` tags merged into it, never in the worktree. No other branch, tag or
+  object of the source is in it. The test tags and commits exist only there.
+  Its `origin` push URL is `push-disabled-by-act-local`. The temp dir is
+  removed at exit.
+- Every git command runs with no `GIT_*` variable and with
+  `core.hooksPath=/dev/null`, and `git init` uses an empty template, so no
+  git hook of the caller's runs.
+- act gets empty `--secret-file`, `--var-file`, `--env-file` and
+  `--input-file` files, and never `-s`, `--secret`, `--var`, `--env` or
+  `--input`. `--container-daemon-socket -` keeps the Docker socket out of the
+  job containers, and `--rm` removes them.
+- act's environment passes only PATH, USER, LANG, TMPDIR and DOCKER_CONTEXT
+  from the caller. HOME and XDG_CONFIG_HOME are new empty dirs, so act reads no
+  user config. DOCKER_HOST names the caller's Docker. DOCKER_CONFIG is a new
+  dir holding only a `config.json` of `{}`, so act reads no registry credential,
+  even when it pulls an image that is not present. No token (GITHUB_TOKEN,
+  GH_TOKEN, NPM_TOKEN, ANTHROPIC_*) reaches act.
+- The run stops before act starts when an actrc exists at `~/.actrc`,
+  `~/.config/act/actrc`, `~/Library/Application Support/act/actrc` or the
+  clone's `.actrc`: an actrc can add `-s` flags.
+- A real run is allowed only for a job in `RUNNABLE_JOBS`. Any other job exits 2
+  and act never starts. Ctrl-C, SIGTERM and a closed terminal (SIGHUP) reach
+  act, and the temp dir is removed after act exits.
+
+Which `release.yml` jobs can run:
+
+- `bundled-list` runs fully. It reads only the git history of the clone.
+- `build` cannot: it downloads magmux with `gh` and the workflow token, a
+  secret.
+- `release` cannot: it pushes the changelog to main and creates the GitHub
+  Release.
+- `publish-npm` cannot: it publishes to npm over OIDC.
+- `update-homebrew` cannot: it needs `HOMEBREW_TAP_TOKEN` and pushes to the
+  tap. With no variables it is not even planned (`vars.ENABLE_HOMEBREW` is
+  unset).
+
+`--list` and `--dry-run` work for every job. A dry run of the whole
+`release.yml` exits 0; it plans the steps and runs none of them, so its green
+says nothing about whether a step works.
 
 ## Deploy monitoring
 
