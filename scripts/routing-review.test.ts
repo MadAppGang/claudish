@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import {
   existsSync,
   mkdirSync,
@@ -10,6 +10,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { claudeCodeStartupCredential } from "../packages/cli/src/auth/claude-code-login.ts";
 import {
   REVIEW_MODEL,
   REVIEW_PROMPT,
@@ -242,6 +243,21 @@ describe("parseArgs", () => {
   });
 });
 
+/** Claude Code's startup credential read from `env`'s HOME only; the Keychain answers absent. */
+function homeOnlyStartup(env: NodeJS.ProcessEnv) {
+  return claudeCodeStartupCredential({ env, keychainPresence: () => "absent" });
+}
+
+function writeLogin(home: string) {
+  mkdirSync(join(home, ".claude"), { recursive: true });
+  writeFileSync(join(home, ".claude", ".credentials.json"), "{}");
+}
+
+function writeConsoleKey(home: string) {
+  mkdirSync(home, { recursive: true });
+  writeFileSync(join(home, ".claude.json"), JSON.stringify({ primaryApiKey: "test-console-key" }));
+}
+
 const PASS_STDOUT = JSON.stringify({
   type: "result",
   structured_output: { verdict: "PASS", violations: [] },
@@ -250,9 +266,13 @@ const PASS_STDOUT = JSON.stringify({
 /** A review whose commit lookup, export and Claude Code are fakes under one temp directory. */
 function fakeReview(overrides: Partial<ReviewDeps> = {}) {
   const root = mkdtempSync(join(tmpdir(), "routing-review-run-"));
+  const home = join(root, "home");
+  writeLogin(home);
   const spawned: { argv: string[]; cwd: string; env: Record<string, string> }[] = [];
   const deps: Partial<ReviewDeps> = {
-    env: { HOME: join(root, "home"), PATH: "/usr/bin" },
+    env: { HOME: home, PATH: "/usr/bin" },
+    startupCredential: homeOnlyStartup,
+    settingsFiles: () => [join(root, "managed-settings.json")],
     resolveCommit: () => "abc123",
     workingTreeDirty: () => false,
     exportCommit: (_sha, _tar, tree) => {
@@ -267,7 +287,7 @@ function fakeReview(overrides: Partial<ReviewDeps> = {}) {
     },
     ...overrides,
   };
-  return { root, spawned, deps };
+  return { root, home, spawned, deps };
 }
 
 /** The review's own temp directories under `root`. */
@@ -308,5 +328,94 @@ describe("runRoutingReview", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("the review signs only with the Claude Code login", () => {
+  /** Run once, capturing stderr; returns the exit code and what was printed. */
+  async function refusal(setup: (r: ReturnType<typeof fakeReview>) => void) {
+    const review = fakeReview();
+    const printed: string[] = [];
+    const error = spyOn(console, "error").mockImplementation((...parts: unknown[]) => {
+      printed.push(parts.join(" "));
+    });
+    try {
+      setup(review);
+      const code = await runRoutingReview([], review.deps);
+      return { code, printed: printed.join("\n"), review };
+    } finally {
+      error.mockRestore();
+      rmSync(review.root, { recursive: true, force: true });
+    }
+  }
+
+  test("a stored Console key with no claude.ai login refuses, and nothing is spawned", async () => {
+    const { code, printed, review } = await refusal(({ home }) => {
+      rmSync(join(home, ".claude"), { recursive: true, force: true });
+      writeConsoleKey(home);
+    });
+    expect(code).toBe(1);
+    expect(review.spawned).toHaveLength(0);
+    expect(printed).toContain(join(review.home, ".claude.json"));
+    expect(printed).not.toContain("test-console-key");
+  });
+
+  test("a claude.ai login passes", async () => {
+    const { code, review } = await refusal(() => {});
+    expect(code).toBe(0);
+    expect(review.spawned).toHaveLength(1);
+  });
+
+  test("an exported ANTHROPIC_API_KEY never reaches Claude Code's environment", async () => {
+    const { code, review } = await refusal(({ deps }) => {
+      deps.env = { ...deps.env, ANTHROPIC_API_KEY: "test-exported-key" };
+    });
+    expect(code).toBe(0);
+    expect(review.spawned).toHaveLength(1);
+    expect(review.spawned[0]!.env.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(Object.values(review.spawned[0]!.env)).not.toContain("test-exported-key");
+  });
+
+  test("no login at all refuses", async () => {
+    const { code, printed, review } = await refusal(({ home }) => {
+      rmSync(join(home, ".claude"), { recursive: true, force: true });
+    });
+    expect(code).toBe(1);
+    expect(review.spawned).toHaveLength(0);
+    expect(printed).toContain("/login");
+  });
+
+  test("a credential store that did not answer refuses", async () => {
+    const { code, review } = await refusal(({ deps }) => {
+      deps.startupCredential = () => ({ kind: "unknown" });
+    });
+    expect(code).toBe(1);
+    expect(review.spawned).toHaveLength(0);
+  });
+
+  const managed: [string, string][] = [
+    ["an apiKeyHelper", JSON.stringify({ apiKeyHelper: "/bin/echo" })],
+    ["an API key in its env", JSON.stringify({ env: { ANTHROPIC_API_KEY: "test-managed-key" } })],
+    ["an auth token in its env", JSON.stringify({ env: { ANTHROPIC_AUTH_TOKEN: "test-token" } })],
+    ["a base URL in its env", JSON.stringify({ env: { ANTHROPIC_BASE_URL: "http://x" } })],
+    ["unreadable JSON", "{not json"],
+  ];
+  for (const [name, body] of managed) {
+    test(`a settings layer the review loads with ${name} refuses`, async () => {
+      const { code, printed, review } = await refusal(({ root }) => {
+        writeFileSync(join(root, "managed-settings.json"), body);
+      });
+      expect(code).toBe(1);
+      expect(review.spawned).toHaveLength(0);
+      expect(printed).toContain(join(review.root, "managed-settings.json"));
+      expect(printed).not.toContain("test-managed-key");
+    });
+  }
+
+  test("a settings layer with no credential passes", async () => {
+    const { code } = await refusal(({ root }) => {
+      writeFileSync(join(root, "managed-settings.json"), JSON.stringify({ model: "x" }));
+    });
+    expect(code).toBe(0);
   });
 });

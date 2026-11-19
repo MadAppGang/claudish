@@ -150,6 +150,11 @@ Mac, on the owner's own login.
 `.claude.json` from it, and runs `claude -p` there on the user's Claude Code login with
 `--safe-mode`, `--strict-mcp-config`, `--setting-sources project` and only the Read,
 Glob and Grep tools. Uncommitted edits are never reviewed (it warns when there are any).
+It signs only with the claude.ai login: before the export it asks, by presence, which
+credential Claude Code would start with, and refuses (exit 1, nothing started) on a stored
+Console key, no login, a credential store that did not answer, or a managed settings file
+that sets an `apiKeyHelper` or an Anthropic credential or base URL in its `env`. The
+refusal names the store, never a value.
 It prints the verdict and each violation and writes `result.json` beside the export.
 Exit 0 is PASS; exit 1 is FAIL, an unreadable verdict, or Claude Code failing or
 running past 20 minutes; exit 2 is a usage error. Anything but 0 stops the tag.

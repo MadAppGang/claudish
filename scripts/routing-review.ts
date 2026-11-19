@@ -15,18 +15,37 @@
  * reaches Anthropic on the login rather than a proxy or a placeholder key. `--bare` is not used:
  * it reads only an API key, never the login.
  *
+ * The review is signed only with the user's claude.ai login, never an Anthropic API key. Before
+ * anything is exported it asks, by presence, which credential Claude Code would start with
+ * (`claudeCodeStartupCredential`), and refuses when that is a stored Console key, when no login
+ * exists, when a store did not answer, or when the managed settings file (the one settings layer
+ * loaded from outside the export) sets an `apiKeyHelper` or an Anthropic credential, base URL or
+ * cloud provider in its `env`. A refusal names the store, never a value.
+ *
  * Usage:
  *   bun scripts/routing-review.ts [--ref <rev>] [--bin <claude>] [--dry-run]
  * `--ref` defaults to HEAD, `--bin` to `claude` on PATH. `--dry-run` exports the tree and prints
  * the argv and the export path, and starts nothing.
- * Exit 0 on PASS; 1 on FAIL, an unreadable verdict, or Claude Code failing or timing out; 2 on a
- * usage error.
+ * Exit 0 on PASS; 1 on FAIL, an unreadable verdict, a refused credential, or Claude Code failing
+ * or timing out; 2 on a usage error.
  */
 
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
+import {
+  type ClaudeCodeStartupCredential,
+  claudeCodeStartupCredential,
+} from "../packages/cli/src/auth/claude-code-login.ts";
 
 export const REVIEW_PROMPT = `Review this commit against the routing rulebook at
 ai-docs/architecture/routing-rulebook.md.
@@ -228,6 +247,88 @@ export function parseArgs(argv: string[]): Args | string {
   return args;
 }
 
+/** Claude Code's managed settings file: the one settings layer `--setting-sources project` still loads from outside the export. */
+export function managedSettingsPath(platform: NodeJS.Platform = process.platform): string {
+  if (platform === "darwin") return "/Library/Application Support/ClaudeCode/managed-settings.json";
+  if (platform === "win32") {
+    return join(
+      process.env.PROGRAMDATA || "C:\\ProgramData",
+      "ClaudeCode",
+      "managed-settings.json"
+    );
+  }
+  return "/etc/claude-code/managed-settings.json";
+}
+
+// Settings `env` names that sign with something other than the login, or send it elsewhere.
+const SETTINGS_ENV_CREDENTIALS = [
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "ANTHROPIC_BASE_URL",
+  "ANTHROPIC_CUSTOM_HEADERS",
+  "CLAUDE_CODE_USE_BEDROCK",
+  "CLAUDE_CODE_USE_VERTEX",
+];
+
+/** What a settings layer sets that would sign the review with something other than the login. */
+function settingsCredential(text: string): string | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return "cannot be parsed";
+  }
+  if (parsed === null || typeof parsed !== "object") return "is not a JSON object";
+  const settings = parsed as { apiKeyHelper?: unknown; env?: unknown };
+  if (typeof settings.apiKeyHelper === "string" && settings.apiKeyHelper.trim()) {
+    return "sets apiKeyHelper";
+  }
+  const env =
+    settings.env !== null && typeof settings.env === "object"
+      ? (settings.env as Record<string, unknown>)
+      : {};
+  const named = SETTINGS_ENV_CREDENTIALS.find(
+    (name) => typeof env[name] === "string" && (env[name] as string).trim() !== ""
+  );
+  return named ? `sets ${named} in its env` : undefined;
+}
+
+/**
+ * Why the review may not start, or undefined when Claude Code would sign it with the user's
+ * claude.ai login. Presence only: a store is named, a value is never read out or printed. A store
+ * that did not answer refuses too.
+ */
+export function credentialRefusal(
+  childEnv: Record<string, string>,
+  deps: Pick<ReviewDeps, "startupCredential" | "settingsFiles">
+): string | undefined {
+  for (const name of ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]) {
+    if (childEnv[name]) return `Claude Code's environment holds ${name}`;
+  }
+  for (const file of deps.settingsFiles()) {
+    if (!existsSync(file)) continue;
+    let text: string;
+    try {
+      text = readFileSync(file, "utf8");
+    } catch {
+      return `the settings file ${file} cannot be read`;
+    }
+    const found = settingsCredential(text);
+    if (found) return `the settings file ${file} ${found}`;
+  }
+  const startup = deps.startupCredential(childEnv);
+  switch (startup.kind) {
+    case "login":
+      return undefined;
+    case "api-key":
+      return `Claude Code would sign with the Console API key stored in ${startup.where}, not a claude.ai login; run \`claude\` and \`/login\` with your Claude account`;
+    case "none":
+      return "Claude Code has no login; run `claude` and `/login` with your Claude account";
+    default:
+      return "a Claude Code credential store did not answer, so the login cannot be confirmed";
+  }
+}
+
 const repositoryRoot = resolve(import.meta.dir, "..");
 
 function git(args: string[]): string {
@@ -255,6 +356,10 @@ export interface ReviewDeps {
   tmpRoot: string;
   /** Start Claude Code and wait for it. */
   spawnReview: (argv: string[], cwd: string, env: Record<string, string>) => Promise<ReviewRun>;
+  /** The credential Claude Code would start with in `env`, by presence. */
+  startupCredential: (env: NodeJS.ProcessEnv) => ClaudeCodeStartupCredential;
+  /** The settings files Claude Code loads for the review. */
+  settingsFiles: () => string[];
 }
 
 async function spawnClaude(
@@ -295,6 +400,8 @@ function defaultDeps(): ReviewDeps {
     },
     tmpRoot: tmpdir(),
     spawnReview: spawnClaude,
+    startupCredential: (env) => claudeCodeStartupCredential({ env }),
+    settingsFiles: () => [managedSettingsPath()],
   };
 }
 
@@ -367,6 +474,15 @@ export async function runRoutingReview(
     );
   }
 
+  const childEnv = reviewEnv(deps.env);
+  if (!args.dryRun) {
+    const refused = credentialRefusal(childEnv, deps);
+    if (refused) {
+      console.error(`routing-review: refused: ${refused}`);
+      return 1;
+    }
+  }
+
   const { work, tree, removed } = exportTree(sha, deps);
   console.error(
     `routing-review: reviewing ${sha} (${args.ref}); removed ${removed.length} agent files`
@@ -381,7 +497,7 @@ export async function runRoutingReview(
 
   let outcome: Outcome;
   try {
-    outcome = judge(await deps.spawnReview(reviewArgv(args.bin), tree, reviewEnv(deps.env)));
+    outcome = judge(await deps.spawnReview(reviewArgv(args.bin), tree, childEnv));
   } catch (error) {
     const reason = `Claude Code could not start: ${(error as Error).message}`;
     console.error(`routing-review: ${reason}`);
