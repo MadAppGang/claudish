@@ -12,7 +12,8 @@
  * Usage:
  *   bun scripts/boot-canary.ts [--bin <claude binary>] [--scenarios a,b] [--expect <json>] [--out <dir>]
  *                              [--jobs <n>]
- * `--jobs` is how many scenarios boot at once (default 5); 1 boots them one after another.
+ * `--jobs` is how many scenarios boot at once (default: all of them, so the whole run waits for
+ * one boot deadline at most); 1 boots them one after another.
  * Exit 0 when every scenario reads as expected, 1 on any mismatch, 2 on a usage error.
  */
 
@@ -71,8 +72,6 @@ interface Reading {
 const MAX_MS = 25_000;
 /** A boot is read once the screen has been static this long (the logo animates for ~10 s). */
 const QUIET_MS = 4_000;
-/** Scenarios booted at once. A boot is mostly waiting for a quiet screen, so they overlap well. */
-const DEFAULT_JOBS = 5;
 
 function usage(msg: string): never {
   console.error(`boot-canary: ${msg}`);
@@ -303,7 +302,8 @@ async function main(): Promise<void> {
     // a scenario's world directory, socket and reading are keyed by its name
     if (wanted.indexOf(s) !== i) usage(`scenario ${s} is named twice`);
   }
-  const jobs = Number(arg("--jobs") ?? DEFAULT_JOBS);
+  // a boot is mostly a wait for a quiet screen, so every scenario boots at once by default
+  const jobs = Number(arg("--jobs") ?? wanted.length);
   if (!Number.isInteger(jobs) || jobs < 1) usage("--jobs takes a whole number, 1 or more");
   const expectPath = arg("--expect") ?? join(import.meta.dir, "boot-canary.expect.json");
   const outDir = resolve(arg("--out") ?? "canary-out");
