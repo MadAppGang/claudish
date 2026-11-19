@@ -10,6 +10,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { readAllowRules } from "../launcher/read-allow-rules.js";
 import {
   FATAL_MAGMUX_STDERR,
   HOST_IDENTITY_VARS,
@@ -101,8 +102,18 @@ describe("launcher and shim", () => {
     expect(() => paneCommand("/tmp/claude ")).toThrow();
   });
 
-  test("argv is -i --model X -y --quiet --session-id U --add-dir D, then the caller flags", () => {
-    expect(buildClaudishPaneArgv("m", "u", "/d", ["--agent", "x"])).toEqual([
+  test("argv is -i --model X -y --quiet --session-id U, a Read rule on the turn folder, then the caller flags", () => {
+    // A folder under a symlink has two spellings, so two rules, as /tmp has on macOS.
+    const real = mkdtempSync(join(tmpdir(), "real-"));
+    dirs.push(real);
+    mkdirSync(join(real, "target"));
+    symlinkSync(join(real, "target"), join(real, "link"));
+    const turnDir = join(real, "link");
+    const rules = readAllowRules(turnDir);
+    expect(rules).toHaveLength(2);
+    const argv = buildClaudishPaneArgv("m", "u", turnDir, ["--agent", "x"]);
+    // claudish takes one value per flag, so each rule has its own --allowedTools.
+    expect(argv).toEqual([
       "-i",
       "--model",
       "m",
@@ -110,11 +121,15 @@ describe("launcher and shim", () => {
       "--quiet",
       "--session-id",
       "u",
-      "--add-dir",
-      "/d",
+      "--allowedTools",
+      rules[0] as string,
+      "--allowedTools",
+      rules[1] as string,
       "--agent",
       "x",
     ]);
+    // --add-dir stops a pane on the trust question for a folder never trusted before.
+    expect(argv).not.toContain("--add-dir");
   });
 });
 

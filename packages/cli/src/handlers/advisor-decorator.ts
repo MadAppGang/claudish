@@ -94,7 +94,8 @@ declare module "hono" {
 export const ADVISOR_SWAPPED_CONTEXT_KEY = "advisorSwapped" as const;
 
 const ADVISOR_SERVER_TOOL_TYPE = "advisor_20260301";
-const ADVISOR_TOOL_NAME = "advisor";
+/** The name of claudish's advisor function tool, and of the tool_use blocks that call it. */
+export const ADVISOR_TOOL_NAME = "advisor";
 
 /**
  * Cap on a NON-stream body buffered for the id scan. A Messages JSON response

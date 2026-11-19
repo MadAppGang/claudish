@@ -555,7 +555,14 @@ declares `responseEnd` or a session event.
   its promise for the response even when a hook needs the pane (`interactive-launch.ts`, with tests).
   In `ambient` mode the pane is found by `findOwnPane` (process ancestry against `list`), moved to
   `pane/own-pane.ts` and shared with the recovery UI.
-- **Session id.** claudish mints `--session-id` and an `--add-dir` turn directory, unless the user
+- **Turn directory.** claudish creates a `claudish-turns-*` directory (0700) and passes a Read allow
+  rule for it only, `--allowedTools "Read(//<dir>/**)"` (`readAllowRules`, real path plus the given
+  spelling). claudish writes the turn files; the model only Reads them. Not `--add-dir`: measured on
+  Claude Code 2.1.326 with a `responseEnd` hook, the child got `--add-dir …/claudish-turns-…` and
+  stopped at "Adding a new directory: … Is this a directory you created or one you trust? … Your
+  answer holds for this session." A Read rule asks nothing (the compaction measurement in
+  `compaction.md` § The store and retention).
+- **Session id.** claudish mints `--session-id`, unless the user
   passed `--session-id`, `--resume`/`-r`, `--continue`/`-c` or `--fork-session`. Then the driver
   learns the id from the first main-chain proxy request. The driver retargets to any new session id a
   request carries (after `/clear`), whose transcript exists under the launcher's cwd. Known limit, not
@@ -577,7 +584,7 @@ declares `responseEnd` or a session event.
   overwritten by the injection's witness.
 - **Delivery gate.** IDLE, booted, the box drawn and empty with no menu or dialog, not working, the box
   unchanged for 1,500 ms, no recovery overlay lease held. One `send {typed, enter}` of a plain line,
-  or a turn file in the `--add-dir` directory. Never Esc. The text witness must appear within 30 s,
+  or a turn file in the turn directory. Never Esc. The text witness must appear within 30 s,
   else `send_not_accepted`. A **lost reply** (`client_timeout`, `client_lost`) is not a refusal:
   as in a pane's `typeLine`, the driver waits a frame, presses Enter when the line sits in the box,
   and otherwise accepts it when its echo or witness is there. `client_lost` means the connection

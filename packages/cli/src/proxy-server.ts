@@ -9,6 +9,8 @@ import {
   rewriteClassifierForNative,
 } from "./classifier-passthrough.js";
 import { type CodeModeSetting, parseCodeModeSetting } from "./code-mode/policy.js";
+import { applyStoredForms, withCompaction } from "./compaction/decorator.js";
+import type { CompactionRuntime } from "./compaction/runtime.js";
 import {
   type AdvisorPresenceMonitor,
   advisorKeyArmFor,
@@ -104,6 +106,7 @@ import { redactExactValues, redactForClient } from "./redact.js";
 import { warmPricingCache } from "./services/pricing-cache.js";
 import { resolveTokenFilePath } from "./session/token-file.js";
 import { resolveUpstreamUrl } from "./test-upstream.js";
+import { localTokenEstimate } from "./token-estimate.js";
 import type { ProxyServer } from "./types.js";
 
 /**
@@ -275,6 +278,12 @@ export interface ProxyServerOptions {
    * Default `"other"`. The first proxy of a process decides it.
    */
   hostMode?: HostMode;
+  /**
+   * claudish's own context compaction, built at startup (`prepareCompaction`).
+   * Present ⇒ every `/v1/messages` request passes through `withCompaction`, and
+   * `count_tokens` applies the recorded forms. Absent ⇒ off.
+   */
+  compaction?: CompactionRuntime;
 }
 
 /**
@@ -329,6 +338,12 @@ interface RequestResolution {
   nativeModel?: string;
   /** The request's own signing when it differs from the launch's (`login-only`). */
   signing?: NativeSigning;
+  /**
+   * The model spec this request is routed to after the slot map, role
+   * mapping and `--model` (wire markers removed); the requested model itself
+   * when none applied.
+   */
+  target?: string;
 }
 
 /**
@@ -613,11 +628,12 @@ export async function createProxyServer(
   const getHandlerForRequest = async (
     requestedModel: string,
     probeHopOrigin?: "routed",
-    resolved?: { nativeModel?: string; signing?: NativeSigning }
+    resolved?: { nativeModel?: string; signing?: NativeSigning; target?: string }
   ): Promise<ModelHandler> => {
     const out: RequestResolution = {};
     const handler = await resolveHandlerForRequest(requestedModel, out, probeHopOrigin);
     if (out.refusal) return new RefusingHandler(out.refusal);
+    if (resolved && out.target) resolved.target = out.target;
     if (resolved && out.nativeModel) resolved.nativeModel = out.nativeModel;
     if (resolved && out.signing) resolved.signing = out.signing;
     return out.markers && (out.markers.mode || out.markers.speed)
@@ -638,7 +654,10 @@ export async function createProxyServer(
     probeHopOrigin?: "routed"
   ): Promise<ModelHandler> => {
     // 1. Monitor Mode Override
-    if (monitorMode) return nativeHandler;
+    if (monitorMode) {
+      out.target = requestedModel;
+      return nativeHandler;
+    }
 
     // 2. Resolve target model based on mappings or defaults
     // Priority: exact slot map > role mappings > default model (--model) > requested model (native)
@@ -742,6 +761,7 @@ export async function createProxyServer(
         out.markers = markers;
         target = markers.spec;
       }
+      out.target = target;
     } catch (err) {
       if (err instanceof WireMarkerError) {
         out.refusal = err.message;
@@ -1337,6 +1357,8 @@ export async function createProxyServer(
       const resolved: { nativeModel?: string; signing?: NativeSigning } = {};
       const handler = await getHandlerForRequest(body.model, requestProbeHopOrigin(c), resolved);
       if (resolved.nativeModel) body.model = resolved.nativeModel;
+      // The forms `/v1/messages` sends, and no model call, so the count matches.
+      if (options.compaction) applyStoredForms(options.compaction, body);
 
       // If native, we just forward. OpenRouter needs estimation.
       if (handler instanceof NativeHandler) {
@@ -1377,7 +1399,7 @@ export async function createProxyServer(
         // the session usable where a propagated 401 would not.
         if (res.status === 401 || res.status === 403) {
           log(`[CountTokens] upstream ${res.status} — falling back to the local estimate`);
-          return c.json({ input_tokens: Math.ceil(JSON.stringify(body).length / 4) });
+          return c.json({ input_tokens: localTokenEstimate(body) });
         }
 
         // Every other status is the UPSTREAM's, carried through. Discarding it
@@ -1400,8 +1422,7 @@ export async function createProxyServer(
         return c.json(payload, res.status as any);
       }
       // OpenRouter handler logic (estimation)
-      const txt = JSON.stringify(body);
-      return c.json({ input_tokens: Math.ceil(txt.length / 4) });
+      return c.json({ input_tokens: localTokenEstimate(body) });
     } catch (e) {
       if (isTerminalRoutingFailure(e)) {
         return c.json(
@@ -1466,7 +1487,7 @@ export async function createProxyServer(
       // The advisor wrapper goes on the RESOLVED handler (FallbackHandler
       // included), once per request, around the hooks. See `withAdvisor` and
       // `withRequestHooks` above.
-      const resolved: { nativeModel?: string; signing?: NativeSigning } = {};
+      const resolved: { nativeModel?: string; signing?: NativeSigning; target?: string } = {};
       const resolvedHandler = await getHandlerForRequest(
         body.model,
         requestProbeHopOrigin(c),
@@ -1474,7 +1495,18 @@ export async function createProxyServer(
       );
       const signing = resolved.signing ?? defaultRequestSigning(body.model);
       setNativeSigning(c, signing);
-      const handler = withAdvisor(withRequestHooks(resolvedHandler), signing, advisorPresence);
+      // Compaction sits between the two: after the advisor's rewrite of its own
+      // tool_results, before the hooks, which see the compacted body. Its
+      // history limit is the window of the model this request is routed to.
+      const handler = withAdvisor(
+        withCompaction(
+          withRequestHooks(resolvedHandler),
+          options.compaction,
+          resolved.nativeModel ?? resolved.target
+        ),
+        signing,
+        advisorPresence
+      );
       if (resolved.nativeModel) body.model = resolved.nativeModel;
 
       // Route. The `await` is load-bearing: `return handler.handle(...)` hands
@@ -1562,6 +1594,8 @@ export async function createProxyServer(
       await server.stop(true);
       // The advisor chains were handed over at startup; the proxy owns them.
       if (advisorRuntime) await shutdownAdvisorChains(advisorRuntime.chains.values());
+      // Compaction's background summaries and its key's signing lease.
+      if (options.compaction?.shutdown) await options.compaction.shutdown();
       // "No episode may outlive the process that owns its timers" —
       // `closeAllEpisodes`'s own doc, which until now nothing but tests
       // invoked. `server.stop(true)` aborts the client signals, so waiters

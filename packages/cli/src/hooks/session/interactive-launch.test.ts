@@ -1,10 +1,13 @@
 /**
  * The interactive launcher's plan when session hooks are loaded (hook-system §3.2, §7.5,
  * §12 P7): the wrap's second reason, the recovery gate it must NOT open, the session-id
- * mint and the `--add-dir` turn directory.
+ * mint and the Read allow rule for the turn directory.
  */
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { MagmuxPaneCapability } from "../../launcher/magmux-wrapper.js";
 import {
   RETRY_WATCHDOG_OWNER_ENV,
@@ -199,17 +202,37 @@ describe("sessionFlagsOf", () => {
 });
 
 describe("driverLeadingArgs", () => {
-  test("--add-dir is never the last of the leading args a positional could follow", () => {
-    const minted = driverLeadingArgs({ mintedSessionId: "u-1", turnDir: "/t" });
-    expect(minted).toEqual(["--session-id", "u-1", "--add-dir", "/t"]);
-    expect(driverLeadingArgs({ mintedSessionId: null, turnDir: "/t" })).toEqual([
-      "--add-dir",
-      "/t",
+  let turnDir: string;
+  beforeEach(() => {
+    turnDir = mkdtempSync(join(tmpdir(), "claudish-turns-test-"));
+  });
+  afterEach(() => {
+    rmSync(turnDir, { recursive: true, force: true });
+  });
+
+  // Claude Code 2.1.326 asks a trust question for every `--add-dir` folder and the
+  // launch waits on it; a Read allow rule asks nothing. Its paths are the folder's real
+  // spelling and, when it differs (`/var` → `/private/var`), the spelling given.
+  const readRules = (dir: string) =>
+    [...new Set([realpathSync(dir), dir])].map((p) => `Read(/${p}/**)`);
+
+  test("the turn folder gets a Read allow rule and no --add-dir", () => {
+    const minted = driverLeadingArgs({ mintedSessionId: "u-1", turnDir });
+    expect(minted).toEqual(["--session-id", "u-1", "--allowedTools", ...readRules(turnDir)]);
+    expect(driverLeadingArgs({ mintedSessionId: null, turnDir })).toEqual([
+      "--allowedTools",
+      ...readRules(turnDir),
     ]);
+    expect(minted).not.toContain("--add-dir");
+  });
+
+  test("the variadic --allowedTools list is ended before a positional prompt", () => {
+    const minted = driverLeadingArgs({ mintedSessionId: "u-1", turnDir });
     // claude-runner puts these ahead of its own `--settings <file>`, which ends the
-    // variadic list: a prompt after it can never be read as a directory.
+    // variadic list: a prompt after it can never be read as a rule.
     const argv = [...minted, "--settings", "/s.json", "hello"];
-    const at = argv.indexOf("--add-dir");
-    expect(argv[at + 2]?.startsWith("-")).toBe(true);
+    const at = argv.indexOf("--allowedTools");
+    const next = argv.slice(at + 1).findIndex((a) => a.startsWith("-"));
+    expect(argv[at + 1 + next]).toBe("--settings");
   });
 });

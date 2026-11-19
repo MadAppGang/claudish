@@ -485,7 +485,7 @@ describe("team-orchestrator", () => {
         probe.replace("{session}", slot?.sessionUuid as string)
       );
       // REQ-105: A parent pin is marked explicitly, including a pin of one spec.
-      // -i --model <spawnModel> --model-pinned -y --quiet --session-id <uuid> --add-dir <turn dir>
+      // -i --model <spawnModel> --model-pinned -y --quiet --session-id <uuid> --allowedTools Read(<turn dir>)
       expect(argv.slice(0, 7)).toEqual([
         "-i",
         "--model",
@@ -496,7 +496,9 @@ describe("team-orchestrator", () => {
         "--session-id",
       ]);
       expect(argv[7]).toBe(slot?.sessionUuid as string);
-      expect(argv[8]).toBe("--add-dir");
+      expect(argv[8]).toBe("--allowedTools");
+      expect(argv[9]).toMatch(/^Read\(\/\/.*\/launch-[A-Za-z0-9]{6}\/\*\*\)$/);
+      expect(argv).not.toContain("--add-dir");
       for (const banned of ["-p", "--print", "--stdin", "--output-format", "--verbose", "--json"])
         expect(argv).not.toContain(banned);
 

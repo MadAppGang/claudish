@@ -1075,14 +1075,21 @@ describe.skipIf(!MAGMUX)(`end to end: claudish -i ${MAGMUX ? "" : NO_MAGMUX_MESS
       return existsSync(p) ? readFileSync(p, "utf8").split("\n").filter(Boolean) : [];
     };
     try {
-      // Claude Code's argv: the minted id and the turn dir lead, `--settings` ends the list
+      // Claude Code's argv: the minted id and the turn dir's Read rules lead,
+      // `--settings` ends the variadic list. No `--add-dir`: it stops the launch on a
+      // trust question.
       await until(() => existsSync(dump), "the fake Claude Code's argv dump", 30_000);
       const argv = JSON.parse(readFileSync(dump, "utf8")).argv as string[];
       expect(argv[0]).toBe("--session-id");
       const sid = argv[1] as string;
       expect(sid).toMatch(/^[0-9a-f-]{36}$/);
-      expect(argv[2]).toBe("--add-dir");
-      expect(argv[4]).toBe("--settings");
+      expect(argv[2]).toBe("--allowedTools");
+      const settingsAt = argv.indexOf("--settings");
+      const rules = argv.slice(3, settingsAt);
+      expect(rules.length).toBeGreaterThan(0);
+      for (const rule of rules)
+        expect(rule).toMatch(/^Read\(\/\/.*\/claudish-turns-[^/]+\/\*\*\)$/);
+      expect(argv).not.toContain("--add-dir");
       // wait for the REPL, then type as the human
       await Bun.sleep(1_500);
       const sent = await human.request({

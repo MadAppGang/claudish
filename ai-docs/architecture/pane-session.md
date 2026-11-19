@@ -28,7 +28,7 @@ owner (MCP server or CLI team) ── spawn, detached, stdin = pipe ──▶ pa
                                COLUMNS=160 LINES=50 (launch size), SHELL=<ctl>/sh-shim
                                └─ pane 0: sh-shim -l -c ". pane-launch.sh"  =  /bin/sh -c …
                                     └─ cd -- '<realpath cwd>' || exit 97
-                                       exec claudish -i --model <spawnModel> -y --quiet --session-id <uuid> --add-dir <turnDir> [caller flags]
+                                       exec claudish -i --model <spawnModel> -y --quiet --session-id <uuid> --allowedTools "Read(/<turnDir>/**)" [caller flags]
                                             └─ bun → claude   (writes <config>/projects/<slug>/<uuid>.jsonl)
 ```
 
@@ -39,9 +39,17 @@ owner (MCP server or CLI team) ── spawn, detached, stdin = pipe ──▶ pa
   characters. The pid plus start time makes a dead owner detectable even after its pid is reused.
 - Two directories per pane, both `mkdtemp(<root>/launch-)`: the **control** directory
   (`pane-launch.sh`, `sh-shim`, `magmux.pid`, `group`) and the **turn** directory (`turn-<n>.md`
-  only), which is the one the child gets as `--add-dir`. The model is never pointed at the control
+  only), which is the one the child gets a Read allow rule for. The model is never pointed at the control
   files (R3-M2). Before any `rm`, both the TypeScript and the watcher's shell check that a path is a
   direct child of the root named `launch-` plus six `[A-Za-z0-9]`.
+- **The turn directory is a Read allow rule, never `--add-dir`** (`readAllowRules`,
+  `launcher/read-allow-rules.ts`; the real path and, when it differs, the given one). Measured on
+  Claude Code 2.1.326 with the pane child's own argv, `-y` included and bypass mode already
+  accepted: `--add-dir <new launch-XXXXXX>` stops the boot on "Adding a new directory … Is this a
+  directory you created or one you trust?" (a `dialog:trust` the pane never answers, so the session
+  fails `first_run_dialog`), and every `launch-` folder is new. The Read rule boots to the input box
+  with no question. The child only Reads `turn-<n>.md` there, so Read is all it needs, and the rule
+  adds to a caller's own `--allowedTools`.
 - **The pane is DECLARED to magmux's Claude Code controller**, and that declaration is bound to one
   transcript: `--controller claude-code --session-id <uuid> --transcript <path>` comes before the
   `-e` it binds, with the same uuid claudish passes Claude Code and the same path its transcript

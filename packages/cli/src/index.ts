@@ -1560,6 +1560,37 @@ async function runCli() {
       await reportModelLineup(cliConfig, lineup);
     }
 
+    // Compaction is built before the port is bound: its key and model resolve
+    // here, once. Anything that stops it (no key, a model that does not
+    // resolve) turns it off with one warning, and the launcher then adds no
+    // `--add-dir` for it.
+    let compactionRuntime: import("./compaction/runtime.js").CompactionRuntime | null = null;
+    let compactionSettings: import("./compaction/config.js").CompactionSettings;
+    {
+      // An unreadable `compaction` block warns on every launch, also when
+      // compaction is off: the block may be the one meant to turn it on.
+      const [{ compactionStartupSettings }, { loadConfig }, { logStderr }] = await Promise.all([
+        import("./compaction/config.js"),
+        import("./profile-config.js"),
+        import("./logger.js"),
+      ]);
+      compactionSettings = compactionStartupSettings(
+        loadConfig(),
+        cliConfig.compaction === true,
+        logStderr
+      );
+    }
+    if (cliConfig.compaction) {
+      const [{ prepareCompaction, compactionMayPromptForKey }, { compactionKeepSessionIds }] =
+        await Promise.all([import("./compaction/runtime.js"), import("./compaction/launch.js")]);
+      compactionRuntime = await prepareCompaction({
+        settings: compactionSettings,
+        allowOpPrompt: compactionMayPromptForKey(),
+        keepSessionIds: compactionKeepSessionIds(cliConfig.claudeArgs, resumedSessionId),
+      });
+      if (!compactionRuntime) cliConfig.compaction = false;
+    }
+
     const proxy = await traceSpan("startup:proxy-start", () =>
       createProxyServer(
         port,
@@ -1608,6 +1639,7 @@ async function runCli() {
           modelParams: cliConfig.modelParams,
           proOnUltracode: cliConfig.proOnUltracode,
           codeMode: cliConfig.codeMode,
+          ...(compactionRuntime ? { compaction: compactionRuntime } : {}),
           // Proxy events run in the process that hosts the proxy: a pane child
           // for MCP/team slots, the interactive launcher otherwise.
           hostMode: isPaneChild() ? "pane-child" : cliConfig.interactive ? "interactive" : "other",

@@ -33,6 +33,9 @@ import {
 } from "./auth/claudish-placeholder.js";
 import type { ChildAuthControl, ChildAuthSource } from "./child-auth-types.js";
 import { classifierPassthroughEnabled } from "./classifier-passthrough.js";
+import { setLaunchAutoCompactWindow } from "./compaction/history.js";
+import { compactionLaunchArgs } from "./compaction/launch.js";
+import { compactionRoot } from "./compaction/store.js";
 import { ENV } from "./config.js";
 import { applyProxyFastModeGates, scrubInheritedFastModeGates } from "./fast-mode-gates.js";
 import { CLAUDE_LOGIN_BEARER } from "./handlers/shared/anthropic-forward.js";
@@ -1009,11 +1012,41 @@ export function settingsClaudeLoginToken(
   env: NodeJS.ProcessEnv = process.env,
   deps: ChildAuthControlDeps = {}
 ): SettingsLoginToken {
+  const found = settingsEnvValue("CLAUDE_CODE_OAUTH_TOKEN", config, env, deps);
+  if (found.kind !== "set") return found.kind;
+  const nonEmpty = found.values.some((value) => value.trim().length > 0);
+  const empty = found.values.some((value) => value.trim().length === 0);
+  if (nonEmpty && empty) return "unknown";
+  return nonEmpty ? "set" : "cleared";
+}
+
+/**
+ * What the settings layers the child applies give one `env` variable:
+ *
+ * - `set`: the highest tier whose layers name it as a string; `values` holds
+ *   every such layer's value in that tier (an empty string included, since
+ *   Claude Code writes it over the launch environment's value);
+ * - `absent`: no layer names it; the launch environment's value stands;
+ * - `unknown`: a layer at or above the deciding tier could not be read.
+ *
+ * Reads the layers `childAuthControl` reads (managed, `--settings`, local,
+ * project, user, in that precedence), with `--setting-sources` honoured.
+ */
+export type SettingsEnvValue =
+  | { kind: "set"; values: readonly string[] }
+  | { kind: "absent" }
+  | { kind: "unknown" };
+
+export function settingsEnvValue(
+  name: string,
+  config: ClaudishConfig,
+  env: NodeJS.ProcessEnv = process.env,
+  deps: ChildAuthControlDeps = {}
+): SettingsEnvValue {
   const layers = readableClaudeSettingsLayers(config, env, deps);
   for (const tier of SETTINGS_TIER_ORDER) {
     let unreadable = false;
-    let nonEmpty = false;
-    let empty = false;
+    const values: string[] = [];
     for (const layer of layers) {
       if (layer.tier !== tier) continue;
       if (layer.settings === null) {
@@ -1022,16 +1055,32 @@ export function settingsClaudeLoginToken(
       }
       const block = layer.settings.env;
       if (!block || typeof block !== "object") continue;
-      const value = (block as Record<string, unknown>).CLAUDE_CODE_OAUTH_TOKEN;
-      if (typeof value !== "string") continue;
-      if (value.trim().length > 0) nonEmpty = true;
-      else empty = true;
+      const value = (block as Record<string, unknown>)[name];
+      if (typeof value === "string") values.push(value);
     }
-    if (unreadable || (nonEmpty && empty)) return "unknown";
-    if (nonEmpty) return "set";
-    if (empty) return "cleared";
+    if (unreadable) return { kind: "unknown" };
+    if (values.length > 0) return { kind: "set", values };
   }
-  return "absent";
+  return { kind: "absent" };
+}
+
+/**
+ * Record, for history compaction, the `CLAUDE_CODE_AUTO_COMPACT_WINDOW` Claude
+ * Code will run with. A settings layer's `env` block overwrites the environment
+ * the child is given, so the deciding layer's value wins over `env`'s; an empty
+ * one clears it. The launch environment's value stands when no layer names the
+ * variable, when a layer at or above the deciding tier cannot be read, and when
+ * the deciding tier's layers disagree.
+ */
+export function recordLaunchAutoCompactWindow(
+  config: ClaudishConfig,
+  env: NodeJS.ProcessEnv,
+  deps: ChildAuthControlDeps = {}
+): void {
+  const fromEnv = env[ENV.CLAUDE_CODE_AUTO_COMPACT_WINDOW];
+  const found = settingsEnvValue(ENV.CLAUDE_CODE_AUTO_COMPACT_WINDOW, config, env, deps);
+  const distinct = found.kind === "set" ? new Set(found.values) : undefined;
+  setLaunchAutoCompactWindow(distinct?.size === 1 ? [...distinct][0] : fromEnv);
 }
 
 /** A non-managed tier's rank in Claude Code's precedence, higher wins. */
@@ -3450,20 +3499,44 @@ export async function runClaudeWithProxy(
     sessionHooksNeedDriver: hookEngine !== null && sessionHooksNeedBinding(hookEngine),
   });
   const sessionFlags = sessionFlagsOf(config.claudeArgs);
+  // Compaction's recovery files are Read from the session's own folder, allowed
+  // by a Read rule for that folder only. The session id must be known before
+  // Claude Code starts, so claudish mints one unless the user's arguments fix it
+  // or leave it to Claude Code (`--continue`, a bare `--resume`), when nothing is
+  // added. Nothing is written to the child's environment.
+  let compactionMintedId: string | null = null;
+  if (config.compaction === true) {
+    const compaction = compactionLaunchArgs(config.claudeArgs, compactionRoot());
+    claudeArgs.unshift(...compaction.leadingArgs);
+    compactionMintedId = compaction.mintedSessionId;
+  }
   let driverLaunch: { sink: InProcessSink; turnDir: string; sessionId: string | null } | null =
     null;
   if (surfaces.driver) {
     // The transcript path must be known from boot, so claudish mints the session id
-    // unless the user named one or asked Claude Code to resume. Long injections go to a
-    // turn file the model Reads from the `--add-dir` directory (no prompt there: S2b).
-    const minted = sessionFlags.sessionId || sessionFlags.resumes ? null : randomUUID();
+    // unless the user named one, asked Claude Code to resume, or compaction minted
+    // one above. Long injections go to a turn file the model Reads from the turn
+    // directory, allowed by a Read rule for that directory only (no prompt there).
+    const minted =
+      sessionFlags.sessionId || sessionFlags.resumes || compactionMintedId ? null : randomUUID();
     const turnDir = mkdtempSync(join(tmpdir(), "claudish-turns-"));
     chmodSync(turnDir, 0o700);
     claudeArgs.unshift(...driverLeadingArgs({ mintedSessionId: minted, turnDir }));
     const sink = new InProcessSink();
     // Installed before Claude Code starts, so its first request already reports here.
     setProcessSink(sink);
-    driverLaunch = { sink, turnDir, sessionId: minted ?? sessionFlags.sessionId };
+    driverLaunch = {
+      sink,
+      turnDir,
+      sessionId: minted ?? compactionMintedId ?? sessionFlags.sessionId,
+    };
+  }
+
+  if (config.compaction === true) {
+    // History compaction measures each request against the lower of the
+    // model's catalog window and the auto-compact window Claude Code runs with,
+    // its settings layers included.
+    recordLaunchAutoCompactWindow(config, env);
   }
 
   const wrap =
@@ -3570,8 +3643,8 @@ export async function runClaudeWithProxy(
     noSurfaceSession = startNoSurfaceSession(hookEngine, {
       kind: "interactive",
       role: null,
-      id: sessionFlags.sessionId ?? "",
-      claudeSessionId: sessionFlags.sessionId,
+      id: compactionMintedId ?? sessionFlags.sessionId ?? "",
+      claudeSessionId: compactionMintedId ?? sessionFlags.sessionId,
       model: sessionModel,
       cwd: process.cwd(),
       shape: config.interactive ? "interactive" : "one-shot",

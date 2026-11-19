@@ -36,6 +36,7 @@
  * rows could never be routed.
  */
 
+import { lookupModelCapabilities } from "../adapters/model-catalog.js";
 import {
   type ClaudeCodeStartupCredential,
   claudeCodeStartupCredential,
@@ -67,6 +68,7 @@ import { normalizeNativeModelSpec } from "../providers/claude-code-aliases.js";
 import {
   MODEL_CHAIN_SEPARATOR,
   type ParsedModelFlags,
+  concurrencySuffixRefusal,
   parseModelSpec,
 } from "../providers/model-parser.js";
 import {
@@ -378,6 +380,53 @@ export interface DecideClaudeLaunchDeps {
   paneChild?: boolean;
   /** Default `shadowedEndpointRefusal`: a spec on a custom endpoint name a Claude builtin took over. */
   shadowedEndpointRefusal?: (specs: readonly string[]) => string | null;
+  /** Default: the cloud models catalog has an entry for the id (`lookupModelCapabilities`). */
+  knowsModelId?: (id: string) => boolean;
+}
+
+/** True when the cloud models catalog has an entry for `id`, by model id or alias. */
+function catalogKnowsModelId(id: string): boolean {
+  try {
+    return lookupModelCapabilities(id) !== undefined;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The first refusal among the named specs: a `claude@` spec the subscription
+ * cannot serve, or a `:N` suffix on a provider without a request cap. A chain a
+ * parent claudish pinned holds routed hops, wire ids included, so its `:N` is
+ * not checked again. The main model of a Claude API launch is left to
+ * `claudeApiLaunchRefusal`, whose message names the reason for that launch.
+ */
+function namedSpecRefusal(
+  named: readonly string[],
+  opts: {
+    pinned: boolean;
+    claudeApiMain: string | undefined;
+    knowsModelId: ((id: string) => boolean) | undefined;
+  }
+): string | null {
+  const knowsModelId = opts.knowsModelId ?? catalogKnowsModelId;
+  for (const spec of named) {
+    const checkSuffix = !opts.pinned && spec !== opts.claudeApiMain;
+    const refusal =
+      claudeSubscriptionSpecRefusal(spec) ??
+      (checkSuffix ? concurrencySuffixRefusal(spec, knowsModelId) : null);
+    if (refusal) return refusal;
+  }
+  return null;
+}
+
+/** The one main model that starts a Claude API launch (a monitor session), or undefined. */
+function claudeApiLaunchMain(
+  specs: readonly string[],
+  deps: DecideClaudeLaunchDeps
+): string | undefined {
+  const main = specs.length === 1 ? specs[0] : undefined;
+  if (main === undefined || !isClaudeApiSpec(main)) return undefined;
+  return (deps.paneChild ?? isPaneChild()) ? undefined : main;
 }
 
 /**
@@ -417,11 +466,12 @@ export function decideClaudeLaunch(
   );
   const shadowed = (deps.shadowedEndpointRefusal ?? shadowedEndpointRefusal)(named);
   if (shadowed) return { ok: false, message: shadowed };
-  for (const spec of [...specs, ...tiers]) {
-    if (typeof spec !== "string" || spec.length === 0) continue;
-    const refusal = claudeSubscriptionSpecRefusal(spec);
-    if (refusal) return { ok: false, message: refusal };
-  }
+  const refusal = namedSpecRefusal(named, {
+    pinned: config.modelPinned === true,
+    claudeApiMain: claudeApiLaunchMain(specs, deps),
+    knowsModelId: deps.knowsModelId,
+  });
+  if (refusal) return { ok: false, message: refusal };
   // A `claude@` tier is the Claude subscription named explicitly: the proxy
   // serves it on the native passthrough, and the whole launch keeps the login.
   if (tiers.some((spec) => typeof spec === "string" && isClaudeSubscriptionSpec(spec))) {

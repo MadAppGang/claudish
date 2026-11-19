@@ -350,6 +350,16 @@ export interface ClaudishProfileConfig {
    * (`harness-gateway.ts`); `loadConfig` stays Zod-free.
    */
   harnessGateway?: Record<string, unknown>;
+
+  /**
+   * claudish's own context compaction: `{ enabled, model, toolOutputs, history }`.
+   * Default OFF: it sends tool output to Anthropic and bills the user's
+   * Anthropic API key. Precedence for `enabled`: --compaction/--no-compaction
+   * flag > CLAUDISH_COMPACTION env > this field > false. Global config (or the
+   * `--config` file) only; validated at the consumption site
+   * (`compaction/config.ts`), so `loadConfig` stays Zod-free.
+   */
+  compaction?: Record<string, unknown>;
 }
 
 /**
@@ -499,6 +509,11 @@ export function loadConfig(): ClaudishProfileConfig {
     // save, and sessions silently stop going through the gateway.
     if (config.harnessGateway !== undefined) {
       merged.harnessGateway = config.harnessGateway;
+    }
+    // Same trap: omitted here, the compaction block is dropped at the first
+    // global save, and compaction silently stops turning on.
+    if (config.compaction !== undefined) {
+      merged.compaction = config.compaction;
     }
     return merged;
   } catch (error) {

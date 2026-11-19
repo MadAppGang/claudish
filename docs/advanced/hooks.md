@@ -805,6 +805,10 @@ forwards its traffic unchanged and loads no hooks. When a hook must run on a nat
 `claude@<id>` runs as a normal session), or a bare Claude name such as `claudish --model
 claude-sonnet-<version>`.
 
+claudish also has its own compaction, which needs no hook and also runs in monitor sessions:
+`--compaction` compresses large tool outputs with a small Claude model and swaps in a summary of
+the earlier conversation. It signs with your Anthropic API key. See [Compaction](compaction.md).
+
 ### rtk
 
 The hook below sends each `Bash` command to `rtk rewrite`. When rtk returns a different command,

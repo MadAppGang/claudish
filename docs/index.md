@@ -116,6 +116,7 @@ Then just ask Claude:
 - **[Cost Tracking](advanced/cost-tracking.md)** - Monitor your API spending
 - **[Automation](advanced/automation.md)** - Pipes, scripts, CI/CD integration
 - **[Hooks](advanced/hooks.md)** - Your own code at named points of a request and a session: rewrite requests and responses, start a new turn
+- **[Compaction](advanced/compaction.md)** - Compress large tool outputs and summarise earlier turns with a small Claude model, on every route
 
 ### AI Integration
 - **[For AI Agents](ai-integration/for-agents.md)** - How Claude sub-agents should use Claudish

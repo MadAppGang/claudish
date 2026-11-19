@@ -22,6 +22,26 @@ claudish --model ollama@<model>:3 "task"   # 3 concurrent requests
 `claudish --help` lists every provider shortcut, generated from `BUILTIN_PROVIDERS`
 (`providerShortcutRows`, `cli.ts`).
 
+### `:N` is a request cap on local providers only
+
+Only `LocalTransport` reads a concurrency cap, so `parseModelSpec` splits a trailing `:N` only
+when the provider is `isLocal` (ollama, lmstudio, vllm, mlx; `splitLocalConcurrency`,
+`model-parser.ts`). On every other provider `:<digits>` stays in the model id. That matters
+because some catalog wire ids end in one: Ollama Cloud maps `deepseek-v4-pro-0813` to the wire id
+`deepseek-v4-pro:0813`, and a routed hop is built as `provider@wireId`. Cutting it sent
+`deepseek-v4-pro` with a cap of 813.
+
+A spec that ends in `:N` on any other provider, or a bare name ending in `:N`, is refused at launch
+before any routing (`concurrencySuffixRefusal`, called from `decideClaudeLaunch`). The message
+names the spec and the local providers. Measured before the refusal (claudish 14.27.3,
+`--probe`): `glm-5-turbo:1` routed to OpenRouter as "fallback only", and `glm@glm-5-turbo:1`
+answered "account does not serve it". Two exceptions are not refused:
+
+- an id the cloud models catalog knows, by model id or alias, is a model, not a suffix
+  (`ollamacloud@deepseek-v4-pro:0813`);
+- a chain a parent claudish pinned (`modelPinned`) holds routed hops, wire ids from a dynamic
+  models catalog included, so it is not checked again.
+
 ## Provider Shortcuts
 - `g@`, `google@` → Google Gemini (direct API, `GEMINI_API_KEY`)
 - `ag@`, `antigravity@` → Antigravity (Gemini via your Antigravity subscription — see `ai-docs/architecture/providers/antigravity.md`)

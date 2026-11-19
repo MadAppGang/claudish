@@ -42,6 +42,7 @@ import {
 import { ENV } from "../config.js";
 import { findMagmuxCandidates } from "../launcher/magmux-binary.js";
 import { STRIPPED_CHILD_VARS } from "../launcher/magmux-wrapper.js";
+import { readAllowRules } from "../launcher/read-allow-rules.js";
 import { log } from "../logger.js";
 import { resolveClaudishSpawn } from "../spawn-claudish.js";
 import { isPaneShellManagedKey } from "./child-env.js";
@@ -425,6 +426,10 @@ export function readUserStatusLine(configDir: string): unknown | null {
  * `spawnPinned` is true when `spawnModel` is the parent's pin for a bare name
  * (`SpawnPlan.pinned`): `--model-pinned` tells the child its elements are routed
  * hops. A model the caller named is passed without it.
+ *
+ * The turn folder is granted as Read allow rules, never `--add-dir`: an added
+ * folder that was never trusted stops the pane on Claude Code's trust question,
+ * bypass mode included. `turnDir` must exist, since the rules name its real path.
  */
 export function buildClaudishPaneArgv(
   spawnModel: string,
@@ -442,8 +447,9 @@ export function buildClaudishPaneArgv(
     "--quiet",
     "--session-id",
     sessionUuid,
-    "--add-dir",
-    turnDir,
+    // The child Reads its turn files there and does nothing else in it. One flag
+    // per rule: claudish takes one value per flag, and a second value is a prompt.
+    ...readAllowRules(turnDir).flatMap((rule) => ["--allowedTools", rule]),
     ...callerFlags,
   ];
 }
@@ -992,7 +998,7 @@ export function paneCommand(ctlDir: string): string {
 export interface LaunchDirs {
   /** control directory: pane-launch.sh, sh-shim, magmux.pid, group — never shown to the model */
   ctlDir: string;
-  /** turn directory: turn-<n>.md only; the child's `--add-dir` (R3-M2) */
+  /** turn directory: turn-<n>.md only; the child's Read allow rule (R3-M2) */
   turnDir: string;
 }
 
