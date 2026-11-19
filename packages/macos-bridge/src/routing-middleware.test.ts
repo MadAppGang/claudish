@@ -1,7 +1,26 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+// The bundled recommended list is regenerated at every version bump, so the "bundled" case
+// takes its model from that list: the first OpenAI model whose openai connection speaks
+// responses.
+const BUNDLED_RESPONSES_MODEL = (
+  JSON.parse(
+    readFileSync(
+      join(import.meta.dir, "../../cli/src/providers/bundled-recommended-list.json"),
+      "utf8"
+    )
+  ) as {
+    entries: Array<{
+      modelId: string;
+      provider?: string;
+      endpoints?: { openai?: { api?: string } };
+    }>;
+  }
+).entries.find((e) => e.provider === "openai" && e.endpoints?.openai?.api === "responses")?.modelId;
+if (!BUNDLED_RESPONSES_MODEL) throw new Error("no bundled model speaks responses on openai");
 
 // Import runtime code only after the child's HOME has been isolated.
 // catalog: "file" writes a catalog file; "none" has no catalog file and the bundled
@@ -11,7 +30,12 @@ test.each([
   ["oai/gpt-6.1-sol", "file", "https://api.openai.com/v1/responses", "max_output_tokens"],
   ["openai/gpt-6.1-sol", "file", "https://openrouter.ai/api/v1/chat/completions", "max_tokens"],
   ["oai/gpt-6.1-sol", "none", "https://api.openai.com/v1/chat/completions", "max_tokens"],
-  ["oai/gpt-6.1-sol", "bundled", "https://api.openai.com/v1/responses", "max_output_tokens"],
+  [
+    `oai/${BUNDLED_RESPONSES_MODEL}`,
+    "bundled",
+    "https://api.openai.com/v1/responses",
+    "max_output_tokens",
+  ],
 ] as const)(
   "bridge %s with catalog=%s uses the expected upstream wire",
   (model, catalog, endpoint, limit) => {
