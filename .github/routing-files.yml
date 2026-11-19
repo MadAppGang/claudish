@@ -35,6 +35,7 @@ routing:
   - 'packages/cli/src/picker/PickerDataSource.ts'
   - 'packages/cli/src/picker/ModelPicker.tsx'
   - 'packages/cli/scripts/generate-bundled-list.ts'
+  - 'scripts/routing-review.ts'
   - 'ai-docs/architecture/routing-rulebook.md'
   - 'ai-docs/architecture/routing.md'
   - '.github/routing-files.yml'

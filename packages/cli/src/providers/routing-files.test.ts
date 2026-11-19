@@ -223,6 +223,7 @@ describe("R4.2 RB-16 RB-27: routing review filter is complete", () => {
       "ai-docs/architecture/routing-rulebook.md",
       "ai-docs/architecture/routing.md",
       "packages/cli/scripts/generate-bundled-list.ts",
+      "scripts/routing-review.ts",
       ".github/routing-files.yml",
       ".github/workflows/routing-rulebook.yml",
       ".github/workflows/routing-fork-guard.yml",
