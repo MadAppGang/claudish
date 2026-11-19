@@ -233,6 +233,17 @@ test("a long styled turn swaps mid-turn and keeps its inline system messages ver
 
   const lines = await capturedLines();
   expect(lines.some((l) => l.includes("history swap") && l.includes("mid-turn"))).toBe(true);
+  const contextChars = (CONTEXT.content[0] as { text: string }).text.length;
+  const reminderChars = (STYLE_REMINDER.content[0] as { text: string }).text.length;
+  expect(
+    lines.some(
+      (l) =>
+        l.includes("history swap") &&
+        l.endsWith(
+          `; 2 inline system messages kept verbatim (${contextChars}, ${reminderChars} characters)`
+        )
+    )
+  ).toBe(true);
 
   // The next request of the turn replays the same bytes.
   const c = styledTurn(9);

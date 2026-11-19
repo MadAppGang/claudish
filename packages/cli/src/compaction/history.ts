@@ -1484,8 +1484,13 @@ function logSwap(sessionId: string, swap: HistorySwapRecord, original: readonly 
     const sha = createHash("sha256").update(text).digest("hex").slice(0, 12);
     pinnedPart = `; the turn's prompt, message ${swap.pinned} (${text.length} characters, sha256 ${sha}), kept verbatim after the summary`;
   }
+  const kept = keptInlineSystemMessages(original, swap.boundary);
+  const keptPart =
+    kept.length === 0
+      ? ""
+      : `; ${kept.length} inline system message${kept.length === 1 ? "" : "s"} kept verbatim (${kept.map((m) => messageText(m).length).join(", ")} characters)`;
   log(
-    `[compaction] history swap in session ${sessionId}${midTurn ? " mid-turn, after a complete tool round" : ""}: messages 0..${swap.boundary} replaced by a summary of ${swap.summary.length} characters${pinnedPart}`
+    `[compaction] history swap in session ${sessionId}${midTurn ? " mid-turn, after a complete tool round" : ""}: messages 0..${swap.boundary} replaced by a summary of ${swap.summary.length} characters${pinnedPart}${keptPart}`
   );
 }
 
