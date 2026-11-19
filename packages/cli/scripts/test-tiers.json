@@ -19,8 +19,16 @@
       "guards": "the cached Devin credential follows a replaced file, and an unreadable file never clears it"
     },
     {
-      "file": "src/handlers/composed-handler-accounts-2a.test.ts",
-      "guards": "once a request signed OAuth, its requireOAuth latch stays set for every later sign, so a subscription request never signs with a metered key"
+      "file": "src/handlers/composed-handler-accounts-2a-reauth.test.ts",
+      "guards": "a pooled Codex request never reaches Codex signed with the metered key: a metered signing is refused, and an unreachable or failing token host is classified with no upstream contact"
+    },
+    {
+      "file": "src/handlers/composed-handler-accounts-2a-rotation.test.ts",
+      "guards": "once a request signed OAuth, its requireOAuth latch stays set for every later sign: a forced re-sign and a quota rotation keep the selected account's artifact"
+    },
+    {
+      "file": "src/handlers/composed-handler-accounts-2a-sites.test.ts",
+      "guards": "a refresh, account-list or persist failure at each of the five auth sites is classified transient or terminal with no billing probe and no metered contact, and an account-list read failure keeps Codex routing and reserves OAuth"
     },
     {
       "file": "src/handlers/v14-merge-fixes.test.ts",

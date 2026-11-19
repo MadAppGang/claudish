@@ -399,7 +399,9 @@ describe("validateTiers", () => {
         "src/auth/grok-oauth.reload.test.ts",
         "src/auth/kimi-oauth.reload.test.ts",
         "src/providers/devin/devin-credentials.reload.test.ts",
-        "src/handlers/composed-handler-accounts-2a.test.ts",
+        "src/handlers/composed-handler-accounts-2a-reauth.test.ts",
+        "src/handlers/composed-handler-accounts-2a-rotation.test.ts",
+        "src/handlers/composed-handler-accounts-2a-sites.test.ts",
         "src/handlers/v14-merge-fixes.test.ts",
       ])
     );
