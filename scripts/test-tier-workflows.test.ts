@@ -1,14 +1,46 @@
 /**
  * Which test tier each workflow runs: pull requests and pushes run the essential tier, a manual
- * dispatch runs the full tier (packages/cli/scripts/ci-tests.ts, test-tiers.json).
+ * dispatch and the weekly run take the github tier (packages/cli/scripts/ci-tests.ts,
+ * test-tiers.json), and how the rest slices are spread over jobs.
  */
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import {
+  discover,
+  filesInTier,
+  forPlatform,
+  groupOf,
+  loadTiers,
+  slices,
+} from "../packages/cli/scripts/ci-tests.ts";
 import { bunPinOf } from "./test-macos.ts";
 
 const WORKFLOWS = join(import.meta.dir, "..", ".github", "workflows");
 const read = (name: string) => readFileSync(join(WORKFLOWS, name), "utf8");
+
+/**
+ * The heaviest slice a GitHub job may hold, in ci-test-times.json seconds. A slice's real time
+ * on ubuntu-latest has run near its weight (weights of 25 took 21-30 s), and a job adds 10-20 s
+ * of setup, so 22 keeps a job well under the 50 s CI budget.
+ */
+const SLICE_BUDGET_SECONDS = 22;
+
+/** The `rest` matrix: one entry per job, each naming its slices (`rest@1/18,rest@7/18,…`). */
+type RestJob = { job: number; slices: string };
+
+const restJobs = (workflow: string): RestJob[] =>
+  // biome-ignore lint/suspicious/noExplicitAny: a parsed workflow is untyped YAML
+  (Bun.YAML.parse(workflow) as any).jobs.rest.strategy.matrix.include;
+
+/** `rest@1/18,rest@7/18` → its slice numbers and the slice count. */
+function parseSlices(specs: string): { i: number; n: number }[] {
+  return specs.split(",").map((spec) => {
+    const m = /^rest@(\d+)\/(\d+)$/.exec(spec);
+    if (!m) throw new Error(`"${spec}" is not a rest slice`);
+    return { i: Number(m[1]), n: Number(m[2]) };
+  });
+}
 
 /** The lines of one job (`  <job>:` up to the next job key). */
 function jobBlock(workflow: string, job: string): string {
@@ -57,26 +89,72 @@ describe("test.yml", () => {
     return matrix;
   };
 
-  test("the Linux idle slices run the essential tier, and the full tier on a dispatch", () => {
+  test("the Linux idle slices run the essential tier, and the github tier on a dispatch", () => {
     const runs = ciTestsRuns(jobBlock(yml, "idle"));
     expect(runs).toHaveLength(1);
     expect(runs[0]).toContain(`--run idle@\${{ matrix.slice }}/${slicesOf("idle").length}`);
     expect(runs[0]).toContain(
-      "--tier ${{ github.event_name == 'workflow_dispatch' && 'full' || 'essential' }}"
+      "--tier ${{ github.event_name == 'workflow_dispatch' && 'github' || 'essential' }}"
     );
   });
 
-  test("the Linux rest slices run on every pull request: essential tier, full on a dispatch", () => {
+  test("the Linux rest jobs run on every pull request: essential tier, github on a dispatch", () => {
     const block = jobBlock(yml, "rest");
     expect(block).toContain("runs-on: ubuntu-latest");
     expect(block).not.toMatch(/^ {4}if:/m);
     const runs = ciTestsRuns(block);
     expect(runs).toHaveLength(1);
-    expect(runs[0]).toContain(`--run rest@\${{ matrix.slice }}/${slicesOf("rest").length}`);
+    expect(runs[0]).toContain("--run ${{ matrix.slices }} ");
     expect(runs[0]).toContain(
-      "--tier ${{ github.event_name == 'workflow_dispatch' && 'full' || 'essential' }}"
+      "--tier ${{ github.event_name == 'workflow_dispatch' && 'github' || 'essential' }}"
     );
     expect(bunPinOf(yml, "rest")).toBe(bunPinOf(yml, "idle") as string);
+  });
+
+  test("the rest jobs take every slice exactly once, the heaviest three in three jobs", () => {
+    const jobs = restJobs(yml);
+    expect(jobs.map((j) => j.job)).toEqual(jobs.map((_, i) => i + 1));
+    const specs = jobs.map((j) => parseSlices(j.slices));
+    const n = specs[0]?.[0]?.n ?? 0;
+    expect(n).toBeGreaterThan(0);
+    const taken = specs.flat();
+    expect(taken.every((s) => s.n === n)).toBe(true);
+    expect(taken.map((s) => s.i).sort((a, b) => a - b)).toEqual(
+      Array.from({ length: n }, (_, i) => i + 1)
+    );
+    // The planner hands the heaviest files to slices 1, 2 and 3 first.
+    const jobOf = (i: number) => specs.findIndex((ss) => ss.some((s) => s.i === i));
+    expect(new Set([jobOf(1), jobOf(2), jobOf(3)]).size).toBe(3);
+  });
+
+  test(`no rest or idle slice weighs over ${SLICE_BUDGET_SECONDS} s in a tier a GitHub job runs`, () => {
+    const data = loadTiers();
+    const times = JSON.parse(
+      readFileSync(
+        join(import.meta.dir, "..", "packages", "cli", "scripts", "ci-test-times.json"),
+        "utf8"
+      )
+    ) as Record<string, number>;
+    const files = forPlatform(discover(), data, "linux");
+    const restCount = parseSlices(restJobs(yml)[0]?.slices ?? "")[0]?.n ?? 0;
+    const counts = { rest: restCount, idle: slicesOf("idle").length };
+    const heavy: string[] = [];
+    for (const tier of ["essential", "github"] as const) {
+      for (const [group, count] of Object.entries(counts)) {
+        const inGroup = filesInTier(
+          files.filter((f) => groupOf(f) === group),
+          tier,
+          data,
+          times
+        );
+        slices(inGroup, count, times).forEach((s, i) => {
+          if (s.seconds > SLICE_BUDGET_SECONDS) {
+            heavy.push(`${tier} ${group}@${i + 1}/${count}: ${s.seconds.toFixed(1)} s`);
+          }
+        });
+      }
+    }
+    expect(heavy).toEqual([]);
   });
 
   test("the dispatched macOS hermetic runners run the full tier", () => {
@@ -101,10 +179,10 @@ describe("weekly-tests.yml", () => {
     expect("workflow_dispatch" in wf.on).toBe(true);
   });
 
-  test("runs the full tier of the idle slices, with the Bun test.yml pins", () => {
+  test("runs the github tier of the idle slices, with the Bun test.yml pins", () => {
     const runs = ciTestsRuns(jobBlock(text, "idle"));
     expect(runs).toHaveLength(1);
-    expect(runs[0]).toContain("--run idle@${{ matrix.slice }}/3 --tier full");
+    expect(runs[0]).toContain("--run idle@${{ matrix.slice }}/3 --tier github");
     expect(wf.jobs.idle.strategy.matrix.slice).toEqual([1, 2, 3]);
     expect(bunPinOf(text, "idle")).toBe(bunPinOf(testYml, "idle") as string);
     expect(bunPinOf(text, "scripts")).toBe(bunPinOf(testYml, "scripts") as string);
@@ -149,7 +227,7 @@ describe("weekly-tests.yml", () => {
     expect(linuxTieredJobs(yml)).toEqual(["plain", "matrixed"]);
   });
 
-  test("every Linux ci-tests.ts job of test.yml runs here in the full tier, same slices and Bun", () => {
+  test("every Linux ci-tests.ts job of test.yml runs here in the github tier, same slices and Bun", () => {
     // biome-ignore lint/suspicious/noExplicitAny: a parsed workflow is untyped YAML
     const prJobs = (Bun.YAML.parse(testYml) as any).jobs as Record<string, any>;
     const linuxTiered = linuxTieredJobs(testYml);
@@ -158,9 +236,16 @@ describe("weekly-tests.yml", () => {
       expect(wf.jobs[job]).toBeDefined();
       const runs = ciTestsRuns(jobBlock(text, job));
       expect(runs).toHaveLength(1);
-      const slices = prJobs[job].strategy.matrix.slice as number[];
-      expect(runs[0]).toContain(`--run ${job}@\${{ matrix.slice }}/${slices.length} --tier full`);
-      expect(wf.jobs[job].strategy.matrix.slice).toEqual(slices);
+      if (job === "rest") {
+        expect(runs[0]).toContain("--run ${{ matrix.slices }} --tier github");
+        expect(restJobs(text)).toEqual(restJobs(testYml));
+      } else {
+        const shards = prJobs[job].strategy.matrix.slice as number[];
+        expect(runs[0]).toContain(
+          `--run ${job}@\${{ matrix.slice }}/${shards.length} --tier github`
+        );
+        expect(wf.jobs[job].strategy.matrix.slice).toEqual(shards);
+      }
       expect(bunPinOf(text, job)).toBe(bunPinOf(testYml, job) as string);
       expect(wf.jobs[job].env.CLAUDISH_SKIP_LIVE_E2E).toBe("1");
       expect(wf.jobs[job].env.CLAUDISH_DISABLE_CATALOG_WARM).toBe("1");

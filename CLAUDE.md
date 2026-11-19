@@ -225,8 +225,9 @@ negative case: if you are about to type one of those words, stop and use the lef
   <k>/7`) under launchd, installed with `bun scripts/install-weekly-macos-tests.ts`
   (`--uninstall`). Each part writes `~/Library/Logs/claudish-weekly-tests/part<k>.json`; a red
   part also writes `RED-<date>-part<k>.json` (date, part, commit, failing tests, log) for triage
-  and a notification. `weekly-tests.yml` runs the Linux full tier on Sunday 11:00 UTC. Promoting
-  a test: `testing.md`.
+  and a notification. `weekly-tests.yml` runs the Linux github tier on Sunday 11:00 UTC: the
+  essential files plus every weekly file measured under `githubMaxSeconds`, so no GitHub job
+  holds a file that alone takes it past a minute. Promoting a test: `testing.md`.
 - `bun run typecheck`, `bun run lint`, `bun run format`
 - `claudish --probe <model>` shows the adapter composition; `--debug` writes a log to `logs/`.
 - Model syntax is `provider@model[:concurrency]` (`google@gemini-2.0-flash`, `ollama@llama3.2:3`); a bare name routes by a matching user routing rule, else by the chain gathered from the cloud models catalog and the accounts' dynamic models catalogs. Prefix meanings: `routing.md`.

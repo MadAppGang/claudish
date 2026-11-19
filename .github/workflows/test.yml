@@ -30,9 +30,17 @@ name: Tests
 # request and a push run the ESSENTIAL tier of the idle and rest slices: at most three listed
 # files per slow category, whatever their time, the pinned files, and, outside the slow
 # categories, no other file measured at the data file's heavySeconds or more. A manual dispatch
-# runs the FULL tier everywhere. The rest is the WEEKLY tier: weekly-tests.yml runs the Linux
-# full tier on Sunday, and scripts/weekly-macos-tests.ts runs one weekly-tier part a night on
-# the owner's Mac.
+# runs the GITHUB tier on Linux: the essential files plus every weekly file measured under the
+# data file's githubMaxSeconds (10 s), so that no job holds a file that alone takes it past a
+# minute. weekly-tests.yml runs the same github tier on Sunday. The rest is the WEEKLY tier, and
+# scripts/weekly-macos-tests.ts runs one weekly-tier part a night on the owner's Mac, the files
+# the github tier leaves out (recovery-ladder 67 s, claude-runner-exit-code 62.5 s, ...)
+# included.
+#
+# THE TIME BUDGET: every run of this workflow finishes in under a minute, and each job well under
+# 50 s. A long check moves to the Mac (`bun run test:macos`, the nightly parts); a timeout is
+# never raised to make room. scripts/test-tier-workflows.test.ts fails when a slice of a GitHub
+# job weighs more than its budget.
 
 on:
   pull_request:
@@ -51,16 +59,16 @@ jobs:
   # long as its slowest slice, not as long as the whole suite (about 25 minutes run whole).
   # packages/cli/scripts/ci-tests.ts owns the file list, the groups, the tiers and the slices;
   # the slices are balanced by scripts/ci-test-times.json (refresh it from the junit of a
-  # full-tier run, the weekly ones included: `bun scripts/ci-tests.ts --update-times
-  # junit-*.xml`). The same table decides which files are heavy, so a refresh can move a file
-  # between tiers.
+  # dispatched or weekly run: `bun scripts/ci-tests.ts --update-times junit-*.xml`). The same
+  # table decides which files are heavy, so a refresh can move a file between tiers.
   #
   # WHERE EACH GROUP RUNS, measured on PR #328 (run 39545203694):
   # - idle (recovery ladders, the grok refresh ceiling) passes 54/54 on ubuntu and is CPU-idle,
   #   so it runs there, in three slices.
   # - pane (real magmux panes) stays on macOS: on ubuntu-latest it fails 23 tests. It runs on a
   #   manual dispatch and in the local gate (`bun run test:macos`), not on every PR.
-  # - rest also runs on Linux, in the rest job below, in six slices, on every PR. The files written for the
+  # - rest also runs on Linux, in the rest job below, on every PR: 6 jobs, each running 3 of
+  #   18 slices as concurrent processes. The files written for the
   #   darwin-only shared Antigravity token store are listed in test-tiers.json's macOnly, and
   #   ci-tests.ts drops them off darwin.
   # The org is on the free plan: 5 macOS jobs at once across every repo, against 20 Linux
@@ -161,7 +169,7 @@ jobs:
       - run: bun install --frozen-lockfile
       - name: Tests
         working-directory: packages/cli
-        run: bun scripts/ci-tests.ts --run idle@${{ matrix.slice }}/3 --tier ${{ github.event_name == 'workflow_dispatch' && 'full' || 'essential' }} -- --reporter=junit --reporter-outfile=junit-{label}.xml
+        run: bun scripts/ci-tests.ts --run idle@${{ matrix.slice }}/3 --tier ${{ github.event_name == 'workflow_dispatch' && 'github' || 'essential' }} -- --reporter=junit --reporter-outfile=junit-{label}.xml
         timeout-minutes: 10
       - uses: actions/upload-artifact@v5
         if: always()
@@ -169,13 +177,30 @@ jobs:
           name: junit-idle-${{ matrix.slice }}
           path: packages/cli/junit-*.xml
 
+  # Each job runs three slices of 18 as concurrent `bun test` processes (ci-tests.ts prefixes
+  # each output line with its slice). A test file runs in one process on one core, and the
+  # public repository's ubuntu-latest runner has 4 vCPUs, so three slices take about as long as
+  # one. Job k runs slices k, k+6 and k+12: the planner gives slices 1-3 the heaviest files
+  # (the pinned Codex pool tests, about 20 s each), so no job holds two of them.
   rest:
-    name: hermetic · rest ${{ matrix.slice }}/6
+    name: hermetic · rest ${{ matrix.job }}/6
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        slice: [1, 2, 3, 4, 5, 6]
+        include:
+          - job: 1
+            slices: rest@1/18,rest@7/18,rest@13/18
+          - job: 2
+            slices: rest@2/18,rest@8/18,rest@14/18
+          - job: 3
+            slices: rest@3/18,rest@9/18,rest@15/18
+          - job: 4
+            slices: rest@4/18,rest@10/18,rest@16/18
+          - job: 5
+            slices: rest@5/18,rest@11/18,rest@17/18
+          - job: 6
+            slices: rest@6/18,rest@12/18,rest@18/18
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       CLAUDISH_SKIP_LIVE_E2E: "1"
@@ -188,12 +213,12 @@ jobs:
       - run: bun install --frozen-lockfile
       - name: Tests
         working-directory: packages/cli
-        run: bun scripts/ci-tests.ts --run rest@${{ matrix.slice }}/6 --tier ${{ github.event_name == 'workflow_dispatch' && 'full' || 'essential' }} -- --reporter=junit --reporter-outfile=junit-{label}.xml
+        run: bun scripts/ci-tests.ts --run ${{ matrix.slices }} --tier ${{ github.event_name == 'workflow_dispatch' && 'github' || 'essential' }} -- --reporter=junit --reporter-outfile=junit-{label}.xml
         timeout-minutes: 15
       - uses: actions/upload-artifact@v5
         if: always()
         with:
-          name: junit-rest-${{ matrix.slice }}
+          name: junit-rest-${{ matrix.job }}
           path: packages/cli/junit-*.xml
 
   hermetic:
