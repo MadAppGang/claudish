@@ -37,10 +37,13 @@ name: Tests
 # the github tier leaves out (recovery-ladder 67 s, claude-runner-exit-code 62.5 s, ...)
 # included.
 #
-# THE TIME BUDGET: every job of this workflow finishes well under 50 s, and every run in under a
+# THE TIME BUDGET (a target): every job of this workflow well under 50 s, every run under a
 # minute. A long check moves to the Mac (`bun run test:macos`, the nightly parts); a timeout is
-# never raised to make room. scripts/test-tier-workflows.test.ts fails when a slice of a job
-# weighs more than its budget, or when a job names a macOS runner.
+# never raised to make room. scripts/test-tier-workflows.test.ts checks the planned slices only:
+# it fails when a slice's recorded test seconds pass 22 s, or when a job names a macOS runner.
+# It cannot see setup (10-20 s a job), queueing behind other runs (20 Linux jobs at once on the
+# account), or a file's load time that ci-test-times.json records as 0 s. Read real job times
+# with `gh run view <id> --json jobs`.
 
 on:
   pull_request:

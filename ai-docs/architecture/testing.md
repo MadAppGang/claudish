@@ -33,7 +33,10 @@ plus every weekly file measured under `githubMaxSeconds` (10 s) in `test-tiers.j
 measured yet (a file `ci-test-times.json` lacks weighs 1 s and is kept). `bun run
 test` and `test:safe` stay a plain `bun test` of every file.
 
-**Why the github tier exists: every Linux GitHub job finishes well under 50 s.** Jack's rule
+**Why the github tier exists: the target is every Linux GitHub job well under 50 s.** The guard
+in `scripts/test-tier-workflows.test.ts` checks planned slice weights (22 s of recorded test
+time), not job time: setup, queueing behind other runs and load time recorded as 0 s are outside
+it, so real times come from `gh run view <id> --json jobs`. Jack's rule
 (2026-11-19): a GitHub workflow run takes under 1 minute, aim 50 s; long validation runs on the
 Mac, which has no limit, and a timeout is never raised to make room. A slice cannot be lighter
 than its heaviest file, and a job adds 10-20 s of setup, so a file such as
