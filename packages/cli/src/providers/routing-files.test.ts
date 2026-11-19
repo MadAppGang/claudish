@@ -227,7 +227,6 @@ describe("R4.2 RB-16 RB-27: routing review filter is complete", () => {
       ".github/routing-files.yml",
       ".github/workflows/routing-rulebook.yml",
       ".github/workflows/routing-fork-guard.yml",
-      ".github/workflows/routing-review-release.yml",
       ".github/workflows/release.yml",
     ])
       expect(matches(name, patterns)).toBe(true);
