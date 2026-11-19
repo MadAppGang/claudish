@@ -626,7 +626,6 @@
   "src/providers/remote-provider-registry.test.ts": 0,
   "src/providers/route-candidates.test.ts": 0,
   "src/providers/route-description.test.ts": 0,
-  "src/providers/routing-files.test.ts": 0.4,
   "src/providers/routing-rules.availability-deadline.test.ts": 0,
   "src/providers/routing-rules.gateway-refusal.test.ts": 0.6,
   "src/providers/routing-rules.muse-code.test.ts": 0,
