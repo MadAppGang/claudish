@@ -577,9 +577,9 @@ export function magmuxPinOfThisMac(): MagmuxPin {
 }
 
 /**
- * Installs the pinned magmux into `magmux/` under this run's directory, as
- * .github/actions/install-magmux does on a runner: `gh release download` of the pinned tag's
- * asset, the pinned SHA-256, untar, and `--version` must print the pinned version. The
+ * Installs the pinned magmux into `magmux/` under this run's directory: `gh release download`
+ * of the pinned tag's asset, the pinned SHA-256, untar, and `--version` must print the pinned
+ * version. The
  * directory goes first on every step's PATH. The Mac's own magmux (Homebrew) is never used
  * or changed. Needs `gh` signed in.
  */

@@ -48,8 +48,8 @@ the GitHub Release as a prerelease, which is the only variant.
    "successfully" and then fails to find the binary at runtime.
 3. **External prerequisite, every release** — the build downloads magmux from
    `MadAppGang/magmux`, a different repository, at the tag pinned in
-   `.github/magmux.env` (with a checksum per platform; `bun run test:macos` and the
-   dispatched macOS jobs of `test.yml` install the same pin). The pin, not that repo's latest release, decides what ships. If the pinned
+   `.github/magmux.env` (with a checksum per platform; `bun run test:macos` installs the
+   same pin). The pin, not that repo's latest release, decides what ships. If the pinned
    release lacks a platform asset or a checksum does not match, the build fails
    before anything publishes. Preflight lists the PINNED tag's assets.
 
@@ -57,11 +57,10 @@ the GitHub Release as a prerelease, which is the only variant.
 
 `release.yml`, triggered by `push` of a tag matching `v*`. It runs **no tests**.
 `test.yml` triggers on `pull_request`, `push` to `main` and `workflow_dispatch`;
-`pull_request` and `push` run only its Linux jobs, the essential tier of the `idle` and
-`rest` groups among them. The macOS suites (pane and rest,
-macos-bridge, the blind hook tests, the macOS rows of hooks-loading) run only on a
-dispatch (`gh workflow run Tests --ref <branch>`) and in `bun run test:macos`, which
-must be green on a Mac before the tag (`CLAUDE.md`, Releasing). The blind hook
+every trigger runs Linux jobs only, the `idle` and `rest` groups among them. No GitHub
+workflow starts a macOS runner. The macOS suites (pane and rest, macos-bridge, the blind
+hook tests, hook loading on macOS) run only on this Mac, in `bun run test:macos`, which
+must be green before the tag (`CLAUDE.md`, Releasing). The blind hook
 tests and the hook loading (S1) tests run locally under `bun run test:macos --full` and in
 the last nightly part (`--part 7/7`); the default `bun run test:macos` skips them. In CI, the Linux `hooks-loading` job runs
 the S1 tests on every pull request and push. The tag is therefore
@@ -70,16 +69,17 @@ the gate: everything must be green before the tag leaves the machine.
 **Tiers.** Pull requests and `bun run test:macos` run the ESSENTIAL tier
 (`packages/cli/scripts/test-tiers.json`: the files listed for each slow category, at most
 three, whatever their time; the `pinned` files, whatever their time; and, outside the slow
-categories, no other file measured at 2 s or more); a dispatch of `test.yml` and
-`bun run test:macos --full` run
-the FULL tier. The WEEKLY tier (full minus essential) runs on the owner's Mac in 7
+categories, no other file measured at 2 s or more); `bun run test:macos --full` runs
+the FULL tier. A dispatch of `test.yml` and `weekly-tests.yml` run the GITHUB tier: the
+essential files plus every weekly file measured under `githubMaxSeconds` or not measured,
+so every GitHub job stays under 50 s. The WEEKLY tier (full minus essential) runs on the owner's Mac in 7
 nightly parts, one a night at 03:00 local: `scripts/weekly-macos-tests.ts` under launchd
 runs `bun run test:macos --part <k>/7` on origin's main, k being the part with no result or
 the oldest result, and writes
 `~/Library/Logs/claudish-weekly-tests/part<k>.json`. A red part also writes
 `RED-<UTC date>-part<k>.json` (date, part, commit, failing tests, log path) and shows a
 notification naming it; triage reads and deletes the marker. `weekly-tests.yml` runs the
-Linux full tier every Sunday (11:00 UTC; a failed run opens or updates the issue "Weekly
+Linux github tier every Sunday (11:00 UTC; a failed run opens or updates the issue "Weekly
 full test run failed"). The release gate is `bun run test:macos` on the release commit,
 `bun scripts/weekly-macos-tests.ts --check` (every part green within 7 days) and
 `bun run review:routing` on the release commit (a PASS verdict). A green
@@ -355,8 +355,8 @@ SETTLED, then SUPERSEDED — the magmux source. On 2026-09-23 (v10.0.2) the buil
 kept downloading the LATEST release of `MadAppGang/magmux`. Since `7563ab21`
 (10.4.0) it is PINNED: `.github/magmux.env` holds the tag and one checksum per
 platform, `release.yml` refuses a pin below `MIN_MAGMUX_VERSION` and verifies each
-download, and the pane suites run against the same pin in `bun run test:macos` and in
-`test.yml`'s dispatched macOS jobs (no pull request runs them) — MCP slots run in
+download, and the pane suites run against the same pin in `bun run test:macos` on this
+Mac (no GitHub workflow runs them) — MCP slots run in
 magmux panes, so the magmux that ships must be the one that was tested, and a new
 magmux release must not change what an existing claudish tag ships. A missing asset
 or checksum mismatch BLOCKS the release before anything publishes. Bump the pin
