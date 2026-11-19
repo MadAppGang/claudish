@@ -125,15 +125,25 @@ PR that also fails on a clean export of `origin/main` is not the release's, but
 it is still a red gate: make the test hermetic (seed the catalog; disable and
 reset the warm) and re-run, rather than tag over it.
 
-The only Claude Code boot check is the "Claude Code boot canary" step of
-`bun run test:macos` (both tiers, no nightly part). It boots each spawn shape against the
-Claude Code pinned in `.github/claude-code.version`, fetched with `npm pack` (the
+The Claude Code boot check that gates a release is the "Claude Code boot canary" step of
+`bun run test:macos` (the essential and the full tier). It boots each spawn shape against
+the Claude Code pinned in `.github/claude-code.version`, fetched with `npm pack` (the
 per-platform package; the Mac's own Claude Code is never used), with every scenario
 booting at once (`--jobs`). Read the step's lines: a scenario that booted and read
 differently means the pane boot reader no longer matches Claude Code, and a scenario that
 did not boot or connect is a failed start. Fix the first, and rerun the gate for the
-second. npm's newest Claude Code is booted only once `.github/claude-code.version` is
-bumped to it.
+second.
+
+Nightly part 1 (`bun run test:macos --part 1/7`) also boots npm's `latest` Claude Code,
+with `scripts/boot-canary-latest.ts`. This step is advisory. The summary shows it as
+`ADVISORY PASS` or `ADVISORY FAIL`, and it never makes the gate red. An `ADVISORY FAIL`
+tells you that a new Claude Code release breaks a spawn shape before the pin moves to it.
+No workflow file runs a canary.
+
+Each run writes its canary output (`results.json` and one screen per spawn shape) to a
+new temp directory of its own. The gate prints its path as `canary output: <dir>`, and
+the advisory step writes to `<dir>-latest`. The gate does not remove these directories;
+macOS removes old files in `$TMPDIR`.
 
 **No GitHub workflow installs, downloads or runs Claude Code.**
 `scripts/no-claude-code-in-ci.test.ts` (in test.yml's `scripts` job on every pull
