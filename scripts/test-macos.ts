@@ -771,6 +771,7 @@ if (import.meta.main) {
   // fetches anything: a run that stops there never reaches the step, and what an earlier run
   // read must not stay at the path this run names. A `--dry-run` removes nothing.
   const canaryOut = join(tmpdir(), "claudish-boot-canary");
+  if (!part && !dryRun) removeCanaryOutput(canaryOut);
 
   const workflow = readFileSync(WORKFLOW, "utf8");
   const hermeticPin = bunPinOf(workflow, "hermetic");
@@ -799,7 +800,6 @@ if (import.meta.main) {
   const unfetched = planFor(() => "");
   const versions = [...new Set(unfetched.map((g) => g.bun.version))];
   const bootsClaudeCode = unfetched.some((g) => g.steps.some((s) => s.name === CANARY_STEP));
-  if (bootsClaudeCode && !dryRun) removeCanaryOutput(canaryOut);
   const magmuxPin = magmuxPinOfThisMac();
   const claudePin = bootsClaudeCode ? claudeCodePinOfThisMac() : undefined;
 
