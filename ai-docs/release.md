@@ -60,8 +60,8 @@ the GitHub Release as a prerelease, which is the only variant.
 every trigger runs Linux jobs only, the `idle` and `rest` groups among them. No GitHub
 workflow starts a macOS runner. The `pane` group, the `macOnly` files of `idle` and `rest`
 (skipped on Linux), macos-bridge, the blind hook tests and hook loading on macOS run only
-on this Mac, in `bun run test:macos`, which
-must be green before the tag (`CLAUDE.md`, Releasing). The blind hook
+on this Mac. `bun run test:macos` runs the essential tier of `pane`, `idle` and `rest`, and
+macos-bridge, and must be green before the tag (`CLAUDE.md`, Releasing). The blind hook
 tests and the hook loading (S1) tests run locally under `bun run test:macos --full` and in
 the last nightly part (`--part 7/7`); the default `bun run test:macos` skips them. In CI, the Linux `hooks-loading` job runs
 the S1 tests on every pull request and push. The tag is therefore
