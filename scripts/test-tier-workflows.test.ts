@@ -26,6 +26,13 @@ const read = (name: string) => readFileSync(join(WORKFLOWS, name), "utf8");
  */
 const SLICE_BUDGET_SECONDS = 22;
 
+/**
+ * The most slices one rest job runs. Each is a concurrent `bun test` process, and the public
+ * repository's ubuntu-latest runner has 4 vCPUs; a fourth process would share a core with the
+ * runner's own work and stretch every slice of its job.
+ */
+const MAX_SLICES_PER_JOB = 3;
+
 /** The `rest` matrix: one entry per job, each naming its slices (`rest@1/18,rest@7/18,…`). */
 type RestJob = { job: number; slices: string };
 
@@ -115,6 +122,7 @@ describe("test.yml", () => {
     const jobs = restJobs(yml);
     expect(jobs.map((j) => j.job)).toEqual(jobs.map((_, i) => i + 1));
     const specs = jobs.map((j) => parseSlices(j.slices));
+    for (const s of specs) expect(s.length).toBeLessThanOrEqual(MAX_SLICES_PER_JOB);
     const n = specs[0]?.[0]?.n ?? 0;
     expect(n).toBeGreaterThan(0);
     const taken = specs.flat();
