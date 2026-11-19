@@ -73,8 +73,8 @@ three, whatever their time; the `pinned` files, whatever their time; and, outsid
 categories, no other file measured at 2 s or more); `bun run test:macos --full` runs
 the FULL tier. A dispatch of `test.yml` and `weekly-tests.yml` run the GITHUB tier: the
 essential files plus every weekly file measured under `githubMaxSeconds` or not measured.
-Weekly files measured at `githubMaxSeconds` or more run only on this Mac; essential and
-pinned files run on GitHub whatever their time. The target is every GitHub job under 50 s;
+Weekly files measured at `githubMaxSeconds` or more run only on this Mac. The target is
+every GitHub job under 50 s;
 the tier does not cap a job's wall time (`ai-docs/architecture/testing.md`). The WEEKLY tier (full minus essential) runs on the owner's Mac in 7
 nightly parts, one a night at 03:00 local: `scripts/weekly-macos-tests.ts` under launchd
 runs `bun run test:macos --part <k>/7` on origin's main, k being the part with no result or
@@ -82,7 +82,7 @@ the oldest result, and writes
 `~/Library/Logs/claudish-weekly-tests/part<k>.json`. A red part also writes
 `RED-<UTC date>-part<k>.json` (date, part, commit, failing tests, log path) and shows a
 notification naming it; triage reads and deletes the marker. `weekly-tests.yml` runs the
-Linux github tier every Sunday (11:00 UTC; a failed run opens or updates the issue "Weekly
+Linux github tier every Sunday (11:00 UTC; a failed run on `main` opens or updates the issue "Weekly
 full test run failed"). The release gate is `bun run test:macos` on the release commit,
 `bun scripts/weekly-macos-tests.ts --check` (every part green within 7 days) and
 `bun run review:routing` on the release commit (a PASS verdict). A green
