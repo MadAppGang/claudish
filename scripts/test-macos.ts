@@ -777,7 +777,8 @@ if (import.meta.main) {
     .sort()
     .map((f) => `./${f}`);
   // What the canary read (one screen per spawn shape, results.json) outlives the run directory,
-  // so a red canary can be read after the gate exits. The next run overwrites it.
+  // so a red canary can be read after the gate exits. The next run that has the canary step
+  // removes it before it fetches anything.
   const canaryOut = join(tmpdir(), "claudish-boot-canary");
   const planFor = (exeOf: (version: string) => string, claude = "") =>
     planSteps({
@@ -824,6 +825,9 @@ if (import.meta.main) {
   // Everything this run fetches lives under one directory of its own, removed when it exits.
   const runDir = mkdtempSync(join(tmpdir(), "claudish-test-macos-"));
   process.on("exit", () => rmSync(runDir, { recursive: true, force: true }));
+  // A run that stops in a fetch never reaches the canary step, so what an earlier run read
+  // must not stay at the path this run names.
+  if (bootsClaudeCode) rmSync(canaryOut, { recursive: true, force: true });
 
   // A signal to the gate goes to the running step's process group; the gate waits for that
   // step to exit (the guard restores what it guards), then stops with no further step. Between
