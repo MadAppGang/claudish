@@ -254,8 +254,8 @@ describe("large conversation streaming", () => {
     // The live heap after a full collection, from `heapStats().heapSize`. Bun 1.3's
     // `process.memoryUsage().heapUsed` is the size recorded at the last EDEN collection:
     // `Bun.gc(true)` does not update it, and an eden collection counts every promoted dead
-    // chunk as live. An eden collection in the middle of this read made it report 30 MB
-    // that nothing held.
+    // chunk as live. After an eden collection in the middle of this read, it can report
+    // tens of MB of dead chunks as a heap delta that nothing holds.
     Bun.gc(true);
     const heapBefore = heapStats().heapSize;
     const conversation = readConversation(file);
