@@ -138,7 +138,8 @@ bumped to it.
 **No GitHub workflow installs, downloads or runs Claude Code.**
 `scripts/no-claude-code-in-ci.test.ts` (in test.yml's `scripts` job on every pull
 request) parses every workflow and fails on `anthropics/claude-code-action`, an
-`@anthropic-ai/claude-code` package, the `ANTHROPIC_API_KEY` or
+`@anthropic-ai/claude-code` package, the standalone installer or a release download
+(`claude.ai/install`, `downloads.claude.ai`, a `claude-code` release URL), the `ANTHROPIC_API_KEY` or
 `CLAUDE_CODE_OAUTH_TOKEN` secret, a `claude` command (also inside a quoted
 `bash`/`sh`/`zsh`/`dash -c` or `eval` string), or a step that starts a script that
 downloads or runs Claude Code: `scripts/boot-canary.ts`, `scripts/routing-review.ts`,

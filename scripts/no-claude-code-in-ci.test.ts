@@ -13,6 +13,7 @@ import { join, resolve } from "node:path";
 type FindingKind =
   | "claude-code-action"
   | "claude-code-package"
+  | "claude-code-installer"
   | "anthropic-secret"
   | "claude-command"
   | "claude-code-script";
@@ -26,6 +27,9 @@ interface Finding {
 
 const ACTION = /anthropics\/claude-code-action/;
 const PACKAGE = "@anthropic-ai/claude-code";
+// The standalone installer and release downloads of the Claude Code binary.
+const INSTALLER =
+  /https?:\/\/[^\s'"]*?(claude\.ai\/install|downloads\.claude\.ai|claude-code[^\s'"]*\/releases?\/|claude-code-releases)/i;
 // `secrets.NAME` or `secrets['NAME']` / `secrets["NAME"]`, any case: GitHub contexts are
 // case-insensitive.
 const SECRETS =
@@ -154,6 +158,7 @@ function claudeCodeFindings(file: string, yamlText: string): Finding[] {
       const shellCode = key === "run" ? runCode(value) : value;
       const evaluated = key === "run" ? (value.match(EXPRESSION) ?? []).join("\n") : value;
       if (shellCode.includes(PACKAGE)) add(where, "claude-code-package", value);
+      if (INSTALLER.test(shellCode)) add(where, "claude-code-installer", value);
       if (SECRETS.test(evaluated)) add(where, "anthropic-secret", value);
       if (key === "run") {
         const line = runsClaude(value);
@@ -345,6 +350,42 @@ describe("the detector finds each kind", () => {
     ["claude after env -u NAME", stepYaml("run: env -u HOME claude -p hi"), "claude-command"],
     ["claude in an env -S string", stepYaml("run: env -S 'claude -p hi'"), "claude-command"],
     ["claude after /usr/bin/sudo", stepYaml("run: /usr/bin/sudo claude -p hi"), "claude-command"],
+    [
+      "the standalone installer piped into bash",
+      stepYaml("run: curl -fsSL https://claude.ai/install.sh | bash"),
+      "claude-code-installer",
+    ],
+    [
+      "the Windows installer",
+      stepYaml("run: irm https://claude.ai/install.ps1 | iex"),
+      "claude-code-installer",
+    ],
+    [
+      "a download from downloads.claude.ai",
+      stepYaml("run: curl -fsSLO https://downloads.claude.ai/claude-code/stable/linux-x64/claude"),
+      "claude-code-installer",
+    ],
+    [
+      "a GitHub release download of claude-code",
+      stepYaml(
+        "run: curl -LO https://github.com/anthropics/claude-code/releases/download/v2.1.0/claude"
+      ),
+      "claude-code-installer",
+    ],
+    [
+      "a claude-code-releases bucket download",
+      stepYaml(
+        "run: curl -O https://storage.googleapis.com/dist/claude-code-releases/2.1.0/claude"
+      ),
+      "claude-code-installer",
+    ],
+    [
+      "the installer URL as an action input",
+      stepYaml(
+        "uses: some/download@v1\n        with:\n          url: https://claude.ai/install.sh"
+      ),
+      "claude-code-installer",
+    ],
   ];
 
   for (const [name, yaml, kind] of cases) {
@@ -399,6 +440,22 @@ describe("the detector leaves clean workflows alone", () => {
     ["env -u NAME running another program", stepYaml("run: env -u claude node x.js")],
     ["/bin/bash running a script file", stepYaml("run: /bin/bash scripts/check.sh claude")],
     ["a program in a directory named for claude", stepYaml("run: /opt/claude/bin/run --x")],
+    [
+      "a claude.ai page that is not the installer",
+      stepYaml("run: curl -fsSL https://claude.ai/docs"),
+    ],
+    [
+      "the claude-code repository page",
+      stepYaml("run: curl https://github.com/anthropics/claude-code"),
+    ],
+    [
+      "another project's release download",
+      stepYaml("run: curl -LO https://github.com/MadAppGang/magmux/releases/download/v1/x.tar.gz"),
+    ],
+    [
+      "the installer URL in a shell comment",
+      stepYaml("run: |\n          # not https://claude.ai/install.sh\n          echo ok"),
+    ],
   ];
 
   for (const [name, yaml] of clean) {
