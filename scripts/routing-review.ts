@@ -129,12 +129,15 @@ function parseJson(text: string): unknown {
 export function structuredOutputOf(stdout: string): unknown | undefined {
   let parsed = parseJson(stdout.trim());
   if (Array.isArray(parsed)) {
-    parsed = parsed.findLast(
-      (entry) =>
-        entry !== null &&
-        typeof entry === "object" &&
-        (entry as { type?: unknown }).type === "result"
-    );
+    const entries: unknown[] = parsed;
+    parsed = [...entries]
+      .reverse()
+      .find(
+        (entry) =>
+          entry !== null &&
+          typeof entry === "object" &&
+          (entry as { type?: unknown }).type === "result"
+      );
   }
   if (parsed === null || typeof parsed !== "object") return undefined;
   const output = (parsed as { structured_output?: unknown }).structured_output;
