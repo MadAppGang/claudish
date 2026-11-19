@@ -1,7 +1,8 @@
 /**
  * The spawn shapes the boot canary boots, and the files one run writes in its output directory:
- * `results.json` and one `<scenario>.screen.txt` per shape. The canary and the macOS gate
- * (`test-macos.ts`) both remove an earlier run's files, and both use this one list.
+ * `results.json` and one `<scenario>.screen.txt` per shape. The canary removes an earlier run's
+ * files from its `--out` directory with this list. The macOS gate (`test-macos.ts`) removes
+ * nothing: each of its runs gives the canary a new temp directory of its own.
  */
 import { rmSync } from "node:fs";
 import { join } from "node:path";

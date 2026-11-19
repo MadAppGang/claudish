@@ -70,7 +70,6 @@ import {
 import { availableParallelism, constants as osConstants, tmpdir } from "node:os";
 import { join } from "node:path";
 import { findMagmuxCandidates } from "../packages/cli/src/launcher/magmux-binary.ts";
-import { removeCanaryOutput } from "./boot-canary.output.ts";
 
 const ROOT = join(import.meta.dir, "..");
 const CLI = join(ROOT, "packages", "cli");
@@ -256,6 +255,22 @@ export const ADVISORY_PART = 1;
  * left out, so it is never fetched. Pure, so `--dry-run` prints the steps a run runs, with
  * placeholders for the executables it has not fetched.
  */
+/** True when the plan has a step that writes boot canary output (`CANARY_STEP`, `LATEST_CANARY_STEP`). */
+export function runsCanary(groups: readonly StepGroup[]): boolean {
+  return groups.some((g) =>
+    g.steps.some((s) => s.name === CANARY_STEP || s.name === LATEST_CANARY_STEP)
+  );
+}
+
+/**
+ * A boot canary output directory of this run's own, made under `root` with `mkdtemp`, so it is
+ * new and empty and no other run writes there. A `dryRun` names a placeholder and makes nothing.
+ */
+export function canaryOutputDir(root: string, dryRun: boolean): string {
+  if (dryRun) return join(root, "claudish-boot-canary-<run>");
+  return mkdtempSync(join(root, "claudish-boot-canary-"));
+}
+
 export function planSteps(p: {
   root: string;
   hermetic: PlannedBun;
@@ -829,14 +844,6 @@ if (import.meta.main) {
   const { dryRun, tier, part } = args;
   if (process.platform !== "darwin") fail(`runs on macOS only, not ${process.platform}`);
 
-  // What the canary read (one screen per spawn shape, results.json) outlives the run directory,
-  // so a red canary can be read after the gate exits. Every run but a nightly part has the canary
-  // step. Such a run removes those files, and no other file there, before it reads a pin or
-  // fetches anything: a run that stops there never reaches the step, and what an earlier run
-  // read must not stay at the path this run names. A `--dry-run` removes nothing.
-  const canaryOut = join(tmpdir(), "claudish-boot-canary");
-  if (!part && !dryRun) removeCanaryOutput(canaryOut);
-
   const workflow = readFileSync(WORKFLOW, "utf8");
   const hermeticPin = bunPinOf(workflow, "hermetic");
   const blindPin = bunPinOf(workflow, "blind-hooks");
@@ -849,7 +856,7 @@ if (import.meta.main) {
   const scriptTests = [...new Bun.Glob("scripts/*.test.ts").scanSync({ cwd: ROOT })]
     .sort()
     .map((f) => `./${f}`);
-  const planFor = (exeOf: (version: string) => string, claude = "") =>
+  const planFor = (exeOf: (version: string) => string, claude = "", canaryOut = "") =>
     planSteps({
       root: ROOT,
       hermetic: { version: hermeticPin, exe: exeOf(hermeticPin) },
@@ -881,7 +888,8 @@ if (import.meta.main) {
     console.log(`[test:macos] tier ${tier}`);
     const plan = planFor(
       (version) => `<bun@${version}>`,
-      claudePin ? `<claude@${claudePin.version}>` : ""
+      claudePin ? `<claude@${claudePin.version}>` : "",
+      canaryOutputDir(tmpdir(), true)
     );
     for (const { steps } of plan)
       for (const s of steps) {
@@ -911,7 +919,11 @@ if (import.meta.main) {
   const magmuxDir = installPinnedMagmux(magmuxPin, runDir);
   const buns = new Map(versions.map((v) => [v, pinnedBun(v, runDir)] as const));
   const claude = claudePin ? installPinnedClaudeCode(claudePin, runDir) : "";
-  const groups = planFor((version) => buns.get(version)?.exe ?? "", claude);
+  // What the canary reads (one screen per spawn shape, results.json) goes to a new directory of
+  // this run's own, made only when the plan has a canary step. It outlives the run directory, so
+  // a red canary can be read after the gate exits; old ones are left to macOS's $TMPDIR purge.
+  const canaryOut = runsCanary(unfetched) ? canaryOutputDir(tmpdir(), false) : "";
+  const groups = planFor((version) => buns.get(version)?.exe ?? "", claude, canaryOut);
   const binDirOf = new Map([...buns].map(([v, bun]) => [v, bun.dir] as const));
 
   console.log(`[test:macos] tier ${tier}`);
@@ -922,6 +934,7 @@ if (import.meta.main) {
 
   const steps = groups.flatMap(({ bun, steps }) => steps.map((step) => ({ ...step, bun })));
   const results = await runSteps(steps, async (step) => {
+  if (canaryOut) console.log(`[test:macos] canary output: ${canaryOut}`);
     console.log(`\n[test:macos] ▶ ${step.name}  (bun ${step.bun.version}, ${step.cwd})`);
     const started = performance.now();
     running = startStep(launchArgv(step), {

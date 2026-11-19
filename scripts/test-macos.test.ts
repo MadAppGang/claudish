@@ -4,6 +4,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -23,6 +24,7 @@ import {
   advisoryResults,
   bunPinOf,
   bunVersionOf,
+  canaryOutputDir,
   compareVersions,
   gateRed,
   launchArgv,
@@ -32,6 +34,7 @@ import {
   planSteps,
   reportedClaudeCodeVersion,
   runSteps,
+  runsCanary,
   runsPackageScript,
   sliceConcurrency,
   startStep,
@@ -674,8 +677,47 @@ describe("removeCanaryOutput", () => {
 
 describe("compareVersions", () => {
   test("orders dotted numbers numerically", () => {
+
     expect(compareVersions("0.19.0", "0.19.0")).toBe(0);
     expect(compareVersions("0.9.0", "0.19.0")).toBe(-1);
     expect(compareVersions("0.20.0", "0.19.0")).toBe(1);
+  });
+});
+
+describe("canaryOutputDir", () => {
+  test("each run gets a new empty directory of its own", () => {
+    const root = tempDir();
+    try {
+      const a = canaryOutputDir(root, false);
+      const b = canaryOutputDir(root, false);
+      expect(a).not.toBe(b);
+      for (const dir of [a, b]) {
+        expect(dir.startsWith(join(root, "claudish-boot-canary-"))).toBe(true);
+        expect(existsSync(dir)).toBe(true);
+        expect(readdirSync(dir)).toEqual([]);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a dry run names a directory and makes nothing", () => {
+    const root = tempDir();
+    try {
+      const dir = canaryOutputDir(root, true);
+      expect(dir.startsWith(join(root, "claudish-boot-canary-"))).toBe(true);
+      expect(existsSync(dir)).toBe(false);
+      expect(readdirSync(root)).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("only a plan with a canary step needs the directory", () => {
+    const part = (k: number) => planSteps({ ...PLAN_INPUT, tier: "weekly", part: { k, n: 7 } });
+    expect(runsCanary(ESSENTIAL)).toBe(true);
+    expect(runsCanary(planSteps({ ...PLAN_INPUT, tier: "full" }))).toBe(true);
+    expect(runsCanary(part(ADVISORY_PART))).toBe(true);
+    for (const k of [2, 3, 4, 5, 6, 7]) expect(runsCanary(part(k))).toBe(false);
   });
 });
