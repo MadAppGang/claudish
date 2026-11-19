@@ -239,18 +239,23 @@ jobs:
           prefix="$RUNNER_TEMP/claude-code"
           bin="$prefix/node_modules/.bin/claude"
 
-          if timeout 20 npm install --prefix "$prefix" --no-audit --no-fund --loglevel=error "@anthropic-ai/claude-code@$CLAUDE_CODE_VERSION"; then
-            reported=$(timeout 10 "$bin" --version 2> /dev/null || true)
-            version=${reported%%[[:space:]]*}
-            if [ "$version" = "$CLAUDE_CODE_VERSION" ]; then
-              echo "path=$bin" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-            echo "::warning::Claude Code from npm reports version '$version', not $CLAUDE_CODE_VERSION; the action will install its own copy"
-          else
-            echo "::warning::Claude Code $CLAUDE_CODE_VERSION did not install from npm in 20 s; the action will install its own copy"
+          if ! timeout -k 2 10 npm install --prefix "$prefix" --no-audit --no-fund --loglevel=error "@anthropic-ai/claude-code@$CLAUDE_CODE_VERSION"; then
+            echo "::warning::Claude Code $CLAUDE_CODE_VERSION did not install from npm in 10 s; the action will install its own copy"
+            exit 0
           fi
-          exit 0
+
+          if ! reported=$(timeout -k 2 5 "$bin" --version 2> /dev/null); then
+            echo "::warning::Claude Code from npm did not report a version; the action will install its own copy"
+            exit 0
+          fi
+
+          version=${reported%%[[:space:]]*}
+          if [ "$version" != "$CLAUDE_CODE_VERSION" ]; then
+            echo "::warning::Claude Code from npm reports version '$version', not $CLAUDE_CODE_VERSION; the action will install its own copy"
+            exit 0
+          fi
+
+          echo "path=$bin" >> "$GITHUB_OUTPUT"
 
       - name: Review against the rulebook
         id: review

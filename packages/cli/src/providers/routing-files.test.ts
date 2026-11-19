@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync, readdirSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 
 const ROUTING_MODULES = new Set([
@@ -386,6 +387,28 @@ describe("routing rulebook review executable", () => {
     expect(step.run).not.toContain("@latest");
   });
 
+  // The action installs its own Claude Code version when it gets no path. The step must
+  // install that same version, so a new action commit needs a new version beside it here.
+  test("claude step version matches the pinned action commit", () => {
+    const review = reviewSteps().find((step) => step.id === "review");
+    expect({
+      action: review?.uses,
+      version: String(installStep().env?.CLAUDE_CODE_VERSION),
+    }).toEqual({
+      action: "anthropics/claude-code-action@61a9c274fa7110a66dfafc1bbbced03833eb25fe",
+      version: "2.1.319",
+    });
+  });
+
+  test("claude step gives every timeout a kill-after grace period", () => {
+    const script = installStep().run ?? "";
+    const calls = [...script.matchAll(/\btimeout[ \t]+/g)];
+    const forced = [...script.matchAll(/\btimeout[ \t]+(?:-k[ \t]+|--kill-after=)\d+/g)];
+
+    expect(calls.length).toBeGreaterThan(0);
+    expect(forced).toHaveLength(calls.length);
+  });
+
   test("claude step does not reference credentials", () => {
     const step = installStep();
     for (const value of [...Object.values(step.env ?? {}), step.run ?? ""]) {
@@ -400,7 +423,11 @@ describe("routing rulebook review executable", () => {
   test("claude step limits npm install to 30 seconds and allows install scripts", () => {
     const script = installStep().run ?? "";
     const installs = [...script.matchAll(/\bnpm[ \t]+install\b/g)];
-    const boundedInstalls = [...script.matchAll(/\btimeout[ \t]+(\d+)s?[ \t]+npm[ \t]+install\b/g)];
+    const boundedInstalls = [
+      ...script.matchAll(
+        /\btimeout[ \t]+(?:(?:-k[ \t]+|--kill-after=)\d+s?[ \t]+)?(\d+)s?[ \t]+npm[ \t]+install\b/g
+      ),
+    ];
 
     expect(installs.length).toBeGreaterThan(0);
     expect(boundedInstalls).toHaveLength(installs.length);
@@ -409,6 +436,107 @@ describe("routing rulebook review executable", () => {
       expect(Number(seconds)).toBeLessThanOrEqual(30);
     }
     expect(script).not.toContain("--ignore-scripts");
+  });
+
+  test("claude step has a total timeout budget of at most 20 seconds", () => {
+    const script = installStep().run ?? "";
+    const calls = [...script.matchAll(/\btimeout[ \t]+/g)];
+    const durations = [
+      ...script.matchAll(
+        /\btimeout[ \t]+(?:(?:-k[ \t]+|--kill-after=)\d+(?:\.\d+)?s?[ \t]+)?(\d+(?:\.\d+)?)s?(?=[ \t])/g
+      ),
+    ];
+
+    expect(calls.length).toBeGreaterThan(0);
+    expect(durations).toHaveLength(calls.length);
+    expect(
+      durations.reduce((total, [, seconds]) => total + Number(seconds), 0)
+    ).toBeLessThanOrEqual(20);
+  });
+
+  test.each([
+    { name: "publishes the path after a matching version", install: "ok", version: "match" },
+    { name: "warns when npm fails", install: "fail", version: "match" },
+    { name: "warns when the install times out", install: "timeout", version: "match" },
+    { name: "warns when the version differs", install: "ok", version: "mismatch" },
+    { name: "warns when the version command fails", install: "ok", version: "fail" },
+  ])("claude step $name", ({ install, version }) => {
+    const step = installStep();
+    if (!step.run || !step.env?.CLAUDE_CODE_VERSION) {
+      throw new Error("claude step needs a run script and pinned version");
+    }
+    const dir = mkdtempSync(join(tmpdir(), "rulebook-install-"));
+    try {
+      const bin = join(dir, "bin");
+      const output = join(dir, "output");
+      const prefix = join(dir, "claude-code");
+      mkdirSync(bin);
+      writeFileSync(output, "");
+      const stub = (name: string, body: string) =>
+        writeFileSync(join(bin, name), "#!/bin/bash\nset -eu\n" + body, { mode: 0o755 });
+
+      stub(
+        "timeout",
+        [
+          'case "$1" in -k) shift 2 ;; --kill-after=*) shift ;; esac',
+          "shift",
+          'if [[ "$1" == npm && "$STUB_INSTALL" == timeout ]]; then exit 124; fi',
+          "export STUB_BOUNDED=1",
+          'exec "$@"',
+        ].join("\n")
+      );
+      stub(
+        "npm",
+        [
+          '[[ "${STUB_BOUNDED:-}" == 1 && "$1" == install && "$2" == --prefix ]] || exit 1',
+          '[[ "$3" == "$RUNNER_TEMP/claude-code" && "$STUB_INSTALL" != fail ]] || exit 1',
+          'mkdir -p "$3/node_modules/.bin"',
+          'cp "$PATH_STUBS/claude-version" "$3/node_modules/.bin/claude"',
+        ].join("\n")
+      );
+      stub(
+        "claude-version",
+        [
+          '[[ "$STUB_BOUNDED" == 1 && "$#" == 1 && "$1" == --version ]]',
+          'version="$CLAUDE_CODE_VERSION"',
+          'if [[ "$STUB_VERSION" == mismatch ]]; then version="0.$version"; fi',
+          'printf "%s (Claude Code)\n" "$version"',
+          '[[ "$STUB_VERSION" != fail ]]',
+        ].join("\n")
+      );
+
+      const result = Bun.spawnSync(
+        ["/bin/bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", step.run],
+        {
+          cwd: dir,
+          env: {
+            ...Object.fromEntries(
+              Object.entries(step.env).map(([key, value]) => [key, String(value)])
+            ),
+            PATH: bin + ":/usr/bin:/bin",
+            PATH_STUBS: bin,
+            RUNNER_TEMP: dir,
+            GITHUB_OUTPUT: output,
+            STUB_INSTALL: install,
+            STUB_VERSION: version,
+          },
+          stdout: "pipe",
+          stderr: "pipe",
+        }
+      );
+      const stdout = result.stdout.toString();
+      const written = readFileSync(output, "utf8");
+      expect(result.exitCode).toBe(0);
+      if (install === "ok" && version === "match") {
+        expect(written).toBe("path=" + join(prefix, "node_modules/.bin/claude") + "\n");
+        expect(stdout).not.toMatch(/^::warning::/m);
+      } else {
+        expect(written).not.toMatch(/^path=/m);
+        expect(stdout).toMatch(/^::warning::/m);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("claude step writes the path output without continuing on error", () => {
