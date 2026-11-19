@@ -57,7 +57,9 @@ jobs:
           # and need magmux >= MIN_MAGMUX_VERSION (packages/cli/src/pane/pane-launch.ts),
           # and a new magmux release must not change what an existing claudish tag ships.
           # The tag and checksums live in .github/magmux.env, which `bun run test:macos`
-          # installs from too: what ships is what the pane suites ran against before the tag.
+          # installs from too: the release ships the magmux tag whose Darwin asset for this
+          # Mac's architecture the pane suites ran against before the tag. The other
+          # platform assets of that tag are pinned by checksum, not tested here.
           set -a; . .github/magmux.env; set +a
           MIN=$(sed -n 's/^export const MIN_MAGMUX_VERSION = "\(.*\)";$/\1/p' packages/cli/src/pane/pane-launch.ts)
           if [ -z "$MIN" ]; then echo "MIN_MAGMUX_VERSION not found in pane-launch.ts"; exit 1; fi
