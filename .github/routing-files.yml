@@ -1,5 +1,5 @@
-# The files the routing rulebook polices. dorny/paths-filter reads this file from
-# the pull request's base commit, so a pull request cannot narrow its own review.
+# The files the routing rulebook polices. routing-fork-guard.yml reads this file from
+# the pull request's base commit, so a pull request cannot narrow what it guards.
 routing:
   - 'packages/cli/src/providers/**'
   - 'packages/cli/src/adapters/model-catalog.ts'
@@ -39,6 +39,5 @@ routing:
   - 'ai-docs/architecture/routing-rulebook.md'
   - 'ai-docs/architecture/routing.md'
   - '.github/routing-files.yml'
-  - '.github/workflows/routing-rulebook.yml'
   - '.github/workflows/routing-fork-guard.yml'
   - '.github/workflows/release.yml'

@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, readdirSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 
 const ROUTING_MODULES = new Set([
@@ -71,7 +70,7 @@ function routingReasons(source: string, loader: "ts" | "tsx"): string[] {
   return reasons;
 }
 
-// dorny/paths-filter's routing entry is a YAML sequence of path strings. Fail
+// The routing entry is a YAML sequence of path strings. Fail
 // rather than silently treating an unreadable or empty filter as no routing.
 function routingPatterns(text: string): string[] {
   const block = text.split(/\r?\n/);
@@ -181,7 +180,7 @@ describe("REQ-108 R4.2: routing-fork-guard/verdict commit status", () => {
 });
 
 describe("R4.2 RB-16 RB-27: routing review filter is complete", () => {
-  test("R4.2: every value importer and routing call site is covered by the CI routing filter", () => {
+  test("R4.2: every value importer and routing call site is covered by the routing filter", () => {
     // Paths are resolved only when this test runs in packages/cli/src/providers.
     const src = resolve(import.meta.dir, "..");
     const repo = resolve(src, "../../..");
@@ -225,7 +224,6 @@ describe("R4.2 RB-16 RB-27: routing review filter is complete", () => {
       "packages/cli/scripts/generate-bundled-list.ts",
       "scripts/routing-review.ts",
       ".github/routing-files.yml",
-      ".github/workflows/routing-rulebook.yml",
       ".github/workflows/routing-fork-guard.yml",
       ".github/workflows/release.yml",
     ])
@@ -338,212 +336,5 @@ describe("R4.2 RB-16 RB-27: routing review filter is complete", () => {
     expect(routingReasons(source, "ts").length).toBeGreaterThan(0);
     expect(matches(path, ["packages/cli/src/providers/**"])).toBe(false);
     expect(matches(path, ["packages/cli/src/**"])).toBe(true);
-  });
-});
-
-describe("routing rulebook review executable", () => {
-  function reviewSteps() {
-    const repo = resolve(import.meta.dir, "../../../..");
-    const workflow = Bun.YAML.parse(
-      readFileSync(join(repo, ".github/workflows/routing-rulebook.yml"), "utf8")
-    ) as { jobs: { review: { steps: WorkflowStep[] } } };
-    return workflow.jobs.review.steps;
-  }
-
-  function installStep() {
-    const step = reviewSteps().find((entry) => entry.id === "claude");
-    if (!step) throw new Error("review job has no claude step");
-    return step;
-  }
-
-  test("review uses the executable path from the claude step", () => {
-    const review = reviewSteps().find((step) => step.id === "review");
-    expect(review?.with?.path_to_claude_code_executable).toBe(
-      expression("steps.claude.outputs.path")
-    );
-  });
-
-  test("claude step precedes the review step in the same job", () => {
-    const steps = reviewSteps();
-    const installIndex = steps.findIndex((step) => step.id === "claude");
-    const reviewIndex = steps.findIndex((step) => step.id === "review");
-
-    expect(installIndex).toBeGreaterThanOrEqual(0);
-    expect(reviewIndex).toBeGreaterThan(installIndex);
-  });
-
-  test("claude step runs under the same condition as the review step", () => {
-    const review = reviewSteps().find((step) => step.id === "review");
-    expect(review?.if).toBeDefined();
-    expect(installStep().if).toBe(review?.if);
-  });
-
-  test("claude step installs the exact pinned version", () => {
-    const step = installStep();
-    expect(String(step.env?.CLAUDE_CODE_VERSION)).toMatch(/^\d+\.\d+\.\d+$/);
-    expect(step.run).toMatch(
-      /\bnpm[ \t]+install\b[^\n]*[ \t]"?@anthropic-ai\/claude-code@\$CLAUDE_CODE_VERSION\b/
-    );
-    expect(step.run).not.toContain("@latest");
-  });
-
-  // The action installs its own Claude Code version when it gets no path. The step must
-  // install that same version, so a new action commit needs a new version beside it here.
-  test("claude step version matches the pinned action commit", () => {
-    const review = reviewSteps().find((step) => step.id === "review");
-    expect({
-      action: review?.uses,
-      version: String(installStep().env?.CLAUDE_CODE_VERSION),
-    }).toEqual({
-      action: "anthropics/claude-code-action@61a9c274fa7110a66dfafc1bbbced03833eb25fe",
-      version: "2.1.319",
-    });
-  });
-
-  test("claude step gives every timeout a kill-after grace period", () => {
-    const script = installStep().run ?? "";
-    const calls = [...script.matchAll(/\btimeout[ \t]+/g)];
-    const forced = [...script.matchAll(/\btimeout[ \t]+(?:-k[ \t]+|--kill-after=)\d+/g)];
-
-    expect(calls.length).toBeGreaterThan(0);
-    expect(forced).toHaveLength(calls.length);
-  });
-
-  test("claude step does not reference credentials", () => {
-    const step = installStep();
-    for (const value of [...Object.values(step.env ?? {}), step.run ?? ""]) {
-      expect(String(value)).not.toMatch(/secrets\.|github\.token/);
-    }
-  });
-
-  test("claude step runs in the runner temporary directory", () => {
-    expect(installStep()["working-directory"]).toBe(expression("runner.temp"));
-  });
-
-  test("claude step limits npm install to 30 seconds and allows install scripts", () => {
-    const script = installStep().run ?? "";
-    const installs = [...script.matchAll(/\bnpm[ \t]+install\b/g)];
-    const boundedInstalls = [
-      ...script.matchAll(
-        /\btimeout[ \t]+(?:(?:-k[ \t]+|--kill-after=)\d+s?[ \t]+)?(\d+)s?[ \t]+npm[ \t]+install\b/g
-      ),
-    ];
-
-    expect(installs.length).toBeGreaterThan(0);
-    expect(boundedInstalls).toHaveLength(installs.length);
-    for (const [, seconds] of boundedInstalls) {
-      expect(Number(seconds)).toBeGreaterThan(0);
-      expect(Number(seconds)).toBeLessThanOrEqual(30);
-    }
-    expect(script).not.toContain("--ignore-scripts");
-  });
-
-  test("claude step has a total timeout budget of at most 20 seconds", () => {
-    const script = installStep().run ?? "";
-    const calls = [...script.matchAll(/\btimeout[ \t]+/g)];
-    const durations = [
-      ...script.matchAll(
-        /\btimeout[ \t]+(?:(?:-k[ \t]+|--kill-after=)\d+(?:\.\d+)?s?[ \t]+)?(\d+(?:\.\d+)?)s?(?=[ \t])/g
-      ),
-    ];
-
-    expect(calls.length).toBeGreaterThan(0);
-    expect(durations).toHaveLength(calls.length);
-    expect(
-      durations.reduce((total, [, seconds]) => total + Number(seconds), 0)
-    ).toBeLessThanOrEqual(20);
-  });
-
-  test.each([
-    { name: "publishes the path after a matching version", install: "ok", version: "match" },
-    { name: "warns when npm fails", install: "fail", version: "match" },
-    { name: "warns when the install times out", install: "timeout", version: "match" },
-    { name: "warns when the version differs", install: "ok", version: "mismatch" },
-    { name: "warns when the version command fails", install: "ok", version: "fail" },
-  ])("claude step $name", ({ install, version }) => {
-    const step = installStep();
-    if (!step.run || !step.env?.CLAUDE_CODE_VERSION) {
-      throw new Error("claude step needs a run script and pinned version");
-    }
-    const dir = mkdtempSync(join(tmpdir(), "rulebook-install-"));
-    try {
-      const bin = join(dir, "bin");
-      const output = join(dir, "output");
-      const prefix = join(dir, "claude-code");
-      mkdirSync(bin);
-      writeFileSync(output, "");
-      const stub = (name: string, body: string) =>
-        writeFileSync(join(bin, name), "#!/bin/bash\nset -eu\n" + body, { mode: 0o755 });
-
-      stub(
-        "timeout",
-        [
-          'case "$1" in -k) shift 2 ;; --kill-after=*) shift ;; esac',
-          "shift",
-          'if [[ "$1" == npm && "$STUB_INSTALL" == timeout ]]; then exit 124; fi',
-          "export STUB_BOUNDED=1",
-          'exec "$@"',
-        ].join("\n")
-      );
-      stub(
-        "npm",
-        [
-          '[[ "${STUB_BOUNDED:-}" == 1 && "$1" == install && "$2" == --prefix ]] || exit 1',
-          '[[ "$3" == "$RUNNER_TEMP/claude-code" && "$STUB_INSTALL" != fail ]] || exit 1',
-          'mkdir -p "$3/node_modules/.bin"',
-          'cp "$PATH_STUBS/claude-version" "$3/node_modules/.bin/claude"',
-        ].join("\n")
-      );
-      stub(
-        "claude-version",
-        [
-          '[[ "$STUB_BOUNDED" == 1 && "$#" == 1 && "$1" == --version ]]',
-          'version="$CLAUDE_CODE_VERSION"',
-          'if [[ "$STUB_VERSION" == mismatch ]]; then version="0.$version"; fi',
-          'printf "%s (Claude Code)\n" "$version"',
-          '[[ "$STUB_VERSION" != fail ]]',
-        ].join("\n")
-      );
-
-      const result = Bun.spawnSync(
-        ["/bin/bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", step.run],
-        {
-          cwd: dir,
-          env: {
-            ...Object.fromEntries(
-              Object.entries(step.env).map(([key, value]) => [key, String(value)])
-            ),
-            PATH: bin + ":/usr/bin:/bin",
-            PATH_STUBS: bin,
-            RUNNER_TEMP: dir,
-            GITHUB_OUTPUT: output,
-            STUB_INSTALL: install,
-            STUB_VERSION: version,
-          },
-          stdout: "pipe",
-          stderr: "pipe",
-        }
-      );
-      const stdout = result.stdout.toString();
-      const written = readFileSync(output, "utf8");
-      expect(result.exitCode).toBe(0);
-      if (install === "ok" && version === "match") {
-        expect(written).toBe("path=" + join(prefix, "node_modules/.bin/claude") + "\n");
-        expect(stdout).not.toMatch(/^::warning::/m);
-      } else {
-        expect(written).not.toMatch(/^path=/m);
-        expect(stdout).toMatch(/^::warning::/m);
-      }
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  test("claude step writes the path output without continuing on error", () => {
-    const step = installStep();
-    expect(String(step["continue-on-error"])).not.toBe("true");
-    expect(step.run).toMatch(
-      /\b(?:echo|printf)[ \t]+[^\n]*\bpath=[^\n]*>>?[ \t]*"?\$GITHUB_OUTPUT\b/
-    );
   });
 });

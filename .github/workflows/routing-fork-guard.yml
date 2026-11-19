@@ -4,12 +4,13 @@ name: Routing fork guard
 #
 # `pull_request_target` runs this file as it is on the base branch, so a pull
 # request cannot edit the guard it is held to, which it can do to any
-# `pull_request` workflow, the routing rulebook review included. The job checks
-# out only the base commit, reads the routing filter from it, and asks the GitHub
-# API which files the pull request changes. No code from the pull request is
-# checked out or run, and no secret is used.
+# `pull_request` workflow. The job checks out only the base commit, reads the
+# routing filter from it, and asks the GitHub API which files the pull request
+# changes. No code from the pull request is checked out or run, and no secret is
+# used.
 #
-# A same-repository pull request passes here; the rulebook review judges it.
+# A same-repository pull request passes here; the release routing review
+# (`bun run review:routing`) judges it.
 #
 # The verdict is also posted as a commit status on the pull request's head commit,
 # context `routing-fork-guard/verdict`, and that context is the required item. A
@@ -88,7 +89,7 @@ jobs:
             --jq '.[] | .filename, (.previous_filename // empty)')
 
           # `*` in a [[ ]] pattern also matches `/`, so `dir/**` covers the tree and a
-          # pattern can only match more files than paths-filter would, never fewer.
+          # pattern can only match more files than a path glob would, never fewer.
           hits=()
           while IFS= read -r file; do
             [ -n "$file" ] || continue
