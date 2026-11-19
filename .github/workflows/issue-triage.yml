@@ -63,9 +63,6 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Install Claude Code
-        run: npm install -g @anthropic-ai/claude-code@latest
-
       - name: Determine trigger type
         id: trigger
         env:
@@ -163,6 +160,12 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
             echo "Bot previously commented, will analyze for reply..."
           fi
+
+      # The install normally takes 2 to 6 s. A hung install is stopped after 15 s and tried
+      # once more, with 30 s so that a slow registry can still finish.
+      - name: Install Claude Code
+        if: steps.trigger.outputs.type != 'comment' || steps.should_process.outputs.skip != 'true'
+        run: timeout -k 2 15 npm install -g @anthropic-ai/claude-code@latest || timeout -k 2 30 npm install -g @anthropic-ai/claude-code@latest
 
       # --dangerously-skip-permissions is GONE. It handed every issue author, via
       # prompt injection, a Bash tool inside a process holding ANTHROPIC_API_KEY.
