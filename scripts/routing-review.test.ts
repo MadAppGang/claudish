@@ -331,6 +331,33 @@ describe("runRoutingReview", () => {
   });
 });
 
+describe("Claude Code's output", () => {
+  const runs: [string, ReviewRun][] = [
+    ["a PASS", { code: 0, stdout: PASS_STDOUT, timedOut: false }],
+    ["a failed run", { code: 1, stdout: '{"type":"result","subtype":"error"}', timedOut: false }],
+  ];
+  for (const [name, run] of runs) {
+    test(`is kept verbatim as claude-output.json beside result.json after ${name}`, async () => {
+      const { root, deps } = fakeReview({ spawnReview: async () => run });
+      const printed: string[] = [];
+      const error = spyOn(console, "error").mockImplementation((...parts: unknown[]) => {
+        printed.push(parts.join(" "));
+      });
+      try {
+        await runRoutingReview([], deps);
+        const [work] = workDirs(root);
+        const output = join(root, work!, "claude-output.json");
+        expect(readFileSync(output, "utf8")).toBe(run.stdout);
+        expect(existsSync(join(root, work!, "result.json"))).toBe(true);
+        expect(printed.join("\n")).toContain(output);
+      } finally {
+        error.mockRestore();
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
 describe("a failed export", () => {
   test("removes the temp directory and its partial tree, exits 1 and spawns nothing", async () => {
     const { root, spawned, deps } = fakeReview({

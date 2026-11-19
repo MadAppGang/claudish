@@ -155,7 +155,8 @@ credential Claude Code would start with, and refuses (exit 1, nothing started) o
 Console key, no login, a credential store that did not answer, or a managed settings file
 that sets an `apiKeyHelper` or an Anthropic credential or base URL in its `env`. The
 refusal names the store, never a value.
-It prints the verdict and each violation and writes `result.json` beside the export.
+It prints the verdict and each violation, writes `result.json` beside the export, and keeps
+Claude Code's own JSON output there as `claude-output.json` (turns, cost, model).
 Exit 0 is PASS; exit 1 is FAIL, an unreadable verdict, or Claude Code failing or
 running past 20 minutes; exit 2 is a usage error. Anything but 0 stops the tag.
 `--ref <rev>` reviews another commit, `--bin <claude>` names the binary, and

@@ -130,7 +130,7 @@ instead.
 | `weekly-tests.yml`, Sunday 11:00 UTC (03:00 PST) | full: the scripts, the idle and rest slices (the same slices as test.yml's Linux jobs; a test keeps the two in step) and the Linux S1 rows | GitHub mails the owner on a failed scheduled run; the run opens (or comments on) one issue titled "Weekly full test run failed" with its URL |
 | `scripts/weekly-macos-tests.ts` under launchd, every day 03:00 local | `test:macos --part <k>/7` on origin's main: the k-th of 7 slices of every group on the weekly tier (full minus essential); part 7 adds the blind hook tests and S1 hook loading | `~/Library/Logs/claudish-weekly-tests/<UTC date>-part<k>.log` and `part<k>.json`; a red part writes `RED-<UTC date>-part<k>.json` and a notification naming it |
 | `bun scripts/weekly-macos-tests.ts --check` | none: reads the `part<k>.json` files | exit 0 only when all 7 parts are green within 7 days (the release gate's nightly half) |
-| `bun run review:routing` | none: the routing rulebook review of the release commit, a local `claude -p` on the user's own login over a `git archive` export | its exit code (0 only on PASS) and the `result.json` path it prints |
+| `bun run review:routing` | none: the routing rulebook review of the release commit, a local `claude -p` on the user's own login over a `git archive` export | its exit code (0 only on PASS) and the `result.json` and `claude-output.json` paths it prints |
 
 Both local gates run the idle group too, although `test.yml` runs it on Linux: without it a weekly
 `src/recovery-contract/` file would run in no gate a release owner starts. The gate cuts each

@@ -512,7 +512,12 @@ export async function runRoutingReview(
 
   let outcome: Outcome;
   try {
-    outcome = judge(await deps.spawnReview(reviewArgv(args.bin), tree, childEnv));
+    const run = await deps.spawnReview(reviewArgv(args.bin), tree, childEnv);
+    // Claude Code's own result (turns, cost, model) as it printed it; it holds no credential.
+    const outputPath = join(work, "claude-output.json");
+    writeFileSync(outputPath, run.stdout);
+    console.error(`routing-review: Claude Code output written to ${outputPath}`);
+    outcome = judge(run);
   } catch (error) {
     const reason = `Claude Code could not start: ${(error as Error).message}`;
     console.error(`routing-review: ${reason}`);
