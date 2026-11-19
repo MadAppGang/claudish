@@ -74,14 +74,18 @@ const QUIET_MS = 4_000;
 /** Scenarios booted at once. A boot is mostly waiting for a quiet screen, so they overlap well. */
 const DEFAULT_JOBS = 5;
 
-function arg(name: string): string | undefined {
-  const i = process.argv.indexOf(name);
-  return i >= 0 ? process.argv[i + 1] : undefined;
-}
-
 function usage(msg: string): never {
   console.error(`boot-canary: ${msg}`);
   process.exit(2);
+}
+
+/** The value after `name`, `undefined` when the flag is not given. A flag with no value is a usage error. */
+function arg(name: string): string | undefined {
+  const i = process.argv.indexOf(name);
+  if (i < 0) return undefined;
+  const value = process.argv[i + 1];
+  if (value === undefined || value.startsWith("--")) usage(`${name} needs a value`);
+  return value;
 }
 
 function claudeBinary(): string {
@@ -292,16 +296,21 @@ async function runScenario(
 }
 
 async function main(): Promise<void> {
+  // every flag is read before the binary runs or a directory is made
+  const wanted = (arg("--scenarios") ?? SCENARIOS.join(",")).split(",").map((s) => s.trim());
+  for (const [i, s] of wanted.entries()) {
+    if (!SCENARIOS.includes(s as Scenario)) usage(`unknown scenario ${s}`);
+    // a scenario's world directory, socket and reading are keyed by its name
+    if (wanted.indexOf(s) !== i) usage(`scenario ${s} is named twice`);
+  }
+  const jobs = Number(arg("--jobs") ?? DEFAULT_JOBS);
+  if (!Number.isInteger(jobs) || jobs < 1) usage("--jobs takes a whole number, 1 or more");
+  const expectPath = arg("--expect") ?? join(import.meta.dir, "boot-canary.expect.json");
+  const outDir = resolve(arg("--out") ?? "canary-out");
   const bin = claudeBinary();
   const version =
     execFileSync(bin, ["--version"], { encoding: "utf8" }).trim().split(/\s/)[0] ?? "unknown";
-  const wanted = (arg("--scenarios") ?? SCENARIOS.join(",")).split(",").map((s) => s.trim());
-  for (const s of wanted) if (!SCENARIOS.includes(s as Scenario)) usage(`unknown scenario ${s}`);
-  const expectPath = arg("--expect") ?? join(import.meta.dir, "boot-canary.expect.json");
   const expected = JSON.parse(readFileSync(expectPath, "utf8")) as Record<string, Partial<Reading>>;
-  const jobs = Number(arg("--jobs") ?? DEFAULT_JOBS);
-  if (!Number.isInteger(jobs) || jobs < 1) usage("--jobs takes a whole number, 1 or more");
-  const outDir = resolve(arg("--out") ?? "canary-out");
   mkdirSync(outDir, { recursive: true });
   // macOS caps a socket path at 104 bytes: a short directory under /tmp, never $TMPDIR
   const sockDir = mkdtempSync(join(process.platform === "darwin" ? "/tmp" : tmpdir(), "ccanary-"));
