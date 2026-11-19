@@ -20,7 +20,7 @@ for (const name of ["NeedsReauthError", "NoUsableAccountError", "MeteredEscapeEr
   });
   for (const order of ["sub-first", "meter-first", "fail-then-success", "all-fail", "meter-only"]) {
     // A terminal credential rejection advances in chain order, including metered
-    // hops, with a notice. The explicit cx@ case below still stops.
+    // hops, with a notice. The explicit cx@ case above still stops.
     test(`E9 ${name} after OAuth advances past terminal rejection: ${order}`, async () => {
       const { result, stderr } = await run(`E9:${name}:${order}`);
       const metered = order !== "sub-first";

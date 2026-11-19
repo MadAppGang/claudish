@@ -2,7 +2,7 @@
  * Codex pool request path: quota rotation between accounts. Interleaved turns (E18), usage
  * capture (E19), quota and non-quota refusals (E5, E1 to E4, E7), forced re-signs that keep the
  * selected account (E14, E15, R2), stream quota (S1) and code mode (R1). Each test runs one
- * scenario of the child program in `test-helpers/composed-handler-accounts-2a.ts`.
+ * or two scenarios of the child program in `test-helpers/composed-handler-accounts-2a.ts`.
  */
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
@@ -263,7 +263,8 @@ for (const scenario of ["R2-leg-first", "R2-primary-first", "R2-two-legs"]) {
   test(`${scenario} Responses leg 401 shares the single pinned forced re-sign`, async () => {
     const { result, stderr } = await run(scenario);
     expect(result.status, result.text + stderr).toBe(200);
-    // No resend after the forced sign.
+    // The request has one forced sign. A 401 that arrives after it is not signed
+    // again: it reaches the client as an error event.
     if (scenario === "R2-leg-first") {
       expect(result.text).not.toContain("event: error");
       expect(result.text).toContain('"name":"Read"');
