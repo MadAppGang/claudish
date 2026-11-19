@@ -8,8 +8,7 @@ name: Weekly full tests
 # pinned files, and, outside the slow categories, no other file measured at the data file's
 # heavySeconds or more. This run adds, in the idle and rest groups and without macOnly files,
 # every weekly file measured under the data file's githubMaxSeconds or not measured yet
-# (`--tier github`), so a broken test among those files is found on Linux within a week
-# rather than at the next release. No Linux job here runs a weekly file measured
+# (`--tier github`). No Linux job here runs a weekly file measured
 # at githubMaxSeconds or more: the owner's Mac does, one weekly-tier part a night
 # (scripts/weekly-macos-tests.ts), with the macOS suites (pane, the macOS-only rest files, the
 # blind hook tests).
