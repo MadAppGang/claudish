@@ -318,6 +318,30 @@ function defaultGit(args: string[], cwd: string, env: Record<string, string>): s
 /** The signals passed on to act, which runs in its own process group and sees none itself. */
 export const FORWARDED_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
 
+/** Where the signals come from: `process` in a run, an emitter in a test. */
+export interface SignalSource {
+  on(event: NodeJS.Signals, handler: () => void): unknown;
+  off(event: NodeJS.Signals, handler: () => void): unknown;
+}
+
+/**
+ * Passes every FORWARDED_SIGNALS signal `target` receives to `kill`. Returns the function that
+ * removes the handlers again.
+ */
+export function forwardSignals(
+  target: SignalSource,
+  kill: (sig: NodeJS.Signals) => void
+): () => void {
+  const handlers = FORWARDED_SIGNALS.map((sig) => {
+    const handler = () => kill(sig);
+    target.on(sig, handler);
+    return [sig, handler] as const;
+  });
+  return () => {
+    for (const [sig, handler] of handlers) target.off(sig, handler);
+  };
+}
+
 /**
  * Starts act in its own process group and forwards FORWARDED_SIGNALS to it, then waits for it
  * to exit, so the caller's cleanup runs after act has removed its containers.
@@ -334,17 +358,15 @@ function defaultSpawnAct(
       stdio: ["ignore", "inherit", "inherit"],
       detached: true,
     });
-    const forward = (sig: NodeJS.Signals) => () => {
-      child.kill(sig);
-    };
-    const handlers = FORWARDED_SIGNALS.map((sig) => {
-      const handler = forward(sig);
-      process.on(sig, handler);
-      return [sig, handler] as const;
+    // act leads its own process group (detached), so the signal goes to the whole group.
+    const detach = forwardSignals(process, (sig) => {
+      try {
+        if (child.pid !== undefined) process.kill(-child.pid, sig);
+        else child.kill(sig);
+      } catch {
+        child.kill(sig);
+      }
     });
-    const detach = () => {
-      for (const [sig, handler] of handlers) process.off(sig, handler);
-    };
     child.on("error", (error) => {
       detach();
       reject(error);

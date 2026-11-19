@@ -1,5 +1,6 @@
-import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { describe, expect, spyOn, test } from "bun:test";
+import { EventEmitter } from "node:events";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -13,6 +14,7 @@ import {
   actEnv,
   actrcPaths,
   dockerHostFor,
+  forwardSignals,
   gitEnv,
   parseArgs,
   runActLocal,
@@ -337,6 +339,30 @@ describe("writeEmptyDockerConfig", () => {
 describe("FORWARDED_SIGNALS", () => {
   test("act gets SIGINT, SIGTERM and SIGHUP (a closed terminal)", () => {
     expect([...FORWARDED_SIGNALS].sort()).toEqual(["SIGHUP", "SIGINT", "SIGTERM"]);
+  });
+});
+
+describe("forwardSignals", () => {
+  test("a SIGHUP on the process is passed to act's group, and detach stops it", () => {
+    const target = new EventEmitter();
+    const killed: NodeJS.Signals[] = [];
+    const detach = forwardSignals(target, (sig) => killed.push(sig));
+    target.emit("SIGHUP");
+    expect(killed).toEqual(["SIGHUP"]);
+    for (const sig of FORWARDED_SIGNALS) expect(target.listenerCount(sig)).toBe(1);
+    detach();
+    target.emit("SIGHUP");
+    expect(killed).toEqual(["SIGHUP"]);
+    for (const sig of FORWARDED_SIGNALS) expect(target.listenerCount(sig)).toBe(0);
+  });
+
+  test("SIGINT and SIGTERM are passed on too", () => {
+    const target = new EventEmitter();
+    const killed: NodeJS.Signals[] = [];
+    forwardSignals(target, (sig) => killed.push(sig));
+    target.emit("SIGINT");
+    target.emit("SIGTERM");
+    expect(killed).toEqual(["SIGINT", "SIGTERM"]);
   });
 });
 
