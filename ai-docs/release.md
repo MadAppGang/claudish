@@ -152,8 +152,8 @@ request) parses every workflow and fails on `anthropics/claude-code-action`, an
 (`claude.ai/install`, `downloads.claude.ai`, a `claude-code` release URL), the `ANTHROPIC_API_KEY` or
 `CLAUDE_CODE_OAUTH_TOKEN` secret, a `claude` command (also inside a quoted
 `bash`/`sh`/`zsh`/`dash -c` or `eval` string), or a step that starts a script that
-downloads or runs Claude Code: `scripts/boot-canary.ts`, `scripts/routing-review.ts`,
-`scripts/test-macos.ts`, `scripts/weekly-macos-tests.ts`, `bun run test:macos` or
+downloads or runs Claude Code: `scripts/boot-canary.ts`, `scripts/boot-canary-latest.ts`,
+`scripts/routing-review.ts`, `scripts/test-macos.ts`, `scripts/weekly-macos-tests.ts`, `bun run test:macos` or
 `bun run review:routing`. Claude Code runs only on the Mac, on the owner's own login.
 
 **The routing rulebook review is `bun run review:routing`, on the release commit.**
