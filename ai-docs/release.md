@@ -223,6 +223,65 @@ summary and the log grep disagreed with the job's conclusion:
 - A release PR can get no `pull_request` run while main moves
   (`mergeable: UNKNOWN`). Merging main into the release branch starts one.
 
+### Run a workflow job locally with act
+
+`bun run act:local` (`scripts/act-local.ts`) runs a `release.yml` job on this Mac
+with `act`, in Docker, so a job can be tried before the tag. It needs Docker
+running and the image `catthehacker/ubuntu:act-latest` already pulled (it runs
+with `--pull=false`). It runs the committed HEAD; uncommitted edits are not in
+the run, and the script warns when there are any.
+
+```
+bun scripts/act-local.ts --job bundled-list --tag-case changed    # exit 0: "bundled recommended list changed since v0.0.0-act.base"
+bun scripts/act-local.ts --job bundled-list --tag-case unchanged  # exit 1: "::error::the bundled recommended list was not regenerated ..."
+bun scripts/act-local.ts --list                                   # act's job list for release.yml
+bun scripts/act-local.ts --dry-run [--job <id>]                   # act -n: plans every step, starts no container
+```
+
+`--tag-case` simulates a `v*` tag push: in the clone, HEAD is tagged
+`v0.0.0-act.base`, one commit is added (`changed` appends a newline to the bundled
+recommended list, or to the `--change <path>` file; `unchanged` is an empty
+commit) and tagged `v0.0.0-act.tag`, and act gets a push event for that tag. The
+exit code is act's own; 2 is a usage error or a refused job, 1 a setup failure.
+`--keep` keeps the temp dir and prints its path. `--workflow <file>` picks
+another file under `.github/workflows` for `--list` and `--dry-run`.
+
+How it keeps a run local and free of secrets:
+
+- act runs in a temp clone of the repository at the current commit, never in
+  the worktree. The test tags and commits exist only in that clone. Its `origin`
+  push URL is `push-disabled-by-act-local`. The temp dir is removed at exit.
+- act gets empty `--secret-file`, `--var-file`, `--env-file` and
+  `--input-file` files, and never `-s`, `--secret`, `--var`, `--env` or
+  `--input`. `--container-daemon-socket -` keeps the Docker socket out of the
+  job containers, and `--rm` removes them.
+- act's environment passes only PATH, USER, LANG, TMPDIR and DOCKER_CONTEXT
+  from the caller. HOME and XDG_CONFIG_HOME are new empty dirs, so act reads no
+  user config. DOCKER_HOST and DOCKER_CONFIG name the caller's Docker. No token
+  (GITHUB_TOKEN, GH_TOKEN, NPM_TOKEN, ANTHROPIC_*) reaches act.
+- The run stops before act starts when an actrc exists at `~/.actrc`,
+  `~/.config/act/actrc`, `~/Library/Application Support/act/actrc` or the
+  clone's `.actrc`: an actrc can add `-s` flags.
+- A real run is allowed only for a job in `RUNNABLE_JOBS`. Any other job exits 2
+  and act never starts. Ctrl-C reaches act, and the temp dir is removed after
+  act exits.
+
+Which `release.yml` jobs can run:
+
+- `bundled-list` runs fully. It reads only the git history of the clone.
+- `build` cannot: it downloads magmux with `gh` and the workflow token, a
+  secret.
+- `release` cannot: it pushes the changelog to main and creates the GitHub
+  Release.
+- `publish-npm` cannot: it publishes to npm over OIDC.
+- `update-homebrew` cannot: it needs `HOMEBREW_TAP_TOKEN` and pushes to the
+  tap. With no variables it is not even planned (`vars.ENABLE_HOMEBREW` is
+  unset).
+
+`--list` and `--dry-run` work for every job. A dry run of the whole
+`release.yml` exits 0; it plans the steps and runs none of them, so its green
+says nothing about whether a step works.
+
 ## Deploy monitoring
 
 `none` — claudish publishes packages and binaries. No service is deployed, so

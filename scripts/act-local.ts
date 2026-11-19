@@ -1,0 +1,496 @@
+/**
+ * Run one GitHub Actions job of this repository on this Mac with `act`, inside Docker, before a
+ * tag ever reaches GitHub.
+ *
+ * act cannot run in a worktree (its `.git` is a file pointing outside the tree), so the script
+ * clones the toplevel of the current directory into a new temp dir and checks out the current
+ * HEAD commit there. Uncommitted edits are not in the run; the script warns when the working tree
+ * has any. The clone's `origin` fetch URL is the GitHub repository (act names the repository from
+ * it) and its push URL is the literal `push-disabled-by-act-local`, so nothing in the clone can
+ * push anywhere.
+ *
+ * `--tag-case` simulates a `v*` tag push: the clone's HEAD is tagged `v0.0.0-act.base`, one new
+ * commit is made (`changed`: a newline appended to the bundled recommended list or the
+ * `--change` file; `unchanged`: an empty commit) and tagged `v0.0.0-act.tag`, and act receives a
+ * push event for `refs/tags/v0.0.0-act.tag`. Those tags and commits exist only in the clone.
+ *
+ * No secret reaches act:
+ * - argv carries empty `--secret-file`, `--var-file`, `--env-file` and `--input-file` files the
+ *   script creates, so act reads no `.secrets`, `.vars`, `.env` or `.input` file; never `-s`,
+ *   `--secret`, `--var`, `--env` or `--input`. `--container-daemon-socket -` keeps the Docker
+ *   socket out of the job containers, `--rm` removes them.
+ * - act's environment is an allowlist (PATH, USER, LANG, TMPDIR, DOCKER_CONTEXT); HOME and
+ *   XDG_CONFIG_HOME are new empty dirs, so act reads no user actrc. DOCKER_HOST and DOCKER_CONFIG
+ *   point at the caller's Docker.
+ * - Any actrc in the user's or the clone's config locations stops the run (one could add `-s`).
+ * - A real run is allowed only for a job in RUNNABLE_JOBS. `--list` and `--dry-run` (act's own
+ *   dry run: plans the steps, starts no container) take any job, or the whole workflow.
+ * - No step here runs `git push`, `npm publish` or `gh`.
+ *
+ * Usage:
+ *   bun scripts/act-local.ts --job <id> [--workflow <file>] [--tag-case changed|unchanged]
+ *     [--change <path>] [--keep]
+ *   bun scripts/act-local.ts --list [--workflow <file>]
+ *   bun scripts/act-local.ts --dry-run [--job <id>] [--workflow <file>] [--tag-case ...]
+ * `--workflow` is a file name under .github/workflows, default release.yml. The temp dir is
+ * removed at exit unless `--keep`, which prints its path.
+ * Exit: act's own exit code; 2 on a usage error or a job outside RUNNABLE_JOBS; 1 when the setup
+ * fails (git, a found actrc, a missing workflow) or act cannot start.
+ */
+
+import { execFileSync, spawn } from "node:child_process";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { isAbsolute, join, normalize } from "node:path";
+
+export const RUNNABLE_JOBS: Record<string, readonly string[]> = {
+  "release.yml": ["bundled-list"],
+};
+
+export const IMAGE = "catthehacker/ubuntu:act-latest";
+export const BASE_TAG = "v0.0.0-act.base";
+export const CASE_TAG = "v0.0.0-act.tag";
+export const ORIGIN_URL = "https://github.com/MadAppGang/claudish.git";
+export const PUSH_URL = "push-disabled-by-act-local";
+export const BUNDLED_LIST = "packages/cli/src/providers/bundled-recommended-list.json";
+
+/** Caller variables act may see; everything else, every token included, stays out. */
+export const ENV_ALLOWLIST = ["PATH", "USER", "LANG", "TMPDIR", "DOCKER_CONTEXT"] as const;
+
+const COMMIT_IDENTITY = [
+  "-c",
+  "user.name=act-local",
+  "-c",
+  "user.email=act-local@localhost",
+  "-c",
+  "commit.gpgsign=false",
+  "-c",
+  "tag.gpgsign=false",
+];
+
+const USAGE = [
+  "usage: bun scripts/act-local.ts --job <id> [--workflow <file>] [--tag-case changed|unchanged] [--change <path>] [--keep]",
+  "       bun scripts/act-local.ts --list [--workflow <file>]",
+  "       bun scripts/act-local.ts --dry-run [--job <id>] [--workflow <file>] [--tag-case changed|unchanged]",
+].join("\n");
+
+export type TagCase = "changed" | "unchanged";
+export type ActMode = "list" | "dry-run" | "run";
+
+export interface ActArgs {
+  job?: string;
+  workflow: string;
+  tagCase?: TagCase;
+  change?: string;
+  list: boolean;
+  dryRun: boolean;
+  keep: boolean;
+}
+
+const BOOL_FLAGS = { "--list": "list", "--dry-run": "dryRun", "--keep": "keep" } as const;
+const VALUE_FLAGS = ["--job", "--workflow", "--tag-case", "--change"];
+
+/** Stores one flag's value; a string is the usage error. */
+function setValue(args: ActArgs, flag: string, value: string | undefined): string | null {
+  switch (flag) {
+    case "--job":
+      if (!value) return "--job needs a job id";
+      args.job = value;
+      return null;
+    case "--workflow":
+      if (!value || !/^[A-Za-z0-9._-]+\.ya?ml$/.test(value)) {
+        return "--workflow needs a .yml file name under .github/workflows, not a path";
+      }
+      args.workflow = value;
+      return null;
+    case "--tag-case":
+      if (value !== "changed" && value !== "unchanged") return "--tag-case is changed or unchanged";
+      args.tagCase = value;
+      return null;
+    default:
+      if (!value) return "--change needs a path";
+      args.change = value;
+      return null;
+  }
+}
+
+/** The rules between flags; a string is the usage error. */
+function checkArgs(args: ActArgs): string | null {
+  if (args.list && args.dryRun) return "--list and --dry-run cannot be combined";
+  if (args.list && args.tagCase) return "--list takes no --tag-case";
+  if (!args.list && !args.dryRun && !args.job) return "--job is required for a real run";
+  if (args.change === undefined) return null;
+  if (args.tagCase !== "changed") return "--change needs --tag-case changed";
+  const path = normalize(args.change);
+  if (isAbsolute(args.change) || path === ".." || path.startsWith("../")) {
+    return "--change takes a path inside the repository";
+  }
+  return null;
+}
+
+/** Parses the command line; a string is the usage error. */
+export function parseArgs(argv: string[]): ActArgs | string {
+  const args: ActArgs = { workflow: "release.yml", list: false, dryRun: false, keep: false };
+  for (let i = 0; i < argv.length; i++) {
+    const flag = argv[i];
+    if (Object.hasOwn(BOOL_FLAGS, flag)) {
+      args[BOOL_FLAGS[flag as keyof typeof BOOL_FLAGS]] = true;
+      continue;
+    }
+    if (!VALUE_FLAGS.includes(flag)) return `unknown argument ${flag}`;
+    const next = argv[i + 1];
+    const value = next === undefined || next.startsWith("--") ? undefined : next;
+    if (value !== undefined) i++;
+    const error = setValue(args, flag, value);
+    if (error) return error;
+  }
+  return checkArgs(args) ?? args;
+}
+
+/** Why a real run is refused, or null. `--list` and `--dry-run` start no job and are allowed. */
+export function runRefusal(args: ActArgs): string | null {
+  if (args.list || args.dryRun) return null;
+  const allowed = RUNNABLE_JOBS[args.workflow] ?? [];
+  if (args.job && allowed.includes(args.job)) return null;
+  const listed = Object.entries(RUNNABLE_JOBS)
+    .map(([workflow, jobs]) => `${workflow}: ${jobs.join(", ")}`)
+    .join("; ");
+  return `${args.workflow} job ${args.job} is not in RUNNABLE_JOBS (${listed}); use --list or --dry-run for it`;
+}
+
+export interface ActArgvOptions {
+  mode: ActMode;
+  workflow: string;
+  job?: string;
+  eventFile?: string;
+  secretFile: string;
+  varFile: string;
+  envFile: string;
+  inputFile: string;
+}
+
+/** act's argv. Every mode carries the empty secret, var, env and input files. */
+export function actArgv(o: ActArgvOptions): string[] {
+  const argv = o.mode === "list" ? ["-l"] : ["push"];
+  if (o.mode === "dry-run") argv.push("-n");
+  argv.push("-W", `.github/workflows/${o.workflow}`);
+  if (o.job) argv.push("-j", o.job);
+  if (o.eventFile && o.mode !== "list") argv.push("-e", o.eventFile);
+  argv.push(
+    "--secret-file",
+    o.secretFile,
+    "--var-file",
+    o.varFile,
+    "--env-file",
+    o.envFile,
+    "--input-file",
+    o.inputFile,
+    "--rm",
+    "--container-daemon-socket",
+    "-",
+    "--actor",
+    "act-local",
+    "-P",
+    `ubuntu-latest=${IMAGE}`,
+    "-P",
+    `ubuntu-24.04-arm=${IMAGE}`,
+    "--pull=false"
+  );
+  return argv;
+}
+
+export interface ActEnvDirs {
+  home: string;
+  xdgConfigHome: string;
+  dockerHost: string;
+  dockerConfig: string;
+}
+
+/** act's environment: the allowlist from the caller, plus the dirs and Docker settings given. */
+export function actEnv(
+  env: Record<string, string | undefined>,
+  dirs: ActEnvDirs
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const key of ENV_ALLOWLIST) {
+    const value = env[key];
+    if (value !== undefined) out[key] = value;
+  }
+  out.HOME = dirs.home;
+  out.XDG_CONFIG_HOME = dirs.xdgConfigHome;
+  out.DOCKER_HOST = dirs.dockerHost;
+  out.DOCKER_CONFIG = dirs.dockerConfig;
+  return out;
+}
+
+/**
+ * The Docker endpoint act talks to. With HOME replaced by an empty dir, Docker Desktop's socket
+ * under the real HOME would not be found, so it is named explicitly.
+ */
+export function dockerHostFor(
+  env: Record<string, string | undefined>,
+  realHome: string,
+  exists: (path: string) => boolean
+): string {
+  if (env.DOCKER_HOST) return env.DOCKER_HOST;
+  const desktop = join(realHome, ".docker", "run", "docker.sock");
+  if (exists(desktop)) return `unix://${desktop}`;
+  return "unix:///var/run/docker.sock";
+}
+
+/** Every place act reads an actrc from: the user's config locations and the project's. */
+export function actrcPaths(
+  realHome: string,
+  env: Record<string, string | undefined>,
+  repo: string
+): string[] {
+  const xdg = env.XDG_CONFIG_HOME || join(realHome, ".config");
+  return [
+    join(realHome, ".actrc"),
+    join(xdg, "act", "actrc"),
+    join(realHome, "Library", "Application Support", "act", "actrc"),
+    join(repo, ".actrc"),
+  ];
+}
+
+export function tagEvent(tag: string): { ref: string } {
+  return { ref: `refs/tags/${tag}` };
+}
+
+export interface ActDeps {
+  cwd: string;
+  env: Record<string, string | undefined>;
+  realHome: string;
+  /** Runs git in `cwd` and returns its stdout; throws on a non-zero exit. */
+  git: (args: string[], cwd: string) => string;
+  exists: (path: string) => boolean;
+  makeTemp: () => string;
+  remove: (path: string) => void;
+  /** Runs act and resolves with its exit code. */
+  spawnAct: (argv: string[], cwd: string, env: Record<string, string>) => Promise<number>;
+}
+
+function defaultGit(args: string[], cwd: string): string {
+  return execFileSync("git", args, {
+    cwd,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  }).trim();
+}
+
+/**
+ * Starts act in its own process group and forwards SIGINT and SIGTERM to it, then waits for it
+ * to exit, so the caller's cleanup runs after act has removed its containers.
+ */
+function defaultSpawnAct(
+  argv: string[],
+  cwd: string,
+  env: Record<string, string>
+): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("act", argv, {
+      cwd,
+      env,
+      stdio: ["ignore", "inherit", "inherit"],
+      detached: true,
+    });
+    const forward = (sig: NodeJS.Signals) => () => {
+      child.kill(sig);
+    };
+    const handlers = (["SIGINT", "SIGTERM"] as const).map((sig) => {
+      const handler = forward(sig);
+      process.on(sig, handler);
+      return [sig, handler] as const;
+    });
+    const detach = () => {
+      for (const [sig, handler] of handlers) process.off(sig, handler);
+    };
+    child.on("error", (error) => {
+      detach();
+      reject(error);
+    });
+    child.on("close", (code, signal) => {
+      detach();
+      if (code !== null) resolve(code);
+      else resolve(128 + (signal === "SIGINT" ? 2 : signal === "SIGTERM" ? 15 : 1));
+    });
+  });
+}
+
+function defaultDeps(): ActDeps {
+  return {
+    cwd: process.cwd(),
+    env: process.env,
+    realHome: homedir(),
+    git: defaultGit,
+    exists: existsSync,
+    makeTemp: () => mkdtempSync(join(tmpdir(), "claudish-act-")),
+    remove: (path) => rmSync(path, { recursive: true, force: true }),
+    spawnAct: defaultSpawnAct,
+  };
+}
+
+/** Clones the toplevel at `sha` into `repo` and points its remote at GitHub with pushes disabled. */
+function prepareClone(deps: ActDeps, toplevel: string, sha: string, repo: string): void {
+  deps.git(["clone", "--quiet", "--no-hardlinks", toplevel, repo], deps.cwd);
+  deps.git(["checkout", "--quiet", "--detach", sha], repo);
+  deps.git(["remote", "set-url", "origin", ORIGIN_URL], repo);
+  deps.git(["remote", "set-url", "--push", "origin", PUSH_URL], repo);
+}
+
+/** Tags HEAD as the base, makes the case commit, tags it, and writes the push event file. */
+function prepareTagCase(
+  deps: ActDeps,
+  repo: string,
+  work: string,
+  tagCase: TagCase,
+  change: string
+): string {
+  deps.git([...COMMIT_IDENTITY, "tag", BASE_TAG, "HEAD"], repo);
+  if (tagCase === "changed") {
+    const target = join(repo, change);
+    if (!deps.exists(target)) throw new Error(`${change} does not exist in the commit`);
+    appendFileSync(target, "\n");
+    deps.git(["add", "--", change], repo);
+    deps.git([...COMMIT_IDENTITY, "commit", "--quiet", "-m", `act-local: change ${change}`], repo);
+  } else {
+    deps.git(
+      [...COMMIT_IDENTITY, "commit", "--quiet", "--allow-empty", "-m", "act-local: no change"],
+      repo
+    );
+  }
+  deps.git([...COMMIT_IDENTITY, "tag", CASE_TAG, "HEAD"], repo);
+  const eventFile = join(work, "event.json");
+  writeFileSync(eventFile, `${JSON.stringify(tagEvent(CASE_TAG))}\n`);
+  return eventFile;
+}
+
+interface WorkLayout {
+  repo: string;
+  home: string;
+  xdgConfigHome: string;
+  files: { secretFile: string; varFile: string; envFile: string; inputFile: string };
+}
+
+/** Makes the empty HOME, XDG_CONFIG_HOME and the four empty files act is pointed at. */
+function layoutWork(work: string): WorkLayout {
+  const empty = join(work, "empty");
+  const layout: WorkLayout = {
+    repo: join(work, "repo"),
+    home: join(work, "home"),
+    xdgConfigHome: join(work, "xdg-config"),
+    files: {
+      secretFile: join(empty, "secrets"),
+      varFile: join(empty, "vars"),
+      envFile: join(empty, "env"),
+      inputFile: join(empty, "inputs"),
+    },
+  };
+  for (const dir of [layout.home, layout.xdgConfigHome, empty]) mkdirSync(dir, { recursive: true });
+  for (const file of Object.values(layout.files)) writeFileSync(file, "");
+  return layout;
+}
+
+/** Everything after the temp dir exists: clone, checks, tag case, act. Returns the exit code. */
+async function runInWork(
+  args: ActArgs,
+  deps: ActDeps,
+  source: { toplevel: string; sha: string },
+  work: string
+): Promise<number> {
+  const { repo, home, xdgConfigHome, files } = layoutWork(work);
+  try {
+    prepareClone(deps, source.toplevel, source.sha, repo);
+  } catch (error) {
+    console.error(`act-local: could not clone ${source.toplevel}: ${(error as Error).message}`);
+    return 1;
+  }
+  console.error(`act-local: running ${source.sha} from ${source.toplevel}`);
+
+  const found = actrcPaths(deps.realHome, deps.env, repo).filter((p) => deps.exists(p));
+  if (found.length > 0) {
+    console.error(
+      `act-local: refused: an actrc can add flags such as -s; remove it first: ${found.join(", ")}`
+    );
+    return 1;
+  }
+  if (!deps.exists(join(repo, ".github", "workflows", args.workflow))) {
+    console.error(`act-local: .github/workflows/${args.workflow} does not exist in ${source.sha}`);
+    return 1;
+  }
+
+  let eventFile: string | undefined;
+  if (args.tagCase) {
+    try {
+      eventFile = prepareTagCase(deps, repo, work, args.tagCase, args.change ?? BUNDLED_LIST);
+    } catch (error) {
+      console.error(`act-local: could not make the tag case: ${(error as Error).message}`);
+      return 1;
+    }
+    console.error(
+      `act-local: tag case ${args.tagCase}: ${BASE_TAG} -> ${CASE_TAG}, in the clone only`
+    );
+  }
+
+  const mode: ActMode = args.list ? "list" : args.dryRun ? "dry-run" : "run";
+  const actArgs = actArgv({ mode, workflow: args.workflow, job: args.job, eventFile, ...files });
+  const env = actEnv(deps.env, {
+    home,
+    xdgConfigHome,
+    dockerHost: dockerHostFor(deps.env, deps.realHome, deps.exists),
+    dockerConfig: deps.env.DOCKER_CONFIG || join(deps.realHome, ".docker"),
+  });
+  console.error(`act-local: act ${actArgs.join(" ")}`);
+
+  let code: number;
+  try {
+    code = await deps.spawnAct(actArgs, repo, env);
+  } catch (error) {
+    console.error(`act-local: act could not start: ${(error as Error).message}`);
+    return 1;
+  }
+  console.log(`act-local: act exited ${code}`);
+  return code;
+}
+
+export async function runActLocal(argv: string[], deps: ActDeps = defaultDeps()): Promise<number> {
+  const args = parseArgs(argv);
+  if (typeof args === "string") {
+    console.error(`act-local: ${args}`);
+    console.error(USAGE);
+    return 2;
+  }
+  const refused = runRefusal(args);
+  if (refused) {
+    console.error(`act-local: refused: ${refused}`);
+    return 2;
+  }
+
+  let source: { toplevel: string; sha: string };
+  try {
+    source = {
+      toplevel: deps.git(["rev-parse", "--show-toplevel"], deps.cwd),
+      sha: deps.git(["rev-parse", "HEAD"], deps.cwd),
+    };
+    if (deps.git(["status", "--porcelain"], deps.cwd) !== "") {
+      console.error(
+        "act-local: the working tree has uncommitted changes; they are NOT in the run, only the commit is"
+      );
+    }
+  } catch (error) {
+    console.error(`act-local: not in a git repository: ${(error as Error).message}`);
+    return 1;
+  }
+
+  const work = deps.makeTemp();
+  try {
+    return await runInWork(args, deps, source, work);
+  } finally {
+    if (args.keep) console.error(`act-local: kept ${work}`);
+    else deps.remove(work);
+  }
+}
+
+if (import.meta.main) {
+  process.exit(await runActLocal(process.argv.slice(2)));
+}

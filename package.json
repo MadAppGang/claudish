@@ -24,6 +24,7 @@
     "test:safe": "bun run scripts/guard-real-config.ts -- bun run test",
     "test:macos": "bun scripts/test-macos.ts",
     "review:routing": "bun scripts/routing-review.ts",
+    "act:local": "bun scripts/act-local.ts",
     "test:mcp": "bun run packages/cli/src/mcp-e2e/runner.ts",
     "test:mcp:op": "bun run packages/cli/src/mcp-e2e/runner.ts --group op",
     "madbench": "bun run packages/cli/src/madbench/runner.ts",
