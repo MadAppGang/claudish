@@ -15,6 +15,8 @@
  * starts from Claude Code's summary), so the history pass records none.
  */
 
+import { lastConversationIndex } from "./conversation.js";
+
 type Block = Record<string, unknown>;
 
 /** The first line of Claude Code's compaction instruction. */
@@ -43,9 +45,12 @@ export function isHarnessCompactionMessage(message: unknown): boolean {
   return lastUserText(message)?.trimStart().startsWith(HARNESS_COMPACTION_PROMPT_START) === true;
 }
 
-/** True when the request's last message carries Claude Code's compaction instruction. */
+/**
+ * True when the request's last message, past any inline system message,
+ * carries Claude Code's compaction instruction.
+ */
 export function isHarnessCompactionRequest(messages: readonly unknown[]): boolean {
-  return isHarnessCompactionMessage(messages[messages.length - 1]);
+  return isHarnessCompactionMessage(messages[lastConversationIndex(messages)]);
 }
 
 /**
