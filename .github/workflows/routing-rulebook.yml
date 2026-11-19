@@ -222,6 +222,36 @@ jobs:
           rm -rf pr-head/.claude pr-head/.claude.json pr-head/.mcp.json
           find pr-head -name .git -prune -o \( -name CLAUDE.md -o -name CLAUDE.local.md -o -name AGENTS.md \) -exec rm -f {} +
 
+      # Without an executable the action downloads Claude Code with its own installer
+      # on every run (about 19 s measured). This step installs the same version from
+      # npm in a few seconds. CLAUDE_CODE_VERSION must be the version the pinned
+      # action installs, so change both together. An empty `path` output makes the
+      # action install its own copy, so this step never fails the job. It runs outside
+      # the workspace, which holds the pull request's files as data, and it holds no
+      # secret, because the package runs an install script.
+      - name: Install Claude Code for the review
+        id: claude
+        if: steps.rulebook.outputs.review == 'true'
+        working-directory: ${{ runner.temp }}
+        env:
+          CLAUDE_CODE_VERSION: 2.1.319
+        run: |
+          prefix="$RUNNER_TEMP/claude-code"
+          bin="$prefix/node_modules/.bin/claude"
+
+          if timeout 20 npm install --prefix "$prefix" --no-audit --no-fund --loglevel=error "@anthropic-ai/claude-code@$CLAUDE_CODE_VERSION"; then
+            reported=$(timeout 10 "$bin" --version 2> /dev/null || true)
+            version=${reported%%[[:space:]]*}
+            if [ "$version" = "$CLAUDE_CODE_VERSION" ]; then
+              echo "path=$bin" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "::warning::Claude Code from npm reports version '$version', not $CLAUDE_CODE_VERSION; the action will install its own copy"
+          else
+            echo "::warning::Claude Code $CLAUDE_CODE_VERSION did not install from npm in 20 s; the action will install its own copy"
+          fi
+          exit 0
+
       - name: Review against the rulebook
         id: review
         if: steps.rulebook.outputs.review == 'true'
@@ -229,6 +259,7 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ github.token }}
+          path_to_claude_code_executable: ${{ steps.claude.outputs.path }}
           prompt: |
             Review a pull request against the routing rulebook at
             ${{ steps.rulebook.outputs.path }}. Apply that file and no other copy of it.
