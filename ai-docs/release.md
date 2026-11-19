@@ -71,7 +71,8 @@ the gate: everything must be green before the tag leaves the machine.
 (`packages/cli/scripts/test-tiers.json`: the files listed for each slow category, at most
 three, whatever their time; the `pinned` files, whatever their time; and, outside the slow
 categories, no other file measured at 2 s or more); `bun run test:macos --full` runs
-the FULL tier. A dispatch of `test.yml` and `weekly-tests.yml` run the GITHUB tier: the
+the FULL tier. A dispatch of `test.yml` and `weekly-tests.yml` run the `idle` and `rest`
+groups of the GITHUB tier on Linux, without their `macOnly` files. The GITHUB tier is the
 essential files plus every weekly file measured under `githubMaxSeconds` or not measured.
 Weekly files measured at `githubMaxSeconds` or more run only on this Mac. The target is
 every GitHub job under 50 s;
