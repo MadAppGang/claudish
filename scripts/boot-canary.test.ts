@@ -22,13 +22,18 @@ function canary(...args: string[]): { status: number | null; stderr: string; out
   }
 }
 
-test("a run that fails leaves no report of an earlier run", () => {
+test("a run that fails leaves no report and no screen of an earlier run", () => {
   const dir = mkdtempSync(join(tmpdir(), "canary-stale-"));
   const out = join(dir, "out");
   const report = join(out, "results.json");
+  // a scenario this run does not name: its screen is of an earlier run too
+  const screen = join(out, "agent.screen.txt");
+  const other = join(out, "notes.txt");
   try {
     mkdirSync(out);
     writeFileSync(report, '{"version":"0.0.0","results":{}}\n');
+    writeFileSync(screen, "an earlier screen\n");
+    writeFileSync(other, "not a file of the canary\n");
     const run = spawnSync(
       process.execPath,
       [SCRIPT, "--bin", join(dir, "no-such-claude"), "--out", out, "--scenarios", "boot"],
@@ -36,6 +41,8 @@ test("a run that fails leaves no report of an earlier run", () => {
     );
     expect(run.status).not.toBe(0);
     expect(existsSync(report)).toBe(false);
+    expect(existsSync(screen)).toBe(false);
+    expect(existsSync(other)).toBe(true);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

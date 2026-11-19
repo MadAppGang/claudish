@@ -307,8 +307,10 @@ async function main(): Promise<void> {
   if (!Number.isInteger(jobs) || jobs < 1) usage("--jobs takes a whole number, 1 or more");
   const expectPath = arg("--expect") ?? join(import.meta.dir, "boot-canary.expect.json");
   const outDir = resolve(arg("--out") ?? "canary-out");
-  // a run that fails writes no report, so the report of an earlier run must not stay in its place
+  // a run that fails writes no report, so the report of an earlier run must not stay in its place;
+  // the same holds for the screen of every scenario, named in this run or not
   rmSync(join(outDir, "results.json"), { force: true });
+  for (const s of SCENARIOS) rmSync(join(outDir, `${s}.screen.txt`), { force: true });
   const bin = claudeBinary();
   const version =
     execFileSync(bin, ["--version"], { encoding: "utf8" }).trim().split(/\s/)[0] ?? "unknown";
