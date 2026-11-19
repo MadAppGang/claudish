@@ -94,7 +94,7 @@ for (const scenario of [
   test(`${scenario} cold failure retains real bare-name Codex routing and reserves OAuth`, async () => {
     const { result, stderr } = await run(scenario);
     const invalid = scenario === "E10-config-invalid" || scenario === "E10-config-schema";
-    // 9ace3fe5 changes the bare chain only; the retained Codex failure is still
+    // Only the bare chain advances; the retained Codex failure is still
     // terminal for invalid config and transient for I/O/legacy failure.
     const stop = result.originalStop;
     expect(stop.status, stop.text + stderr).toBe(invalid ? 400 : 503);

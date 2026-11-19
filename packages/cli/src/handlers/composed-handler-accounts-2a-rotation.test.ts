@@ -229,8 +229,8 @@ test("E7 bare-name exhaustion reaches the metered socket with its cost warning; 
   expect(explicit.stderr).not.toContain("billed per token");
 }, 30_000);
 
-// Rebase resolution "Decisions for the owner", decision 1: the code-mode
-// body belongs to A. The next inbound request may select B, never this request.
+// The code-mode body belongs to A. The next inbound request may select B,
+// never this request.
 test("R1 code-mode pooled quota returns transient 429 without contacting a second account", async () => {
   const { result, stderr } = await run("R1-code-mode");
   expect(result.status, result.text + stderr).toBe(429);
@@ -257,13 +257,13 @@ test("R1 code-mode pooled quota returns transient 429 without contacting a secon
   expect(stderr).not.toContain("billed per token");
 }, 30_000);
 
-// Decision 2: legs use the same request-owned forced-sign budget as the primary,
-// and every normal or forced leg sign remains pinned to the turn's account.
+// Legs use the same request-owned forced-sign budget as the primary, and
+// every normal or forced leg sign remains pinned to the turn's account.
 for (const scenario of ["R2-leg-first", "R2-primary-first", "R2-two-legs"]) {
   test(`${scenario} Responses leg 401 shares the single pinned forced re-sign`, async () => {
     const { result, stderr } = await run(scenario);
     expect(result.status, result.text + stderr).toBe(200);
-    // implementation-log.md § v14 merge fixes / M4: no resend after the forced sign.
+    // No resend after the forced sign.
     if (scenario === "R2-leg-first") {
       expect(result.text).not.toContain("event: error");
       expect(result.text).toContain('"name":"Read"');

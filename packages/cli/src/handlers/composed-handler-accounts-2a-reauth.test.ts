@@ -19,8 +19,8 @@ for (const name of ["NeedsReauthError", "NoUsableAccountError", "MeteredEscapeEr
     expect(stderr).not.toContain("billed per token");
   });
   for (const order of ["sub-first", "meter-first", "fail-then-success", "all-fail", "meter-only"]) {
-    // v14 rebase, 9ace3fe5: terminal credential rejection advances in chain order,
-    // including metered hops, with a notice. The explicit cx@ case below still stops.
+    // A terminal credential rejection advances in chain order, including metered
+    // hops, with a notice. The explicit cx@ case below still stops.
     test(`E9 ${name} after OAuth advances past terminal rejection: ${order}`, async () => {
       const { result, stderr } = await run(`E9:${name}:${order}`);
       const metered = order !== "sub-first";
@@ -104,8 +104,8 @@ for (const scenario of [
 
 // The backstop refuses a metered signing on the Codex hop: that request never
 // reaches Codex signed with the API key. The refusal is a terminal credential
-// verdict, which advances on every tier (project owner, 2026-11-12), so the
-// chain moves to its next hop and says so.
+// verdict, which advances on every tier, so the chain moves to its next hop
+// and says so.
 test("E17-backstop refuses metered signing on the Codex hop and the chain moves on", async () => {
   const { result, stderr } = await run("E17-backstop");
   expect(result.contacts, JSON.stringify(result)).toHaveLength(0);
