@@ -1,24 +1,52 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+  capturedLines,
+  startLogCapture,
+  stopLogCapture,
+} from "../recovery/test-helpers/capture-log.js";
+import { localTokenEstimate } from "../token-estimate.js";
 import { DEFAULT_COMPACTION_SETTINGS } from "./config.js";
 import { CompactionClient } from "./haiku-client.js";
 import {
   HARNESS_COMPACTION_PROMPT_START,
   isHarnessCompactionRequest,
 } from "./harness-compaction.js";
+import {
+  HISTORY_PINNED_PROMPT_MARKER,
+  HISTORY_SUMMARY_MARKER,
+  HistoryCompactor,
+  isSwapPoint,
+  summaryBoundary,
+} from "./history.js";
 import { CompactionStore, toolOutputKey } from "./store.js";
 import { ToolOutputCompactor } from "./tool-outputs.js";
 
 const session = "inline-system-session";
 const model = "test-compaction-model";
 
+// Installed per file and restored: bun runs every test file in one process.
+const realFetch = globalThis.fetch;
+beforeAll(() => {
+  globalThis.fetch = (() => {
+    throw new Error("Unexpected network access");
+  }) as unknown as typeof fetch;
+});
+afterAll(() => {
+  globalThis.fetch = realFetch;
+});
+
 let dir: string;
+const active: HistoryCompactor[] = [];
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "compaction-inline-system-"));
+  startLogCapture();
 });
-afterEach(() => {
+afterEach(async () => {
+  await Promise.all(active.splice(0).map((h) => h.whenIdle()));
+  stopLogCapture();
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -96,4 +124,118 @@ test("a tool_result followed by an inline system message is decided on its first
   expect(store.get(session, toolOutputKey(session, "t-1", output))).toMatchObject({
     form: "compressed",
   });
+});
+
+type Block = Record<string, unknown>;
+type Message = { role: string; content: string | Block[] };
+type Payload = { model: string; messages: Message[] };
+
+const PROMPT = "Refactor nativeRouteFor everywhere";
+const CONTEXT = {
+  role: "system",
+  content: [{ type: "text", text: `SESSION_CONTEXT ${"cwd and git status ".repeat(40)}` }],
+};
+const SUMMARY = "INLINE_SYSTEM_SUMMARY: the refactor so far.";
+
+/**
+ * The shape Claude Code 2.1.328 sends with an output style set: the prompt,
+ * the session context, then per tool round the assistant message (thinking,
+ * then a tool_use), its tool_result, and the style reminder. Round `i` starts
+ * at message `2 + 3i`.
+ */
+function styledTurn(rounds: number): Payload {
+  const messages: Message[] = [{ role: "user", content: PROMPT }, structuredClone(CONTEXT)];
+  for (let i = 0; i < rounds; i++) {
+    messages.push({
+      role: "assistant",
+      content: [
+        { type: "thinking", thinking: `THOUGHT_${i}`, signature: `sig-${i}` },
+        { type: "tool_use", id: `t-${i}`, name: "Bash", input: { command: `step ${i}` } },
+      ],
+    });
+    messages.push({
+      role: "user",
+      content: [{ type: "tool_result", tool_use_id: `t-${i}`, content: `out-${i} `.repeat(400) }],
+    });
+    messages.push(structuredClone(STYLE_REMINDER));
+  }
+  return { model, messages };
+}
+
+test("a tool round that ends in an inline system message is a swap point", () => {
+  const p = styledTurn(6);
+  expect(isSwapPoint(p.messages)).toBe(true);
+  expect(summaryBoundary(p.messages)).toBe(14);
+});
+
+test("a long styled turn swaps mid-turn and keeps its inline system messages verbatim", async () => {
+  const inputs: string[] = [];
+  let window = 10_000;
+  const h = new HistoryCompactor({
+    store: new CompactionStore(join(dir, "history")),
+    client: new CompactionClient({
+      apiKey: "FAKE_INLINE_SYSTEM_0000",
+      model,
+      warn() {},
+      record() {},
+      fetchImpl: (async (_url: unknown, init?: { body?: unknown }) => {
+        inputs.push(String(init?.body ?? ""));
+        return Response.json({
+          type: "message",
+          role: "assistant",
+          model,
+          content: [{ type: "text", text: SUMMARY }],
+          stop_reason: "end_turn",
+          usage: { input_tokens: 10, output_tokens: 5 },
+        });
+      }) as unknown as typeof fetch,
+    }),
+    settings: { enabled: true, precomputeAt: 0.6, applyAt: 0.75 },
+    contextWindowOf: () => window,
+    autoCompactWindow: () => undefined,
+    summaryTimeoutMs: 1000,
+  });
+  active.push(h);
+  const windowAt = (p: Payload, ratio: number) => {
+    window = Math.ceil(localTokenEstimate(p) / ratio);
+  };
+
+  const a = styledTurn(6);
+  windowAt(a, 0.65);
+  expect(h.compact(a, session).precomputeStarted).toBe(true);
+  await h.whenIdle();
+  expect(inputs.length).toBe(1);
+  expect(inputs[0]).not.toContain("SESSION_CONTEXT");
+  expect(inputs[0]).not.toContain("output style is active");
+
+  const b = styledTurn(8);
+  windowAt(b, 0.8);
+  const pass = h.compact(b, session);
+  expect(pass.applied).toBe("swapped");
+  expect(pass.boundary).toBe(14);
+
+  const sent = b.messages;
+  expect(sent[0]).toEqual({
+    role: "user",
+    content: [
+      { type: "text", text: `${HISTORY_SUMMARY_MARKER}\n${SUMMARY}` },
+      { type: "text", text: HISTORY_PINNED_PROMPT_MARKER },
+      { type: "text", text: PROMPT },
+    ],
+  });
+  // Each distinct inline system message of [0, 14) once, in first-seen order.
+  expect(sent[1]).toEqual(CONTEXT);
+  expect(sent[2]).toEqual(STYLE_REMINDER);
+  expect(sent[3]?.role).toBe("assistant");
+  expect(sent.length).toBe(3 + (2 + 3 * 8 - 14));
+  expect(JSON.stringify(sent)).not.toContain("THOUGHT_");
+
+  const lines = await capturedLines();
+  expect(lines.some((l) => l.includes("history swap") && l.includes("mid-turn"))).toBe(true);
+
+  // The next request of the turn replays the same bytes.
+  const c = styledTurn(9);
+  windowAt(c, 0.8);
+  expect(h.compact(c, session).applied).toBe("replayed");
+  expect(JSON.stringify(c.messages.slice(0, sent.length))).toBe(JSON.stringify(sent));
 });

@@ -53,6 +53,11 @@ import { ONE_MILLION_CONTEXT_SUFFIX } from "../providers/claude-code-aliases.js"
 import { parseModelSpec } from "../providers/model-parser.js";
 import { type CachePricing, cacheRatios, cacheTtlMs } from "./cache-prices.js";
 import { DEFAULT_TOPIC_SETTINGS, type HistorySettings } from "./config.js";
+import {
+  isInlineSystem,
+  lastConversationIndex,
+  previousConversationIndex,
+} from "./conversation.js";
 import type { CompactionCallResult, CompactionClient } from "./haiku-client.js";
 import { isHarnessCompactionMessage, isHarnessCompactionRequest } from "./harness-compaction.js";
 import {
@@ -322,11 +327,11 @@ function holdsToolResult(message: unknown): boolean {
 
 /**
  * True when message `i` is a user message of tool_results that answers every
- * tool_use of the assistant message right before it.
+ * tool_use of the assistant message before it (past any inline system message).
  */
 export function isCompleteToolRound(messages: readonly unknown[], i: number): boolean {
   const results = messages[i] as Block | undefined;
-  const asking = messages[i - 1] as Block | undefined;
+  const asking = messages[previousConversationIndex(messages, i)] as Block | undefined;
   if (results?.role !== "user" || asking?.role !== "assistant") return false;
   const answered = new Set(
     blocksOf(results)
@@ -339,12 +344,12 @@ export function isCompleteToolRound(messages: readonly unknown[], i: number): bo
 }
 
 /**
- * True when a swap may be sent on a request whose last message is
- * `messages[last]`: it starts a human turn, or it answers every tool_use of
- * the assistant message before it.
+ * True when a swap may be sent on a request whose last message, past any
+ * inline system message, starts a human turn or answers every tool_use of the
+ * assistant message before it.
  */
 export function isSwapPoint(messages: readonly unknown[]): boolean {
-  const last = messages.length - 1;
+  const last = lastConversationIndex(messages);
   if (last < 1) return false;
   return isHumanTurnStart(messages[last]) || isCompleteToolRound(messages, last);
 }
@@ -367,12 +372,12 @@ export function isSafeBoundary(messages: readonly unknown[], b: number): boolean
  */
 export function summaryBoundary(messages: readonly unknown[]): number {
   const human = lastHumanTurnStart(messages);
-  const last = messages.length - 1;
+  const last = lastConversationIndex(messages);
   if (last >= 0 && isHumanTurnStart(messages[last])) return human;
   let found = 0;
   for (let b = last; b > human && b >= 2; b--) {
     if ((messages[b] as Block | undefined)?.role !== "assistant") continue;
-    if (!isCompleteToolRound(messages, b - 1)) continue;
+    if (!isCompleteToolRound(messages, previousConversationIndex(messages, b))) continue;
     found += 1;
     if (found === MID_TURN_TAIL_ROUNDS) return b;
   }
@@ -488,7 +493,10 @@ export function renderMessage(message: unknown): string {
  */
 export function renderMessages(messages: readonly unknown[], start: number, end: number): string {
   const parts: string[] = [];
-  for (let i = start; i < end; i++) parts.push(renderMessage(messages[i]));
+  for (let i = start; i < end; i++) {
+    // Inline system messages are kept verbatim by the swap, never summarised.
+    if (!isInlineSystem(messages[i])) parts.push(renderMessage(messages[i]));
+  }
   const joined = parts.join("\n\n");
   if (joined.length <= HISTORY_INPUT_MAX_CHARS || parts.length < 2) {
     return joined.length <= HISTORY_INPUT_MAX_CHARS ? joined : cut(joined, HISTORY_INPUT_MAX_CHARS);
@@ -648,10 +656,34 @@ export function projectedTokens(
   return { tokens: count + Math.round(growthPerRequest * requests), requests };
 }
 
+/**
+ * The inline system messages of `[0, boundary)` a swap keeps after the
+ * summary: each distinct one once, in first-seen order, without cache
+ * markers. They are Claude Code's session context and reminders, which the
+ * summary never covers.
+ */
+export function keptInlineSystemMessages(
+  original: readonly unknown[],
+  boundary: number
+): unknown[] {
+  const kept: unknown[] = [];
+  const seen = new Set<string>();
+  for (let i = 0; i < Math.min(boundary, original.length); i++) {
+    if (!isInlineSystem(original[i])) continue;
+    const copy = withoutCacheMarkers(original[i]);
+    const key = canonicalJson(copy);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    kept.push(copy);
+  }
+  return kept;
+}
+
 /** The messages a swap sends in place of `original`. */
 export function applySwap(original: readonly unknown[], swap: HistorySwapRecord): unknown[] {
   return [
     summaryMessage(swap.summary, original, swap.boundary, swap.pinned),
+    ...keptInlineSystemMessages(original, swap.boundary),
     ...original.slice(swap.boundary, swap.end).map(stripThinking),
     ...original.slice(swap.end),
   ];
@@ -1126,7 +1158,10 @@ export class HistoryCompactor {
     const pinned = pinnedPromptIndex(original, ready.boundary);
     const summaryTokens = counter.tokensOfChars(
       sessionId,
-      charsOf(summaryMessage(ready.summary, original, ready.boundary, pinned))
+      charsOf([
+        summaryMessage(ready.summary, original, ready.boundary, pinned),
+        ...keptInlineSystemMessages(original, ready.boundary),
+      ])
     );
     const prefixTokens = counter.tokensOfChars(
       sessionId,
@@ -1428,7 +1463,7 @@ export class HistoryCompactor {
  * reader can compare it with the prompt the user typed.
  */
 function logSwap(sessionId: string, swap: HistorySwapRecord, original: readonly unknown[]): void {
-  const midTurn = !isHumanTurnStart(original[original.length - 1]);
+  const midTurn = !isHumanTurnStart(original[lastConversationIndex(original)]);
   let pinnedPart = "";
   if (swap.pinned !== undefined && isHumanTurnStart(original[swap.pinned])) {
     const text = pinnedPromptBlocks(original[swap.pinned])
