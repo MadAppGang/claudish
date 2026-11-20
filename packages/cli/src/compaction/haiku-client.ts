@@ -24,6 +24,7 @@ import { ANTHROPIC_MESSAGES_URL } from "../handlers/advisor-claude-route.js";
 import { isClaudeShapeRefusal } from "../handlers/native-handler-advisor.js";
 import { calculateCost } from "../handlers/shared/remote-provider-types.js";
 import { log, logStderr } from "../logger.js";
+import type { WireValue } from "../providers/connection-wire.js";
 import { redactExactValues, redactForClient } from "../redact.js";
 import type { StatsEvent } from "../stats-otlp.js";
 import { recordStats } from "../stats.js";
@@ -81,6 +82,11 @@ export interface CompactionClientOptions {
   apiKey: string;
   /** The resolved Anthropic model id. */
   model: string;
+  /**
+   * The `output_config.effort` value, from the catalog wire
+   * (`compactionEffort`). Absent: no effort field is sent.
+   */
+  effort?: WireValue;
   /** Test seam; defaults to the global fetch at call time. */
   fetchImpl?: typeof fetch;
   /** Where the one switch-off warning goes. Defaults to `logStderr`. */
@@ -135,6 +141,10 @@ export class CompactionClient {
       return { ok: false, reason: "compaction is off for this launch after repeated 401 answers" };
     }
     const timeoutMs = Math.max(1, Math.floor(req.timeoutMs));
+    const outputConfig = {
+      ...(this.opts.effort === undefined ? {} : { effort: this.opts.effort }),
+      ...(req.schema ? { format: { type: "json_schema", schema: req.schema } } : {}),
+    };
     const body = {
       model: this.opts.model,
       system: req.system,
@@ -151,10 +161,7 @@ export class CompactionClient {
         },
       ],
       max_tokens: req.maxTokens,
-      output_config: {
-        effort: "low",
-        ...(req.schema ? { format: { type: "json_schema", schema: req.schema } } : {}),
-      },
+      ...(Object.keys(outputConfig).length > 0 ? { output_config: outputConfig } : {}),
     };
     const controller = new AbortController();
     this.inFlight.add(controller);

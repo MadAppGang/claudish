@@ -103,7 +103,15 @@ if (process.env.COMPACTION_BLIND_FILE !== import.meta.path) {
       requests.push(request.clone());
       return reply(request);
     }) as unknown as typeof fetch;
-    const client = new CompactionClient({ apiKey: key, model, fetchImpl, warn() {}, record() {} });
+    // effort as resolved for a model whose catalog wire publishes the low effort.
+    const client = new CompactionClient({
+      apiKey: key,
+      model,
+      effort: "low",
+      fetchImpl,
+      warn() {},
+      record() {},
+    });
     const settings = { enabled: true, minTokens: 4000, timeoutMs, maxRatio: 0.6 };
     const store = new CompactionStore(root);
     const compactor = new ToolOutputCompactor({ store, client, settings });

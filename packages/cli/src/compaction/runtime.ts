@@ -23,7 +23,11 @@ import { log, logStderr } from "../logger.js";
 import { getRegisteredProviders } from "../providers/provider-registry.js";
 import { acquireSigningLease } from "../redact.js";
 import type { StatsEvent } from "../stats-otlp.js";
-import { type CompactionSettings, resolveCompactionModel } from "./config.js";
+import {
+  type CompactionSettings,
+  compactionEffort,
+  resolveCompactionModel,
+} from "./config.js";
 import { CompactionClient } from "./haiku-client.js";
 import { HistoryCompactor } from "./history.js";
 import { CompactionStore, compactionRoot, purgeExpiredSessions } from "./store.js";
@@ -179,15 +183,17 @@ export async function prepareCompaction(
     log(`[compaction] removed ${purged.length} session folder(s) unused for 7 days`);
   }
 
+  const effort = compactionEffort(model.id);
   const client = new CompactionClient({
     apiKey: resolution.key,
     model: model.id,
+    ...(effort === undefined ? {} : { effort }),
     ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
     ...(opts.record ? { record: opts.record } : {}),
     warn,
   });
   log(
-    `[compaction] on: model ${model.id} (from "${settings.model}"), key from ${resolution.source}, store ${store.root}`
+    `[compaction] on: model ${model.id} (from "${settings.model}"), effort ${effort === undefined ? "not sent (none published for the model)" : String(effort)}, key from ${resolution.source}, store ${store.root}`
   );
   const runtime: CompactionRuntime = {
     settings,

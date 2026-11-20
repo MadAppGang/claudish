@@ -128,6 +128,8 @@ if (process.env.COMPACTION_BLIND_FILE !== import.meta.path) {
     const client = new CompactionClient({
       apiKey: "FAKE_HISTORY_KEY_00000000",
       model,
+      // As resolved for a model whose catalog wire publishes the low effort.
+      effort: "low",
       warn() {},
       record() {},
       fetchImpl: (async (input: RequestInfo | URL, init?: RequestInit) => {

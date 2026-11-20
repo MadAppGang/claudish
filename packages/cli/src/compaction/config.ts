@@ -23,6 +23,8 @@
 import { type CompactionConfig, CompactionConfigSchema } from "../config-schema.js";
 import { claudeAdvisorModelFor } from "../handlers/advisor-claude-route.js";
 import type { ClaudishProfileConfig } from "../profile-config.js";
+import { resolveConnection } from "../providers/connection-resolver.js";
+import type { WireValue } from "../providers/connection-wire.js";
 import type { HistoryPolicy } from "./swap-policy.js";
 
 /** The environment variable that switches compaction on (`1`) or off (`0`). */
@@ -320,4 +322,30 @@ export function resolveCompactionModel(model: string): CompactionModel {
     };
   }
   return { ok: true, id };
+}
+
+/** The catalog effort level compaction calls ask for. */
+export const COMPACTION_EFFORT = "low";
+
+/**
+ * The `output_config.effort` value to send to `model`, or undefined to send
+ * none. Read from the catalog wire of the model's Claude API connection: the
+ * native value of `COMPACTION_EFFORT` when the wire publishes effort at
+ * `/output_config/effort`. A model whose effort is unknown, published at
+ * another path, or without that level gets no effort field, because a model
+ * that does not take the field answers 400.
+ */
+export function compactionEffort(
+  model: string,
+  resolve: typeof resolveConnection = resolveConnection
+): WireValue | undefined {
+  const resolved = resolve("anthropic", model);
+  if (!resolved.ok) return undefined;
+  const wire = resolved.connection.wire;
+  if (wire.status !== "known" || wire.reasoning.status !== "supported") return undefined;
+  const effort = wire.reasoning.effort;
+  if (!("path" in effort) || effort.path !== "/output_config/effort") return undefined;
+  return Object.hasOwn(effort.values, COMPACTION_EFFORT)
+    ? effort.values[COMPACTION_EFFORT]
+    : undefined;
 }
