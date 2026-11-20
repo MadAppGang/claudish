@@ -11,11 +11,11 @@ on:
 
 jobs:
   smoke:
-    runs-on: blacksmith-2vcpu-ubuntu-2404-arm
+    runs-on: ubuntu-latest
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
-      - uses: useblacksmith/checkout@v1
+      - uses: actions/checkout@v5
 
       - uses: oven-sh/setup-bun@v2
 
