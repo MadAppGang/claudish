@@ -460,7 +460,12 @@ a launch-scoped `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, measured first.
   effort field. A model that does not take the field answers 400, and `compaction.model` accepts
   any `claude-*` id: in the catalog on 2026-11-20, `claude-haiku-5-5` and `claude-sonnet-5-5`
   publish `low`, and `claude-haiku-4-5` publishes reasoning status `unknown`, so it gets no field.
-  The startup line names the effort sent.
+  The effort is resolved on every call, not once at startup: on a first run or a new HOME the
+  catalog file is written by the first refresh, after compaction started, and a value read once
+  kept a whole session without effort (bench round 4 on `2e349e91`). `readDiskCatalog` memoizes by
+  mtime and size, so an unchanged file costs two `stat` calls. The client logs the effort it sends
+  on its first call and again when it changes (`output_config.effort sent: "low", …` or
+  `output_config.effort not sent: …`); the startup line names none.
 - A 429 "Error" shape (`isClaudeShapeRefusal`) or a 401 is a final failure. Three 401s in one
   launch switch compaction off, with one warning.
 - Every call records a `StatsEvent` with `request_role: "compaction"`, provider `anthropic`, priced
