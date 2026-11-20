@@ -58,11 +58,19 @@ const CONTINUED =
 /**
  * `compacted`: the conversation opens with Claude Code's summary, as after its
  * compaction. `everySummary`: every Haiku summary succeeds, not only the first.
- * `summaryChars`: the summary's length.
+ * `summaryChars`: the summary's length. `routedModel`: the model spec the
+ * proxy routes each request to. `pricesOf`: the rates lookup, Sonnet 5.5's by
+ * default.
  */
 function rig(
   history: HistorySettings,
-  opts: { compacted?: boolean; everySummary?: boolean; summaryChars?: number } = {}
+  opts: {
+    compacted?: boolean;
+    everySummary?: boolean;
+    summaryChars?: number;
+    routedModel?: string;
+    pricesOf?: (model: unknown, inputTokens: number) => typeof SONNET | undefined;
+  } = {}
 ) {
   let calls = 0;
   let clock = 1_000_000;
@@ -94,7 +102,7 @@ function rig(
     autoCompactWindow: () => undefined,
     summaryTimeoutMs: 1000,
     now: () => clock,
-    pricesOf: () => SONNET,
+    pricesOf: opts.pricesOf ?? (() => SONNET),
     haikuCostOf: () => 0,
   });
   active.push(compactor);
@@ -136,7 +144,7 @@ function rig(
         metadata: { user_id: JSON.stringify({ session_id: session }) },
         messages: [...messages],
       };
-      const result = compactor.compact(payload, session);
+      const result = compactor.compact(payload, session, opts.routedModel);
       if (result.mark) {
         compactor.recordUsage(result.mark, { input_tokens: Math.round(charsOf(payload) / 4) });
       }
@@ -181,6 +189,42 @@ test("cost: at the measured figures it holds, projected below nStar", async () =
   expect(nStar).toBeGreaterThan(projected);
   expect(last).toMatch(/L=\d+, S=\d+, R=\d+, reason=projected \d+ < nStar/);
   expect((await capturedLines()).some((l) => l.includes("history swap in session"))).toBe(false);
+});
+
+/**
+ * A role mapping or `--model` routes Claude Code's `claude-*` request to
+ * another model, and the body keeps Claude Code's name. The decision is
+ * priced on the route: a Claude API spec on its inner model id, any other
+ * provider on nothing, so a foreign route is never credited Claude cache
+ * savings.
+ */
+test("cost: the decision is priced on the routed model, not on the request's own name", async () => {
+  const cases: Array<[string | undefined, unknown]> = [
+    ["glm@glm-5-turbo", undefined],
+    ["anthropic@claude-opus-5-5", "claude-opus-5-5"],
+    ["a@claude-opus-5-5", "claude-opus-5-5"],
+    ["claude-opus-5-5", "claude-opus-5-5"],
+    [undefined, model],
+  ];
+  for (const [routedModel, priced] of cases) {
+    const asked: unknown[] = [];
+    const r = rig(COST, {
+      ...(routedModel !== undefined ? { routedModel } : {}),
+      pricesOf: (name) => {
+        asked.push(name);
+        return SONNET;
+      },
+    });
+    r.send();
+    await r.compactor.whenIdle();
+    r.turn();
+    r.send();
+    expect(asked.length).toBeGreaterThan(0);
+    expect(new Set(asked)).toEqual(new Set([priced]));
+    await r.compactor.whenIdle();
+    rmSync(root, { recursive: true, force: true });
+    root = mkdtempSync(join(tmpdir(), "compaction-swap-policy-"));
+  }
 });
 
 test("cost: the same request after a gap longer than the cache TTL swaps", async () => {

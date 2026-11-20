@@ -756,6 +756,26 @@ export interface HistoryCompactorDeps {
   topicDecider?: TopicDecider;
 }
 
+/**
+ * The model name a swap decision is priced on: the routed model when the
+ * proxy routes the request elsewhere, else the request's own. A Claude API or
+ * Claude subscription spec (`anthropic@`, `a@`, `api@`, `claude@`) prices its
+ * inner model id; any other `provider@model` spec prices nothing, since the
+ * Claude API rates are the only ones the policy reads.
+ */
+export function pricingModelOf(routedModel: string | undefined, bodyModel: unknown): unknown {
+  if (routedModel === undefined) return bodyModel;
+  try {
+    const parsed = parseModelSpec(routedModel);
+    if (!parsed.isExplicitProvider) return routedModel;
+    return parsed.provider === "anthropic" || parsed.provider === "native-anthropic"
+      ? parsed.model
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** The Claude API rates of a `claude-*` model; undefined for any other name. */
 export function claudeApiPrices(model: unknown, inputTokens: number): CachePricing | undefined {
   if (typeof model !== "string") return undefined;
@@ -1029,7 +1049,10 @@ export class HistoryCompactor {
       (topicSwap !== undefined
         ? this.topicSwap(sessionId, thread, original, hashes, active, topicSwap)
         : undefined) ??
-      this.decidedSwap(sessionId, thread, body, original, hashes, active, count, limit);
+      this.decidedSwap(sessionId, thread, body, original, hashes, active, count, {
+        limit,
+        routedModel,
+      });
     if (swap) {
       body.messages = applySwap(original, swap);
       result.applied = "swapped";
@@ -1171,8 +1194,9 @@ export class HistoryCompactor {
     hashes: MessageHashes,
     active: HistorySwapRecord | undefined,
     count: RequestCount,
-    limit: number
+    route: { limit: number; routedModel: string | undefined }
   ): HistorySwapRecord | undefined {
+    const { limit } = route;
     const policy: HistoryPolicy = this.deps.settings.policy ?? "threshold";
     const { precomputeAt, applyAt } = this.deps.settings;
     const gate = policy === "cost" ? precomputeAt : applyAt;
@@ -1187,7 +1211,7 @@ export class HistoryCompactor {
       last
     );
     if (!ready) return undefined;
-    const decision = this.decide(policy, sessionId, thread, body, original, ready, count, limit);
+    const decision = this.decide(policy, sessionId, thread, body, original, ready, count, route);
     return decision.swap
       ? this.recordSwap(sessionId, thread, original, hashes, ready, decision.forced === true)
       : undefined;
@@ -1215,8 +1239,9 @@ export class HistoryCompactor {
     original: readonly unknown[],
     ready: Extract<HistorySummaryRecord, { form: "ready" }>,
     count: RequestCount,
-    limit: number
+    route: { limit: number; routedModel: string | undefined }
   ): SwapDecision {
+    const { limit, routedModel } = route;
     const counter = this.counter;
     const observed = counter.observe(sessionId, thread);
     const tailTokens = counter.tokensOfChars(
@@ -1241,7 +1266,10 @@ export class HistoryCompactor {
       sessionId,
       charsOf(body.messages) - charsOf(swapped)
     );
-    const pricing = (this.deps.pricesOf ?? claudeApiPrices)(body.model, count.tokens);
+    const pricing = (this.deps.pricesOf ?? claudeApiPrices)(
+      pricingModelOf(routedModel, body.model),
+      count.tokens
+    );
     const ratios = cacheRatios(pricing, observed.writeSplit);
     const haikuCostUsd = (
       this.deps.haikuCostOf ?? ((s) => summaryHaikuCost(s, this.deps.client.model))
