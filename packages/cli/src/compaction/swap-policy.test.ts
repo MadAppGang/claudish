@@ -375,3 +375,158 @@ describe("a forced swap against Claude Code's compaction", () => {
     expect(d.swap).toBe(true);
   });
 });
+
+/** Opus 5.5 on the Claude API: $4 input, a 0.05 read ratio; a 1-hour cache write. */
+const OPUS_1H = { inputPerMTok: 4, readRatio: 0.05, writeRatio: 2 };
+
+/**
+ * The Opus 5.5 bench trial on Claude Code 2.1.329 (cost policy): Claude Code
+ * never compacted, so nothing was measured, and six forced swaps came 5 to 11
+ * requests apart between 04:25:17 and 04:28:00, each writing 18K-82K tokens.
+ * Growth per request is solved from each line's projected and
+ * requestsAfterSwap.
+ */
+describe("a forced swap soon after a forced swap, with nothing measured", () => {
+  const opus = (overrides: Partial<SwapDecisionInput>) =>
+    costInput({ ratios: OPUS_1H, ...overrides });
+  const line0425_38 = {
+    count: 149_399,
+    tailTokens: 69_204,
+    summaryTokens: 9_165,
+    removedTokens: 38_850,
+    growthPerRequest: 17_000,
+  };
+
+  test("04:25:38, 5 requests after the forced swap at 04:25:17, holds so Claude Code compacts once", () => {
+    const d = decideHistorySwap(opus({ ...line0425_38, lastForcedSwapGap: 5 }));
+    expect(d.projectedRequestsBeforeCcCompact).toBe(1);
+    expect(d.requestsAfterSwap).toBe(4);
+    expect(d.nStar ?? 0).toBeGreaterThan(78);
+    expect(d.lastForcedSwapGap).toBe(5);
+    expect(d.swap).toBe(false);
+    expect(d.reason).toBe(
+      `the next request crosses Claude Code's compaction point; no Claude Code compaction measured yet, and the last forced swap left 5 requests, fewer than nStar ${(d.nStar ?? 0).toFixed(1)}`
+    );
+  });
+
+  test("the rest of the burst holds too: 6, 8 and 7 requests after a forced swap, below nStar", () => {
+    const lines = [
+      {
+        count: 158_430,
+        tailTokens: 46_810,
+        summaryTokens: 8_819,
+        removedTokens: 70_597,
+        growthPerRequest: 8_000,
+        lastForcedSwapGap: 6,
+        room: 10,
+      },
+      {
+        count: 165_010,
+        tailTokens: 61_862,
+        summaryTokens: 8_914,
+        removedTokens: 62_004,
+        growthPerRequest: 10_000,
+        lastForcedSwapGap: 8,
+        room: 7,
+      },
+      {
+        count: 158_124,
+        tailTokens: 42_698,
+        summaryTokens: 9_041,
+        removedTokens: 74_322,
+        growthPerRequest: 8_500,
+        lastForcedSwapGap: 7,
+        room: 10,
+      },
+    ];
+    for (const { room, ...line } of lines) {
+      const d = decideHistorySwap(opus(line));
+      expect(d.projectedRequestsBeforeCcCompact).toBe(1);
+      expect(d.requestsAfterSwap).toBe(room);
+      expect(d.swap).toBe(false);
+    }
+  });
+
+  test("04:25:17, the first forced swap after a cost swap, still swaps", () => {
+    const d = decideHistorySwap(
+      opus({
+        count: 167_810,
+        tailTokens: 26_023,
+        summaryTokens: 8_726,
+        removedTokens: 101_312,
+        growthPerRequest: 13_000,
+      })
+    );
+    expect(d.projectedRequestsBeforeCcCompact).toBe(0);
+    expect(d.requestsAfterSwap).toBe(8);
+    expect(d.swap).toBe(true);
+    expect(d.reason).toBe(
+      "the next request crosses Claude Code's compaction point; no Claude Code compaction measured yet"
+    );
+  });
+
+  test("04:28:00, 11 requests after a forced swap, above nStar 6.4, swaps", () => {
+    const d = decideHistorySwap(
+      opus({
+        count: 161_370,
+        tailTokens: 8_874,
+        summaryTokens: 9_015,
+        removedTokens: 111_953,
+        growthPerRequest: 6_000,
+        lastForcedSwapGap: 11,
+      })
+    );
+    expect(d.requestsAfterSwap).toBe(20);
+    expect(d.nStar ?? Number.POSITIVE_INFINITY).toBeLessThan(11);
+    expect(d.swap).toBe(true);
+  });
+
+  test("a measured Claude Code compaction decides instead of the gap", () => {
+    const d = decideHistorySwap(
+      opus({ ...line0425_38, lastForcedSwapGap: 5, ccCompactedTokens: 120_000 })
+    );
+    expect(d.requestsAfterCcCompact).toBe(3);
+    expect(d.swap).toBe(true);
+    expect(d.reason).toBe(
+      "the next request crosses Claude Code's compaction point; the swap leaves 4 requests, Claude Code's compaction 3"
+    );
+  });
+
+  test("the Sonnet XL trial keeps its 3 swaps, 47, 29 and 44 requests apart", () => {
+    const sonnet = (overrides: Partial<SwapDecisionInput>) =>
+      costInput({ ratios: SONNET_1H, ...overrides });
+    const decisions = [
+      // 03:40:43, a cost swap.
+      sonnet({
+        count: 100_690,
+        tailTokens: 6_592,
+        summaryTokens: 8_774,
+        removedTokens: 56_796,
+        growthPerRequest: 2_340,
+      }),
+      // 03:46:31, forced, 29 requests after the cost swap.
+      sonnet({
+        count: 157_004,
+        tailTokens: 86_962,
+        summaryTokens: 8_854,
+        removedTokens: 30_565,
+        growthPerRequest: 10_000,
+      }),
+      // 03:57:57, forced, 44 requests after the forced swap, Claude Code's compaction measured at 55,437.
+      sonnet({
+        count: 161_525,
+        tailTokens: 9_240,
+        summaryTokens: 7_851,
+        removedTokens: 111_522,
+        growthPerRequest: 12_000,
+        lastForcedSwapGap: 44,
+        ccCompactedTokens: 55_437,
+      }),
+    ].map(decideHistorySwap);
+    expect(decisions.map((d) => d.requestsAfterSwap)).toEqual([53, 4, 10]);
+    expect(decisions[0].reason).toContain("projected 28 >= nStar");
+    expect(decisions[1].nStar ?? 0).toBeGreaterThan(120);
+    expect(decisions[2].requestsAfterCcCompact).toBe(10);
+    expect(decisions.map((d) => d.swap)).toEqual([true, true, true]);
+  });
+});

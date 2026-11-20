@@ -100,6 +100,11 @@ export interface SwapDecisionInput extends Omit<BreakEvenInput, "ratios"> {
    * compaction; undefined until one is measured.
    */
   ccCompactedTokens?: number;
+  /**
+   * Requests since the session's previous swap, when that swap was made at
+   * the forced point; undefined after any other swap, or before the first.
+   */
+  lastForcedSwapGap?: number;
 }
 
 export interface SwapDecision {
@@ -124,6 +129,10 @@ export interface SwapDecision {
    * reaches the compaction point again. Undefined until both are measured.
    */
   requestsAfterCcCompact?: number;
+  /** The input's `lastForcedSwapGap`, for the log. */
+  lastForcedSwapGap?: number;
+  /** True when the decision was made at the forced point. */
+  forced?: boolean;
 }
 
 /** N*, the requests a swap needs to pay for itself. Infinite when it removes nothing. */
@@ -161,6 +170,7 @@ interface DecisionFigures {
   afterSwap: number;
   room?: number;
   ccRoom?: number;
+  lastForcedSwapGap?: number;
 }
 
 function figuresOf(input: SwapDecisionInput): DecisionFigures {
@@ -175,6 +185,7 @@ function figuresOf(input: SwapDecisionInput): DecisionFigures {
     const ccRoom = requestsUntilCcCompact(input, input.ccCompactedTokens);
     if (ccRoom !== undefined) f.ccRoom = ccRoom;
   }
+  if (input.lastForcedSwapGap !== undefined) f.lastForcedSwapGap = input.lastForcedSwapGap;
   return f;
 }
 
@@ -184,6 +195,7 @@ function decisionOf(f: DecisionFigures, swap: boolean, reason: string): SwapDeci
   if (f.projected !== undefined) d.projectedRequestsBeforeCcCompact = f.projected;
   if (f.room !== undefined) d.requestsAfterSwap = f.room;
   if (f.ccRoom !== undefined) d.requestsAfterCcCompact = f.ccRoom;
+  if (f.lastForcedSwapGap !== undefined) d.lastForcedSwapGap = f.lastForcedSwapGap;
   return d;
 }
 
@@ -193,13 +205,30 @@ const CROSSES = "the next request crosses Claude Code's compaction point";
  * The next request crosses Claude Code's compaction point: the swap against
  * Claude Code's compaction. Equal room swaps, since the compaction also
  * writes the cache and costs a main-model call.
+ *
+ * With no compaction measured, the swap is made, unless the previous swap
+ * was forced too and left fewer requests than nStar: then the swaps do not
+ * pay for themselves, and the hold lets Claude Code compact once so that its
+ * size is measured for the next forced point.
  */
 function decideForced(f: DecisionFigures): SwapDecision {
+  const forced = (swap: boolean, reason: string) => ({
+    ...decisionOf(f, swap, reason),
+    forced: true,
+  });
   if (f.ccRoom === undefined || f.room === undefined) {
-    return decisionOf(f, true, `${CROSSES}; no Claude Code compaction measured yet`);
+    const unmeasured = `${CROSSES}; no Claude Code compaction measured yet`;
+    const gap = f.lastForcedSwapGap;
+    if (gap !== undefined && f.nStar !== undefined && gap < f.nStar) {
+      return forced(
+        false,
+        `${unmeasured}, and the last forced swap left ${gap} requests, fewer than nStar ${formatN(f.nStar)}`
+      );
+    }
+    return forced(true, unmeasured);
   }
   const compared = `the swap leaves ${f.room} requests, Claude Code's compaction ${f.ccRoom}`;
-  return decisionOf(f, f.room >= f.ccRoom, `${CROSSES}; ${compared}`);
+  return forced(f.room >= f.ccRoom, `${CROSSES}; ${compared}`);
 }
 
 export function decideHistorySwap(input: SwapDecisionInput): SwapDecision {

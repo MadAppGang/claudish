@@ -808,6 +808,14 @@ export class HistoryCompactor {
    * sent beside it, from the history before the compaction.
    */
   private readonly ccCompactPending = new Map<string, string>();
+  /**
+   * Each session's newest swap: its thread, whether it was made at the forced
+   * point, and the requests on that thread since, the current one included.
+   */
+  private readonly lastSwap = new Map<
+    string,
+    { thread: string; forced: boolean; requests: number }
+  >();
   /** The tokens of the first request after each session's newest Claude Code compaction. */
   private readonly ccCompactedTokens = new Map<string, number>();
   /** The newest summary's duration per session, in ms, for `projectedTokens`. */
@@ -1012,6 +1020,8 @@ export class HistoryCompactor {
         `[compaction] session ${sessionId}: Claude Code's compaction measured, the next request is ${count.tokens} tokens`
       );
     }
+    const lastSwap = this.lastSwap.get(sessionId);
+    if (lastSwap?.thread === thread) lastSwap.requests += 1;
     const prepareAt = this.prepareAt(limit);
     if (count.tokens >= prepareAt) logCount(sessionId, count, limit);
 
@@ -1178,7 +1188,15 @@ export class HistoryCompactor {
     );
     if (!ready) return undefined;
     const decision = this.decide(policy, sessionId, thread, body, original, ready, count, limit);
-    return decision.swap ? this.recordSwap(sessionId, thread, original, hashes, ready) : undefined;
+    return decision.swap
+      ? this.recordSwap(sessionId, thread, original, hashes, ready, decision.forced === true)
+      : undefined;
+  }
+
+  /** Requests on `thread` since the session's newest swap, when that swap was forced. */
+  private lastForcedSwapGap(sessionId: string, thread: string): number | undefined {
+    const last = this.lastSwap.get(sessionId);
+    return last?.forced === true && last.thread === thread ? last.requests : undefined;
   }
 
   /**
@@ -1230,6 +1248,7 @@ export class HistoryCompactor {
     )(ready);
     const ccCompactAt = CLAUDE_CODE_COMPACT_AT * limit;
     const ccCompacted = this.ccCompactedTokens.get(sessionId);
+    const lastForcedSwapGap = this.lastForcedSwapGap(sessionId, thread);
     const decision =
       pinnedPromptTooLarge(pinned, tailTokens + summaryTokens, ccCompactAt) ??
       decideHistorySwap({
@@ -1250,11 +1269,12 @@ export class HistoryCompactor {
           ? { growthPerRequest: observed.growthPerRequest }
           : {}),
         ...(ccCompacted !== undefined ? { ccCompactedTokens: ccCompacted } : {}),
+        ...(lastForcedSwapGap !== undefined ? { lastForcedSwapGap } : {}),
       });
     const show = (n: number | undefined) =>
       n === undefined ? "unknown" : Number.isFinite(n) ? n.toFixed(1) : "infinite";
     log(
-      `[compaction] history decision ${policy}: ${decision.swap ? "swap" : "hold"}, nStar=${show(decision.nStar)}, projected=${decision.projectedRequestsBeforeCcCompact ?? "unknown"}, requestsAfterSwap=${decision.requestsAfterSwap ?? "unknown"}, requestsAfterCcCompact=${decision.requestsAfterCcCompact ?? "unknown"}, L=${tailTokens}, S=${summaryTokens}, R=${removedTokens}, reason=${decision.reason}`
+      `[compaction] history decision ${policy}: ${decision.swap ? "swap" : "hold"}, nStar=${show(decision.nStar)}, projected=${decision.projectedRequestsBeforeCcCompact ?? "unknown"}, requestsAfterSwap=${decision.requestsAfterSwap ?? "unknown"}, requestsAfterCcCompact=${decision.requestsAfterCcCompact ?? "unknown"}, lastForcedSwapGap=${decision.lastForcedSwapGap ?? "none"}, L=${tailTokens}, S=${summaryTokens}, R=${removedTokens}, reason=${decision.reason}`
     );
     return decision;
   }
@@ -1269,7 +1289,8 @@ export class HistoryCompactor {
     thread: string,
     original: readonly unknown[],
     hashes: MessageHashes,
-    ready: Extract<HistorySummaryRecord, { form: "ready" }>
+    ready: Extract<HistorySummaryRecord, { form: "ready" }>,
+    forced = false
   ): HistorySwapRecord | undefined {
     const swap: HistorySwapRecord = {
       kind: "history-swap",
@@ -1300,6 +1321,7 @@ export class HistoryCompactor {
     // A swap recorded earlier for the same prefix is sent on the replay rule:
     // it covers `[0, b)`, and this request reaches its `end`.
     if (stored.kind !== "history-swap" || stored.end > original.length) return undefined;
+    this.lastSwap.set(sessionId, { thread, forced, requests: 0 });
     return stored;
   }
 

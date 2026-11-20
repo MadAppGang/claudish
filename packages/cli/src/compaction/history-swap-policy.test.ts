@@ -55,10 +55,18 @@ function text(chars: number, tag: string): string {
 const CONTINUED =
   "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.";
 
-/** `compacted`: the conversation opens with Claude Code's summary, as after its compaction. */
-function rig(history: HistorySettings, opts: { compacted?: boolean } = {}) {
+/**
+ * `compacted`: the conversation opens with Claude Code's summary, as after its
+ * compaction. `everySummary`: every Haiku summary succeeds, not only the first.
+ * `summaryChars`: the summary's length.
+ */
+function rig(
+  history: HistorySettings,
+  opts: { compacted?: boolean; everySummary?: boolean; summaryChars?: number } = {}
+) {
   let calls = 0;
   let clock = 1_000_000;
+  const summary = opts.summaryChars ? text(opts.summaryChars, "SUMMARY") : "SUMMARY";
   const client = new CompactionClient({
     apiKey: "FAKE_SWAP_POLICY_0000",
     model,
@@ -67,12 +75,12 @@ function rig(history: HistorySettings, opts: { compacted?: boolean } = {}) {
     // The first summary is ready; later ones fail, so the first stays the newest.
     fetchImpl: (async () => {
       calls += 1;
-      if (calls > 1) return new Response("{}", { status: 500 });
+      if (calls > 1 && !opts.everySummary) return new Response("{}", { status: 500 });
       return Response.json({
         type: "message",
         role: "assistant",
         model,
-        content: [{ type: "text", text: "SUMMARY" }],
+        content: [{ type: "text", text: summary }],
         stop_reason: "end_turn",
         usage: { input_tokens: 10, output_tokens: 5 },
       });
@@ -135,10 +143,10 @@ function rig(history: HistorySettings, opts: { compacted?: boolean } = {}) {
       clock += 10_000;
     },
     /** The next human turn: 2K tokens. */
-    turn(): void {
+    turn(chars = 8_000): void {
       messages.push(
         { role: "assistant", content: [{ type: "text", text: "Done." }] },
-        { role: "user", content: text(8_000, `TURN${messages.length}`) }
+        { role: "user", content: text(chars, `TURN${messages.length}`) }
       );
     },
   };
@@ -293,6 +301,28 @@ test("threshold: the decision is logged, and the swap comes at applyAt as before
   expect(lines.length).toBe(1);
   expect(lines[0]).toContain("history decision threshold: swap");
   expect(lines[0]).toContain("reason=count reached applyAt 0.75");
+});
+
+test("cost: a forced swap 7 requests after a forced swap, below nStar, holds", async () => {
+  // The Opus bench burst in small: summaries of 30K tokens, turns of 15K
+  // tokens, so a forced swap leaves room for only a few requests.
+  const r = rig(COST, { everySummary: true, summaryChars: 120_000 });
+  r.send();
+  await r.compactor.whenIdle();
+  for (let k = 0; k < 30; k++) {
+    r.turn(k < 16 ? 8_000 : 60_000);
+    r.send();
+    await r.compactor.whenIdle();
+  }
+  const forced = (await decisions()).filter((l) => l.includes("reason=the next request crosses"));
+  expect(forced.length).toBeGreaterThanOrEqual(2);
+  expect(forced[0]).toContain("history decision cost: swap");
+  expect(forced[0]).toContain("lastForcedSwapGap=none");
+  expect(forced[1]).toContain("history decision cost: hold");
+  expect(forced[1]).toContain("lastForcedSwapGap=7");
+  expect(forced[1]).toContain(
+    `the last forced swap left 7 requests, fewer than nStar ${field(forced[1], "nStar").toFixed(1)}`
+  );
 });
 
 /**
