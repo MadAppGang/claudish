@@ -947,14 +947,18 @@ export class HistoryCompactor {
     const settings = this.deps.settings.topic ?? DEFAULT_TOPIC_SETTINGS;
     const original = messagesOf(payload);
     if (!decider || !original || original.length < 2) return undefined;
-    const last = original.length - 1;
-    if (!isHumanTurnStart(original[last])) return undefined;
+    // An inline system message after the prompt does not end the turn start.
+    const last = lastConversationIndex(original);
+    if (last < 0 || !isHumanTurnStart(original[last])) return undefined;
     const thread = threadOf(original);
-    if (this.counter.count(sessionId, thread, payload).tokens < settings.floorTokens) {
-      return undefined;
-    }
     const hashes = new MessageHashes(original);
     const active = this.matchSwap(sessionId, thread, original, hashes);
+    // Counted as sent: with a swap active, the original history is far
+    // larger than the request, and a request below the floor is not decided.
+    const sent = active ? { ...(payload as Block), messages: applySwap(original, active) } : payload;
+    if (this.counter.count(sessionId, thread, sent).tokens < settings.floorTokens) {
+      return undefined;
+    }
     const ready = this.bestSummary(
       sessionId,
       thread,

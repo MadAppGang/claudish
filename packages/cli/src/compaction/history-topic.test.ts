@@ -141,6 +141,10 @@ function rig(opts: {
         { role: "user", content: prompt }
       );
     },
+    /** An inline system message after the newest prompt, as with an output style active. */
+    remind(): void {
+      messages.push({ role: "system", content: "The output style is active." });
+    },
   };
 }
 
@@ -258,6 +262,49 @@ test("embed: Ollama unreachable holds and says why", async () => {
   expect(lines[0]).toContain("action=hold");
   expect(lines[0]).toContain(`Ollama at http://127.0.0.1:${port} is unreachable`);
   expect(await swapped()).toBe(false);
+});
+
+test("haiku: an inline system message after the new prompt does not hide the topic change", async () => {
+  const fake = fakeClient(NEW_ANSWER);
+  const r = rig({
+    history: settings("haiku"),
+    client: fake.client,
+    decider: new HaikuTopicDecider(fake.client, 2000),
+    firstChars: 160_000,
+  });
+  r.remind();
+  await r.send();
+  await r.compactor.whenIdle();
+  r.say(NEW_TOPIC);
+  r.remind();
+  await r.send();
+  const lines = await topicLines();
+  expect(lines.length).toBe(1);
+  expect(lines[0]).toContain("topic decision haiku: new");
+  expect(await swapped()).toBe(true);
+});
+
+test("the floor counts the request as sent: after a swap, a small request is not decided", async () => {
+  const fake = fakeClient(NEW_ANSWER);
+  const r = rig({
+    history: settings("haiku"),
+    client: fake.client,
+    decider: new HaikuTopicDecider(fake.client, 2000),
+    firstChars: 160_000,
+  });
+  await r.send();
+  await r.compactor.whenIdle();
+  r.say(NEW_TOPIC);
+  await r.send();
+  expect(await swapped()).toBe(true);
+  const before = (await topicLines()).length;
+  const callsBefore = fake.topicCalls();
+  // The original history is still 40K tokens; the request as sent is the
+  // summary and two short turns.
+  r.say("Now a rye loaf, please");
+  await r.send();
+  expect((await topicLines()).length).toBe(before);
+  expect(fake.topicCalls()).toBe(callsBefore);
 });
 
 test("below the floor no topic decision is made", async () => {
