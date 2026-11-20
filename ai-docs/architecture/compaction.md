@@ -230,11 +230,14 @@ one of them is never compressed and never recorded, so it is sent as it is on ev
   image, document) with cache markers dropped, so the bytes are equal on every request whatever
   message Claude Code marks. The record keeps `pinned` (that message's index); the prefix hash
   covers it, so a changed prompt matches no swap. A record without `pinned` (written before) replays
-  the summary alone. The decision's `S` is this whole message. A swap whose pinned prompt and kept
-  rounds stay at or above Claude Code's compaction point is held, with the reason
-  `the current turn's prompt and newest rounds are <N> tokens, at or above Claude Code's compaction point <M>`:
+  the summary alone. The decision's `S` is this whole message. A swap whose pinned prompt keeps
+  the swapped request (`count − R`, the system prompt and tools included) at or above Claude
+  Code's compaction point is held, with the reason
+  `the current turn's prompt keeps the swapped request at <N> tokens, at or above Claude Code's compaction point <M>`:
   the prompt is never cut or summarised, and Claude Code's own compaction stays the fallback. A
-  swap at a human turn start keeps the plain string form (its prompt is message `b`).
+  swap at a human turn start keeps the plain string form (its prompt is message `b`). A user
+  message with an image or a document and no text starts a turn too, so a screenshot sent alone
+  is the prompt a swap inside its turn pins.
   Hashes are taken over canonical JSON (sorted keys, `cache_control` markers removed) of the
   messages as the tool-output pass left them.
 - **Replay** on every later request of the same thread whose prefix `[0,b)` hashes to
