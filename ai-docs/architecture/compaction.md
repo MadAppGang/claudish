@@ -317,7 +317,8 @@ the request sent was about 160,000, and `nStar` fell to 2.3. Case d:
   is made when `requestsAfterSwap ≥ requestsAfterCcCompact`, the requests a request of Claude
   Code's post-compaction size has before the point; equal room swaps. That size is measured on
   the compacted request: after Claude Code's compaction request, the first request on another
-  thread whose first message has a text block opening with `HARNESS_COMPACTED_START`
+  thread with a user message, before the first assistant message, whose text block opens with
+  `HARNESS_COMPACTED_START`
   (`[compaction] session <id>: Claude Code's compaction measured, the next request is <N> tokens`);
   with none measured yet, the forced swap is made. "The next request" is not enough: Claude Code
   2.1.329 sends its compaction request in advance, beside the main loop (`precomputed compact:
@@ -326,7 +327,11 @@ the request sent was about 160,000, and `nStar` fell to 2.3. Case d:
   2 ms beside it (167,105 tokens) was measured as the post-compaction size, so
   `requestsAfterCcCompact` read 0 and every forced decision swapped. The compacted request is
   recognisable: in 9 compactions of the `55f34661` session the summary opened block 2 of message 0
-  at offset 0, and the message count dropped from 50 or 38 to 14. A subagent request has no such
+  at offset 0, and the message count dropped from 50 or 38 to 14. A reactive compaction lays it out
+  differently: live on `61ea03db` (04:44:55Z), Claude Code first re-attached the files it had read
+  as their own user message, and the summary was block 8 of 9 of message 1, at offset 0. A check
+  of message 0 alone missed it, so one of four compactions in that run went unmeasured. A subagent
+  request has no such
   block, and a main request sent beside the compaction request keeps the old thread. Measured on `55f34661`, where the room rule
   also held forced swaps: 52 holds, 0 swaps, and Claude Code compacted 9 times in 6 minutes, each
   first request after it writing 95,171 to 101,098 tokens; at 03:04:06 the swap would have left
