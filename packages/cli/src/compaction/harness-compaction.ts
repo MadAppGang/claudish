@@ -18,10 +18,14 @@
  * ("precomputed compact", at autocompact level `warn`), and keeps the summary
  * until it compacts. The main loop goes on with its full history, so the
  * request after the compaction request is not the compacted one. The
- * compacted request opens its first user message with a text block that
- * starts with `HARNESS_COMPACTED_START`, followed by a short tail of the
- * conversation: in 9 compactions of one live session, block 2 of message 0,
- * at offset 0, and 50 or 38 messages dropped to 14.
+ * compacted request carries a text block that starts with
+ * `HARNESS_COMPACTED_START`, in a user message before the first assistant
+ * message, followed by a short tail of the conversation. After a precomputed
+ * compaction it is block 2 of message 0, at offset 0 (9 compactions of one
+ * live session, 50 or 38 messages dropped to 14). After a reactive one,
+ * Claude Code first re-attaches the files it read as their own user message,
+ * and the summary is block 8 of 9 of message 1 (one live compaction, 3
+ * messages).
  */
 
 import { lastConversationIndex } from "./conversation.js";
@@ -66,15 +70,13 @@ export function isHarnessCompactionRequest(messages: readonly unknown[]): boolea
 export const HARNESS_COMPACTED_START =
   "This session is being continued from a previous conversation";
 
-/**
- * True when the request's first message is a user message with a text block
- * that starts with Claude Code's summary: a history Claude Code compacted.
- */
-export function isHarnessCompactedRequest(messages: readonly unknown[]): boolean {
-  const first = messages[0] as Block | undefined;
-  if (!first || first.role !== "user") return false;
+/** True when `message` is a user message with a text block that starts with the summary. */
+function opensWithSummary(message: Block): boolean {
+  if (message.role !== "user") return false;
   const blocks =
-    typeof first.content === "string" ? [{ type: "text", text: first.content }] : first.content;
+    typeof message.content === "string"
+      ? [{ type: "text", text: message.content }]
+      : message.content;
   if (!Array.isArray(blocks)) return false;
   return blocks.some((raw) => {
     const block = raw as Block | undefined;
@@ -84,6 +86,20 @@ export function isHarnessCompactedRequest(messages: readonly unknown[]): boolean
       block.text.startsWith(HARNESS_COMPACTED_START)
     );
   });
+}
+
+/**
+ * True when a user message before the first assistant message has a text
+ * block that starts with Claude Code's summary: a history Claude Code
+ * compacted.
+ */
+export function isHarnessCompactedRequest(messages: readonly unknown[]): boolean {
+  for (const raw of messages) {
+    const message = raw as Block | undefined;
+    if (!message || typeof message !== "object" || message.role === "assistant") return false;
+    if (opensWithSummary(message)) return true;
+  }
+  return false;
 }
 
 /**
