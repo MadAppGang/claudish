@@ -18,22 +18,22 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: blacksmith-2vcpu-ubuntu-2404-arm
             target: bun-darwin-arm64
             artifact: claudish-darwin-arm64
             goos: darwin
             goarch: arm64
-          - os: ubuntu-latest
+          - os: blacksmith-2vcpu-ubuntu-2404-arm
             target: bun-darwin-x64
             artifact: claudish-darwin-x64
             goos: darwin
             goarch: amd64
-          - os: ubuntu-latest
+          - os: blacksmith-2vcpu-ubuntu-2404-arm
             target: bun-linux-x64
             artifact: claudish-linux-x64
             goos: linux
             goarch: amd64
-          - os: ubuntu-24.04-arm
+          - os: blacksmith-2vcpu-ubuntu-2404-arm
             target: bun-linux-arm64
             artifact: claudish-linux-arm64
             goos: linux
@@ -44,7 +44,7 @@ jobs:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: useblacksmith/checkout@v1
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -132,7 +132,7 @@ jobs:
   # (`bun run review:routing`).
   bundled-list:
     name: refuse a stale bundled recommended list
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404-arm
     timeout-minutes: 5
     permissions:
       contents: read
@@ -140,7 +140,7 @@ jobs:
       BUNDLED_LIST: packages/cli/src/providers/bundled-recommended-list.json
     steps:
       - name: Check out the tag with its history
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        uses: useblacksmith/checkout@v1 # v5
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -183,12 +183,12 @@ jobs:
 
   release:
     needs: [build, bundled-list]
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404-arm
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: useblacksmith/checkout@v1
         with:
           fetch-depth: 0  # Full history for generating release notes from commits
 
@@ -309,12 +309,12 @@ jobs:
 
   publish-npm:
     needs: release
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404-arm
     # OIDC trusted publishing - no NPM_TOKEN needed!
     # Configure at: https://www.npmjs.com/package/claudish/access (Trusted Publishers)
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: useblacksmith/checkout@v1
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -419,7 +419,7 @@ jobs:
 
   update-homebrew:
     needs: release
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404-arm
     if: ${{ vars.ENABLE_HOMEBREW == 'true' }}
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -446,7 +446,7 @@ jobs:
           echo "x64_sha=$X64_SHA" >> $GITHUB_OUTPUT
 
       - name: Update Homebrew tap
-        uses: actions/checkout@v5
+        uses: useblacksmith/checkout@v1
         with:
           repository: MadAppGang/homebrew-tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
