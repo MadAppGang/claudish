@@ -180,8 +180,11 @@ one of them is never compressed and never recorded, so it is sent as it is on ev
   request itself is too late (and is not made, see Claude Code's own compaction request below). A
   request waits for the thread's summary in flight only when it is a swap point, its count is at
   or above the swap gate (`applyAt`, or `precomputeAt` under `cost`), and its count plus one
-  request's measured growth reaches `CLAUDE_CODE_COMPACT_AT` of the limit. It then swaps if the
-  summary is ready. Every wait logs
+  request's measured growth reaches `CLAUDE_CODE_COMPACT_AT` of the limit. The count is of the
+  request as sent, the active swap applied: the wait runs before `compact` replays the swap, and
+  the original history stays above Claude Code's point once a swap is active (measured on
+  `8c6e053f`: "237850 tokens now" up to "769903", so nearly every request with a summary in
+  flight waited 5 to 19 s). It then swaps if the summary is ready. Every wait logs
   `[compaction] history waited <ms> ms in session <id>: <N> tokens now, next request projected <P>, Claude Code compacts at <M>; summary ready|summary not ready after <cap> ms`.
   A summary that is not ready by the cap leaves the request unchanged; Claude Code's compaction
   stays the fallback. Every other request never waits.
@@ -283,16 +286,32 @@ in requests after the swap is
 N* = [(writeRatio − readRatio)·(L + S) + haikuCost / p] / (readRatio·R)
 ```
 
-with `L` the kept tail, `S` the summary, `R` the removed tokens (prefix less `S`), `p` the main
-model's input price per token. Case d: `(1.25 − 0.05)·60,897 / (0.05·74,000) ≈ 19.7` requests on
-Sonnet 5.5, about 40 on Fable 5.2 (cache read 0.025× input). Six requests were far short.
+with `L` the kept tail, `S` the summary message with the inline system messages it keeps, `R` the
+removed tokens, `p` the main model's input price per token. `R` is what the request sends now (an
+active swap already applied) less what it sends with the new summary swapped in, both built by
+`applySwap`. It is never the original prefix less `S`: with a swap active the request no longer
+sends that prefix. Measured on `8c6e053f`, that error put `R` at 109,629 to 614,046 tokens while
+the request sent was about 160,000, and `nStar` fell to 2.3. Case d:
+`(1.25 − 0.05)·60,897 / (0.05·74,000) ≈ 19.7` requests on Sonnet 5.5, about 40 on Fable 5.2
+(cache read 0.025× input). Six requests were far short.
 
 - `decideHistorySwap` is pure: every number is an argument, so the tests use the measured figures
-  directly. `threshold` and `early` swap at `applyAt` and only log `nStar`; `cost` swaps when the
-  projection `ceil((0.83·limit − count) / growth)` reaches `N*`, when it is ≤ 1 (the next request
-  crosses Claude Code's point: the swap replaces that compaction), or when the gap since the
-  thread's previous request exceeds the cache TTL (a cold cache rewrites everything anyway).
-  Without prices it never swaps on `N*`; without growth it holds until one of the other two cases.
+  directly. `threshold` and `early` swap at `applyAt` and only log `nStar`. `cost`, in this order:
+  holds below `precomputeAt`; swaps when the gap since the thread's previous request exceeds the
+  cache TTL (a cold cache rewrites everything anyway, so the swap writes nothing extra); holds
+  when the swap leaves less room than `N*` (below); swaps when the projection
+  `ceil((0.83·limit − count) / growth)` is ≤ 1 (the next request crosses Claude Code's point: the
+  swap replaces that compaction) or reaches `N*`. Without prices it never swaps on `N*`; without
+  growth it holds until one of the other cases.
+- **The room a swap leaves.** The swapped request is `count − R` tokens: the fixed prefix, `S` and
+  `L`. `requestsAfterSwap = ceil((0.83·limit − (count − R)) / growth)` is when it reaches Claude
+  Code's point again, and the next swap writes the cache again there. A swap with
+  `requestsAfterSwap < N*` cannot pay back its write first, so it holds, a forced swap included;
+  Claude Code's own compaction is then the fallback. Measured on `8c6e053f` (Claude Code 2.1.328,
+  Sonnet 5.5, 1-hour writes, prompts growing about 12,700 tokens a request): forced swaps left
+  83,003 to 120,054 of 166,000 tokens, about 4 requests of room. 16 swaps, 14 of them in 8 minutes
+  of one turn, cost $8.82 against $5.84 for no compaction, all of the difference in cache writes.
+  The decision line shows `requestsAfterSwap`.
 - Read ratio and base price: the model's own Claude API connection (`claudeApiTurnPricing`, the
   meter's banded reader), `cachedRead / input`. Measured on the catalog: Sonnet 5.5 0.1/2, Opus 5.5
   0.2/4, Fable 5.2 0.2/8, Haiku 5.5 tiered with a cache-read rate per band. A name that is not

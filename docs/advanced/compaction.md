@@ -264,15 +264,22 @@ of the removed tokens on every later request. `cost` swaps only in one of three 
 - more time than the cache lifetime passed since the previous request, so the cache is cold
   and the request is written in full anyway.
 
+Except on a cold cache, `cost` also holds a swap that leaves too little room: when the swapped
+request would reach Claude Code's compaction point again in fewer requests than `nStar`, the next
+swap would write the cache again before this one pays for itself. This holds the second case too,
+and Claude Code then compacts on its own.
+
 The prices come from the model's Claude API rates in the cloud models catalog. A model with no
 published cache-read rate (any non-Claude model) gets only the last two cases. Each decision is
 logged:
 
 ```
-[compaction] history decision cost: hold, nStar=26.0, projected=6, L=80258, S=22, R=74003, reason=projected 6 < nStar 26.0
+[compaction] history decision cost: hold, nStar=26.0, projected=6, requestsAfterSwap=43, L=80258, S=22, R=74004, reason=projected 6 < nStar 26.0
 ```
 
-`L` is the kept tail, `S` the summary and `R` the tokens removed.
+`L` is the kept tail, `S` the summary with the Claude Code system messages it keeps, and `R` the
+tokens the swap removes from the request as sent. `requestsAfterSwap` is the number of requests
+until the swapped request reaches Claude Code's compaction point.
 
 ### Swapping on a new topic: `history.policy: "topic"`
 
