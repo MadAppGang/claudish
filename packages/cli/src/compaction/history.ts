@@ -839,7 +839,8 @@ export class HistoryCompactor {
   /**
    * Wait, at most `swapWaitMs`, for the thread's summary in flight when this
    * request is the last one before Claude Code's own compaction point: it is
-   * a swap point at or above the swap gate, and the count plus one request's
+   * a swap point at or above the swap gate, and the count (of the request as
+   * sent, the active swap applied) plus one request's
    * measured growth reaches `CLAUDE_CODE_COMPACT_AT` of the limit. Claude Code
    * decides to compact from the usage of this request's response, so a swap
    * on any later request comes too late. A summary that is not ready in time
@@ -861,7 +862,13 @@ export class HistoryCompactor {
     if (limit === undefined) return;
     const { precomputeAt, applyAt } = this.deps.settings;
     const gate = (this.deps.settings.policy === "cost" ? precomputeAt : applyAt) * limit;
-    const tokens = this.counter.count(sessionId, thread, payload).tokens;
+    // Counted as sent: with a swap active, the original history is far
+    // larger than the request and would make every request wait.
+    const active = this.matchSwap(sessionId, thread, original, new MessageHashes(original));
+    const sent = active
+      ? { ...(payload as Block), messages: applySwap(original, active) }
+      : payload;
+    const tokens = this.counter.count(sessionId, thread, sent).tokens;
     const growth = this.counter.observe(sessionId, thread).growthPerRequest;
     const ccCompactAt = CLAUDE_CODE_COMPACT_AT * limit;
     if (tokens < gate || growth === undefined || tokens + growth < ccCompactAt) return;

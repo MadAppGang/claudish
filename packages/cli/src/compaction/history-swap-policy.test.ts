@@ -194,7 +194,7 @@ test("threshold: the decision is logged, and the swap comes at applyAt as before
 /**
  * A session with a swap already active: the first summary is ready at once,
  * swapped in on a cold cache, and the turns that follow are sent after it.
- * `hangLater` makes every later summary wait until its timeout aborts it.
+ * `hangLater` makes every later summary wait 600 ms, then fail.
  */
 function activeSwapRig(opts: { hangLater: boolean; swapWaitMs?: number }) {
   let calls = 0;
@@ -209,6 +209,7 @@ function activeSwapRig(opts: { hangLater: boolean; swapWaitMs?: number }) {
       if (calls > 1 && opts.hangLater) {
         return new Promise<Response>((_resolve, reject) => {
           init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+          setTimeout(() => reject(new Error("summary unavailable")), 600);
         });
       }
       return Response.json({
@@ -305,4 +306,15 @@ test("cost: with a swap active, R is what the new swap removes from the request 
   expect(decision).toContain("reason=cold cache");
   expect(afterSwap).toBeLessThan(sentBefore);
   expect(Math.abs(field(decision, "R") - (sentBefore - afterSwap))).toBeLessThan(0.02 * sentBefore);
+});
+
+test("cost: a request whose swapped form is far below Claude Code's point does not wait", async () => {
+  const r = activeSwapRig({ hangLater: true, swapWaitMs: 300 });
+  await r.untilSecondSummary();
+  r.turn();
+  // Unswapped, the history is past Claude Code's compaction point.
+  expect(charsOf(r.messages) / 4).toBeGreaterThan(0.83 * WINDOW);
+  const result = await r.send();
+  expect(result.estimate ?? 0).toBeLessThan(0.6 * WINDOW);
+  expect((await capturedLines()).some((l) => l.includes("history waited"))).toBe(false);
 });
