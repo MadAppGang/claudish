@@ -274,6 +274,29 @@ function swapRecord(boundary: number, end: number): HistorySwapRecord {
   } as HistorySwapRecord;
 }
 
+test("a swap drops a turn-scoped system message that the prompt after it already cleared", () => {
+  const TURN_SCOPED = {
+    role: "system",
+    content: [{ type: "text", text: "TURN_SCOPED: answer in one line this turn" }],
+    clear_at: "next_user_message",
+  };
+  const turn1: Message[] = [
+    { role: "user", content: PROMPT },
+    structuredClone(CONTEXT),
+    TURN_SCOPED as unknown as Message,
+    { role: "assistant", content: [{ type: "text", text: "done" }] },
+  ];
+  const promptAt = turn1.length;
+  const messages: Message[] = [...turn1, { role: "user", content: "Now list the exports" }];
+
+  const sent = applySwap(messages, swapRecord(promptAt, messages.length)) as Message[];
+
+  // The context stays; the turn-scoped reminder, cleared by the prompt at
+  // the boundary, does not come back after it.
+  expect(sent.filter((m) => JSON.stringify(m) === JSON.stringify(CONTEXT)).length).toBe(1);
+  expect(JSON.stringify(sent)).not.toContain("TURN_SCOPED");
+});
+
 test("a swap at a human-turn start places the kept system messages where the API accepts them", () => {
   // Turn 1 of three rounds, then turn 2's prompt with its trailing reminder.
   const turn1 = styledTurn(3).messages;

@@ -671,6 +671,10 @@ export function projectedTokens(
  * summary: each distinct one once, in first-seen order, without cache
  * markers. They are Claude Code's session context and reminders, which the
  * summary never covers.
+ *
+ * A turn-scoped message (`clear_at: "next_user_message"`) is left out: the
+ * user message at the boundary already cleared it, and moved after that
+ * message it would render again.
  */
 export function keptInlineSystemMessages(
   original: readonly unknown[],
@@ -680,6 +684,7 @@ export function keptInlineSystemMessages(
   const seen = new Set<string>();
   for (let i = 0; i < Math.min(boundary, original.length); i++) {
     if (!isInlineSystem(original[i])) continue;
+    if ((original[i] as Block).clear_at === "next_user_message") continue;
     const copy = withoutCacheMarkers(original[i]);
     const key = canonicalJson(copy);
     if (seen.has(key)) continue;
