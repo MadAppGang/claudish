@@ -48,7 +48,15 @@ function text(chars: number, tag: string): string {
   return `${tag} ${"w ".repeat(Math.floor(chars / 2))}`;
 }
 
-function rig(history: HistorySettings) {
+/**
+ * The opening of the first user message after Claude Code 2.1.329 compacts:
+ * block 2 of message 0, at offset 0, in all 9 compactions of a live session.
+ */
+const CONTINUED =
+  "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.";
+
+/** `compacted`: the conversation opens with Claude Code's summary, as after its compaction. */
+function rig(history: HistorySettings, opts: { compacted?: boolean } = {}) {
   let calls = 0;
   let clock = 1_000_000;
   const client = new CompactionClient({
@@ -84,7 +92,12 @@ function rig(history: HistorySettings) {
   active.push(compactor);
   const messages: Message[] = [
     // 74K tokens the summary replaces, then a 60K-token human turn.
-    { role: "user", content: text(296_000, "PREFIX") },
+    {
+      role: "user",
+      content: opts.compacted
+        ? `${CONTINUED}\n\n${text(296_000, "PREFIX")}`
+        : text(296_000, "PREFIX"),
+    },
     { role: "assistant", content: [{ type: "text", text: "ok" }] },
     { role: "user", content: text(240_000, "TAIL") },
   ];
@@ -92,6 +105,21 @@ function rig(history: HistorySettings) {
     compactor,
     advance(ms: number) {
       clock += ms;
+    },
+    /** A copy of the conversation's messages. */
+    messages(): Message[] {
+      return [...messages];
+    },
+    /** Replaces the conversation, as Claude Code does when it compacts. */
+    replace(list: Message[]): void {
+      messages.splice(0, messages.length, ...list);
+    },
+    /** A request outside the main loop, with its own messages and no usage. */
+    sendOther(list: Message[]): void {
+      compactor.compact(
+        { model, metadata: { user_id: JSON.stringify({ session_id: session }) }, messages: list },
+        session
+      );
     },
     /** One request; the upstream reports 4 characters a token of what was sent. */
     send(): void {
@@ -178,8 +206,8 @@ test("cost: it swaps when the next request crosses Claude Code's compaction poin
   expect(swaps[0]).toContain("reason=the next request crosses Claude Code's compaction point");
 });
 
-test("cost: the first request after Claude Code's compaction is measured for the forced point", async () => {
-  const r = rig(COST);
+test("cost: the compacted request after Claude Code's compaction is measured for the forced point", async () => {
+  const r = rig(COST, { compacted: true });
   r.compactor.compact(
     {
       model,
@@ -209,6 +237,48 @@ test("cost: the first request after Claude Code's compaction is measured for the
     Math.ceil((0.83 * WINDOW - tokens) / growth)
   );
   expect(forced[0]).toContain("history decision cost: swap");
+});
+
+test("cost: only the compacted request is measured, not one sent beside Claude Code's compaction request", async () => {
+  const r = rig(COST);
+  r.send();
+  await r.compactor.whenIdle();
+  r.turn();
+  r.send();
+  // 03:18:44.631Z: Claude Code precomputes its compaction beside the main loop,
+  // on the history it has, while the main request goes on (03:18:44.629Z).
+  r.sendOther([
+    ...r.messages(),
+    { role: "user", content: `${HARNESS_COMPACTION_PROMPT_START}\n\nSummarise.` },
+  ]);
+  // A subagent request in the same session starts its own short history.
+  r.sendOther([{ role: "user", content: "Find every caller of parseConfig." }]);
+  r.turn();
+  r.send();
+  const measuredLines = async () =>
+    (await capturedLines()).filter((l) => l.includes("Claude Code's compaction measured"));
+  expect(await measuredLines()).toEqual([]);
+
+  // Claude Code applies its compaction: its summary opens the first message,
+  // and a short tail of the conversation follows.
+  r.replace([
+    {
+      role: "user",
+      content: [
+        { type: "text", text: "<system-reminder>context</system-reminder>" },
+        { type: "text", text: "<system-reminder>output style</system-reminder>" },
+        { type: "text", text: `${CONTINUED}\n\n${text(40_000, "SUMMARY")}` },
+      ],
+    },
+    { role: "assistant", content: [{ type: "text", text: "ok" }] },
+    { role: "user", content: text(8_000, "KEPT") },
+  ]);
+  r.send();
+  const measured = await measuredLines();
+  expect(measured).toHaveLength(1);
+  const tokens = Number(measured[0].match(/the next request is (\d+) tokens/)?.[1]);
+  expect(tokens).toBeGreaterThan(10_000);
+  expect(tokens).toBeLessThan(20_000);
 });
 
 test("threshold: the decision is logged, and the swap comes at applyAt as before", async () => {

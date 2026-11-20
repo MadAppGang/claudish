@@ -11,8 +11,17 @@
  * start with `HARNESS_COMPACTION_PROMPT_START`. The `fallback-credit-2026-06-01`
  * beta is added to both, but not only to them, so it is never the signal.
  *
- * A swap recorded on this request is never sent again (the next request
- * starts from Claude Code's summary), so the history pass records none.
+ * A swap recorded on this request is never sent again (no later request
+ * repeats its prefix), so the history pass records none.
+ *
+ * Claude Code 2.1.329 sends this request in advance, beside the main loop
+ * ("precomputed compact", at autocompact level `warn`), and keeps the summary
+ * until it compacts. The main loop goes on with its full history, so the
+ * request after the compaction request is not the compacted one. The
+ * compacted request opens its first user message with a text block that
+ * starts with `HARNESS_COMPACTED_START`, followed by a short tail of the
+ * conversation: in 9 compactions of one live session, block 2 of message 0,
+ * at offset 0, and 50 or 38 messages dropped to 14.
  */
 
 import { lastConversationIndex } from "./conversation.js";
@@ -51,6 +60,30 @@ export function isHarnessCompactionMessage(message: unknown): boolean {
  */
 export function isHarnessCompactionRequest(messages: readonly unknown[]): boolean {
   return isHarnessCompactionMessage(messages[lastConversationIndex(messages)]);
+}
+
+/** The opening of Claude Code's summary in the first message after it compacts. */
+export const HARNESS_COMPACTED_START =
+  "This session is being continued from a previous conversation";
+
+/**
+ * True when the request's first message is a user message with a text block
+ * that starts with Claude Code's summary: a history Claude Code compacted.
+ */
+export function isHarnessCompactedRequest(messages: readonly unknown[]): boolean {
+  const first = messages[0] as Block | undefined;
+  if (!first || first.role !== "user") return false;
+  const blocks =
+    typeof first.content === "string" ? [{ type: "text", text: first.content }] : first.content;
+  if (!Array.isArray(blocks)) return false;
+  return blocks.some((raw) => {
+    const block = raw as Block | undefined;
+    return (
+      block?.type === "text" &&
+      typeof block.text === "string" &&
+      block.text.startsWith(HARNESS_COMPACTED_START)
+    );
+  });
 }
 
 /**

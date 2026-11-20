@@ -59,7 +59,11 @@ import {
   previousConversationIndex,
 } from "./conversation.js";
 import type { CompactionCallResult, CompactionClient } from "./haiku-client.js";
-import { isHarnessCompactionMessage, isHarnessCompactionRequest } from "./harness-compaction.js";
+import {
+  isHarnessCompactedRequest,
+  isHarnessCompactionMessage,
+  isHarnessCompactionRequest,
+} from "./harness-compaction.js";
 import {
   RealTokenCount,
   type RequestCount,
@@ -798,8 +802,12 @@ export class HistoryCompactor {
   private readonly counter: RealTokenCount;
   /** Sessions and models already told that history is off for want of a window. */
   private readonly windowUnknownLogged = new Set<string>();
-  /** Sessions whose next request is the first after a Claude Code compaction. */
-  private readonly ccCompactPending = new Set<string>();
+  /**
+   * Sessions waiting for the compacted request after Claude Code's compaction
+   * request, with that request's thread: a request on the same thread was
+   * sent beside it, from the history before the compaction.
+   */
+  private readonly ccCompactPending = new Map<string, string>();
   /** The tokens of the first request after each session's newest Claude Code compaction. */
   private readonly ccCompactedTokens = new Map<string, number>();
   /** The newest summary's duration per session, in ms, for `projectedTokens`. */
@@ -975,7 +983,7 @@ export class HistoryCompactor {
     // from is replayed (a cache read), and nothing new is decided, because no
     // later request repeats this one's prefix.
     if (isHarnessCompactionRequest(original)) {
-      this.ccCompactPending.add(sessionId);
+      this.ccCompactPending.set(sessionId, thread);
       return result;
     }
 
@@ -992,7 +1000,13 @@ export class HistoryCompactor {
     const counter = this.counter;
     let chars = charsOf(payload);
     let count = counter.count(sessionId, thread, payload, chars);
-    if (this.ccCompactPending.delete(sessionId)) {
+    const pendingThread = this.ccCompactPending.get(sessionId);
+    if (
+      pendingThread !== undefined &&
+      pendingThread !== thread &&
+      isHarnessCompactedRequest(original)
+    ) {
+      this.ccCompactPending.delete(sessionId);
       this.ccCompactedTokens.set(sessionId, count.tokens);
       log(
         `[compaction] session ${sessionId}: Claude Code's compaction measured, the next request is ${count.tokens} tokens`
