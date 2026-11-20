@@ -217,6 +217,39 @@ test("an image block of the pinned prompt is kept", async () => {
   ]);
 });
 
+/**
+ * A text turn ends, then the user sends a screenshot with no text. A swap
+ * inside that turn pins the screenshot, the turn's real prompt, and never
+ * the earlier text prompt.
+ */
+test("an image-only prompt starts a turn and is the prompt a swap inside it pins", async () => {
+  const r = rig();
+  const image = {
+    type: "image",
+    source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgoAAAANSUhEUg==" },
+  };
+  const withEarlierTurn = (rounds: number): Payload => {
+    const turn = oneTurn(rounds, [image]);
+    turn.messages.unshift(
+      { role: "user", content: [{ type: "text", text: SPEC }] },
+      { role: "assistant", content: [{ type: "text", text: "Spec noted." }] }
+    );
+    return turn;
+  };
+  const a = withEarlierTurn(6);
+  r.windowAt(a, 0.65);
+  expect(r.h.compact(a, session).precomputeStarted).toBe(true);
+  await r.h.whenIdle();
+  const b = withEarlierTurn(8);
+  r.windowAt(b, 0.8);
+  const pass = r.h.compact(b, session);
+  expect(pass.applied).toBe("swapped");
+  expect((b.messages[0]?.content as Block[]).slice(1)).toEqual([
+    { type: "text", text: HISTORY_PINNED_PROMPT_MARKER },
+    image,
+  ]);
+});
+
 test("a swap at a human turn start keeps today's form", async () => {
   const r = rig();
   const turns = (n: number): Payload => {

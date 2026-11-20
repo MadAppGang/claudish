@@ -275,10 +275,11 @@ export function threadOf(messages: readonly unknown[]): string {
 }
 
 /**
- * True when `message` starts a human turn: a user message with user text and
- * no tool_result. A user message carrying a tool_result belongs to a tool
- * round, even when Claude Code added text blocks beside it. Claude Code's
- * compaction instruction is not a human turn.
+ * True when `message` starts a human turn: a user message with user content
+ * (non-empty text, an image or a document) and no tool_result. A screenshot
+ * sent with no text starts a turn too. A user message carrying a tool_result
+ * belongs to a tool round, even when Claude Code added text blocks beside
+ * it. Claude Code's compaction instruction is not a human turn.
  */
 export function isHumanTurnStart(message: unknown): boolean {
   if (!message || typeof message !== "object") return false;
@@ -287,16 +288,20 @@ export function isHumanTurnStart(message: unknown): boolean {
   if (isHarnessCompactionMessage(m)) return false;
   if (typeof m.content === "string") return m.content.trim().length > 0;
   if (!Array.isArray(m.content)) return false;
-  let hasText = false;
+  let hasContent = false;
   for (const raw of m.content) {
     const block = raw as Block;
     if (!block || typeof block !== "object") continue;
     if (block.type === "tool_result") return false;
-    if (block.type === "text" && typeof block.text === "string" && block.text.trim()) {
-      hasText = true;
-    }
+    if (isUserContentBlock(block)) hasContent = true;
   }
-  return hasText;
+  return hasContent;
+}
+
+/** A block a person sent: non-empty text, an image or a document. */
+function isUserContentBlock(block: Block): boolean {
+  if (block.type === "image" || block.type === "document") return true;
+  return block.type === "text" && typeof block.text === "string" && block.text.trim().length > 0;
 }
 
 /** Index of the last message that starts a human turn, or -1. */
