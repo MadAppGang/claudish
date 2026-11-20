@@ -360,7 +360,10 @@ the request sent was about 160,000, and `nStar` fell to 2.3. Case d:
 - Write ratio: no Claude connection publishes `cachedWrite`, so `cache-prices.ts` uses Anthropic's
   rule by TTL (5m 1.25×, 1h 2×), weighted by the newest `usage.cache_creation` split
   (`ephemeral_5m_input_tokens`, `ephemeral_1h_input_tokens`, kept by `mergeSseUsage`). A published
-  `cachedWrite` replaces the 5m multiplier. The TTL is 1 h only when that write was all 1-hour.
+  `cachedWrite` replaces the 5m multiplier. The TTL is 1 h when that write held any 1-hour entry:
+  the split does not say where the 1-hour entries sit, so a mixed write is cold only after 1 h. No
+  logged run has shown a mixed write (0 among about 1,400 writes in the live and bench logs of
+  2026-11-16 to 2026-11-20).
 - Growth: the mean over the thread's last 6 measured counts; a drop (a swap, Claude Code's own
   compaction) restarts the window. Gap: from the thread's previous `mark` (send time).
 - `haikuCost`: the ready summary record keeps the Haiku call's `inputTokens`/`outputTokens`, priced
