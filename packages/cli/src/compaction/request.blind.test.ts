@@ -288,6 +288,14 @@ if (process.env.COMPACTION_BLIND_FILE !== import.meta.path) {
     });
   }
 
+  // Each state's own warning: the bad model is refused with a key present,
+  // so only the model check can turn compaction off.
+  const expectedWarning = {
+    disabled: undefined,
+    absent: "no Anthropic API key",
+    failed: "the Anthropic API key could not be read",
+    "bad-model": 'compaction.model does not resolve: "not-a-claude-model"',
+  } as const;
   for (const state of ["disabled", "absent", "failed", "bad-model"] as const) {
     test("REQ-2 REQ-23: " +
       state +
@@ -304,14 +312,19 @@ if (process.env.COMPACTION_BLIND_FILE !== import.meta.path) {
           async resolveForUse() {
             if (state === "failed")
               return { state: "failed" as const, reason: "test credential failure" };
+            if (state === "bad-model")
+              return { state: "present" as const, key: "FAKE_BAD_MODEL_KEY_0000", source: "env" };
             return { state: "absent" as const, searched: [] };
           },
         },
         warn: (message: string) => warnings.push(message),
         record() {},
       });
+      if (rt) active.push(rt.history);
       expect(rt).toBeNull();
-      expect(warnings).toHaveLength(state === "disabled" ? 0 : 1);
+      const warning = expectedWarning[state];
+      expect(warnings).toHaveLength(warning === undefined ? 0 : 1);
+      if (warning !== undefined) expect(warnings[0]).toContain(warning);
       expect(u.requests).toHaveLength(0);
     });
   }
