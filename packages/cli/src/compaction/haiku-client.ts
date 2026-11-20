@@ -85,9 +85,11 @@ export interface CompactionClientOptions {
   model: string;
   /**
    * The `output_config.effort` value, from the catalog wire
-   * (`compactionEffort`). Absent: no effort field is sent.
+   * (`compactionEffort`). A function is called on every request, so a catalog
+   * written after startup (a first run) sets the effort of the next call.
+   * Absent, or a function that answers undefined: no effort field is sent.
    */
-  effort?: WireValue;
+  effort?: WireValue | (() => WireValue | undefined);
   /** Test seam; defaults to the global fetch at call time. */
   fetchImpl?: typeof fetch;
   /** Where the one switch-off warning goes. Defaults to `logStderr`. */
@@ -105,8 +107,25 @@ export class CompactionClient {
   /** Running spend and output tokens for the stats event, as the advisor reports its own. */
   private spend = 0;
   private outputTokens = 0;
+  /** The effort the last effort log line named; a sentinel before the first call. */
+  private loggedEffort: WireValue | undefined | null = null;
 
   constructor(private readonly opts: CompactionClientOptions) {}
+
+  /** The effort for this request; logged on the first call and when it changes. */
+  private effortNow(): WireValue | undefined {
+    const source = this.opts.effort;
+    const effort = typeof source === "function" ? source() : source;
+    if (effort !== this.loggedEffort) {
+      this.loggedEffort = effort;
+      log(
+        effort === undefined
+          ? `[compaction] output_config.effort not sent: the catalog publishes no effort for ${this.opts.model} (yet)`
+          : `[compaction] output_config.effort sent: ${JSON.stringify(effort)}, from the catalog wire of ${this.opts.model}`
+      );
+    }
+    return effort;
+  }
 
   /** The model id this client calls. */
   get model(): string {
@@ -142,8 +161,9 @@ export class CompactionClient {
       return { ok: false, reason: "compaction is off for this launch after repeated 401 answers" };
     }
     const timeoutMs = Math.max(1, Math.floor(req.timeoutMs));
+    const effort = this.effortNow();
     const outputConfig = {
-      ...(this.opts.effort === undefined ? {} : { effort: this.opts.effort }),
+      ...(effort === undefined ? {} : { effort }),
       ...(req.schema ? { format: { type: "json_schema", schema: req.schema } } : {}),
     };
     const body = {

@@ -20,6 +20,7 @@ import {
   credentialPromptRole,
 } from "../auth/credentials/prompt-role.js";
 import { log, logStderr } from "../logger.js";
+import { resolveConnection } from "../providers/connection-resolver.js";
 import { getRegisteredProviders } from "../providers/provider-registry.js";
 import { acquireSigningLease } from "../redact.js";
 import type { StatsEvent } from "../stats-otlp.js";
@@ -113,6 +114,11 @@ export interface PrepareCompactionOptions {
   /** Test seams for the client. */
   fetchImpl?: typeof fetch;
   record?: (event: Partial<StatsEvent>) => void;
+  /**
+   * Test seam: the catalog file the effort is read from. Defaults to the
+   * reader's own default path (`resolveConnection`).
+   */
+  catalogPath?: string;
 }
 
 /**
@@ -183,17 +189,23 @@ export async function prepareCompaction(
     log(`[compaction] removed ${purged.length} session folder(s) unused for 7 days`);
   }
 
-  const effort = compactionEffort(model.id);
+  // Resolved on every call: on a first run the catalog file is written by the
+  // first refresh, after this point. The client logs the effort it sends.
+  const catalogPath = opts.catalogPath;
+  const resolve: typeof resolveConnection =
+    catalogPath === undefined
+      ? resolveConnection
+      : (provider, name) => resolveConnection(provider, name, catalogPath);
   const client = new CompactionClient({
     apiKey: resolution.key,
     model: model.id,
-    ...(effort === undefined ? {} : { effort }),
+    effort: () => compactionEffort(model.id, resolve),
     ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
     ...(opts.record ? { record: opts.record } : {}),
     warn,
   });
   log(
-    `[compaction] on: model ${model.id} (from "${settings.model}"), effort ${effort === undefined ? "not sent (none published for the model)" : String(effort)}, key from ${resolution.source}, store ${store.root}`
+    `[compaction] on: model ${model.id} (from "${settings.model}"), effort from the catalog on each call, key from ${resolution.source}, store ${store.root}`
   );
   const runtime: CompactionRuntime = {
     settings,
