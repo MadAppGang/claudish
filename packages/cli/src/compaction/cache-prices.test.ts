@@ -46,10 +46,13 @@ describe("cacheRatios", () => {
 });
 
 describe("cacheTtlMs", () => {
-  test("5 minutes unless the last write was all 1-hour", () => {
+  test("1 hour when the last write held any 1-hour entry, else 5 minutes", () => {
     expect(cacheTtlMs(undefined)).toBe(300_000);
     expect(cacheTtlMs({ fiveMinute: 10, oneHour: 0 })).toBe(300_000);
-    expect(cacheTtlMs({ fiveMinute: 10, oneHour: 10 })).toBe(300_000);
     expect(cacheTtlMs({ fiveMinute: 0, oneHour: 10 })).toBe(3_600_000);
+  });
+
+  test("a mixed write is not cold after 5 minutes: its 1-hour entries may still be read", () => {
+    expect(cacheTtlMs({ fiveMinute: 10, oneHour: 10 })).toBe(3_600_000);
   });
 });

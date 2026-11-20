@@ -62,9 +62,13 @@ export function cacheRatios(
   return { inputPerMTok: input, readRatio: pricing.cacheReadCostPer1M / input, writeRatio };
 }
 
-/** The cache lifetime: 1 hour only when the last write was all 1-hour, else 5 minutes. */
+/**
+ * How long until the whole cache is cold: 1 hour when the last write held any
+ * 1-hour entry, else 5 minutes. A mixed write's 1-hour entries can still be
+ * read after its 5-minute ones expire, and the split does not say where in
+ * the prompt they sit, so only the longer lifetime proves the cache cold.
+ */
 export function cacheTtlMs(split: CacheWriteSplit | undefined): number {
-  const five = positive(split?.fiveMinute) ? split.fiveMinute : 0;
   const hour = positive(split?.oneHour) ? split.oneHour : 0;
-  return hour > 0 && five === 0 ? ONE_HOUR_TTL_MS : FIVE_MINUTE_TTL_MS;
+  return hour > 0 ? ONE_HOUR_TTL_MS : FIVE_MINUTE_TTL_MS;
 }
