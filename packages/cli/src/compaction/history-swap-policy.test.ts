@@ -9,6 +9,7 @@ import {
 } from "../recovery/test-helpers/capture-log.js";
 import type { HistorySettings } from "./config.js";
 import { CompactionClient } from "./haiku-client.js";
+import { HARNESS_COMPACTION_PROMPT_START } from "./harness-compaction.js";
 import { HistoryCompactor } from "./history.js";
 import { charsOf } from "./real-count.js";
 import { CompactionStore } from "./store.js";
@@ -175,6 +176,39 @@ test("cost: it swaps when the next request crosses Claude Code's compaction poin
   const swaps = (await decisions()).filter((l) => l.includes(": swap"));
   expect(swaps.length).toBe(1);
   expect(swaps[0]).toContain("reason=the next request crosses Claude Code's compaction point");
+});
+
+test("cost: the first request after Claude Code's compaction is measured for the forced point", async () => {
+  const r = rig(COST);
+  r.compactor.compact(
+    {
+      model,
+      metadata: { user_id: JSON.stringify({ session_id: session }) },
+      messages: [
+        { role: "user", content: "Fix the parser" },
+        { role: "assistant", content: [{ type: "text", text: "ok" }] },
+        { role: "user", content: `${HARNESS_COMPACTION_PROMPT_START}\n\nSummarise.` },
+      ],
+    },
+    session
+  );
+  r.send();
+  await r.compactor.whenIdle();
+  for (let k = 0; k < 20; k++) {
+    r.turn();
+    r.send();
+  }
+  const lines = await capturedLines();
+  const measured = lines.find((l) => l.includes("Claude Code's compaction measured"));
+  const tokens = Number(measured?.match(/the next request is (\d+) tokens/)?.[1]);
+  expect(tokens).toBeGreaterThan(130_000);
+  const forced = (await decisions()).filter((l) => l.includes("reason=the next request crosses"));
+  expect(forced.length).toBe(1);
+  const growth = 2_002;
+  expect(field(forced[0], "requestsAfterCcCompact")).toBe(
+    Math.ceil((0.83 * WINDOW - tokens) / growth)
+  );
+  expect(forced[0]).toContain("history decision cost: swap");
 });
 
 test("threshold: the decision is logged, and the swap comes at applyAt as before", async () => {

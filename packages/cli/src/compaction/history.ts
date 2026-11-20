@@ -798,6 +798,10 @@ export class HistoryCompactor {
   private readonly counter: RealTokenCount;
   /** Sessions and models already told that history is off for want of a window. */
   private readonly windowUnknownLogged = new Set<string>();
+  /** Sessions whose next request is the first after a Claude Code compaction. */
+  private readonly ccCompactPending = new Set<string>();
+  /** The tokens of the first request after each session's newest Claude Code compaction. */
+  private readonly ccCompactedTokens = new Map<string, number>();
   /** The newest summary's duration per session, in ms, for `projectedTokens`. */
   private readonly summaryLatency = new Map<string, number>();
 
@@ -970,7 +974,10 @@ export class HistoryCompactor {
     // Claude Code's compaction request: the swap the model already works
     // from is replayed (a cache read), and nothing new is decided, because no
     // later request repeats this one's prefix.
-    if (isHarnessCompactionRequest(original)) return result;
+    if (isHarnessCompactionRequest(original)) {
+      this.ccCompactPending.add(sessionId);
+      return result;
+    }
 
     const windowModel = routedModel ?? body.model;
     const limit = effectiveHistoryLimit(
@@ -985,6 +992,12 @@ export class HistoryCompactor {
     const counter = this.counter;
     let chars = charsOf(payload);
     let count = counter.count(sessionId, thread, payload, chars);
+    if (this.ccCompactPending.delete(sessionId)) {
+      this.ccCompactedTokens.set(sessionId, count.tokens);
+      log(
+        `[compaction] session ${sessionId}: Claude Code's compaction measured, the next request is ${count.tokens} tokens`
+      );
+    }
     const prepareAt = this.prepareAt(limit);
     if (count.tokens >= prepareAt) logCount(sessionId, count, limit);
 
@@ -1202,6 +1215,7 @@ export class HistoryCompactor {
       this.deps.haikuCostOf ?? ((s) => summaryHaikuCost(s, this.deps.client.model))
     )(ready);
     const ccCompactAt = CLAUDE_CODE_COMPACT_AT * limit;
+    const ccCompacted = this.ccCompactedTokens.get(sessionId);
     const decision =
       pinnedPromptTooLarge(pinned, tailTokens + summaryTokens, ccCompactAt) ??
       decideHistorySwap({
@@ -1221,11 +1235,12 @@ export class HistoryCompactor {
         ...(observed.growthPerRequest !== undefined
           ? { growthPerRequest: observed.growthPerRequest }
           : {}),
+        ...(ccCompacted !== undefined ? { ccCompactedTokens: ccCompacted } : {}),
       });
     const show = (n: number | undefined) =>
       n === undefined ? "unknown" : Number.isFinite(n) ? n.toFixed(1) : "infinite";
     log(
-      `[compaction] history decision ${policy}: ${decision.swap ? "swap" : "hold"}, nStar=${show(decision.nStar)}, projected=${decision.projectedRequestsBeforeCcCompact ?? "unknown"}, requestsAfterSwap=${decision.requestsAfterSwap ?? "unknown"}, L=${tailTokens}, S=${summaryTokens}, R=${removedTokens}, reason=${decision.reason}`
+      `[compaction] history decision ${policy}: ${decision.swap ? "swap" : "hold"}, nStar=${show(decision.nStar)}, projected=${decision.projectedRequestsBeforeCcCompact ?? "unknown"}, requestsAfterSwap=${decision.requestsAfterSwap ?? "unknown"}, requestsAfterCcCompact=${decision.requestsAfterCcCompact ?? "unknown"}, L=${tailTokens}, S=${summaryTokens}, R=${removedTokens}, reason=${decision.reason}`
     );
     return decision;
   }

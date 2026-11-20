@@ -31,10 +31,19 @@
  * fixed prefix, the summary and what it carries (`S`) and the tail (`L`). It
  * reaches Claude Code's compaction point again after
  * `(ccCompactAt − (count − R)) / growth` requests, and the next swap writes
- * the cache again there. A swap that leaves fewer requests than `N*` cannot
- * pay for itself before that next write, so it holds, even when the next
- * request crosses the point. Measured on Claude Code 2.1.328: forced swaps
- * that left 4 requests of room swapped 14 times in 8 minutes of one turn.
+ * the cache again there. Before the forced point, a swap that leaves fewer
+ * requests than `N*` cannot pay for itself before that next write, so it
+ * holds. Measured on Claude Code 2.1.328: forced swaps that left 4 requests
+ * of room swapped 14 times in 8 minutes of one turn.
+ *
+ * At the forced point the choice is the swap or Claude Code's compaction,
+ * never the swap or nothing: the compaction also writes the cache, and it
+ * costs a main-model call. So the swap is made when it leaves at least as
+ * many requests as Claude Code's compaction would, its size measured on the
+ * first request after the session's previous compaction, and always when no
+ * compaction is measured yet. Measured on Claude Code 2.1.328 with the room
+ * rule applied at the forced point too: 52 holds, 0 swaps, and Claude Code
+ * compacted 9 times in 6 minutes, each compaction writing 95K-101K tokens.
  */
 
 /**
@@ -86,6 +95,11 @@ export interface SwapDecisionInput extends Omit<BreakEvenInput, "ratios"> {
   cacheTtlMs: number;
   /** Recent prompt growth per request, in tokens; undefined until measured. */
   growthPerRequest?: number;
+  /**
+   * The tokens of the first request after the session's previous Claude Code
+   * compaction; undefined until one is measured.
+   */
+  ccCompactedTokens?: number;
 }
 
 export interface SwapDecision {
@@ -105,6 +119,11 @@ export interface SwapDecision {
    * measured.
    */
   requestsAfterSwap?: number;
+  /**
+   * Requests until a request of Claude Code's measured post-compaction size
+   * reaches the compaction point again. Undefined until both are measured.
+   */
+  requestsAfterCcCompact?: number;
 }
 
 /** N*, the requests a swap needs to pay for itself. Infinite when it removes nothing. */
@@ -141,6 +160,7 @@ interface DecisionFigures {
   /** The swapped request's tokens, `count − R`. */
   afterSwap: number;
   room?: number;
+  ccRoom?: number;
 }
 
 function figuresOf(input: SwapDecisionInput): DecisionFigures {
@@ -151,6 +171,10 @@ function figuresOf(input: SwapDecisionInput): DecisionFigures {
   if (projected !== undefined) f.projected = projected;
   const room = requestsUntilCcCompact(input, afterSwap);
   if (room !== undefined) f.room = room;
+  if (input.ccCompactedTokens !== undefined) {
+    const ccRoom = requestsUntilCcCompact(input, input.ccCompactedTokens);
+    if (ccRoom !== undefined) f.ccRoom = ccRoom;
+  }
   return f;
 }
 
@@ -159,7 +183,23 @@ function decisionOf(f: DecisionFigures, swap: boolean, reason: string): SwapDeci
   if (f.nStar !== undefined) d.nStar = f.nStar;
   if (f.projected !== undefined) d.projectedRequestsBeforeCcCompact = f.projected;
   if (f.room !== undefined) d.requestsAfterSwap = f.room;
+  if (f.ccRoom !== undefined) d.requestsAfterCcCompact = f.ccRoom;
   return d;
+}
+
+const CROSSES = "the next request crosses Claude Code's compaction point";
+
+/**
+ * The next request crosses Claude Code's compaction point: the swap against
+ * Claude Code's compaction. Equal room swaps, since the compaction also
+ * writes the cache and costs a main-model call.
+ */
+function decideForced(f: DecisionFigures): SwapDecision {
+  if (f.ccRoom === undefined || f.room === undefined) {
+    return decisionOf(f, true, `${CROSSES}; no Claude Code compaction measured yet`);
+  }
+  const compared = `the swap leaves ${f.room} requests, Claude Code's compaction ${f.ccRoom}`;
+  return decisionOf(f, f.room >= f.ccRoom, `${CROSSES}; ${compared}`);
 }
 
 export function decideHistorySwap(input: SwapDecisionInput): SwapDecision {
@@ -179,14 +219,12 @@ function decideCost(input: SwapDecisionInput, f: DecisionFigures): SwapDecision 
   if (input.gapMs !== undefined && input.gapMs > input.cacheTtlMs) {
     return decide(true, `cold cache: ${Math.round(input.gapMs / 1000)} s since the last request`);
   }
+  if (projected !== undefined && projected <= 1) return decideForced(f);
   if (nStar !== undefined && room !== undefined && room < nStar) {
     return decide(
       false,
       `the swap leaves ${Math.round(afterSwap)} tokens, Claude Code's compaction point again in ${room} requests, fewer than nStar ${formatN(nStar)}`
     );
-  }
-  if (projected !== undefined && projected <= 1) {
-    return decide(true, "the next request crosses Claude Code's compaction point");
   }
   if (nStar === undefined) return decide(false, "no cache prices for the model");
   if (projected === undefined) return decide(false, "no growth per request measured yet");
