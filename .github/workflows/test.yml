@@ -97,11 +97,11 @@ jobs:
   # its own check, not as long as both.
   typecheck:
     name: typecheck
-    runs-on: blacksmith-2vcpu-ubuntu-2404-arm
+    runs-on: ubuntu-latest
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
-      - uses: useblacksmith/checkout@v1
+      - uses: actions/checkout@v5
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.10"
@@ -112,11 +112,11 @@ jobs:
 
   lint:
     name: lint
-    runs-on: blacksmith-2vcpu-ubuntu-2404-arm
+    runs-on: ubuntu-latest
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
-      - uses: useblacksmith/checkout@v1
+      - uses: actions/checkout@v5
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.10"
@@ -132,13 +132,13 @@ jobs:
   # them needs a Mac, so every trigger runs them here. `bun run test:macos` runs them too.
   scripts:
     name: script and release-file tests
-    runs-on: blacksmith-2vcpu-ubuntu-2404-arm
+    runs-on: ubuntu-latest
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       CLAUDISH_SKIP_LIVE_E2E: "1"
       CLAUDISH_DISABLE_CATALOG_WARM: "1"
     steps:
-      - uses: useblacksmith/checkout@v1
+      - uses: actions/checkout@v5
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.10"
@@ -153,7 +153,7 @@ jobs:
 
   idle:
     name: hermetic · idle ${{ matrix.slice }}/3
-    runs-on: blacksmith-2vcpu-ubuntu-2404-arm
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
@@ -163,7 +163,7 @@ jobs:
       CLAUDISH_SKIP_LIVE_E2E: "1"
       CLAUDISH_DISABLE_CATALOG_WARM: "1"
     steps:
-      - uses: useblacksmith/checkout@v1
+      - uses: actions/checkout@v5
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.10"
@@ -185,7 +185,7 @@ jobs:
   # (the pinned Codex pool tests, about 20 s each), so no job holds two of them.
   rest:
     name: hermetic · rest ${{ matrix.job }}/6
-    runs-on: blacksmith-2vcpu-ubuntu-2404-arm
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
@@ -207,7 +207,7 @@ jobs:
       CLAUDISH_SKIP_LIVE_E2E: "1"
       CLAUDISH_DISABLE_CATALOG_WARM: "1"
     steps:
-      - uses: useblacksmith/checkout@v1
+      - uses: actions/checkout@v5
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.10"
@@ -234,12 +234,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ["blacksmith-2vcpu-ubuntu-2404-arm", "blacksmith-2vcpu-ubuntu-2404-arm"]
+        os: ["ubuntu-latest", "ubuntu-24.04-arm"]
     runs-on: ${{ matrix.os }}
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
-      - uses: useblacksmith/checkout@v1
+      - uses: actions/checkout@v5
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -258,7 +258,7 @@ jobs:
   # packages/cli/package.json on install does not matter.
   darwin-binaries:
     name: darwin binaries · build ${{ matrix.target }}
-    runs-on: blacksmith-2vcpu-ubuntu-2404-arm
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
@@ -270,7 +270,7 @@ jobs:
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
-      - uses: useblacksmith/checkout@v1
+      - uses: actions/checkout@v5
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
