@@ -611,8 +611,9 @@ export function summaryMessage(
 /**
  * The hold decision for a swap that pins a prompt yet leaves the request at
  * or above Claude Code's compaction point: the swap would cost a cache write
- * and Claude Code would still compact. Undefined when the swap can bring the
- * request under that point, or pins nothing.
+ * and Claude Code would still compact. `afterSwapTokens` is the swapped
+ * request as sent, the fixed system prompt and tools included. Undefined when
+ * the swap can bring the request under that point, or pins nothing.
  */
 export function pinnedPromptTooLarge(
   pinned: number | undefined,
@@ -622,7 +623,7 @@ export function pinnedPromptTooLarge(
   if (pinned === undefined || afterSwapTokens < ccCompactAt) return undefined;
   return {
     swap: false,
-    reason: `the current turn's prompt and newest rounds are ${afterSwapTokens} tokens, at or above Claude Code's compaction point ${Math.round(ccCompactAt)}`,
+    reason: `the current turn's prompt keeps the swapped request at ${Math.round(afterSwapTokens)} tokens, at or above Claude Code's compaction point ${Math.round(ccCompactAt)}`,
   };
 }
 
@@ -1283,7 +1284,7 @@ export class HistoryCompactor {
     const ccCompacted = this.ccCompactedTokens.get(sessionId);
     const lastForcedSwapGap = this.lastForcedSwapGap(sessionId, thread);
     const decision =
-      pinnedPromptTooLarge(pinned, tailTokens + summaryTokens, ccCompactAt) ??
+      pinnedPromptTooLarge(pinned, count.tokens - removedTokens, ccCompactAt) ??
       decideHistorySwap({
         policy,
         count: count.tokens,

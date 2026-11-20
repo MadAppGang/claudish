@@ -309,6 +309,27 @@ test("a prompt that keeps the request past Claude Code's compaction point holds 
   expect(decision).toContain("the current turn's prompt");
 });
 
+test("the system prompt counts: a pinned swap that stays past the compaction point holds", async () => {
+  const r = rig();
+  // About 20K tokens of system prompt and 20K of pinned prompt. Without the
+  // system prompt the swapped request would be about 23K tokens, under 0.83
+  // of the window; with it, about 43K, above.
+  const system = "fixed system prompt ".repeat(4000);
+  const prompt = `${SPEC} ${"detail of the spec ".repeat(4200)}`;
+  const withSystem = (rounds: number) => ({ ...oneTurn(rounds, prompt), system });
+  const a = withSystem(6);
+  r.windowAt(a, 0.65);
+  r.h.compact(a, session);
+  await r.h.whenIdle();
+  const b = withSystem(8);
+  r.windowAt(b, 0.95);
+  const pass = r.h.compact(b, session);
+  expect(pass.applied).toBe("none");
+  const decision = (await capturedLines()).find((l) => l.includes("history decision threshold"));
+  expect(decision).toContain("history decision threshold: hold");
+  expect(decision).toContain("the current turn's prompt");
+});
+
 test("a swap recorded without a pinned prompt replays its old form", async () => {
   const r = rig();
   const b = oneTurn(8);
