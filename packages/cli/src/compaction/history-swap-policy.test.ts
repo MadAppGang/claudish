@@ -382,11 +382,12 @@ function activeSwapRig(opts: { hangLater: boolean; swapWaitMs?: number }) {
     model,
     warn() {},
     record() {},
-    fetchImpl: (async (_url: unknown, init?: { signal?: AbortSignal }) => {
+    // The client calls fetch with one Request: its signal is the call's abort.
+    fetchImpl: (async (req: Request) => {
       calls += 1;
       if (calls > 1 && opts.hangLater) {
         return new Promise<Response>((_resolve, reject) => {
-          init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+          req.signal.addEventListener("abort", () => reject(new Error("aborted")));
           setTimeout(() => reject(new Error("summary unavailable")), 600);
         });
       }

@@ -179,8 +179,9 @@ test("a long styled turn swaps mid-turn and keeps its inline system messages ver
       model,
       warn() {},
       record() {},
-      fetchImpl: (async (_url: unknown, init?: { body?: unknown }) => {
-        inputs.push(String(init?.body ?? ""));
+      // The client calls fetch with one Request: the body is read from it.
+      fetchImpl: (async (req: Request) => {
+        inputs.push(await req.text());
         return Response.json({
           type: "message",
           role: "assistant",
@@ -206,6 +207,9 @@ test("a long styled turn swaps mid-turn and keeps its inline system messages ver
   expect(h.compact(a, session).precomputeStarted).toBe(true);
   await h.whenIdle();
   expect(inputs.length).toBe(1);
+  // The summary input holds the conversation, so the absences below can fail.
+  expect(inputs[0]).toContain(PROMPT);
+  expect(inputs[0]).toContain("out-0");
   expect(inputs[0]).not.toContain("SESSION_CONTEXT");
   expect(inputs[0]).not.toContain("output style is active");
 
