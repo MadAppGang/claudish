@@ -220,6 +220,15 @@ one of them is never compressed and never recorded, so it is sent as it is on ev
   `[user "[claudish: summary of the earlier conversation]\n<summary>"]` + messages `[b, end)`
   without thinking + messages after `end` unchanged. Recorded as a `history-swap` with
   `(prefixHash over [0,b), tailHash over [b,end), one hash per message of [b,end), b, end)`.
+- **Inline system messages of `[0, b)` are kept** (`keptInlineSystemMessages`): each distinct one
+  once, in first-seen order, without cache markers, placed before the first assistant message at
+  or after `b` (or at the end), the only places the API accepts them. They are Claude Code's
+  session context and reminders, which the summary never covers. A turn-scoped message
+  (`clear_at: "next_user_message"`, beta `mid-conversation-system-clear-at-2026-08-21`) is left
+  out: it renders for one turn and is cleared once a later user message exists, so in the original
+  request the user message at `b` had already cleared it, and moved after that message it would
+  render again. Claude Code 2.1.329 sends none (0 of 5,052 inline system messages in the run-3
+  request bodies); the rule exists so that a harness that does cannot revive an expired instruction.
 - **A swap inside a turn keeps that turn's user prompt verbatim** (`pinnedPromptIndex`,
   `summaryMessage`). Inside a turn `b` is past the turn's human message, so `[0, b)` held the
   user's own prompt and only the summary carried it. Bench XL Haiku early t1 lost its turn-1 spec
@@ -396,7 +405,11 @@ turn start is a swap point, and after a gap longer than the cache TTL the cache 
   module's request path: `compactAsync` awaits the decider, then runs the synchronous `compact`
   with the chosen summary. Every other policy goes straight to `compact`; its tests are unchanged.
 - **When it asks.** Only at a human turn start, with at least `floorTokens` (default 30K) counted,
-  and with a ready summary above the active swap. Without a summary the line is logged as a hold
+  and with a ready summary above the active swap. The turn start is read at
+  `lastConversationIndex`, so an inline system message after the new prompt does not hide it. The
+  floor is counted on the request as sent, the active swap applied (as in `waitBeforeCcCompact`):
+  the original history stays above the floor after a swap, and counting it asked the decider again
+  at every later turn start although the request sent was the summary and a few short turns. Without a summary the line is logged as a hold
   and no decider is called: "never drop history without a summary" makes every answer a hold, so
   a call would buy nothing. The first request above the floor of a session always logs that hold.
 - **Summaries.** Under `topic`, summaries start at `min(precomputeAt·limit, floorTokens)`, so one
@@ -438,6 +451,16 @@ a launch-scoped `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, measured first.
 - Requests go to the fixed `ANTHROPIC_MESSAGES_URL` with `x-api-key` and `anthropic-version`
   only. The inbound `authorization`, the inbound `x-api-key` and the Claude login are never read.
   The `system` prompt is claudish's own string; no Claude Code identity text is sent.
+- A redirect is refused (`redirect: "error"`): followed, it would resend the request with
+  `x-api-key` to the `Location` target. A redirect fails the call as a transport error, and the
+  form is final as original.
+- `output_config.effort` comes from the cloud models catalog, never from code
+  (`compactionEffort`, `config.ts`): the native value of `COMPACTION_EFFORT` (`low`) when the
+  wire of the model's Claude API connection publishes effort at `/output_config/effort`, else no
+  effort field. A model that does not take the field answers 400, and `compaction.model` accepts
+  any `claude-*` id: in the catalog on 2026-11-20, `claude-haiku-5-5` and `claude-sonnet-5-5`
+  publish `low`, and `claude-haiku-4-5` publishes reasoning status `unknown`, so it gets no field.
+  The startup line names the effort sent.
 - A 429 "Error" shape (`isClaudeShapeRefusal`) or a 401 is a final failure. Three 401s in one
   launch switch compaction off, with one warning.
 - Every call records a `StatsEvent` with `request_role: "compaction"`, provider `anthropic`, priced
