@@ -1449,8 +1449,10 @@ export class HistoryCompactor {
       user,
       ...(previous ? { basedOn: previous.prefixHash } : {}),
     })
-      .then(() => {
-        this.summaryLatency.set(sessionId, Math.max(0, now() - startedAt));
+      .then((ready) => {
+        // Only a ready summary times a summary: a fast failure or a timeout
+        // would project early starts from a latency no summary had.
+        if (ready) this.summaryLatency.set(sessionId, Math.max(0, now() - startedAt));
       })
       .catch((err) => {
         log(
@@ -1475,7 +1477,7 @@ export class HistoryCompactor {
     boundary: number;
     user: string;
     basedOn?: string;
-  }): Promise<void> {
+  }): Promise<boolean> {
     let result: CompactionCallResult;
     try {
       result = await this.deps.client.complete({
@@ -1493,7 +1495,7 @@ export class HistoryCompactor {
     }
     // Cut short by shutdown: no decision about this boundary was made, so
     // nothing is recorded and a later process may still summarise it.
-    if (!result.ok && result.cancelled) return;
+    if (!result.ok && result.cancelled) return false;
     const decidedAt = new Date().toISOString();
     const record: HistorySummaryRecord = result.ok
       ? {
@@ -1533,6 +1535,7 @@ export class HistoryCompactor {
         ? `[compaction] history summary ready in session ${job.sessionId}: messages 0..${job.boundary}, ${record.summary.length} characters`
         : `[compaction] history summary failed in session ${job.sessionId} at message ${job.boundary}: ${record.reason}`
     );
+    return record.form === "ready";
   }
 }
 

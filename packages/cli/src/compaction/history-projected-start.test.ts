@@ -153,6 +153,61 @@ test("no measured growth starts the summary at precomputeAt", () => {
   expect(started[0]).toBe(4);
 });
 
+test("a failed summary's time is not the latency that projects the next start", async () => {
+  // The first summary fails at once with HTTP 500. Timed, it would read as a
+  // latency of a few milliseconds: one request ahead, so the next thread's
+  // summary would not start early.
+  let calls = 0;
+  const byLength = new Map<number, number>([
+    [lengthOf(10), 125_000],
+    [lengthOf(14), 80_000],
+  ]);
+  let current: ThreadObservation = {};
+  const h = new HistoryCompactor({
+    store: new CompactionStore(root),
+    client: new CompactionClient({
+      apiKey: "FAKE_PROJECTED_START_0000",
+      model,
+      warn() {},
+      record() {},
+      fetchImpl: (async () => {
+        calls += 1;
+        if (calls === 1) {
+          return Response.json(
+            { type: "error", error: { type: "api_error", message: "test failure" } },
+            { status: 500 }
+          );
+        }
+        return Response.json({
+          type: "message",
+          role: "assistant",
+          model,
+          content: [{ type: "text", text: "PROJECTED_SUMMARY" }],
+          stop_reason: "end_turn",
+          usage: { input_tokens: 10, output_tokens: 5 },
+        });
+      }) as unknown as typeof fetch,
+    }),
+    settings: { enabled: true, precomputeAt: 0.6, applyAt: 0.75 },
+    contextWindowOf: () => WINDOW,
+    autoCompactWindow: () => undefined,
+    summaryTimeoutMs: 1000,
+    counter: scriptedCounter(byLength, () => current),
+  });
+  active.push(h);
+
+  expect(h.compact(longTurn(10), session).precomputeStarted).toBe(true);
+  await h.whenIdle();
+  expect(calls).toBe(1);
+
+  const other = longTurn(14);
+  other.messages[0] = { role: "user", content: "Another conversation in the same session" };
+  current = { gapMs: 7_000, growthPerRequest: 38_000 };
+  expect(h.compact(other, session).precomputeStarted).toBe(true);
+  const line = (await capturedLines()).find((l) => l.includes("summary started early"));
+  expect(line).toContain("80000 tokens now, projected 194000 in 3 requests");
+});
+
 test("the projection covers the summary's latency in requests", () => {
   expect(projectedTokens(80_000, { gapMs: 7_000, growthPerRequest: 38_000 }, 15_000)).toEqual({
     tokens: 80_000 + 3 * 38_000,
