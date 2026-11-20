@@ -332,6 +332,22 @@ the request sent was about 160,000, and `nStar` fell to 2.3. Case d:
   first request after it writing 95,171 to 101,098 tokens; at 03:04:06 the swap would have left
   12 requests, Claude Code's compaction left 8. The decision line shows `requestsAfterSwap` and
   `requestsAfterCcCompact`.
+- **A forced swap soon after a forced swap holds, while nothing is measured.** With no Claude Code
+  compaction measured, the forced swap is made unless the session's previous swap was forced too
+  and fewer than `nStar` requests have passed since (`lastForcedSwapGap` on the decision line).
+  Then the swaps cannot pay, and the hold lets Claude Code compact once, so its size is measured.
+  The gap is the outcome itself, so it corrects every error in `requestsAfterSwap`. The Opus 5.5
+  bench trial on `4f33a968` (Claude Code never compacted) made six forced swaps 5, 6, 8, 7 and 11
+  requests apart, each predicting about 10: the growth used was low at 04:25:17 (13K against
+  20.6K) but high at 04:25:38 (17K against 6.7K), and the first request after a swap sat 6K to
+  42K tokens above `count − R`, so `R`, converted at the session's characters per token, was also
+  high. Cache writes cost $8.58 against $4.91 for no compaction. A growth estimate that follows
+  recent requests fixes only part of that, and a fallback compaction size would be a guess:
+  Claude Code's `postTokens` (37,264 in one run) is not the request size (117,321 in the same
+  run). The gap counts only after a forced swap: a cost swap is made early, and the room it
+  leaves says nothing about a swap at the compaction point. The Sonnet 5.5 XL trial keeps its 3
+  swaps, 47, 29 and 44 requests apart: its forced swap followed a cost swap, and its last had a
+  measured compaction.
 - Read ratio and base price: the model's own Claude API connection (`claudeApiTurnPricing`, the
   meter's banded reader), `cachedRead / input`. Measured on the catalog: Sonnet 5.5 0.1/2, Opus 5.5
   0.2/4, Fable 5.2 0.2/8, Haiku 5.5 tiered with a cache-read rate per band. A name that is not

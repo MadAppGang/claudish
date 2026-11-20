@@ -269,21 +269,25 @@ would reach Claude Code's compaction point again in fewer requests than `nStar`,
 would write the cache again before this one pays for itself. In the second case the swap is
 compared with Claude Code's compaction instead, because that compaction also rewrites the cache:
 the swap is made when it leaves at least as many requests before the compaction point as Claude
-Code's own compaction left the last time in the session, and always when Claude Code has not
-compacted yet.
+Code's own compaction left the last time in the session. When Claude Code has not compacted yet,
+the swap is made, unless the previous swap was also made at that point and fewer than `nStar`
+requests have passed since: such swaps follow each other too closely to pay, so `cost` holds and
+lets Claude Code compact once, and the size it leaves decides the next time.
 
 The prices come from the model's Claude API rates in the cloud models catalog. A model with no
 published cache-read rate (any non-Claude model) gets only the last two cases. Each decision is
 logged:
 
 ```
-[compaction] history decision cost: hold, nStar=26.0, projected=6, requestsAfterSwap=43, requestsAfterCcCompact=unknown, L=80258, S=22, R=74004, reason=projected 6 < nStar 26.0
+[compaction] history decision cost: hold, nStar=26.0, projected=6, requestsAfterSwap=43, requestsAfterCcCompact=unknown, lastForcedSwapGap=none, L=80258, S=22, R=74004, reason=projected 6 < nStar 26.0
 ```
 
 `L` is the kept tail, `S` the summary with the Claude Code system messages it keeps, and `R` the
 tokens the swap removes from the request as sent. `requestsAfterSwap` is the number of requests
 until the swapped request reaches Claude Code's compaction point, and `requestsAfterCcCompact` the
 same for a request of the size Claude Code's last compaction left (`unknown` before one).
+`lastForcedSwapGap` counts the requests since the previous swap when that swap was made at the
+compaction point (`none` otherwise).
 
 ### Swapping on a new topic: `history.policy: "topic"`
 
