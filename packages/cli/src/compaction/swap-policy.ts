@@ -233,6 +233,11 @@ function decideForced(f: DecisionFigures): SwapDecision {
 
 export function decideHistorySwap(input: SwapDecisionInput): SwapDecision {
   const f = figuresOf(input);
+  // A summary as long as what it replaces leaves the request no smaller: the
+  // swap only rewrites the cache, on any policy and at any point.
+  if (!(input.removedTokens > 0)) {
+    return decisionOf(f, false, "the swap removes no tokens from the request");
+  }
   if (input.policy === "cost") return decideCost(input, f);
   return input.count >= input.applyAt * input.limit
     ? decisionOf(f, true, `count reached applyAt ${input.applyAt}`)

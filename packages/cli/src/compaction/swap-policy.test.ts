@@ -530,3 +530,30 @@ describe("a forced swap soon after a forced swap, with nothing measured", () => 
     expect(decisions.map((d) => d.swap)).toEqual([true, true, true]);
   });
 });
+
+/**
+ * A ready summary can be as long as the messages it replaces: the request as
+ * sent then loses nothing (`R` is 0), and a swap only costs a cache write.
+ */
+describe("a swap that removes nothing", () => {
+  test("holds on a cold cache", () => {
+    const d = decideHistorySwap(costInput({ removedTokens: 0, gapMs: 400_000 }));
+    expect(d.swap).toBe(false);
+    expect(d.reason).toBe("the swap removes no tokens from the request");
+  });
+
+  test("holds at the forced point with no Claude Code compaction measured", () => {
+    const d = decideHistorySwap(costInput({ removedTokens: 0, count: 165_000 }));
+    expect(d.projectedRequestsBeforeCcCompact).toBe(1);
+    expect(d.swap).toBe(false);
+    expect(d.reason).toBe("the swap removes no tokens from the request");
+  });
+
+  test("holds under threshold at applyAt", () => {
+    const d = decideHistorySwap(
+      costInput({ policy: "threshold", removedTokens: 0, applyAt: 0.75, count: 0.75 * LIMIT })
+    );
+    expect(d.swap).toBe(false);
+    expect(d.reason).toBe("the swap removes no tokens from the request");
+  });
+});

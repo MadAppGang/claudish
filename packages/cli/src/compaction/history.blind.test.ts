@@ -317,8 +317,10 @@ if (process.env.COMPACTION_BLIND_FILE !== import.meta.path) {
       const p: Payload = {
         model,
         system: "",
+        // The replaced history is longer than the summary, so the swap
+        // removes tokens and only the thresholds decide.
         messages: [
-          { role: "user", content: "earlier" },
+          { role: "user", content: "earlier context ".repeat(50) },
           { role: "assistant", content: "answer" },
           { role: "user", content: "new turn" },
         ],
