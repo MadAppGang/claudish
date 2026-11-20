@@ -1,19 +1,17 @@
 #!/bin/sh
 # Starts the claudish build in ~/.bench-compaction/build WITHOUT compaction,
-# for the baseline arm of cases/. The arguments are those of
+# for the baseline variant of cases/. The arguments are those of
 # claudish-compaction minus --compaction: --quiet -y --debug-claudish. So the
-# two arms run the same build and differ only in compaction.
+# two variants run the same build and differ only in compaction.
 #
 # The same checks as claudish-compaction, written to the same launch log:
 #   - the launcher's own environment must hold no ANTHROPIC_API_KEY;
 #   - the SHA-256 of the build goes to the launch log;
 #   - ./logs, where --debug-claudish writes, becomes a link into ~/.bench-out.
 #
-# The watcher finds Claude Code by the settings file claudish passes it,
-# ~/.claudish/settings-<claudish pid>-<time>.json. `exec` below keeps this
-# script's pid for claudish, so $$ is claudish's pid. It writes one label,
-# never a value: AGENT_ENV_KEY_UNSET, AGENT_ENV_KEY_PLACEHOLDER or
-# AGENT_ENV_KEY_SET.
+# Claude Code's own environment is recorded by the SessionStart hook of the
+# cc_settings folder (config/*/hooks/agent-env.sh), into this launch log: the
+# sandbox refuses `ps`, so this script cannot read another process.
 set -u
 dir="$HOME/.bench-compaction"
 mkdir -p "$dir"
@@ -46,42 +44,13 @@ else
 fi
 note "launch: build $build sha256 $(shasum -a 256 "$build" | cut -d' ' -f1)"
 note "launch: cwd $(pwd)"
+note "launch: claude version $(claude --version 2>&1 | head -1)"
 if [ ! -e logs ]; then
   ln -s "$live/debug" logs
   note "launch: ./logs -> $live/debug"
 fi
 
 placeholder="sk-ant-api03-placeholder-not-used-proxy-handles-auth-with-openrouter-key-xxxxxxxxxxxxxxxxxxxxx"
-self=$$
-watch_agent_env() {
-  i=0
-  while [ "$i" -lt 600 ]; do
-    pid=$(pgrep -f -- "--settings $HOME/.claudish/settings-$self-" | head -1)
-    if [ -n "$pid" ]; then
-      # A sandbox can refuse ps ("Operation not permitted"). Then nothing was
-      # read, and the label says so instead of reading as "unset".
-      if ! envline=$(ps eww -o command= -p "$pid" 2>&1); then
-        note "agent-env: pid $pid AGENT_ENV_UNREADABLE: $(echo "$envline" | head -1 | cut -c1-120)"
-        return
-      fi
-      found=$(echo "$envline" | grep -o ' ANTHROPIC_API_KEY=[^ ]*' | head -1)
-      if [ -z "$found" ]; then
-        label=AGENT_ENV_KEY_UNSET
-      elif [ "$found" = " ANTHROPIC_API_KEY=$placeholder" ]; then
-        label=AGENT_ENV_KEY_PLACEHOLDER
-      else
-        label=AGENT_ENV_KEY_SET
-      fi
-      config=$(echo "$envline" | grep -c ' CLAUDISH_CONFIG=')
-      note "agent-env: pid $pid $label CLAUDISH_CONFIG_present=$config"
-      return
-    fi
-    i=$((i + 1))
-    sleep 1
-  done
-  note "agent-env: AGENT_ENV_UNKNOWN: no Claude Code process with claudish's settings file in 600 s"
-}
-watch_agent_env &
 
 # On a foreign model claudish gives Claude Code its placeholder as
 # ANTHROPIC_API_KEY, and Claude Code asks "Detected a custom API key ... Do you

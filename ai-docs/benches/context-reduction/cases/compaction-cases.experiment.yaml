@@ -1,9 +1,9 @@
 description: "compaction cases: the same claudish build with and without --compaction"
 bench: ./madbench.yaml
 
-# Both arms run the build named by --param claudish_build. They differ only
+# Both variants run the build named by --param claudish_build. They differ only
 # in the launcher (with or without --compaction) and the tool folder (its
-# key checks and evidence). Run one arm per madbench call; see the header of
+# key checks and evidence). Run one variant per madbench call; see the header of
 # ./madbench.yaml.
 guard_changes:
   allow:

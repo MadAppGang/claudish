@@ -47,5 +47,20 @@ emit(pass, score, `hidden tests: ${passed} pass, ${failed} fail, exit ${exit}`, 
   failed,
   exit,
   total: TOTAL_TESTS,
-  tail: output.slice(-1500),
+  tail: keptTail(output),
 });
+
+/**
+ * What the report keeps of the test output: every "(fail)" line and every
+ * error line, wherever it is, then the last 1,500 characters. A long run
+ * pushes its first failures out of the last 1,500 characters, and a test file
+ * that cannot load names its cause only near the top of the output.
+ */
+function keptTail(text: string): string {
+  const failures = text
+    .split("\n")
+    .filter((line) => /^\(fail\) |^# Unhandled error|^\s*error:|^\s*[A-Z]\w*Error:/.test(line));
+  const last = text.slice(-1500);
+  if (failures.length === 0) return last;
+  return `${failures.join("\n")}\n--- last 1500 characters ---\n${last}`;
+}

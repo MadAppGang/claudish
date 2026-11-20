@@ -2,16 +2,25 @@
 // and prints two facts about it:
 //   - large_tool_outputs: tool results of at least 16,000 characters, the
 //     size at which claudish compaction compresses a tool output;
-//   - config_reads: tool calls whose input names the run's claudish config
-//     (~/.claudish/config.json) or CLAUDISH_CONFIG. The input is matched,
-//     never the result, because claudish's own source mentions both.
+//   - config_reads: tool calls that touched the run's claudish config file in
+//     HOME (~/.claudish/config.json): read, wrote, copied or listed it. A
+//     mention in source, tests or docs is not a touch (config-touch.ts).
 // Prints counts only, never text from the transcripts.
-import { readdirSync, readFileSync, statSync } from "node:fs";
+//
+//   transcripts.ts [--root <transcripts dir>] [--home <sandbox home>]
+// Defaults: $HOME/.claude/projects and $HOME, as madbench runs it. The flags
+// read saved transcript copies after the sandbox is gone.
+import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { touchesConfig } from "./config-touch";
 
 const LARGE = 16000;
-const home = process.env.HOME ?? "";
-const root = join(home, ".claude", "projects");
+const arg = (flag: string) => {
+  const i = process.argv.indexOf(flag);
+  return i > 0 ? process.argv[i + 1] : undefined;
+};
+const home = arg("--home") ?? process.env.HOME ?? "";
+const root = arg("--root") ?? join(home, ".claude", "projects");
 
 function files(dir: string): string[] {
   let out: string[] = [];
@@ -41,7 +50,6 @@ function textLength(content: unknown): number {
   return 0;
 }
 
-const configPattern = /\.claudish\/config\.json|CLAUDISH_CONFIG/;
 let transcripts = 0;
 let results = 0;
 let large = 0;
@@ -79,7 +87,7 @@ for (const f of files(root)) {
         }
       } else if (b?.type === "tool_use") {
         if (b.id && b.name) toolNames.set(b.id, b.name);
-        if (configPattern.test(JSON.stringify(b.input ?? ""))) configReads++;
+        if (touchesConfig(b.name ?? "", b.input, home)) configReads++;
       }
     }
   }

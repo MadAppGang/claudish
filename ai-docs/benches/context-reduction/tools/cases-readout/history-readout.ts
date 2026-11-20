@@ -18,36 +18,22 @@
 // calls since the previous swap, Rm is claudish's history count on the swap
 // request minus the tokens that request actually sent, and Cm is the cache
 // creation of the swap request. Both are model replays, not a counterfactual:
-// the saving a policy really made is its arm's cost against the baseline arm.
+// the saving a policy really made is its variant's cost against the baseline variant.
 //
-// Per arm (run_name): mean, range and pass count.
+// Per variant (run_name): mean, range and pass count.
 //
-// Prices are USD per 1M tokens (Anthropic list prices). Cache writes: 1.25x
-// input for the 5-minute TTL, 2x for the 1-hour TTL. Haiku 5.5 is $0.10 / $0.50
-// up to 100K input tokens and $0.50 / $2.50 beyond.
+// Prices and the per-request band rule (Haiku 5.5's 100K edge) are in
+// pricing.ts. Per trial the readout also prints the requests above a model's
+// band edge and what they cost.
 
-export {};
+import { launchCwd, sameLaunchCwd } from "./launch-logs";
+import { bandOf, EDGE_RULES, type EdgeRule, priceOf, requestCost, type Usage } from "./pricing";
 
-// w5m and w1h are the cache-write multipliers of the input price.
-type Price = { input: number; output: number; read: number; w5m: number; w1h: number };
-const PRICES: Record<string, Price> = {
-  "claude-fable-5-2": { input: 8, output: 40, read: 0.2, w5m: 1.25, w1h: 2 },
-  "claude-opus-5-5": { input: 4, output: 20, read: 0.2, w5m: 1.25, w1h: 2 },
-  "claude-sonnet-5-5": { input: 2, output: 10, read: 0.1, w5m: 1.25, w1h: 2 },
-  "claude-haiku-5-5": { input: 0.1, output: 0.5, read: 0.01, w5m: 1.25, w1h: 2 },
-  // GLM-4.7 on Z.ai's own API (the glm@ route). The cloud models catalog
-  // publishes no price for that connection ("unavailable"); these are the
-  // rates aggregator sites quote for Z.ai, which charges no cache write.
-  "glm-4.7": { input: 0.6, output: 2.2, read: 0.11, w5m: 1, w1h: 1 },
-};
 const M = 1_000_000;
 
-function priceOf(model: string): Price | undefined {
-  return PRICES[model] ?? PRICES[model.replace(/\[.*\]$/, "")];
-}
-
+/** A compaction-model call: uncached input and output, at its own band. */
 function haikuCost(inTok: number, outTok: number): number {
-  return inTok > 100_000 ? (inTok * 0.5 + outTok * 2.5) / M : (inTok * 0.1 + outTok * 0.5) / M;
+  return requestCost(priceOf("claude-haiku-5-5")!, { input: inTok, output: outTok });
 }
 
 interface Req {
@@ -86,6 +72,39 @@ interface Compaction {
   pre: number;
   post: number;
 }
+/** One history summary: messages 0..last, when it started and became ready. */
+interface Summary {
+  last: number;
+  started: string;
+  ready?: string;
+  used: boolean;
+}
+/** claudish's count for one request: "history count|none|replayed|swapped ... X of W tokens". */
+interface CountAt {
+  ts: string;
+  count: number;
+  window: number;
+}
+
+/**
+ * The count at which a policy swaps, as a share of the window (history.ts
+ * at 640a3aec: threshold 0.6/0.75, early 0.5/0.7). The cost policy swaps
+ * on its projection, not at a count, so it has none.
+ */
+const SWAP_AT: Record<string, number> = { threshold: 0.75, early: 0.7 };
+/** CLAUDE_CODE_AUTO_COMPACT_WINDOW as cases-prep/long-session.sh sets it. */
+const AUTO_COMPACT_WINDOW = 200_000;
+
+/**
+ * A summary was ready after the request that needed it when claudish sent a
+ * request at or above the policy's swap point between the summary's start
+ * and its ready time (or after its start, if it never became ready).
+ */
+function lateSummaries(summaries: Summary[], counts: CountAt[], swapAt: number): number {
+  return summaries.filter((s) =>
+    counts.some((c) => c.ts >= s.started && (s.ready === undefined || c.ts < s.ready) && c.count >= swapAt * c.window),
+  ).length;
+}
 
 function parseLog(text: string) {
   const reqs: Req[] = [];
@@ -94,11 +113,50 @@ function parseLog(text: string) {
   const swaps: Swap[] = [];
   const hops: Record<string, number> = {};
   const fallbacks: string[] = [];
+  const summaries: Summary[] = [];
+  const counts: CountAt[] = [];
+  // Rate limits on an OpenAI-format route: Z.ai's code 1302 bodies, claudish's
+  // own retries ("429 rate limited, retry n/m in Xs"), and the final 429
+  // statuses, which on an explicit route (no next hop) reach Claude Code.
+  // waitMs adds, per final 429, the time from its "Calling API" line to the
+  // 429, and the time until the next "Calling API" (Claude Code's own retry).
+  const rate = { code1302: 0, retries: 0, retryWaitS: 0, reachedClient: 0, toNextHop: 0, waitMs: 0, firstTs: "", lastTs: "" };
+  let callTs = "";
+  let pending429 = "";
   let ts = "";
   for (const line of text.split("\n")) {
     const t = line.match(/^\[(\d{4}-\d\d-\d\dT[\d:.]+Z)\]/);
-    if (t) ts = t[1];
-    const meta = line.match(/\[RequestMeta\] model=(\S+)/);
+    if (t) {
+      ts = t[1];
+      rate.firstTs ||= ts;
+      rate.lastTs = ts;
+    }
+    if (line.includes('"code":"1302"')) rate.code1302++;
+    // A tag counts only on claudish's own line ("[<ISO time>] " then the tag,
+    // matched as t above). A request or response body line (an SSE "data:"
+    // line) carries the model's text, which can name any tag: an answer that
+    // quoted "[Fallback]" was once counted as a hop.
+    const retry = t ? line.match(/429 rate limited, retry \d+\/\d+ in ([\d.]+)s/) : null;
+    if (retry) {
+      rate.retries++;
+      rate.retryWaitS += Number(retry[1]);
+    }
+    if (t && /\] Response status: 429/.test(line) && !line.includes("[compaction]")) {
+      rate.reachedClient++;
+      if (callTs) rate.waitMs += Date.parse(ts) - Date.parse(callTs);
+      pending429 = ts;
+    }
+    if (t && line.includes("[Fallback]") && line.includes("trying next provider") && pending429) {
+      rate.reachedClient--;
+      rate.toNextHop++;
+      pending429 = "";
+    }
+    if (t && /\] Calling API: /.test(line) && !line.includes("[compaction]")) {
+      if (pending429) rate.waitMs += Date.parse(ts) - Date.parse(pending429);
+      pending429 = "";
+      callTs = ts;
+    }
+    const meta = t ? line.match(/\[RequestMeta\] model=(\S+)/) : null;
     if (meta) {
       reqs.push({ ts, model: meta[1] });
       continue;
@@ -128,7 +186,9 @@ function parseLog(text: string) {
     // <url>", and RequestMeta is not written for every call, so the call is the
     // request. Its usage is the [SSE:openai] chunk with prompt_tokens, which
     // INCLUDES the cached tokens; no cache write is billed.
-    const call = line.match(/\] Calling API: https?:\/\/([^/\s]+)/);
+    // claudish's own Haiku calls write "[compaction] Calling API:" too; they
+    // are counted from their HTTP 200 lines below, not as requests or hops.
+    const call = !t || line.includes("[compaction]") ? null : line.match(/\] Calling API: https?:\/\/([^/\s]+)/);
     if (call) {
       hops[call[1]] = (hops[call[1]] ?? 0) + 1;
       const prev = reqs[reqs.length - 1];
@@ -136,7 +196,7 @@ function parseLog(text: string) {
       else reqs.push({ ts, model: prev?.model ?? "unknown", host: call[1] });
       continue;
     }
-    if (line.includes("[Fallback]")) fallbacks.push(line.slice(0, 300));
+    if (t && line.includes("[Fallback]")) fallbacks.push(line.slice(0, 300));
     if (line.includes("[SSE:openai]") && line.includes('"prompt_tokens"')) {
       try {
         const u = JSON.parse(line.slice(line.indexOf("{"))).usage;
@@ -160,9 +220,22 @@ function parseLog(text: string) {
       } catch {}
       continue;
     }
-    if (!line.includes("[compaction]")) continue;
+    if (!t || !line.includes("[compaction]")) continue;
     const count = line.match(/history count (\d+) of/);
     if (count && last) last.count = Number(count[1]);
+    const anyCount = line.match(/history (?:count|none,|replayed at \d+,|swapped at \d+,) (\d+) of (\d+) tokens/);
+    if (anyCount) counts.push({ ts, count: Number(anyCount[1]), window: Number(anyCount[2]) });
+    const sum = line.match(/history summary (started|ready)\b.*?messages 0\.\.(\d+)/);
+    if (sum && sum[1] === "started") summaries.push({ last: Number(sum[2]), started: ts, used: false });
+    if (sum && sum[1] === "ready") {
+      const s = summaries.find((x) => x.last === Number(sum[2]) && x.ready === undefined);
+      if (s) s.ready = ts;
+    }
+    const replaced = line.match(/history swap in session .*messages 0\.\.(\d+) replaced/);
+    if (replaced) {
+      const s = [...summaries].reverse().find((x) => x.last === Number(replaced[1]));
+      if (s) s.used = true;
+    }
     const h = line.match(/\[compaction\] (history summary of \d+ messages|tool output [^:]*): HTTP 200, (\d+) in \/ (\d+) out tokens/);
     if (h) haiku.push({ ts, purpose: h[1], in: Number(h[2]), out: Number(h[3]) });
     const d = line.match(/\[compaction\] history decision (\S+): (swap|hold)\b(.*)$/);
@@ -175,7 +248,7 @@ function parseLog(text: string) {
       swaps.push({ ts, req: reqs.length - 1, text: line.replace(/^.*\[compaction\] /, "").slice(0, 160) });
     }
   }
-  return { reqs, haiku, decisions, swaps, hops, fallbacks };
+  return { reqs, haiku, decisions, swaps, hops, fallbacks, rate, summaries, counts };
 }
 
 function compactionsOf(report: unknown): Compaction[] {
@@ -200,22 +273,31 @@ function compactionsOf(report: unknown): Compaction[] {
   return [...seen.values()].sort((a, b) => a.start - b.start);
 }
 
-function reqCost(r: Req): number {
-  const p = priceOf(r.model);
-  if (!p || r.input === undefined) return 0;
-  const creation = r.creation ?? 0;
+/** A request's usage in pricing.ts's terms, or undefined with no usage. */
+function usageOf(r: Req): Usage | undefined {
+  if (r.input === undefined) return undefined;
   const w1h = r.w1h ?? 0;
-  const w5m = r.w5m ?? creation - w1h;
-  return (
-    (r.input * p.input + w5m * p.input * p.w5m + w1h * p.input * p.w1h + (r.read ?? 0) * p.read + (r.output ?? 0) * p.output) / M
-  );
+  return { input: r.input, w5m: r.w5m ?? (r.creation ?? 0) - w1h, w1h, read: r.read, output: r.output };
+}
+
+function reqCost(r: Req, rule: EdgeRule = "all-input"): number {
+  const p = priceOf(r.model);
+  const u = usageOf(r);
+  return p && u ? requestCost(p, u, rule) : 0;
+}
+
+/** Whether a request was priced at its model's upper band. */
+function isUpper(r: Req): boolean {
+  const p = priceOf(r.model);
+  const u = usageOf(r);
+  return !!(p?.above && u && bandOf(p, u).upper);
 }
 
 const fmt = (n: number) => `$${n.toFixed(4)}`;
 const num = (s: string | undefined) => (s === undefined ? NaN : Number(s));
 
-type ArmRow = { arm: string; pass: boolean; cost: number; recomputed: number };
-const arms: ArmRow[] = [];
+type VariantRow = { variant: string; pass: boolean; cost: number; recomputed: number };
+const variants: VariantRow[] = [];
 
 for (const arg of process.argv.slice(2)) {
   const [reportPath, logPath] = arg.split("=");
@@ -229,7 +311,7 @@ for (const arg of process.argv.slice(2)) {
     console.log(`${reportPath}: no result`);
     continue;
   }
-  const { reqs, haiku, decisions, swaps, hops, fallbacks } = parseLog(await Bun.file(logPath).text());
+  const { reqs, haiku, decisions, swaps, hops, fallbacks, rate, summaries, counts } = parseLog(await Bun.file(logPath).text());
   const compactions = compactionsOf(r);
   const unpriced = [...new Set(reqs.filter((q) => !priceOf(q.model)).map((q) => q.model))];
   const noUsage = reqs.filter((q) => q.input === undefined).length;
@@ -239,19 +321,83 @@ for (const arg of process.argv.slice(2)) {
   const scores = Object.entries(r.named_scores ?? {})
     .map(([k, v]) => `${k}:${v}`)
     .join(",");
-  const arm = r.run_name ?? "-";
-  console.log(`== ${reportPath.split("/").pop()} ${arm} ${r.scenario_id} status=${r.status} scores=${scores}`);
+  const variant = r.run_name ?? "-";
+  console.log(`== ${reportPath.split("/").pop()} ${variant} ${r.scenario_id} status=${r.status} scores=${scores}`);
   console.log(
     `cost madbench=${fmt(madbench)} recomputed=${fmt(mainCost + haikuTotal)} (requests ${fmt(mainCost)} + haiku ${fmt(haikuTotal)}) ` +
       `requests=${reqs.length} without_usage=${noUsage}${unpriced.length ? ` UNPRICED=${unpriced.join("/")}` : ""}`,
   );
+  const banded = reqs.filter((q) => priceOf(q.model)?.above && usageOf(q));
+  if (banded.length > 0) {
+    const upper = banded.filter(isUpper);
+    const edge = priceOf(banded[0]!.model)!.above!.edge;
+    console.log(
+      `above_edge(${edge}) requests=${upper.length}/${banded.length} (${((100 * upper.length) / banded.length).toFixed(1)}%) ` +
+        `cost=${fmt(upper.reduce((s, q) => s + reqCost(q), 0))} of ${fmt(banded.reduce((s, q) => s + reqCost(q), 0))}`,
+    );
+    // The whole trial recounted under each edge rule; madbench's cost names the one billed.
+    const byRule = EDGE_RULES.map((rule) => {
+      const total = reqs.reduce((s, q) => s + reqCost(q, rule), 0) + haikuTotal;
+      const n = banded.filter((q) => bandOf(priceOf(q.model)!, usageOf(q)!, rule).upper).length;
+      return `${rule}=${fmt(total)} (upper ${n}, diff ${fmt(total - madbench)})`;
+    });
+    console.log(`edge_rule_recount madbench=${fmt(madbench)} ${byRule.join(" ")}`);
+  }
   console.log(
     `cc_compactions=${compactions.length} ${compactions.map((c) => `[${c.ts} pre=${c.pre} post=${c.post}]`).join(" ")}`,
+  );
+  // The largest request sent upstream against Claude Code's auto-compact
+  // window. preTokens is Claude Code's own estimate before it compacts, so it
+  // can pass the window while no request does; a request above it can still
+  // be answered on a model with a larger real window, so usage is the signal.
+  const inputTotals = reqs.filter((q) => q.input !== undefined).map((q) => q.input! + (q.creation ?? 0) + (q.read ?? 0));
+  const preMax = compactions.reduce((m, c) => Math.max(m, c.pre ?? 0), 0);
+  console.log(
+    `window: max_input=${inputTotals.reduce((m, x) => Math.max(m, x), 0)} ` +
+      `over_${AUTO_COMPACT_WINDOW}=${inputTotals.filter((x) => x > AUTO_COMPACT_WINDOW).length} compact_pre_max=${preMax}`,
   );
   console.log(
     `swaps=${swaps.length} decisions=${decisions.length} (swap ${decisions.filter((d) => d.action === "swap").length}, hold ${decisions.filter((d) => d.action === "hold").length}) ` +
       `haiku_calls=${haiku.length} ${haiku.reduce((s, h) => s + h.in, 0)} in / ${haiku.reduce((s, h) => s + h.out, 0)} out`,
   );
+  if (summaries.length > 0) {
+    const policy = decisions[0]?.policy ?? variant.replace(/^history-/, "");
+    const swapAt = SWAP_AT[policy];
+    const late =
+      swapAt === undefined
+        ? `n/a (${policy}: no fixed swap point)`
+        : `${lateSummaries(summaries, counts, swapAt)} of ${summaries.length} (swap point ${swapAt})`;
+    console.log(
+      `summaries=${summaries.length} used=${summaries.filter((s) => s.used).length} never_ready=${summaries.filter((s) => !s.ready).length} ` +
+        `ready_after_the_request_that_needed_them=${late}`,
+    );
+  }
+  // The launch log sits two folders above the claudish log (<launch>/debug/x.log).
+  const launchLog = logPath.split("/").slice(0, -2).concat("launch.log").join("/");
+  const launchText = (await Bun.file(launchLog).exists()) ? await Bun.file(launchLog).text() : "";
+  const ccVersion = launchText.match(/launch: claude version (.*)/)?.[1] ?? "not recorded";
+  const hookLine = launchText.match(/agent-env: hook .*/)?.[0] ?? "no hook line";
+  console.log(`claude_code=${ccVersion} | ${hookLine}`);
+  // long-session-xl's bun shim writes to the launch log of the session's own
+  // launch, which can be another folder than the one holding the claudish log
+  // (the first launch, `claude plugin`, makes ./logs and the session reuses it).
+  // Every launch of one trial records the same sandbox cwd, so all launch logs
+  // with this cwd are read.
+  const cwd = launchCwd(launchText);
+  if (cwd) {
+    const outDir = logPath.split("/").slice(0, -3).join("/");
+    let trialLaunches = "";
+    for (const f of new Bun.Glob("*launch-*/launch.log").scanSync({ cwd: outDir, absolute: true })) {
+      const t = await Bun.file(f).text();
+      const other = launchCwd(t);
+      if (other !== undefined && sameLaunchCwd(cwd, other)) trialLaunches += t;
+    }
+    const active = /^bun-shim: active/m.test(trialLaunches);
+    const refused = (trialLaunches.match(/^bun-shim: refused bare bun test/gm) ?? []).length;
+    if (active || refused || r.scenario_id === "long-session-xl") {
+      console.log(`bun_shim=${active ? "active" : "NOT ACTIVE"} bare bun test refused: ${refused}`);
+    }
+  }
   if (Object.keys(hops).length || fallbacks.length) {
     const oa = reqs.filter((q) => q.host !== undefined && q.input !== undefined);
     const cached = oa.filter((q) => q.cachedReported).length;
@@ -261,8 +407,16 @@ for (const arg of process.argv.slice(2)) {
         `uncached_input=${oa.reduce((s, q) => s + (q.input ?? 0), 0)} output=${oa.reduce((s, q) => s + (q.output ?? 0), 0)}`,
     );
     for (const f of fallbacks) console.log(`  FALLBACK ${f}`);
+    const spanS = (Date.parse(rate.lastTs) - Date.parse(rate.firstTs)) / 1000;
+    const waitS = rate.waitMs / 1000;
+    console.log(
+      `rate_limits code_1302=${rate.code1302} claudish_retries=${rate.retries} (stated waits ${rate.retryWaitS.toFixed(1)} s) ` +
+        `429_to_claude_code=${rate.reachedClient} 429_to_next_hop=${rate.toNextHop} ` +
+        `429_time=${waitS.toFixed(1)} s of log span ${spanS.toFixed(0)} s (${spanS > 0 ? ((100 * waitS) / spanS).toFixed(1) : "0"}%)` +
+        (spanS > 0 && waitS > spanS / 2 ? " RATE-LIMIT-DOMINATED" : ""),
+    );
   }
-  arms.push({ arm, pass: r.status === "pass", cost: madbench, recomputed: mainCost + haikuTotal });
+  variants.push({ variant, pass: r.status === "pass", cost: madbench, recomputed: mainCost + haikuTotal });
 
   let prevSwapTs = "";
   swaps.forEach((sw, i) => {
@@ -284,8 +438,11 @@ for (const arg of process.argv.slice(2)) {
       console.log("    no priced usage on the swap request");
       return;
     }
-    const read = p.read / M;
-    const write = (p.input * ((swReq.w1h ?? 0) > 0 ? p.w1h : p.w5m)) / M;
+    // The band the swap request itself was priced at (Haiku's upper band
+    // above 100K); a model with one price has one band.
+    const { band } = bandOf(p, usageOf(swReq)!);
+    const read = band.read / M;
+    const write = (band.input * ((swReq.w1h ?? 0) > 0 ? p.w1h : p.w5m)) / M;
     const L = num(decision?.kv.L);
     const S = num(decision?.kv.S);
     const R = num(decision?.kv.R);
@@ -306,13 +463,13 @@ for (const arg of process.argv.slice(2)) {
   });
 }
 
-const byArm = new Map<string, ArmRow[]>();
-for (const a of arms) byArm.set(a.arm, [...(byArm.get(a.arm) ?? []), a]);
-if (byArm.size) console.log("== arms");
-for (const [arm, rows] of byArm) {
+const byVariant = new Map<string, VariantRow[]>();
+for (const a of variants) byVariant.set(a.variant, [...(byVariant.get(a.variant) ?? []), a]);
+if (byVariant.size) console.log("== variants");
+for (const [variant, rows] of byVariant) {
   const stat = (k: "cost" | "recomputed") => {
     const v = rows.map((x) => x[k]);
     return `${fmt(v.reduce((s, x) => s + x, 0) / v.length)} [${fmt(Math.min(...v))} .. ${fmt(Math.max(...v))}]`;
   };
-  console.log(`${arm}: n=${rows.length} pass=${rows.filter((x) => x.pass).length}/${rows.length} madbench=${stat("cost")} recomputed=${stat("recomputed")}`);
+  console.log(`${variant}: n=${rows.length} pass=${rows.filter((x) => x.pass).length}/${rows.length} madbench=${stat("cost")} recomputed=${stat("recomputed")}`);
 }

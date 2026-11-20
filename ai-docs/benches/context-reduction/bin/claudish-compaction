@@ -16,10 +16,9 @@
 #   - ./logs, where --debug-claudish writes claudish_<timestamp>.log, becomes a link
 #     into ~/.bench-out, so the debug log outlives an errored trial.
 #
-# A watcher then waits for the Claude Code process that claudish starts and
-# reads its environment with `ps eww`. It writes one label, never a value:
-# AGENT_ENV_KEY_UNSET, AGENT_ENV_KEY_PLACEHOLDER (claudish's own placeholder)
-# or AGENT_ENV_KEY_SET (any other value).
+# Claude Code's own environment is recorded by the SessionStart hook of the
+# cc_settings folder (config/*/hooks/agent-env.sh), into this launch log: the
+# sandbox refuses `ps`, so this script cannot read another process.
 set -u
 dir="$HOME/.bench-compaction"
 # The variables a case's preparation wrote (the long-session case: the
@@ -56,43 +55,59 @@ else
   build="$dir/build/index.js"
   set -- bun "$build" --quiet -y --compaction --debug-claudish "$@"
 fi
-note "launch: build $build sha256 $(shasum -a 256 "$build" | cut -d' ' -f1)"
+sha=$(shasum -a 256 "$build" | cut -d' ' -f1)
+note "launch: build $build sha256 $sha"
 note "launch: cwd $(pwd)"
+note "launch: claude version $(claude --version 2>&1 | head -1)"
 if [ ! -e logs ]; then
   ln -s "$live/debug" logs
   note "launch: ./logs -> $live/debug"
 fi
 
 placeholder="sk-ant-api03-placeholder-not-used-proxy-handles-auth-with-openrouter-key-xxxxxxxxxxxxxxxxxxxxx"
-watch_agent_env() {
-  i=0
-  while [ "$i" -lt 600 ]; do
-    pid=$(pgrep -f -- "--add-dir $HOME/.claudish/compaction/" | head -1)
-    if [ -n "$pid" ]; then
-      # A sandbox can refuse ps ("Operation not permitted"). Then nothing was
-      # read, and the label says so instead of reading as "unset".
-      if ! envline=$(ps eww -o command= -p "$pid" 2>&1); then
-        note "agent-env: pid $pid AGENT_ENV_UNREADABLE: $(echo "$envline" | head -1 | cut -c1-120)"
-        return
-      fi
-      found=$(echo "$envline" | grep -o ' ANTHROPIC_API_KEY=[^ ]*' | head -1)
-      if [ -z "$found" ]; then
-        label=AGENT_ENV_KEY_UNSET
-      elif [ "$found" = " ANTHROPIC_API_KEY=$placeholder" ]; then
-        label=AGENT_ENV_KEY_PLACEHOLDER
-      else
-        label=AGENT_ENV_KEY_SET
-      fi
-      config=$(echo "$envline" | grep -c ' CLAUDISH_CONFIG=')
-      note "agent-env: pid $pid $label CLAUDISH_CONFIG_present=$config"
-      return
-    fi
-    i=$((i + 1))
-    sleep 1
-  done
-  note "agent-env: AGENT_ENV_UNKNOWN: no Claude Code process with the compaction --add-dir in 600 s"
-}
-watch_agent_env &
+
+# How claudish starts Claude Code, without ps (the sandbox refuses it):
+# claudish runs CLAUDE_PATH first, so CLAUDE_PATH names a shim that writes
+# the flag names of its argv, every --add-dir value and every --allowedTools
+# value to this launch log, then execs the real claude with the same
+# arguments. claudish passes credentials through the environment, never the
+# argv.
+#
+# The shim is written with printf, never a here-document: sh writes a
+# here-document to a temporary file and reads it back, and madbench's sandbox
+# denies reads outside its allow-list, so `cat <<EOF` there writes an EMPTY
+# shim, and claudish's spawn of it fails with ENOEXEC. It lives in the launch
+# folder (the ~/.bench-out mount), and it is used only if it was written: a
+# shim that failed costs the argv record, never the trial.
+real=$(command -v claude)
+if [ -n "$real" ]; then
+  shim="$live/argv-shim/claude"
+  mkdir -p "$live/argv-shim"
+  {
+    printf '%s\n' '#!/bin/sh' '{' \
+      '  flags=""; adddir=""; allowed=""; prev=""' \
+      '  for a in "$@"; do' \
+      '    case "$prev" in' \
+      '      --add-dir) adddir="$adddir [$a]" ;;' \
+      '      --allowedTools|--allowed-tools) allowed="$allowed [$a]" ;;' \
+      '    esac' \
+      '    case "$a" in --*) flags="$flags ${a%%=*}" ;; esac' \
+      '    prev=$a' \
+      '  done' \
+      '  echo "agent-argv: flags:$flags"' \
+      '  echo "agent-argv: add-dir:${adddir:- none}"' \
+      '  echo "agent-argv: allowedTools:${allowed:- none}"'
+    printf "} >>'%s' 2>/dev/null\n" "$live/launch.log"
+    printf "exec '%s' \"\$@\"\n" "$real"
+  } >"$shim" 2>/dev/null
+  if [ "$(head -c 2 "$shim" 2>/dev/null)" = "#!" ] && sh -n "$shim" 2>/dev/null; then
+    chmod +x "$shim"
+    export CLAUDE_PATH="$shim"
+    note "launch: CLAUDE_PATH shim records the agent's argv; real claude $real"
+  else
+    note "launch: argv shim not written ($({ wc -c <"$shim"; } 2>/dev/null || echo no) bytes); CLAUDE_PATH left unset, argv not recorded"
+  fi
+fi
 
 # On a foreign model claudish gives Claude Code its placeholder as
 # ANTHROPIC_API_KEY, and Claude Code asks "Detected a custom API key ... Do you
@@ -102,14 +117,37 @@ watch_agent_env &
 # customApiKeyResponses.approved of ~/.claude.json. The value is claudish's
 # public placeholder, not a credential. A native Claude route sets no key and
 # never reads the entry.
+#
+# claudish also passes its compaction store, a folder per session under
+# ~/.claudish/compaction, to Claude Code with --add-dir. Claude Code 2.1.326
+# asks "Adding a new directory: ... Is this a directory you created or one you
+# trust?" for it, unless a folder above it has a trust record:
+# projects["<real path>"].hasTrustDialogAccepted in ~/.claude.json, keyed by
+# the resolved path. Record that trust for the store's real path only (in the
+# run's out folder), never for the workspace or the home folder. This is a
+# bench workaround: a real --compaction user on Claude Code 2.1.326 meets the
+# same dialog, which is claudish's to fix.
+#
+# Only the build that passes --add-dir gets this record: 0aed68ec (case b).
+# A later build replaces --add-dir with an --allowedTools Read rule, and an
+# eval on it must show that it starts with no record from here.
+store=""
+if [ "$sha" = "dd5a05abc3734bbf8e287c08cce364f83d464b6d313c36051b4fad01b9676aee" ]; then
+  store=$(cd "$HOME/.claudish/compaction" 2>/dev/null && pwd -P)
+fi
 bun -e '
-const path = process.argv[1], tail = process.argv[2].slice(-20);
+const path = process.argv[1], tail = process.argv[2].slice(-20), store = process.argv[3];
 let c = {};
 try { c = JSON.parse(await Bun.file(path).text()); } catch {}
 const r = (c.customApiKeyResponses ??= {});
 r.approved = [...new Set([...(r.approved ?? []), tail])];
 r.rejected = (r.rejected ?? []).filter((x) => x !== tail);
+if (store) {
+  c.projects ??= {};
+  c.projects[store] = { ...(c.projects[store] ?? {}), hasTrustDialogAccepted: true };
+}
 await Bun.write(path, JSON.stringify(c, null, 2));
-' "$HOME/.claude.json" "$placeholder" && note "launch: placeholder key approved in ~/.claude.json"
+' "$HOME/.claude.json" "$placeholder" "$store" && note "launch: placeholder key approved in ~/.claude.json" &&
+  note "launch: compaction store trusted in ~/.claude.json: ${store:-none (not the 0aed68ec build, or no ~/.claudish/compaction)}"
 
 exec "$@"

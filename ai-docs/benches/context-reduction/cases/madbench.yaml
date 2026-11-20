@@ -1,7 +1,7 @@
 description: "compaction cases: claudish with and without --compaction, on one build, across task shapes"
 
 # One Scenario per case. ./compaction-cases.experiment.yaml holds the two
-# arms. Run each arm as its own madbench call with --variant and --scenario,
+# variants. Run each variant as its own madbench call with --variant and --scenario,
 # and pass the case's preparation with --param case_prep=<name>:
 #
 #   madbench cases/compaction-cases.experiment.yaml --variant cases-baseline \
@@ -13,24 +13,24 @@ description: "compaction cases: claudish with and without --compaction, on one b
 #     --param claudish_build=/absolute/path/to/a/compiled/claudish \
 #     --param claudish_config=/absolute/path/to/a/0600/config
 #
-# Only the compaction call names a claudish_config, so the baseline arm never
+# Only the compaction call names a claudish_config, so the baseline variant never
 # gets a file with a key; its start.sh refuses one.
 
 params:
   model: claude-sonnet-5-5
-  # The launcher in ../bin and the folder in ../tools of the arm.
+  # The launcher in ../bin and the folder in ../tools of the variant.
   binary: ../bin/claudish-build-plain
   tool: cases-baseline
   # A script in ../tools/cases-prep run in the workspace before the agent.
   case_prep: none
-  # The claudish build both arms run (a compiled executable) and the config
-  # of the compaction arm. The defaults refuse to start.
+  # The claudish build both variants run (a compiled executable) and the config
+  # of the compaction variant. The defaults refuse to start.
   claudish_build: ../config/no-claudish-build
   claudish_config: ../config/no-claudish-config.json
   # Claude Code's settings for the agent. ../config/inline-max raises
   # bashOutputMaxChars from its default 30000 to its maximum 128000, so a
   # Bash output up to 128,000 characters reaches the model inline instead of
-  # as a short preview and a file path. Pass it to both arms of a case.
+  # as a short preview and a file path. Pass it to both variants of a case.
   cc_settings: ../config/base
 
 harness:
@@ -51,15 +51,21 @@ defaults:
     # by default: Claude Code's own default is 2 minutes, which kills the
     # adapters and handlers tests (95 s on an idle host) under load, so their
     # full output never reaches the model.
+    # ~/.local/bin and ~/.local/share/claude are not shared: shared read-write
+    # (the only live share at level home), a self-update inside the sandbox
+    # rewrote the user's real ~/.local/bin/claude to the sandbox's own path,
+    # and every Claude Code on the host failed once the sandbox was removed.
+    # The runner puts the pinned claude first on PATH; context-gateway (E2-E4)
+    # is the one file copied in. DISABLE_AUTOUPDATER stops the self-update.
     env:
+      DISABLE_AUTOUPDATER: "1"
       CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1"
       BASH_DEFAULT_TIMEOUT_MS: "600000"
       BASH_MAX_TIMEOUT_MS: "600000"
     share:
       paths:
         - { from: ~/.bun, to: ~/.bun, access: rw }
-        - { from: ~/.local/bin, to: ~/.local/bin, access: rw }
-        - { from: ~/.local/share/claude, to: ~/.local/share/claude, access: rw }
+        - { from: ~/.local/bin/context-gateway, to: ~/.local/bin/context-gateway, access: copy }
         - { from: ../tools, to: ~/.bench-tools, access: copy }
         - { from: ../out, to: ~/.bench-out, access: rw }
         - { from: "{{claudish_build}}", to: ~/.bench-compaction/build, access: copy }
@@ -170,6 +176,265 @@ scenarios:
         cmd: sh "$HOME/.bench-tools/{{tool}}/evidence.sh"; ls "$HOME"/.claude/projects/*/*.jsonl >/dev/null 2>&1
         timeout: "60s"
 
+  # Case d with path-named test runs, for E3 (the model axis). Everything is
+  # as in long-session except items 3 and 4 of the task, which name their
+  # test runs by path with long-session-xl's wording: a bare `bun test` runs
+  # all 659 test files of packages/cli, about 2.5 h in the sandbox.
+  # long-session stays as E1 ran it. Run through
+  # ./history-policy-scoped.experiment.yaml, whose variants set case_prep
+  # long-session-xl (a 200K window and the bun shim that refuses a bare
+  # `bun test`); do not pass --param case_prep.
+  - name: long-session-scoped
+    description: "the --context-window task with path-named test runs, then three turns of full test output and long reads, in a 200K window"
+    repo:
+      url: ../../../..
+      ref: fe1a93ec9d6bc63538bbb1401663eb30a51e2e33
+    timeout: 150m
+    prompt: |
+      I want a new claudish flag: `--context-window <size>`. It sets the context window for a local model (LM Studio or Ollama). Today the LM Studio window is fixed at 64,000 tokens and I cannot change it from the command line.
+
+      Work in this order.
+
+      1. Explore first, with subagents. Start at least two subagents with the Agent tool, at the same time, and wait for their reports before you edit anything. One maps how `packages/cli/src/cli.ts` parses flags (`parseArgs`, the passthrough walker that decides which arguments go to Claude Code) and how a flag value reaches the proxy. The other maps how the local providers decide their context window: the LM Studio instance code (`ensureLMStudioInstance`, the machine and device selection under `packages/cli/src/providers/`), the local transport under `packages/cli/src/providers/transport/`, the Ollama path, and the picker rows built by `expandModelsToMachines`.
+
+      2. Build the feature in `packages/cli`:
+         - `--context-window <size>` accepts a plain number or a number with a `k` or `m` suffix, in either case, with an optional decimal: `128000`, `128k`, `64K`, `1m`, `1.5m`. It refuses an empty value, `abc`, `0`, `-5`, `12x` and `k`.
+         - `parseArgs` sets `config.contextWindow` to the number of tokens. With no flag it stays undefined. A bad value prints an error that names `--context-window` and exits with code 1.
+         - A new module `packages/cli/src/providers/context-window-limit.ts` exports `parseContextWindow(text)`, which returns the number of tokens or `undefined` for a bad value, and `contextWindowLimit()`, which reads the environment variable `CLAUDISH_CONTEXT_WINDOW`.
+         - claudish writes the flag's value to `CLAUDISH_CONTEXT_WINDOW` before the proxy starts, so every local provider path reads one value.
+         - The value is a limit, not a demand: the window in use is the lesser of the limit and what the model has loaded. It applies to local providers only (lmstudio, ollama).
+         - The LM Studio default rises from 64,000 to 128,000 tokens.
+         - Picker rows from `expandModelsToMachines` carry `maxContextWindow`: the model's maximum, or, for a copy that already runs on that machine, the size that copy was loaded with.
+         - When `ensureLMStudioInstance` refuses because a running instance has a smaller window, the message names the flag with the running size, for example `--context-window 8192`.
+         - A limit above the model's maximum loads the maximum.
+         - The passthrough walker treats `--context-window 128k` as claudish's own flag with one value, and does not pass it to Claude Code.
+         - The flag appears in the `--help` text.
+
+      3. Add tests for what you built, beside the code they cover, and run them from `packages/cli` with `bun test` followed by the path of each test file you added or changed. Run `bun run typecheck` there too. Fix what fails.
+
+      4. Get the work reviewed. Start one more subagent with the Agent tool and have it review every file you changed against the list in item 2, point by point, and look for a case the tests miss. Wait for its report. Fix each real finding. Then, from `packages/cli`, run `bun test` on the same test files by path, and `bun run typecheck`, once more.
+
+      Do not change `bun.lock` or any `package.json`. Do not add dependencies. Do not stop to ask me anything: I am away until you finish. End with the test and typecheck results and the list of files you changed.
+    follow_ups:
+      - "Run `bun test src/adapters src/handlers` from `packages/cli` and read its complete output: do not pipe it through tail, head or grep. Then run `bun run typecheck` and `bun run build` from `packages/cli`, also with complete output. Fix anything that fails, and give me the totals."
+      - "Read `packages/cli/src/cli.ts` and `packages/cli/src/claude-runner.ts` in full, every line, without subagents. Then write `packages/cli/CONTEXT-WINDOW.md`: how the `--context-window` value travels from the command line to an LM Studio or an Ollama request, with each function name in order and the file it is in."
+      - "In two sentences: what were the two exploration subagents in the first turn asked to map? Then run `bun test src/adapters src/handlers` and `bun run typecheck` from `packages/cli` one last time, with complete output, and give me the totals."
+    checks:
+      # The grade: the 114 hidden tests of ../madbench.yaml, after the last turn.
+      - type: custom:exec
+        metric: Graded
+        command: ["bun", "../checks/grade-check.ts"]
+        timeout: "600s"
+      - type: file-changes
+        metric: StayedInBounds
+        must:
+          create: packages/cli/src/providers/context-window-limit.ts
+          update: packages/cli/src/cli.ts
+        must-not:
+          touch: [bun.lock, package.json, packages/cli/package.json]
+        ignore: [logs]
+      # Which compaction came first: Claude Code's or claudish's.
+      - type: exec
+        metric: CompactionOrder
+        readout: true
+        in_sandbox: true
+        cmd: sh "$HOME/.bench-tools/cases-readout/compaction-order.sh"; ls "$HOME"/.claude/projects/*/*.jsonl >/dev/null 2>&1
+        timeout: "60s"
+      - type: exec
+        metric: VariantCheck
+        readout: true
+        in_sandbox: true
+        cmd: sh "$HOME/.bench-tools/{{tool}}/variant-check.sh"
+        timeout: "60s"
+      - type: exec
+        metric: ToolEvidence
+        readout: true
+        in_sandbox: true
+        cmd: sh "$HOME/.bench-tools/{{tool}}/evidence.sh"; ls "$HOME"/.claude/projects/*/*.jsonl >/dev/null 2>&1
+        timeout: "60s"
+
+  # Case d without the forced whole-file reads. Everything is as in
+  # long-session except two things. The second follow-up asks for the same
+  # document but leaves to the agent what to read, instead of "Read cli.ts and
+  # claude-runner.ts in full, every line". And items 3 and 4 of the task name
+  # their test runs by path, as long-session-xl does: a bare `bun test` runs
+  # all 659 test files of packages/cli, about 2.5 h in the sandbox. The first
+  # and third follow-ups still FORCE the complete test, typecheck and build
+  # output. Run through ./history-policy-natural.experiment.yaml, whose
+  # variants set case_prep long-session-xl (a 200K window and the bun shim
+  # that refuses a bare `bun test`); do not pass --param case_prep.
+  - name: long-session-natural
+    description: "the --context-window task, then three turns of full test output and a self-directed trace, in a 200K window"
+    repo:
+      url: ../../../..
+      ref: fe1a93ec9d6bc63538bbb1401663eb30a51e2e33
+    timeout: 150m
+    prompt: |
+      I want a new claudish flag: `--context-window <size>`. It sets the context window for a local model (LM Studio or Ollama). Today the LM Studio window is fixed at 64,000 tokens and I cannot change it from the command line.
+
+      Work in this order.
+
+      1. Explore first, with subagents. Start at least two subagents with the Agent tool, at the same time, and wait for their reports before you edit anything. One maps how `packages/cli/src/cli.ts` parses flags (`parseArgs`, the passthrough walker that decides which arguments go to Claude Code) and how a flag value reaches the proxy. The other maps how the local providers decide their context window: the LM Studio instance code (`ensureLMStudioInstance`, the machine and device selection under `packages/cli/src/providers/`), the local transport under `packages/cli/src/providers/transport/`, the Ollama path, and the picker rows built by `expandModelsToMachines`.
+
+      2. Build the feature in `packages/cli`:
+         - `--context-window <size>` accepts a plain number or a number with a `k` or `m` suffix, in either case, with an optional decimal: `128000`, `128k`, `64K`, `1m`, `1.5m`. It refuses an empty value, `abc`, `0`, `-5`, `12x` and `k`.
+         - `parseArgs` sets `config.contextWindow` to the number of tokens. With no flag it stays undefined. A bad value prints an error that names `--context-window` and exits with code 1.
+         - A new module `packages/cli/src/providers/context-window-limit.ts` exports `parseContextWindow(text)`, which returns the number of tokens or `undefined` for a bad value, and `contextWindowLimit()`, which reads the environment variable `CLAUDISH_CONTEXT_WINDOW`.
+         - claudish writes the flag's value to `CLAUDISH_CONTEXT_WINDOW` before the proxy starts, so every local provider path reads one value.
+         - The value is a limit, not a demand: the window in use is the lesser of the limit and what the model has loaded. It applies to local providers only (lmstudio, ollama).
+         - The LM Studio default rises from 64,000 to 128,000 tokens.
+         - Picker rows from `expandModelsToMachines` carry `maxContextWindow`: the model's maximum, or, for a copy that already runs on that machine, the size that copy was loaded with.
+         - When `ensureLMStudioInstance` refuses because a running instance has a smaller window, the message names the flag with the running size, for example `--context-window 8192`.
+         - A limit above the model's maximum loads the maximum.
+         - The passthrough walker treats `--context-window 128k` as claudish's own flag with one value, and does not pass it to Claude Code.
+         - The flag appears in the `--help` text.
+
+      3. Add tests for what you built, beside the code they cover, and run them from `packages/cli` with `bun test` followed by the path of each test file you added or changed. Run `bun run typecheck` there too. Fix what fails.
+
+      4. Get the work reviewed. Start one more subagent with the Agent tool and have it review every file you changed against the list in item 2, point by point, and look for a case the tests miss. Wait for its report. Fix each real finding. Then, from `packages/cli`, run `bun test` on the same test files by path, and `bun run typecheck`, once more.
+
+      Do not change `bun.lock` or any `package.json`. Do not add dependencies. Do not stop to ask me anything: I am away until you finish. End with the test and typecheck results and the list of files you changed.
+    follow_ups:
+      - "Run `bun test src/adapters src/handlers` from `packages/cli` and read its complete output: do not pipe it through tail, head or grep. Then run `bun run typecheck` and `bun run build` from `packages/cli`, also with complete output. Fix anything that fails, and give me the totals."
+      - "Write `packages/cli/CONTEXT-WINDOW.md`: how the `--context-window` value travels from the command line to an LM Studio or an Ollama request, with each function name in order and the file it is in. Trace it yourself, without subagents, and read whatever you need to get it right."
+      - "In two sentences: what were the two exploration subagents in the first turn asked to map? Then run `bun test src/adapters src/handlers` and `bun run typecheck` from `packages/cli` one last time, with complete output, and give me the totals."
+    checks:
+      # The same checks as long-session.
+      - type: custom:exec
+        metric: Graded
+        command: ["bun", "../checks/grade-check.ts"]
+        timeout: "600s"
+      - type: file-changes
+        metric: StayedInBounds
+        must:
+          create: packages/cli/src/providers/context-window-limit.ts
+          update: packages/cli/src/cli.ts
+        must-not:
+          touch: [bun.lock, package.json, packages/cli/package.json]
+        ignore: [logs]
+      - type: exec
+        metric: CompactionOrder
+        readout: true
+        in_sandbox: true
+        cmd: sh "$HOME/.bench-tools/cases-readout/compaction-order.sh"; ls "$HOME"/.claude/projects/*/*.jsonl >/dev/null 2>&1
+        timeout: "60s"
+      - type: exec
+        metric: VariantCheck
+        readout: true
+        in_sandbox: true
+        cmd: sh "$HOME/.bench-tools/{{tool}}/variant-check.sh"
+        timeout: "60s"
+      - type: exec
+        metric: ToolEvidence
+        readout: true
+        in_sandbox: true
+        cmd: sh "$HOME/.bench-tools/{{tool}}/evidence.sh"; ls "$HOME"/.claude/projects/*/*.jsonl >/dev/null 2>&1
+        timeout: "60s"
+
+  # Case d at two to three times the length, so a swap is followed by many
+  # requests. Turns 1 to 4 are long-session's, except that every test run
+  # names its test files by path: a bare `bun test` runs all 659 test files of
+  # packages/cli, which in the sandbox takes about 2.5 h (Haiku waited for it
+  # in the background; Sonnet took the Bash tool's 10-minute cut-off), so turn
+  # length depended on how a model treats that wait, not on context. Turns 5
+  # and 6 add a second feature on the same code, the config file's
+  # `contextWindow`, graded by its own hidden tests (../hidden-tests-xl, 13
+  # tests). Turns 7 to 12 add long outputs, long reads and a recall question.
+  # The grade is all 127 hidden tests after the last turn
+  # (../checks/grade-xl-check.ts). Run with --param case_prep=long-session (a
+  # 200K window) and --param model=.
+  - name: long-session-xl
+    description: "case d's four turns with path-scoped test runs, a second feature on the config file, then long outputs, long reads and recall, in a 200K window"
+    repo:
+      url: ../../../..
+      ref: fe1a93ec9d6bc63538bbb1401663eb30a51e2e33
+    # Haiku 5.5's turns run slower than Sonnet 5.5's (its turn 1 took 55 min).
+    timeout: 300m
+    prompt: |
+      I want a new claudish flag: `--context-window <size>`. It sets the context window for a local model (LM Studio or Ollama). Today the LM Studio window is fixed at 64,000 tokens and I cannot change it from the command line.
+
+      Work in this order.
+
+      1. Explore first, with subagents. Start at least two subagents with the Agent tool, at the same time, and wait for their reports before you edit anything. One maps how `packages/cli/src/cli.ts` parses flags (`parseArgs`, the passthrough walker that decides which arguments go to Claude Code) and how a flag value reaches the proxy. The other maps how the local providers decide their context window: the LM Studio instance code (`ensureLMStudioInstance`, the machine and device selection under `packages/cli/src/providers/`), the local transport under `packages/cli/src/providers/transport/`, the Ollama path, and the picker rows built by `expandModelsToMachines`.
+
+      2. Build the feature in `packages/cli`:
+         - `--context-window <size>` accepts a plain number or a number with a `k` or `m` suffix, in either case, with an optional decimal: `128000`, `128k`, `64K`, `1m`, `1.5m`. It refuses an empty value, `abc`, `0`, `-5`, `12x` and `k`.
+         - `parseArgs` sets `config.contextWindow` to the number of tokens. With no flag it stays undefined. A bad value prints an error that names `--context-window` and exits with code 1.
+         - A new module `packages/cli/src/providers/context-window-limit.ts` exports `parseContextWindow(text)`, which returns the number of tokens or `undefined` for a bad value, and `contextWindowLimit()`, which reads the environment variable `CLAUDISH_CONTEXT_WINDOW`.
+         - claudish writes the flag's value to `CLAUDISH_CONTEXT_WINDOW` before the proxy starts, so every local provider path reads one value.
+         - The value is a limit, not a demand: the window in use is the lesser of the limit and what the model has loaded. It applies to local providers only (lmstudio, ollama).
+         - The LM Studio default rises from 64,000 to 128,000 tokens.
+         - Picker rows from `expandModelsToMachines` carry `maxContextWindow`: the model's maximum, or, for a copy that already runs on that machine, the size that copy was loaded with.
+         - When `ensureLMStudioInstance` refuses because a running instance has a smaller window, the message names the flag with the running size, for example `--context-window 8192`.
+         - A limit above the model's maximum loads the maximum.
+         - The passthrough walker treats `--context-window 128k` as claudish's own flag with one value, and does not pass it to Claude Code.
+         - The flag appears in the `--help` text.
+
+      3. Add tests for what you built, beside the code they cover, and run them from `packages/cli` with `bun test` followed by the path of each test file you added or changed. Run `bun run typecheck` there too. Fix what fails.
+
+      4. Get the work reviewed. Start one more subagent with the Agent tool and have it review every file you changed against the list in item 2, point by point, and look for a case the tests miss. Wait for its report. Fix each real finding. Then, from `packages/cli`, run `bun test` on the same test files by path, and `bun run typecheck`, once more.
+
+      Do not change `bun.lock` or any `package.json`. Do not add dependencies. Do not stop to ask me anything: I am away until you finish. End with the test and typecheck results and the list of files you changed.
+    follow_ups:
+      - "Run `bun test src/adapters src/handlers` from `packages/cli` and read its complete output: do not pipe it through tail, head or grep. Then run `bun run typecheck` and `bun run build` from `packages/cli`, also with complete output. Fix anything that fails, and give me the totals."
+      - "Read `packages/cli/src/cli.ts` and `packages/cli/src/claude-runner.ts` in full, every line, without subagents. Then write `packages/cli/CONTEXT-WINDOW.md`: how the `--context-window` value travels from the command line to an LM Studio or an Ollama request, with each function name in order and the file it is in."
+      - "In two sentences: what were the two exploration subagents in the first turn asked to map? Then run `bun test src/adapters src/handlers` and `bun run typecheck` from `packages/cli` one last time, with complete output, and give me the totals."
+      - |
+        A second feature, on top of the first: a default window in claudish's config file, so a user does not have to type the flag every time.
+
+        1. Start one subagent with the Agent tool to map how `loadConfig` and `saveConfig` in `packages/cli/src/profile-config.ts` handle the config's fields, and wait for its report before you edit anything.
+
+        2. Build it in `packages/cli`:
+           - `ClaudishProfileConfig` gets a field `contextWindow`: a size in the flag's syntax, written as text (`96k`, `1.5m`) or as a number (`64000`).
+           - `loadConfig()` keeps the field, so it survives a load followed by `saveConfig`.
+           - `contextWindowLimit()` returns the size in `CLAUDISH_CONTEXT_WINDOW` when that is a valid size, else the size in the config file's `contextWindow` when that is a valid size, else `undefined`. A bad value in either place is skipped, never an error. It reads the config on every call, so an edit to the file takes effect at once.
+           - The flag still wins over the config, because claudish writes it to `CLAUDISH_CONTEXT_WINDOW`.
+
+        3. Add tests beside the code they cover. From `packages/cli`, run `bun test` followed by the path of each test file you added or changed, and `bun run typecheck`. Fix what fails.
+
+        Do not change `bun.lock` or any `package.json`. Do not stop to ask me anything.
+      - "Get the config work reviewed. Start one subagent with the Agent tool and have it review every file you changed for the config's `contextWindow` against the four points of item 2 in my last message, point by point, and look for a case the tests miss. Wait for its report. Fix each real finding. Then, from `packages/cli`, run `bun test` followed by the path of each test file you added or changed for the config's `contextWindow`, and `bun run typecheck`."
+      - "Run `bun test src/adapters src/handlers` from `packages/cli` and read its complete output: do not pipe it through tail, head or grep. Then run `bun run typecheck` and `bun run build` from `packages/cli`, also with complete output. Fix anything that fails, and give me the totals."
+      - "Read `packages/cli/src/profile-config.ts` and `packages/cli/src/providers/context-window-limit.ts` in full, every line, without subagents. Then add a section to `packages/cli/CONTEXT-WINDOW.md`: where the config's `contextWindow` is read, and which size wins when the flag, `CLAUDISH_CONTEXT_WINDOW` and the config file each name one."
+      - "Run `bun test` on every test file you created or changed in this session, in one command, from `packages/cli`, with complete output. Then run `bun run typecheck`. Fix anything that fails, and give me the totals."
+      - "Read `packages/cli/src/index.ts` from its first line to the line that writes `CLAUDISH_CONTEXT_WINDOW`, every line, without subagents. Then tell me in two sentences whether anything in that part reads the window before the flag's value is written, and name the function if it does."
+      - "In three sentences, without reading any file again: what were the two exploration subagents in the first turn asked to map, what did the subagent of the config feature map, and what did the two review subagents find? Then run `bun test src/adapters src/handlers` and `bun run typecheck` from `packages/cli` with complete output, and give me the totals."
+      - "List every file you changed in this session, grouped by the feature it belongs to. Then run `bun test` on the test files of both features in one command and `bun run typecheck`, from `packages/cli`, with complete output, and give me the totals."
+    checks:
+      # The grade: all 127 hidden tests (114 of the flag, 13 of the config
+      # field), after the last turn.
+      - type: custom:exec
+        metric: Graded
+        command: ["bun", "../checks/grade-xl-check.ts"]
+        timeout: "600s"
+      - type: file-changes
+        metric: StayedInBounds
+        must:
+          create: packages/cli/src/providers/context-window-limit.ts
+          update: [packages/cli/src/cli.ts, packages/cli/src/profile-config.ts]
+        must-not:
+          touch: [bun.lock, package.json, packages/cli/package.json]
+        ignore: [logs]
+      # Which compaction came first: Claude Code's or claudish's.
+      - type: exec
+        metric: CompactionOrder
+        readout: true
+        in_sandbox: true
+        cmd: sh "$HOME/.bench-tools/cases-readout/compaction-order.sh"; ls "$HOME"/.claude/projects/*/*.jsonl >/dev/null 2>&1
+        timeout: "60s"
+      - type: exec
+        metric: VariantCheck
+        readout: true
+        in_sandbox: true
+        cmd: sh "$HOME/.bench-tools/{{tool}}/variant-check.sh"
+        timeout: "60s"
+      - type: exec
+        metric: ToolEvidence
+        readout: true
+        in_sandbox: true
+        cmd: sh "$HOME/.bench-tools/{{tool}}/evidence.sh"; ls "$HOME"/.claude/projects/*/*.jsonl >/dev/null 2>&1
+        timeout: "60s"
+
   # Case a: log-heavy debugging. The workspace is the parent of the fix that
   # orders Gemini function responses by their function calls; the grade is
   # that fix's own test file, copied in after the agent stops. The prompt
@@ -181,7 +446,9 @@ scenarios:
     repo:
       url: ../../../..
       ref: 7f8ffe7faabe19fd4984bdeba663cf383cf9c083
-    timeout: 75m
+    # 100m: on glm-5-turbo one baseline trial still worked at 65 min (glm-4.7
+    # needed 30); the limit must not cut a slow trial that is still working.
+    timeout: 100m
     prompt: |
       A bug report from a claudish user, on a Gemini model through the Gemini API:
 
@@ -310,6 +577,118 @@ scenarios:
           create: answers.md
         default: []
         ignore: [logs]
+      - type: exec
+        metric: VariantCheck
+        readout: true
+        in_sandbox: true
+        cmd: sh "$HOME/.bench-tools/{{tool}}/variant-check.sh"
+        timeout: "60s"
+      - type: exec
+        metric: ToolEvidence
+        readout: true
+        in_sandbox: true
+        cmd: sh "$HOME/.bench-tools/{{tool}}/evidence.sh"; ls "$HOME"/.claude/projects/*/*.jsonl >/dev/null 2>&1
+        timeout: "60s"
+
+  # Topic changes in one session, for a compaction that decides on a change
+  # of topic. Five turns on one snapshot, each a task of its own:
+  #   A (prompt)     the Gemini tool-output bug of log-debug    start
+  #   B (follow-up)  the 12 research questions, read in person  TRUE change
+  #   C (follow-up)  the nativeRouteFor refactor                TRUE change
+  #   D (follow-up)  a regression test for A's fix              NOT a change
+  #   E (follow-up)  a doc comment in C's new module            NOT a change
+  # A, B, C and D are graded by the graders of log-debug, research and
+  # refactor, and by checks/regression-check.ts. A asks for no test, so D's
+  # test is new work that only the session's memory of A can direct. B forbids
+  # subagents, so the reading lands in the main context. Run with
+  # --param case_prep=topic-change (a 200K auto-compact window, and the
+  # Ollama address the embed decider reads).
+  - name: topic-change
+    description: "five tasks in one session, two true topic changes and two returns, in a 200K window"
+    repo:
+      url: ../../../..
+      ref: 7f8ffe7faabe19fd4984bdeba663cf383cf9c083
+    timeout: 180m
+    prompt: |
+      A bug report from a claudish user, on a Gemini model through the Gemini API:
+
+      "When the model calls two tools in one turn, for example two Read calls on two different files, it sometimes answers as if each Read returned the other file. There is no error anywhere. It looks like it happens when the second tool finishes first."
+
+      Find the cause in claudish and fix it.
+
+      1. From `packages/cli`, run `bun test src/adapters src/handlers` and `bun run build`, and read their complete output: do not pipe them through tail, head or grep.
+      2. Find the cause and fix it in the source.
+      3. Run `bun test src/adapters src/handlers` and `bun run typecheck` from `packages/cli` again, with complete output, and fix what fails.
+
+      Do not change `bun.lock` or any `package.json`. Do not stop to ask me anything: I am away until you finish. End with the cause, the test results and the list of files you changed.
+    follow_ups:
+      - |
+        New task, unrelated to the bug. I need exact answers to 12 questions about this claudish source tree. Answer from the code in `packages/cli/src`, not from memory. Read the code yourself, without subagents.
+
+        Write the file `answers.md` in the top-level folder: exactly 12 lines, one per question, in the form `N. value`. The value only: no backticks, no explanation.
+
+        Questions:
+
+        1. What is the lowest magmux version claudish accepts for a pane session? (a version string)
+        2. Which function decides whether one environment variable is withheld from a pane child's environment? (a function name)
+        3. claudish remaps terminal upstream errors to HTTP 400. Which file defines the function that recovers the real upstream status? (a path from the top-level folder)
+        4. Which environment variable does claudish set to "1" in pure proxy mode so that Claude Code skips its fast-mode organisation check? (a variable name)
+        5. Which function under `packages/cli/src/pane/` tells whether the current process runs inside a session that a claudish MCP server started? (a function name)
+        6. Under `~/.claudish/`, what is the file name of the key claudish uses to name the files of the dynamic models catalog? (a file name)
+        7. Which environment variable lets a parent process choose where the proxy's token tracker writes its counts, ahead of the port? (a variable name)
+        8. For how many milliseconds is an account's dynamic models catalog list young enough to deny a model? (an integer)
+        9. After how many milliseconds without a stream event does the Responses stream stall guard fire by default? (an integer)
+        10. claudish can collect a complete message from an SSE stream outside the Responses parser. What stall timeout, in milliseconds, does that collector use? (an integer)
+        11. Which file defines the function that decides whether a model spec goes to the native Claude passthrough (a bare Claude name such as `opus`)? (a path from the top-level folder)
+        12. Which environment variable does claudish set to "1" for every child it starts in an MCP pane session, so that a claudish inside knows it is one level deep? (a variable name)
+
+        Do not change any file except `answers.md` in this task.
+      - |
+        New task, unrelated to the two before. Refactor claudish in `packages/cli/src`. Keep the behaviour exactly as it is.
+
+        1. Rename the exported function `nativeRouteFor` (now in `packages/cli/src/providers/native-route.ts`) to `claudeSubscriptionRoute`.
+        2. Move it to a new module, `packages/cli/src/providers/claude-subscription-route.ts`, which exports it. `native-route.ts` must not define it or re-export it any more.
+        3. Update every caller and every test, and every comment that names the old function. When you are done, the name `nativeRouteFor` must not appear anywhere under `packages/cli/src`.
+        4. Run `bun run typecheck` from `packages/cli`, and `bun test` for the test files you changed, and fix what fails.
+
+        Do not change `answers.md`. End with the typecheck and test results and the list of files you changed.
+      - "Back to the bug you fixed in the first task. Add a regression test for that fix in a new file, `packages/cli/src/adapters/gemini-parallel-tool-order.test.ts`: it must fail without your fix and pass with it. Run it with `bun test` from `packages/cli` and give me the result."
+      - "In the module you created in the refactor, add a one-line doc comment above `claudeSubscriptionRoute` that says what it returns. Then run `bun run typecheck` from `packages/cli` once more and give me the result."
+    checks:
+      # A: the 8 known tests of the fix commit.
+      - type: custom:exec
+        metric: Graded
+        command: ["bun", "./checks/log-debug-check.ts"]
+        timeout: "600s"
+      # B: the 12 answers.
+      - type: custom:exec
+        metric: GradedAnswers
+        command: ["bun", "./checks/answers-check.ts"]
+        timeout: "60s"
+      # C: the five parts of the refactor.
+      - type: custom:exec
+        metric: GradedRefactor
+        command: ["bun", "./checks/refactor-check.ts"]
+        timeout: "600s"
+      # D: the regression test fails without the fix and passes with it.
+      - type: custom:exec
+        metric: GradedRegression
+        command: ["bun", "./checks/regression-check.ts"]
+        timeout: "600s"
+      - type: file-changes
+        metric: StayedInBounds
+        must:
+          create: [answers.md, packages/cli/src/providers/claude-subscription-route.ts, packages/cli/src/adapters/gemini-parallel-tool-order.test.ts]
+          update: [packages/cli/src/adapters/gemini-api-format.ts, packages/cli/src/providers/native-route.ts]
+        must-not:
+          touch: [bun.lock, package.json, packages/cli/package.json]
+        ignore: [logs]
+      - type: exec
+        metric: CompactionOrder
+        readout: true
+        in_sandbox: true
+        cmd: sh "$HOME/.bench-tools/cases-readout/compaction-order.sh"; ls "$HOME"/.claude/projects/*/*.jsonl >/dev/null 2>&1
+        timeout: "60s"
       - type: exec
         metric: VariantCheck
         readout: true

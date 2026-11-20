@@ -1,0 +1,102 @@
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { loadConfig, saveConfig, setConfigFileOverride } from "../profile-config.js";
+import { contextWindowLimit } from "./context-window-limit.js";
+
+let dir: string;
+let file: string;
+let savedEnv: string | undefined;
+
+function writeConfig(extra: Record<string, unknown>): void {
+  writeFileSync(file, JSON.stringify({ version: "1.0.0", defaultProfile: "default", profiles: {}, ...extra }));
+}
+
+beforeEach(() => {
+  dir = mkdtempSync(join(tmpdir(), "ctxwin-config-"));
+  file = join(dir, "config.json");
+  setConfigFileOverride(file);
+  savedEnv = process.env.CLAUDISH_CONTEXT_WINDOW;
+  delete process.env.CLAUDISH_CONTEXT_WINDOW;
+});
+
+afterEach(() => {
+  setConfigFileOverride(null);
+  if (savedEnv === undefined) delete process.env.CLAUDISH_CONTEXT_WINDOW;
+  else process.env.CLAUDISH_CONTEXT_WINDOW = savedEnv;
+  rmSync(dir, { recursive: true, force: true });
+});
+
+describe("contextWindow in the config file", () => {
+  test("loadConfig keeps a size written as text", () => {
+    writeConfig({ contextWindow: "96k" });
+    expect(loadConfig().contextWindow).toBe("96k");
+  });
+
+  test("loadConfig keeps a size written as a number", () => {
+    writeConfig({ contextWindow: 64000 });
+    expect(loadConfig().contextWindow).toBe(64000);
+  });
+
+  test("a load and a save keep the field on disk", () => {
+    writeConfig({ contextWindow: "96k" });
+    saveConfig(loadConfig());
+    expect(JSON.parse(readFileSync(file, "utf-8")).contextWindow).toBe("96k");
+  });
+});
+
+describe("contextWindowLimit reads the config file", () => {
+  test("uses the config's size when CLAUDISH_CONTEXT_WINDOW is not set", () => {
+    writeConfig({ contextWindow: "96k" });
+    expect(contextWindowLimit()).toBe(96_000);
+  });
+
+  test("uses a numeric config size", () => {
+    writeConfig({ contextWindow: 64000 });
+    expect(contextWindowLimit()).toBe(64_000);
+  });
+
+  test("CLAUDISH_CONTEXT_WINDOW wins over the config", () => {
+    writeConfig({ contextWindow: "96k" });
+    process.env.CLAUDISH_CONTEXT_WINDOW = "32k";
+    expect(contextWindowLimit()).toBe(32_000);
+  });
+
+  test("a bad CLAUDISH_CONTEXT_WINDOW falls through to the config", () => {
+    writeConfig({ contextWindow: "96k" });
+    process.env.CLAUDISH_CONTEXT_WINDOW = "abc";
+    expect(contextWindowLimit()).toBe(96_000);
+  });
+
+  test("a bad config size is ignored", () => {
+    writeConfig({ contextWindow: "abc" });
+    expect(contextWindowLimit()).toBeUndefined();
+  });
+
+  test("a zero config size is ignored", () => {
+    writeConfig({ contextWindow: 0 });
+    expect(contextWindowLimit()).toBeUndefined();
+  });
+
+  test("no config field and no variable gives undefined", () => {
+    writeConfig({});
+    expect(contextWindowLimit()).toBeUndefined();
+  });
+
+  test("no config file and no variable gives undefined", () => {
+    expect(contextWindowLimit()).toBeUndefined();
+  });
+
+  test("a change to the file is read on the next call", () => {
+    writeConfig({ contextWindow: "96k" });
+    expect(contextWindowLimit()).toBe(96_000);
+    writeConfig({ contextWindow: "48k" });
+    expect(contextWindowLimit()).toBe(48_000);
+  });
+
+  test("the config size takes the flag's syntax: a decimal and an upper-case unit", () => {
+    writeConfig({ contextWindow: "1.5M" });
+    expect(contextWindowLimit()).toBe(1_500_000);
+  });
+});

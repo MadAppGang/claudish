@@ -5,6 +5,7 @@
 # debug log. Prints the first time of each, the limits claudish reported
 # ("~N of LIMIT tokens") and the auto-compact window both launchers exported.
 # Always exits 0: this is a measurement, not a grade.
+here=$(cd "$(dirname "$0")" && pwd)
 launch=$(cat "$HOME/.bench-compaction/launch-dir" 2>/dev/null)
 echo "launch_env=$(cat "$HOME/.bench-compaction/launch-env" 2>/dev/null || echo absent)"
 
@@ -12,7 +13,8 @@ cc=$(cat "$HOME"/.claude/projects/*/*.jsonl 2>/dev/null | grep '"compact_boundar
 echo "claude_code_compactions=$(echo "$cc" | grep -c .)"
 echo "claude_code_first=$(echo "$cc" | head -1)"
 
-logs=$(ls "$launch"/debug/claudish_*.log 2>/dev/null)
+# The session's log can sit in an earlier launch folder of the same trial.
+logs=$(sh "$here/../claudish-compaction/trial-logs.sh" "$launch")
 if [ -n "$logs" ]; then
   first() { cat $logs | grep -- "$1" | head -1 | grep -o '^\[[^]]*\]' | tr -d '[]'; }
   echo "claudish_summary_started_first=$(first '\[compaction\] history summary started')"

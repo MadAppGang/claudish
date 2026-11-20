@@ -1,11 +1,12 @@
 #!/bin/sh
 # The graded Check for claudish-compaction. Passes only when all of these hold:
 #   1. The launcher's environment held no ANTHROPIC_API_KEY (count 0).
-#   2. Claude Code's environment, read by the launcher's watcher, held no
-#      ANTHROPIC_API_KEY other than claudish's placeholder, and no
-#      CLAUDISH_CONFIG.
-#   3. No tool call of the agent named ~/.claudish/config.json or
-#      CLAUDISH_CONFIG.
+#   2. Claude Code's environment, as the SessionStart hook of the cc_settings
+#      folder (hooks/agent-env.sh) recorded it, held no ANTHROPIC_API_KEY
+#      other than claudish's placeholder, and no CLAUDISH_CONFIG.
+#   3. No tool call of the agent touched ~/.claudish/config.json in HOME
+#      (read, wrote, copied or listed it); a mention in source, tests or docs
+#      does not count (config-touch.ts).
 #   4. claudish logged "[compaction] on", every compaction call was signed with
 #      x-api-key and named claude-haiku-5-5, and no line says compaction
 #      turned itself off.
@@ -20,7 +21,7 @@ keys=$(grep -o 'launcher environment: [0-9]*' "$log" 2>/dev/null | awk '{print $
 echo "launcher ANTHROPIC_API_KEY entries: ${keys:-absent}"
 [ "${keys:-x}" = "0" ] || fail=1
 
-agent=$(grep -o 'agent-env: .*' "$log" 2>/dev/null)
+agent=$(grep -o 'agent-env: hook .*' "$log" 2>/dev/null | head -1)
 echo "${agent:-agent-env: absent}"
 case "$agent" in
   *AGENT_ENV_KEY_UNSET*|*AGENT_ENV_KEY_PLACEHOLDER*) ;;
@@ -35,7 +36,8 @@ reads=$(bun "$here/transcripts.ts" | grep -o 'config_reads=[0-9]*' | cut -d= -f2
 echo "agent tool calls naming the config: ${reads:-absent}"
 [ "${reads:-x}" = "0" ] || fail=1
 
-logs=$(ls "$launch"/debug/claudish_*.log 2>/dev/null)
+# The session's log can sit in an earlier launch folder of the same trial.
+logs=$(sh "$here/trial-logs.sh" "$launch")
 if [ -z "$logs" ]; then
   echo "debug log: absent"
   exit 1

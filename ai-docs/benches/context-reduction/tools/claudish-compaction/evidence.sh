@@ -12,7 +12,8 @@ if [ -n "$launch" ] && [ -f "$launch/launch.log" ]; then
   cat "$launch/launch.log"
 fi
 
-logs=$(ls "$launch"/debug/claudish_*.log 2>/dev/null)
+# The session's log can sit in an earlier launch folder of the same trial.
+logs=$(sh "$here/trial-logs.sh" "$launch")
 echo "debug_logs=${logs:-absent}"
 store=$(readlink "$HOME/.claudish/compaction" 2>/dev/null || echo "$HOME/.claudish/compaction")
 echo "compaction_store=$store"
