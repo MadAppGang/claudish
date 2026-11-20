@@ -190,3 +190,119 @@ test("threshold: the decision is logged, and the swap comes at applyAt as before
   expect(lines[0]).toContain("history decision threshold: swap");
   expect(lines[0]).toContain("reason=count reached applyAt 0.75");
 });
+
+/**
+ * A session with a swap already active: the first summary is ready at once,
+ * swapped in on a cold cache, and the turns that follow are sent after it.
+ * `hangLater` makes every later summary wait until its timeout aborts it.
+ */
+function activeSwapRig(opts: { hangLater: boolean; swapWaitMs?: number }) {
+  let calls = 0;
+  let clock = 1_000_000;
+  const client = new CompactionClient({
+    apiKey: "FAKE_SWAP_POLICY_0000",
+    model,
+    warn() {},
+    record() {},
+    fetchImpl: (async (_url: unknown, init?: { signal?: AbortSignal }) => {
+      calls += 1;
+      if (calls > 1 && opts.hangLater) {
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+        });
+      }
+      return Response.json({
+        type: "message",
+        role: "assistant",
+        model,
+        content: [{ type: "text", text: `SUMMARY_${calls}` }],
+        stop_reason: "end_turn",
+        usage: { input_tokens: 10, output_tokens: 5 },
+      });
+    }) as unknown as typeof fetch,
+  });
+  const compactor = new HistoryCompactor({
+    store: new CompactionStore(root),
+    client,
+    settings: COST,
+    contextWindowOf: () => WINDOW,
+    autoCompactWindow: () => undefined,
+    summaryTimeoutMs: 1000,
+    ...(opts.swapWaitMs !== undefined ? { swapWaitMs: opts.swapWaitMs } : {}),
+    now: () => clock,
+    pricesOf: () => SONNET,
+    haikuCostOf: () => 0,
+  });
+  active.push(compactor);
+  const messages: Message[] = [
+    { role: "user", content: text(296_000, "PREFIX") },
+    { role: "assistant", content: [{ type: "text", text: "ok" }] },
+    { role: "user", content: text(240_000, "TAIL") },
+  ];
+  const payloadOf = () => ({
+    model,
+    metadata: { user_id: JSON.stringify({ session_id: session }) },
+    messages: [...messages],
+  });
+  const send = async () => {
+    const payload = payloadOf();
+    const result = await compactor.compactAsync(payload, session);
+    if (result.mark) {
+      compactor.recordUsage(result.mark, { input_tokens: Math.round(charsOf(payload) / 4) });
+    }
+    clock += 10_000;
+    return result;
+  };
+  const turn = () => {
+    messages.push(
+      { role: "assistant", content: [{ type: "text", text: "Done." }] },
+      { role: "user", content: text(8_000, `TURN${messages.length}`) }
+    );
+  };
+  return {
+    compactor,
+    messages,
+    send,
+    turn,
+    advance(ms: number) {
+      clock += ms;
+    },
+    /** Swap the first summary in, then add turns until a second summary starts. */
+    async untilSecondSummary() {
+      await send();
+      await compactor.whenIdle();
+      clock += 301_000;
+      turn();
+      let last = await send();
+      for (let k = 0; k < 40 && !last.precomputeStarted; k++) {
+        turn();
+        last = await send();
+      }
+      return last;
+    },
+  };
+}
+
+test("cost: with a swap active, R is what the new swap removes from the request as sent", async () => {
+  const r = activeSwapRig({ hangLater: false });
+  const before = await r.untilSecondSummary();
+  await r.compactor.whenIdle();
+  const swapLines = async () =>
+    (await capturedLines()).filter((l) => l.includes("history swap in session"));
+  expect((await swapLines()).length).toBe(1);
+
+  r.advance(301_000);
+  r.turn();
+  // The request as sent before this swap: the previous one plus the new turn.
+  const sentBefore = (before.estimate ?? 0) + Math.ceil(charsOf(r.messages.slice(-2)) / 4);
+  const pass = await r.send();
+  expect(pass.applied).toBe("swapped");
+  const afterSwap = pass.estimate ?? 0;
+
+  const lines = await capturedLines();
+  const decision = lines.filter((l) => l.includes("history decision cost: swap")).pop() ?? "";
+  expect((await swapLines()).length).toBe(2);
+  expect(decision).toContain("reason=cold cache");
+  expect(afterSwap).toBeLessThan(sentBefore);
+  expect(Math.abs(field(decision, "R") - (sentBefore - afterSwap))).toBeLessThan(0.02 * sentBefore);
+});

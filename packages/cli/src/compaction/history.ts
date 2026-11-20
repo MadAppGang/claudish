@@ -689,7 +689,10 @@ export function keptInlineSystemMessages(
  * yet. A later request of the same turn appends that assistant message after
  * them, so the messages sent before it keep their bytes.
  */
-export function applySwap(original: readonly unknown[], swap: HistorySwapRecord): unknown[] {
+export function applySwap(
+  original: readonly unknown[],
+  swap: Pick<HistorySwapRecord, "boundary" | "end" | "summary" | "pinned">
+): unknown[] {
   const tail = [
     ...original.slice(swap.boundary, swap.end).map(stripThinking),
     ...original.slice(swap.end),
@@ -1148,7 +1151,9 @@ export class HistoryCompactor {
    * Decide, with `decideHistorySwap`, whether swapping `ready` in now pays,
    * and log the decision. The token figures are measured at the session's
    * characters-per-token ratio: L the kept tail with thinking stripped, S the
-   * summary message, R the prefix it replaces less S.
+   * summary message with the inline system messages it keeps, R what the
+   * request sends now (`body.messages`, an active swap already applied) less
+   * what it sends with `ready` swapped in.
    */
   private decide(
     policy: HistoryPolicy,
@@ -1174,11 +1179,16 @@ export class HistoryCompactor {
         ...keptInlineSystemMessages(original, ready.boundary),
       ])
     );
-    const prefixTokens = counter.tokensOfChars(
+    const swapped = applySwap(original, {
+      boundary: ready.boundary,
+      end: original.length,
+      summary: ready.summary,
+      ...(pinned !== undefined ? { pinned } : {}),
+    });
+    const removedTokens = counter.tokensOfChars(
       sessionId,
-      charsOf(original.slice(0, ready.boundary))
+      charsOf(body.messages) - charsOf(swapped)
     );
-    const removedTokens = Math.max(0, prefixTokens - summaryTokens);
     const pricing = (this.deps.pricesOf ?? claudeApiPrices)(body.model, count.tokens);
     const ratios = cacheRatios(pricing, observed.writeSplit);
     const haikuCostUsd = (
