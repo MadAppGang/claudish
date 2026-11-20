@@ -50,6 +50,8 @@ export interface ThreadObservation {
 export interface UsageMark {
   sessionId: string;
   thread: string;
+  /** The thread's send order: a later request of the thread has a larger one. */
+  sequence: number;
   messageCount: number;
   lastMessageHash: string;
   chars: number;
@@ -122,6 +124,10 @@ export class RealTokenCount {
   private readonly sentAt = new Map<string, number>();
   private readonly recent = new Map<string, number[]>();
   private readonly splitByThread = new Map<string, CacheWriteSplit>();
+  /** The sequence of the newest mark of each thread. */
+  private readonly markedSeq = new Map<string, number>();
+  /** The sequence of the newest mark of each thread whose usage was recorded. */
+  private readonly recordedSeq = new Map<string, number>();
 
   constructor(private readonly now: () => number = Date.now) {}
 
@@ -152,12 +158,16 @@ export class RealTokenCount {
 
   /** Describe what `payload` sends, for `record` once its response ends. Records the send time. */
   mark(sessionId: string, thread: string, payload: unknown, chars = charsOf(payload)): UsageMark {
-    setBounded(this.sentAt, `${sessionId}\n${thread}`, this.now());
+    const key = `${sessionId}\n${thread}`;
+    setBounded(this.sentAt, key, this.now());
+    const sequence = (this.markedSeq.get(key) ?? 0) + 1;
+    setBounded(this.markedSeq, key, sequence);
     const messages = messagesOf(payload);
     const last = messages[messages.length - 1];
     return {
       sessionId,
       thread,
+      sequence,
       messageCount: messages.length,
       lastMessageHash: last === undefined ? "" : messageHash(last),
       chars,
@@ -169,6 +179,12 @@ export class RealTokenCount {
     const tokens = promptTokens(usage);
     if (tokens <= 0 || mark.chars <= 0 || mark.messageCount === 0) return;
     const key = `${mark.sessionId}\n${mark.thread}`;
+    // Overlapping requests: the response of an older request that ends after
+    // a newer one's measures an earlier prompt. Its smaller count is not a
+    // drop, so it neither replaces the newer measurement nor restarts growth.
+    const newest = this.recordedSeq.get(key);
+    if (newest !== undefined && mark.sequence < newest) return;
+    setBounded(this.recordedSeq, key, mark.sequence);
     setBounded(this.byThread, key, {
       messageCount: mark.messageCount,
       lastMessageHash: mark.lastMessageHash,
