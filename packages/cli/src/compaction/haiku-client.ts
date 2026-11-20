@@ -3,7 +3,8 @@
  * endpoint.
  *
  * - The URL is the module constant `ANTHROPIC_MESSAGES_URL`; no caller can
- *   change it.
+ *   change it, and a redirect is refused (`redirect: "error"`), so the key
+ *   reaches no other URL.
  * - It signs with `x-api-key` (the key resolved at startup) and
  *   `anthropic-version` only. It never reads the inbound request: not its
  *   `authorization`, not its `x-api-key`, not the Claude login.
@@ -178,6 +179,8 @@ export class CompactionClient {
         },
         body: JSON.stringify(body),
         signal: controller.signal,
+        // A redirect would carry x-api-key to the redirect target: refuse it.
+        redirect: "error",
       });
       log(
         `[compaction] Calling API: ${request.url} (purpose: ${req.purpose}, model: ${this.opts.model}, auth: x-api-key)`

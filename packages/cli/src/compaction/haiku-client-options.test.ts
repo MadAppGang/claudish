@@ -61,6 +61,13 @@ test("without either option the request is as before", async () => {
   expect(bodies[0]?.output_config).toEqual({ effort: "low" });
 });
 
+test("the key-signed request refuses a redirect instead of following it", async () => {
+  const { client, requests } = capture();
+  await client.complete(BASE);
+  expect(requests[0]?.headers.get("x-api-key")).toBe("FAKE_CLIENT_OPTIONS_0000");
+  expect(requests[0]?.redirect).toBe("error");
+});
+
 test("a model with no published effort gets no output_config.effort", async () => {
   const { client, bodies } = capture(null);
   await client.complete(BASE);
