@@ -557,3 +557,60 @@ describe("a swap that removes nothing", () => {
     expect(d.reason).toBe("the swap removes no tokens from the request");
   });
 });
+
+/** The forced point on a model with no published cache prices: no nStar. */
+describe("a forced swap with no cache prices", () => {
+  const unpriced = (overrides: Partial<SwapDecisionInput>): SwapDecisionInput => {
+    const { ratios: _none, ...input } = costInput({ count: 165_000, ...overrides });
+    return input;
+  };
+
+  test("the first forced swap is made", () => {
+    const d = decideHistorySwap(unpriced({}));
+    expect(d.nStar).toBeUndefined();
+    expect(d.swap).toBe(true);
+  });
+
+  test("a forced swap after a forced swap holds, so Claude Code compacts once", () => {
+    const d = decideHistorySwap(unpriced({ lastForcedSwapGap: 40 }));
+    expect(d.swap).toBe(false);
+    expect(d.reason).toBe(
+      "the next request crosses Claude Code's compaction point; no Claude Code compaction measured yet, and the last forced swap left 40 requests with no cache prices to weigh them"
+    );
+  });
+});
+
+/**
+ * Right after a swap the growth window holds one count, so no growth is
+ * measured and neither room is known in requests. The measured compaction
+ * size still decides: at the same growth, a smaller request leaves at least
+ * as much room.
+ */
+describe("a forced swap with a measured compaction and no growth", () => {
+  const noGrowth = (overrides: Partial<SwapDecisionInput>): SwapDecisionInput => {
+    const { growthPerRequest: _none, ...input } = costInput({
+      count: 170_000,
+      removedTokens: 40_000,
+      ...overrides,
+    });
+    return input;
+  };
+
+  test("holds when Claude Code's compaction leaves the smaller request", () => {
+    const d = decideHistorySwap(noGrowth({ ccCompactedTokens: 110_000 }));
+    expect(d.projectedRequestsBeforeCcCompact).toBe(0);
+    expect(d.requestsAfterSwap).toBeUndefined();
+    expect(d.swap).toBe(false);
+    expect(d.reason).toBe(
+      "the next request crosses Claude Code's compaction point; no growth measured, the swap leaves 130000 tokens, Claude Code's compaction 110000"
+    );
+  });
+
+  test("swaps when the swap leaves the smaller request", () => {
+    const d = decideHistorySwap(noGrowth({ ccCompactedTokens: 140_000 }));
+    expect(d.swap).toBe(true);
+    expect(d.reason).toBe(
+      "the next request crosses Claude Code's compaction point; no growth measured, the swap leaves 130000 tokens, Claude Code's compaction 140000"
+    );
+  });
+});

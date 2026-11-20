@@ -169,6 +169,8 @@ interface DecisionFigures {
   /** The swapped request's tokens, `count − R`. */
   afterSwap: number;
   room?: number;
+  /** The tokens of the first request after Claude Code's previous compaction. */
+  ccCompacted?: number;
   ccRoom?: number;
   lastForcedSwapGap?: number;
 }
@@ -182,6 +184,7 @@ function figuresOf(input: SwapDecisionInput): DecisionFigures {
   const room = requestsUntilCcCompact(input, afterSwap);
   if (room !== undefined) f.room = room;
   if (input.ccCompactedTokens !== undefined) {
+    f.ccCompacted = input.ccCompactedTokens;
     const ccRoom = requestsUntilCcCompact(input, input.ccCompactedTokens);
     if (ccRoom !== undefined) f.ccRoom = ccRoom;
   }
@@ -207,18 +210,28 @@ const CROSSES = "the next request crosses Claude Code's compaction point";
  * writes the cache and costs a main-model call.
  *
  * With no compaction measured, the swap is made, unless the previous swap
- * was forced too and left fewer requests than nStar: then the swaps do not
- * pay for themselves, and the hold lets Claude Code compact once so that its
- * size is measured for the next forced point.
+ * was forced too and left fewer requests than nStar, or the model has no
+ * cache prices to weigh that gap: then the hold lets Claude Code compact once
+ * so that its size is measured for the next forced point.
+ *
+ * With a compaction measured but no growth (the window starts again after a
+ * swap), the room in requests is unknown, and the sizes decide: at the same
+ * growth, the smaller request leaves at least as much room.
  */
 function decideForced(f: DecisionFigures): SwapDecision {
   const forced = (swap: boolean, reason: string) => ({
     ...decisionOf(f, swap, reason),
     forced: true,
   });
-  if (f.ccRoom === undefined || f.room === undefined) {
+  if (f.ccCompacted === undefined) {
     const unmeasured = `${CROSSES}; no Claude Code compaction measured yet`;
     const gap = f.lastForcedSwapGap;
+    if (gap !== undefined && f.nStar === undefined) {
+      return forced(
+        false,
+        `${unmeasured}, and the last forced swap left ${gap} requests with no cache prices to weigh them`
+      );
+    }
     if (gap !== undefined && f.nStar !== undefined && gap < f.nStar) {
       return forced(
         false,
@@ -226,6 +239,10 @@ function decideForced(f: DecisionFigures): SwapDecision {
       );
     }
     return forced(true, unmeasured);
+  }
+  if (f.room === undefined || f.ccRoom === undefined) {
+    const sizes = `the swap leaves ${Math.round(f.afterSwap)} tokens, Claude Code's compaction ${f.ccCompacted}`;
+    return forced(f.afterSwap <= f.ccCompacted, `${CROSSES}; no growth measured, ${sizes}`);
   }
   const compared = `the swap leaves ${f.room} requests, Claude Code's compaction ${f.ccRoom}`;
   return forced(f.room >= f.ccRoom, `${CROSSES}; ${compared}`);
