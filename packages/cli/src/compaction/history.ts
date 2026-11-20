@@ -1218,7 +1218,7 @@ export class HistoryCompactor {
     const show = (n: number | undefined) =>
       n === undefined ? "unknown" : Number.isFinite(n) ? n.toFixed(1) : "infinite";
     log(
-      `[compaction] history decision ${policy}: ${decision.swap ? "swap" : "hold"}, nStar=${show(decision.nStar)}, projected=${decision.projectedRequestsBeforeCcCompact ?? "unknown"}, L=${tailTokens}, S=${summaryTokens}, R=${removedTokens}, reason=${decision.reason}`
+      `[compaction] history decision ${policy}: ${decision.swap ? "swap" : "hold"}, nStar=${show(decision.nStar)}, projected=${decision.projectedRequestsBeforeCcCompact ?? "unknown"}, requestsAfterSwap=${decision.requestsAfterSwap ?? "unknown"}, L=${tailTokens}, S=${summaryTokens}, R=${removedTokens}, reason=${decision.reason}`
     );
     return decision;
   }

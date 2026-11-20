@@ -255,3 +255,61 @@ describe("decideHistorySwap, policies threshold and early", () => {
     expect(d.projectedRequestsBeforeCcCompact).toBe(Math.ceil((CC_POINT - 0.75 * LIMIT) / GROWTH));
   });
 });
+
+/**
+ * A forced swap measured on Claude Code 2.1.328 (cost policy, Sonnet 5.5,
+ * 1-hour cache writes): the next request crossed Claude Code's compaction
+ * point at 166,000, the swap carried a 71,080-token tail and 10,410 tokens of
+ * summary and inline system messages, and the swapped request was 115,671
+ * tokens. Prompts grew about 12,700 tokens a request, so the next forced swap
+ * came 4 requests later.
+ */
+describe("the room a swap leaves", () => {
+  const SONNET_1H = { inputPerMTok: 2, readRatio: 0.05, writeRatio: 2 };
+  const SENT = 160_000;
+  const AFTER_SWAP = 115_671;
+  const bench = (overrides: Partial<SwapDecisionInput> = {}) =>
+    costInput({
+      count: SENT,
+      tailTokens: 71_080,
+      summaryTokens: 10_410,
+      removedTokens: SENT - AFTER_SWAP,
+      ratios: SONNET_1H,
+      growthPerRequest: 12_700,
+      ...overrides,
+    });
+
+  test("a forced swap that reaches the compaction point again before it pays back holds", () => {
+    const d = decideHistorySwap(bench());
+    expect(d.projectedRequestsBeforeCcCompact).toBe(1);
+    expect(d.requestsAfterSwap).toBe(4);
+    expect(d.nStar ?? 0).toBeGreaterThan(4);
+    expect(d.swap).toBe(false);
+    expect(d.reason).toBe(
+      `the swap leaves ${AFTER_SWAP} tokens, Claude Code's compaction point again in 4 requests, fewer than nStar ${(d.nStar ?? 0).toFixed(1)}`
+    );
+  });
+
+  test("a forced swap that leaves room for nStar requests swaps", () => {
+    const d = decideHistorySwap(
+      bench({
+        count: 162_000,
+        tailTokens: 21_000,
+        summaryTokens: 11_000,
+        removedTokens: 102_000,
+        growthPerRequest: 5_000,
+      })
+    );
+    expect(d.requestsAfterSwap).toBe(22);
+    expect(d.nStar ?? Number.POSITIVE_INFINITY).toBeLessThan(22);
+    expect(d.swap).toBe(true);
+    expect(d.reason).toBe("the next request crosses Claude Code's compaction point");
+  });
+
+  test("on a cold cache the swap writes nothing extra, so little room does not hold it", () => {
+    const d = decideHistorySwap(bench({ gapMs: 301_000 }));
+    expect(d.requestsAfterSwap).toBe(4);
+    expect(d.swap).toBe(true);
+    expect(d.reason).toContain("cold cache");
+  });
+});
