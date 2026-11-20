@@ -352,11 +352,23 @@ the request sent was about 160,000, and `nStar` fell to 2.3. Case d:
   run). The gap counts only after a forced swap: a cost swap is made early, and the room it
   leaves says nothing about a swap at the compaction point. The Sonnet 5.5 XL trial keeps its 3
   swaps, 47, 29 and 44 requests apart: its forced swap followed a cost swap, and its last had a
-  measured compaction.
+  measured compaction. A model with no cache prices has no `nStar` to weigh the gap with, so there
+  any forced swap after a forced swap holds until a compaction is measured.
+- **A measured compaction decides even with no growth.** Right after a swap the growth window holds
+  one count, so neither room is known in requests. The sizes then decide: the forced swap is made
+  when `count − R` is at most the measured compaction size, since at the same growth the smaller
+  request leaves at least as much room.
+- **A swap that removes nothing holds, on every policy.** A summary as long as what it replaces
+  (`R` = 0) leaves the request no smaller; the swap would only rewrite the cache.
 - Read ratio and base price: the model's own Claude API connection (`claudeApiTurnPricing`, the
   meter's banded reader), `cachedRead / input`. Measured on the catalog: Sonnet 5.5 0.1/2, Opus 5.5
   0.2/4, Fable 5.2 0.2/8, Haiku 5.5 tiered with a cache-read rate per band. A name that is not
   `claude-*`, an estimate, or no published cache-read rate gives no ratios; nothing is guessed.
+  The name is the routed model's (`pricingModelOf`), not the body's: a role mapping or `--model`
+  keeps Claude Code's `claude-*` name in the body while another model serves the request. A Claude
+  API or Claude subscription spec (`anthropic@`, `a@`, `api@`, `claude@`) prices its inner id; any
+  other `provider@model` prices nothing, so the forced point then has no nStar (see the hold
+  above, which also applies with no prices).
 - Write ratio: no Claude connection publishes `cachedWrite`, so `cache-prices.ts` uses Anthropic's
   rule by TTL (5m 1.25×, 1h 2×), weighted by the newest `usage.cache_creation` split
   (`ephemeral_5m_input_tokens`, `ephemeral_1h_input_tokens`, kept by `mergeSseUsage`). A published
