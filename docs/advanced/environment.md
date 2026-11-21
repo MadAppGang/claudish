@@ -127,6 +127,10 @@ Off by default deliberately: the captured `system` array is the **full** system 
 export CLAUDISH_CLASSIFIER_DEBUG=1
 ```
 
+### `CLAUDE_CODE_AUTO_MODE_SERVER` (set for the Claude Code child)
+
+With classifier passthrough on, claudish starts Claude Code with this set to `0`, unless you already exported it. That turns off Claude Code's server-side review of auto-mode actions, which a foreign main-loop provider cannot answer, so the separate classifier request passthrough reroutes is sent again. See [Server-side classifier review](../models/model-mapping.md#server-side-classifier-review-claude-code-21278).
+
 ---
 
 ## Network Configuration
