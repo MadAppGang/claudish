@@ -212,6 +212,20 @@ const BUSY_RETRY_MS = 250;
 const MISMATCH_SETTLE_MS = 1_000;
 /** After a ctrl-u from the admission loop: wait at most this for a fresh `ready` reading. */
 const CLEAR_WAIT_MS = 1_000;
+
+/**
+ * The number of ctrl-u keys that empties a box holding this admission's leftover text.
+ * Claude Code's ctrl-u deletes ONE wrapped screen row, not the whole box, and extra ctrl-u
+ * keys on an empty box do nothing (both measured on Claude Code 2.1.330). Leftover text is
+ * at most two copies of the line per gated send made so far (magmux retypes once inside a
+ * send), so the count covers that many screen cells (a wide character takes two) wrapped at
+ * half the box width (word wrap can leave a row far shorter than the box), plus one row.
+ */
+export function clearKeyCount(line: string, attempts: number, cols: number): number {
+  const cells = 2 * Math.max(1, attempts) * Bun.stringWidth(line);
+  const halfRow = Math.max(1, Math.floor((cols - 4) / 2));
+  return Math.ceil(cells / halfRow) + 1;
+}
 /** A dialog or choice screen static this long blocks boot. */
 const BOOT_STATIC_MS = 5_000;
 const TICK_MS = 250;
@@ -688,6 +702,8 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   private turnAcceptedAt: number | null = null;
   private turnErrorLogSize = 0;
   private witnessMissingCounted = false;
+  /** the turn whose witness copy count was read (`witness_copies:<k>` once per turn) */
+  private witnessCopiesTurn = 0;
   /** a later send abandoned unwitnessed: a witness arriving in IDLE re-wakes this turn (§5.3) */
   private abandonedIndex: number | null = null;
 
@@ -1263,7 +1279,17 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       this.lastChatOffset = off;
       this.lastChatSeenAt = now;
     }
+    this.noteWitnessCopies(view.current);
     return view;
+  }
+
+  /** A turn witnessed by k > 1 whole copies of its line (a doubled submit), counted once. */
+  private noteWitnessCopies(t: TurnView | null): void {
+    if (!t || t.index !== this.turnIndex || t.index === this.witnessCopiesTurn) return;
+    const k = t.witnessCopies;
+    if (k === null) return;
+    this.witnessCopiesTurn = t.index;
+    if (k > 1) this.anomaly(`witness_copies:${k}`);
   }
 
   private evaluate(): void {
@@ -1899,6 +1925,9 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     if (out.dialog) {
       // a re-woken turn owns the dialog; evalIdle/evalRunning see it
       this.noteOnce(adm, `gate_dialog_at_admission:${out.dialog}`);
+      // text typed before the dialog opened may sit in the box behind it; the clear sends
+      // no key while a dialog shows, so it runs once the dialog has closed
+      if (out.typed) markClearFirst(adm);
     } else if (out.typed) {
       // the box may hold all or part of the text: the next send's precondition clears it
       this.anomaly("gate_typed_withheld");
@@ -2077,10 +2106,16 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     return !!g && g.receivedAt > after && g.ready;
   }
 
-  /** KEYS ctrl-u, then wait at most `CLEAR_WAIT_MS` for a fresh `ready` reading. */
+  /**
+   * One KEYS send of `clearKeyCount` ctrl-u keys (one ctrl-u deletes one wrapped row), then
+   * wait at most `CLEAR_WAIT_MS` for a fresh `ready` reading. The keys are lane-ordered after
+   * every byte typed before them, so they empty Claude Code's buffer whether its text is drawn
+   * yet or not.
+   */
   private async clearBox(adm: Admission): Promise<void> {
     const at = Date.now();
-    await this.key("ctrl-u");
+    const n = clearKeyCount(adm.line, adm.attempts, this.screen.cols);
+    await this.keys(Array.from({ length: n }, () => "ctrl-u"));
     await this.waitFor(() => !this.admitting(adm) || this.freshReady(at), CLEAR_WAIT_MS);
   }
 
@@ -2089,13 +2124,13 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
    * box types nothing and waits its whole `readyTimeoutMs`, so leftover text is cleared
    * first, from the published view. `box_not_empty` is the gate's LAST readiness rule, so it
    * already proves no dialog and a settled terminal: this ctrl-u cannot land on a dialog.
-   * Text this admission may itself have left (`clearFirst`) is judged only on a reading
-   * received after the reply that set the flag (Revision 3 item 2): an older one can say
-   * `ready` while that delivery's text is still being drawn (DB-2). Such a reading that is
-   * `ready` clears the flag; one naming a dialog or vim mode keeps it, and the pre-check
-   * decides; any other clears the box. With no newer reading within `CLEAR_WAIT_MS`, the
-   * ctrl-u goes anyway: a ctrl-u on an empty box is harmless, a send into a full one costs
-   * its whole `readyTimeoutMs`.
+   * Text this admission may itself have left (`clearFirst`) is always cleared unless a
+   * reading received after the reply that set the flag names a dialog or vim mode (then the
+   * flag stays and the pre-check decides). A `ready` reading does not skip the clear: the
+   * screen shows only what Claude Code has drawn, and under load it reads typed bytes into its
+   * buffer seconds before drawing them, so a box drawn empty can still hold the text. With no
+   * newer reading within `CLEAR_WAIT_MS`, the ctrl-u keys go anyway: ctrl-u on an empty box
+   * does nothing, a send into a full one costs its whole `readyTimeoutMs`.
    *
    * R1.5.3: after a TYPE whose reply was lost, a ctrl-u on the SAME connection is
    * lane-ordered behind that delivery; one on a NEW connection is not and could land
@@ -2113,7 +2148,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     else if (this.gateNow()?.reason === "box_not_empty") await this.clearBox(adm);
   }
 
-  /** `clearFirst`: judged on a reading received after the reply that set it (see above). */
+  /** `clearFirst`: cleared unless a reading newer than the reply names a dialog or vim mode. */
   private async clearOwnLeftover(adm: Admission): Promise<void> {
     // the published view trails the pane by up to one refresh: a reading received within
     // that interval of the reply may still show the box as it was before the text landed
@@ -2128,10 +2163,6 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     );
     if (!this.admitting(adm)) return;
     const g = newer();
-    if (g?.ready) {
-      adm.clearFirst = false;
-      return;
-    }
     // a dialog or vim mode: no key; the pre-check decides, and the flag waits for a clear box
     if (g && (g.dialog !== null || g.reason === "vim_mode")) return;
     adm.clearFirst = false;
@@ -2217,12 +2248,17 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       this.anomaly(`control_send:${out.kind}${s.reason ? `:${s.reason}` : ""}`);
   }
 
-  /** One KEYS send (ctrl-u, Escape): no text and no final Enter, never gated. */
-  private async key(k: string): Promise<boolean> {
+  /** One KEYS send of one key (Escape): no text and no final Enter, never gated. */
+  private key(k: string): Promise<boolean> {
+    return this.keys([k]);
+  }
+
+  /** One KEYS send of `ks` in order (ctrl-u ×n): no text and no final Enter, never gated. */
+  private async keys(ks: string[]): Promise<boolean> {
     const c = this.client;
     if (!c) return false;
     const r = await c.request(
-      { type: "send", pane: 0, keys: [k], enter: false, noGate: true },
+      { type: "send", pane: 0, keys: ks, enter: false, noGate: true },
       10_000
     );
     return r.ok;

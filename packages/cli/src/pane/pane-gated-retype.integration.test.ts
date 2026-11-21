@@ -20,6 +20,7 @@ import {
   submissions,
 } from "./test-helpers/gated-pane.js";
 import { MAGMUX, NO_MAGMUX_MESSAGE } from "./test-helpers/hermetic-env.js";
+import { wrapPrompt } from "./test-helpers/repl-wrap.js";
 
 describe.skipIf(!MAGMUX)(
   `gated retypes at production timings (${MAGMUX ? "real magmux" : NO_MAGMUX_MESSAGE})`,
@@ -247,6 +248,63 @@ describe.skipIf(!MAGMUX)(
         expect(snapshot.detail).toContain("Is this a project you created or one you trust");
         expect(r.sends).toEqual([]);
         expect(submissions(r)).toEqual([]);
+      },
+      T
+    );
+
+    // Claude Code's ctrl-u deletes one wrapped row, and under load it draws typed text
+    // seconds after reading it, so a screen that reads "ready" can hide a buffer that still
+    // holds a failed send's text. Before claudish types the line again, it must empty the
+    // buffer with one ctrl-u per row that leftover can occupy (two copies per earlier send),
+    // whatever the published view says. The prompt then lands as whole copies only and the
+    // slot completes instead of failing prompt_not_accepted on a box that never empties.
+    test(
+      "a wrapped leftover under a 3.5 s draw lag is cleared row by row before the line is typed again",
+      async () => {
+        const cols = 80;
+        let prompt = "Reply with exactly PEAR";
+        for (let i = 0; prompt.length < 300; i++) prompt += ` and word${i}`;
+        prompt += ".";
+        const r = await startGatePane("answer", {
+          shape: "one-shot",
+          initialPrompt: prompt,
+          initialSize: { cols, rows: 40 },
+          env: { FAKE_RENDER_LAG_MS: "3500", FAKE_CTRL_U: "row", FAKE_GAP_MS_WITNESS: "3000" },
+        });
+        const snapshot = await gateUntil(
+          r,
+          (s) => s.state === "COMPLETED" || s.state === "FAILED",
+          60_000
+        );
+        expect(snapshot.reason).not.toBe("prompt_not_accepted");
+        expect(snapshot.state).toBe("COMPLETED");
+        for (const { text } of submissions(r)) {
+          const copies = text.length / prompt.length;
+          expect(Number.isInteger(copies) && text === prompt.repeat(copies)).toBe(true);
+        }
+        const rows = wrapPrompt(prompt.repeat(2), cols).length;
+        const typed = (m: Record<string, unknown>) =>
+          typeof m.text === "string" && m.noGate !== true;
+        const firstTyped = r.sends.findIndex(({ message }) => typed(message));
+        // The draw lag must force at least one clear: a noGate KEYS send of ctrl-u keys after
+        // the first typed send, followed by a later typed send. Without it the case proves
+        // nothing about the clear.
+        const isClear = (m: Record<string, unknown>) =>
+          m.noGate === true &&
+          Array.isArray(m.keys) &&
+          (m.keys as string[]).length > 0 &&
+          (m.keys as string[]).every((k) => k === "ctrl-u");
+        const clearAt = r.sends.findIndex(({ message }, i) => i > firstTyped && isClear(message));
+        expect(firstTyped).toBeGreaterThanOrEqual(0);
+        expect(clearAt).toBeGreaterThan(firstTyped);
+        expect(r.sends.slice(clearAt + 1).some(({ message }) => typed(message))).toBe(true);
+        r.sends.forEach(({ message }, i) => {
+          if (i <= firstTyped || !typed(message)) return;
+          const before = r.sends[i - 1]?.message;
+          expect(before).toMatchObject({ enter: false, noGate: true });
+          const keys = (before?.keys as string[] | undefined) ?? [];
+          expect(keys.filter((k) => k === "ctrl-u").length).toBeGreaterThanOrEqual(rows);
+        });
       },
       T
     );

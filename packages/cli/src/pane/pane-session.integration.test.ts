@@ -429,7 +429,8 @@ describe.skipIf(!MAGMUX)(
           const snap = await close(r);
           expect(snap.anomalies).not.toContain("gate_busy:box_not_empty");
           expect(sends.map(({ message }) => message)).toMatchObject([
-            { keys: ["ctrl-u"], enter: false, noGate: true },
+            // clearKeyCount(24-cell line, 0, 160): one ctrl-u per wrapped row the leftover can occupy
+            { keys: ["ctrl-u", "ctrl-u"], enter: false, noGate: true },
             { text: "Reply with exactly PEAR.", typed: true, enter: true },
           ]);
           expect(sends).toHaveLength(2);

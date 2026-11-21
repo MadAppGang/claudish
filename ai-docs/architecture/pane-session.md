@@ -574,14 +574,20 @@ duplicate.
 non-empty box types nothing and waits its WHOLE `readyTimeoutMs` before answering `busy
 box_not_empty`, as `busy vim_mode` and `busy dialog:<kind>` do. So before every send that types,
 claudish reads the fresh published `input`: `box_not_empty` (or text this admission itself may have
-left) → KEYS ctrl-u, then up to 1 s for a `ready` reading received at least 250 ms after the reply
-that left the text (magmux republishes at 4 Hz, so an earlier reading can predate a late draw);
-`vim_mode` or a boot dialog → stop now; a permission, question or plan dialog → wait for it to
-leave. Because `box_not_empty` is evaluated last by the gate, it already proves no dialog and a
-settled terminal, so that ctrl-u cannot land on a dialog. A lost TYPE reply on a new connection
-waits out the old delivery's own budget first, since a ctrl-u from another connection is not
-ordered behind it. Measured (I10b, magmux 0.17.0): vim mode on before the send stops in 2.2 s wall,
-boot included; a send already in flight when vim turns on still costs its ready wait (≈ 10 s).
+left) → one ordered KEYS send of `clearKeyCount` ctrl-u keys, then up to 1 s for a `ready` reading
+received at least 250 ms after the reply that left the text (magmux republishes at 4 Hz, so an
+earlier reading can predate a late draw); `vim_mode` or a boot dialog → stop now; a permission,
+question or plan dialog → wait for it to leave. One ctrl-u deletes ONE wrapped row, not the whole
+box, and extra ctrl-u keys on an empty box do nothing (both measured on Claude Code 2.1.330), so
+`clearKeyCount` covers two copies of the line per gated send made so far, counted in screen cells
+(a wide character takes two) and wrapped at half the box width, plus one row. A `ready` screen does
+not skip the clear of text this admission may have left: Claude Code reads typed bytes seconds
+before drawing them, so a box drawn empty can still hold them. Because `box_not_empty` is evaluated
+last by the gate, it already proves no dialog and a settled terminal, so those ctrl-u keys cannot
+land on a dialog. A lost TYPE reply on a new connection waits out the old delivery's own budget
+first, since a ctrl-u from another connection is not ordered behind it. Measured (I10b, magmux
+0.17.0): vim mode on before the send stops in 2.2 s wall, boot included; a send already in flight
+when vim turns on still costs its ready wait (≈ 10 s).
 
 **Every attempt fits the 30 s admission.** The client request timeout is magmux's own upper bound
 (`protocol.SendBudget`, ported as `sendBudgetMs` at 4c6060c) plus 2 s, and no attempt is started
@@ -622,10 +628,23 @@ ignored, the text proven present), once, after ctrl-u, through the gate. The gat
 empty box and presses Enter only on an exact match; magmux's own single retype needs the box
 COMPLETELY empty and either a terminal reset after the first byte (`terminal_reset`) or no draw for
 the whole 3 s window with no conversation change (`never_drawn`), and never for a paste. claudish
-keeps `typed:true` on every send so no line is ever a paste. Two copies can still be TYPED (a very
-late draw after a retype), but Enter is pressed only on a box holding exactly one, so two copies are
-never SUBMITTED. The DA-* and DB-* tests in `pane-gated-delivery.integration.test.ts` prove both at
-production timings, with no `timings` overrides.
+keeps `typed:true` on every send so no line is ever a paste. Two copies can still be TYPED, and
+SUBMITTED: under load Claude Code reads typed bytes into its buffer seconds before it draws them, so
+magmux's retype lands on an undrawn first copy and its verify can press Enter on a stale frame
+showing one. Measured: 31 user records from 2026-11-03 to 2026-11-20 (Claude Code 2.1.317–2.1.330)
+hold the launch line 2 or 4 times, always whole copies joined end to end. So the text witness
+accepts a record that is k ≥ 1 whole copies of the line (never empty text, a partial copy or other
+text), and claudish never trusts a `ready` screen to mean an empty buffer: leftover it may have
+left is cleared by key order, in one KEYS send of `clearKeyCount` ctrl-u keys, because one ctrl-u
+deletes one wrapped row (measured on 2.1.330; extra ctrl-u keys on an empty box do nothing). A
+record of k whole copies is accepted as the witness, so a direct text prompt can reach the model k
+times; the file-template launch line only points at the task file, which is read once. A k > 1
+match is recorded as the anomaly `witness_copies:<k>`, once per turn. At
+production timings, with no `timings` overrides, the DA-* tests in
+`pane-gated-delivery.integration.test.ts` prove that a lost prompt fails loudly instead of reading
+as an empty answer and that a late transcript still yields exactly one answer, and the DB-* tests
+prove that an 800 ms render lag with late terminal resets on six loaded panes submits each prompt
+as one copy.
 
 **Slash commands are two sends, because the gate has no menu handling.** A leading `/` opens
 Claude Code's command menu, and Enter on an open menu runs the HIGHLIGHTED item, not the typed one.

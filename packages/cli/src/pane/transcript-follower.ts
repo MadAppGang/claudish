@@ -109,6 +109,11 @@ export interface TurnView {
    * (D23); panes never open a turn ahead of their own delivery and ignore it.
    */
   unwitnessedChatOffset: number | null;
+  /**
+   * Whole copies of the typed line the witness record held: 1 for every witness but a text
+   * witness of a doubled submit (k > 1); null until accepted.
+   */
+  witnessCopies: number | null;
 }
 
 export interface SessionFacts {
@@ -174,6 +179,7 @@ interface TurnState {
   /** at most RECENT_STEP_LIMIT, oldest dropped first */
   steps: SlotStep[];
   unwitnessedChat: number | null;
+  witnessCopies: number | null;
 }
 
 export interface FollowerState {
@@ -305,6 +311,28 @@ export function isHumanPrompt(record: Record<string, unknown>): boolean {
   return true;
 }
 
+/**
+ * How many times `text` holds `line` as whole copies joined end to end: k >= 1, or 0 when it
+ * is not the line at all. Under load Claude
+ * Code can read a typed line into its buffer before drawing it, so a second copy is typed onto
+ * the first and Enter submits both; that record is still the submitted line. Both sides are
+ * compared trimmed: k copies of the trimmed line match, and so do k exact copies of the line
+ * as typed, trimmed once as a whole (the spaces between copies kept). Empty text, a partial
+ * copy and any other text are refused (0).
+ */
+function wholeCopies(text: string, line: string): number {
+  const got = text.trim();
+  const core = line.trim();
+  if (!core) return got === core ? 1 : 0;
+  const copies = (unit: string, padding: number): number => {
+    const total = got.length + padding;
+    if (total % unit.length !== 0) return 0;
+    const k = total / unit.length;
+    return k >= 1 && got === unit.repeat(k).trim() ? k : 0;
+  };
+  return copies(core, 0) || copies(line, line.length - core.length);
+}
+
 function matchesWitness(r: Rec, w: Witness): boolean {
   if (w.kind === "human") return isHumanPrompt(r);
   // Some local commands are written as system records, not user records (captured:
@@ -313,7 +341,7 @@ function matchesWitness(r: Rec, w: Witness): boolean {
     return String(r.content ?? "").includes(`<command-name>/${w.name}</command-name>`);
   if (!isMainUser(r) || hasToolResult(r)) return false;
   const text = userText(r);
-  if (w.kind === "text") return !r.isMeta && text.trim() === w.text.trim();
+  if (w.kind === "text") return !r.isMeta && wholeCopies(text, w.text) > 0;
   // `/compact` writes its <command-name> record only AFTER compaction finishes, which takes
   // minutes on a real context; the plain record of the typed line is written at submit
   // (captured: 2.1.290 and 2.1.291, `"content":"/compact"`, no isMeta), so it is the witness.
@@ -578,6 +606,7 @@ function acceptIfWitness(t: TurnState, r: Rec, offset: number): void {
   if (!matchesWitness(r, t.witness)) return;
   t.acceptedAt = typeof r.timestamp === "string" ? r.timestamp : new Date().toISOString();
   t.acceptedOffset = offset;
+  t.witnessCopies = t.witness.kind === "text" ? wholeCopies(userText(r), t.witness.text) : 1;
   t.lastChatOffset = offset;
 }
 
@@ -708,6 +737,7 @@ export function openTurnState(
     localOutput: null,
     steps: [],
     unwitnessedChat: null,
+    witnessCopies: null,
   });
   return state;
 }
@@ -767,6 +797,7 @@ export function turnView(t: TurnState): TurnView {
     localCommandOutput: t.localOutput?.text ?? null,
     recent: [...t.steps],
     unwitnessedChatOffset: t.unwitnessedChat,
+    witnessCopies: t.witnessCopies,
   };
 }
 

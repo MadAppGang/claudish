@@ -42,6 +42,16 @@ export function normaliseTranscriptPath(p: string): string {
 }
 
 /**
+ * The `input_gate_unavailable` detail. magmux publishes pane 0's `input` view only after its
+ * first poll of the pane, so a `list` read before that shows `gateBasis declared` alone.
+ */
+function unavailableDetail(v: string, basis: string | null | undefined): string {
+  if (basis === "declared")
+    return `input_gate_unavailable: magmux ${v} declared the input gate for pane 0 but has not published its input view yet`;
+  return `input_gate_unavailable: magmux ${v} did not gate pane 0 (gateBasis ${basis ?? "none"})`;
+}
+
+/**
  * One `list` result → whether pane 0's gate may be trusted for this session. Fails with
  * `input_gate_unavailable` when pane 0 is not gated as a declared pane, and with
  * `input_gate_unbound` when the binding is not by name, or names another session or path.
@@ -52,12 +62,8 @@ export function checkGateBinding(
 ): GateBindingCheck {
   const v = expected.magmuxVersion || "?";
   const basis = gateBasisOf(listResult);
-  if (basis !== "declared" || !parseGateInput(listResult, 0)) {
-    return {
-      ok: false,
-      detail: `input_gate_unavailable: magmux ${v} did not gate pane 0 (gateBasis ${basis ?? "none"})`,
-    };
-  }
+  if (basis !== "declared" || !parseGateInput(listResult, 0))
+    return { ok: false, detail: unavailableDetail(v, basis) };
   const b = parseGateBinding(listResult);
   const ours = normaliseTranscriptPath(expected.transcriptPath);
   const theirs = b?.transcriptPath ? normaliseTranscriptPath(b.transcriptPath) : null;

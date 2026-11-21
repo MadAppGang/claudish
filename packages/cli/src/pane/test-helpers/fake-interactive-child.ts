@@ -1426,9 +1426,35 @@ function onKey(ch: string): void {
   }
   if (ch === "\n") S.box += "\n";
   else if (ch === "\x7f" || ch === "\b") S.box = S.box.slice(0, -1);
-  else if (ch === "\x15") S.box = "";
+  else if (ch === "\x15") S.box = ctrlURowWise ? withoutLastRow(S.box) : "";
   else if (ch >= " ") S.box += ch;
   updateMenu();
+}
+
+/**
+ * `FAKE_CTRL_U=row`: ctrl-u deletes only the last wrapped row of the box, as Claude Code
+ * 2.1.330 does (measured: a 250-character line in a 200-column pane wraps onto two rows, one
+ * ctrl-u removes the second row, a second ctrl-u empties the box). Unset, ctrl-u empties it.
+ */
+const ctrlURowWise = env.FAKE_CTRL_U === "row";
+
+/**
+ * The buffer with its last wrapped row (at the current width) removed. A last row that is
+ * not in the buffer means this model of the wrap is wrong: the child says so on its screen
+ * and on stderr and exits 70, leaving the box as it was, so the test fails rather than
+ * passing on a box this mode emptied by accident.
+ */
+function withoutLastRow(box: string): string {
+  if (!box) return box;
+  if (box.endsWith("\n")) return box.slice(0, -1);
+  const last = (wrapPrompt(box, COLS).at(-1) ?? "").slice(2);
+  const at = last ? box.lastIndexOf(last) : -1;
+  if (at >= 0) return box.slice(0, at);
+  const msg = `FAKE_CTRL_U=row: last wrapped row ${JSON.stringify(last)} not found in the box ${JSON.stringify(box)} at ${COLS} columns`;
+  process.stdout.write(`\r\n${msg}\r\n`);
+  process.stderr.write(`${msg}\n`);
+  void quit(70);
+  return box;
 }
 
 // PTY reads can end anywhere in an escape sequence, even after its initial ESC.
