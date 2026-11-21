@@ -1520,7 +1520,8 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       this.fire(block.ev, { detail: block.detail });
       return;
     }
-    if (now - this.startedAtMs >= (this.o.bootTimeoutMs ?? BOOT_TIMEOUT_MS)) {
+    const elapsedMs = now - this.startedAtMs;
+    if (elapsedMs >= (this.o.bootTimeoutMs ?? BOOT_TIMEOUT_MS)) {
       const blocked =
         this.screen.seq > 0 &&
         settled &&
@@ -1529,9 +1530,14 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       const gate = g
         ? `gate: ${g.reason ?? "ready"}${g.detail ? ` (${g.detail})` : ""}`
         : "gate: unknown";
+      // A child that never drew a frame has no screen tail; say that instead of an empty line.
+      const evidence =
+        this.screen.seq === 0
+          ? `Claude Code drew nothing in ${Math.round(elapsedMs / 1000)} s`
+          : screenTailOf(this.screen);
       this.fire("boot_deadline", {
         reason: blocked ? "boot_blocked" : "boot_timeout",
-        detail: `${screenTailOf(this.screen)}\n${gate}`,
+        detail: `${evidence}\n${gate}`,
       });
     }
   }

@@ -571,8 +571,9 @@ export const NEXT_STEP: Record<FailureReason, string> = {
     "you stopped this slot; nothing is wrong with it. Re-run it if you still want its vote",
   timeout: "grid mode only — magmux ended the pane. The orchestrator has no deadline",
   boot_timeout:
-    "the child never reached its prompt and its screen kept changing — read the evidence " +
-    "screen; usually a slow catalog fetch or MCP server start",
+    "the child never reached its prompt before the boot deadline — read the evidence " +
+    "screen: an empty one means Claude Code drew nothing (a stalled machine or a hung " +
+    "start); one that kept changing is usually a slow MCP server start",
   boot_blocked:
     "a screen claudish does not know stopped boot — its text is in `what`; answer it once " +
     "interactively in that directory",
