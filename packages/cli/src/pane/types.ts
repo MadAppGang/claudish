@@ -14,6 +14,13 @@ import type { SubagentRow } from "./view-contract.js";
 export interface SettledTurn {
   index: number;
   answer: string;
+  /** the last content block of the turn's last assistant API response (TurnView.lastResponseEnd);
+   * absent where the turn was not read from the transcript or no response was recorded */
+  lastResponseEnd?: { blockType: string; text: string | null };
+  /** the turn's start: its witness record's time (TurnView.acceptedAt), ISO; absent where the
+   * turn was not read from the transcript. An in-band error the proxy recorded before it
+   * belongs to an earlier turn */
+  acceptedAt?: string | null;
   apiError: TurnView["apiError"];
   stopReason: string | null;
   captureSource: "transcript" | "screen" | "none";
@@ -48,7 +55,7 @@ export function chainAnswerOf(t: Pick<SettledTurn, "chainAnswers" | "answer">): 
 }
 
 export interface FinalVerdict {
-  state: "COMPLETED" | "EMPTY" | "FAILED";
+  state: "COMPLETED" | "EMPTY" | "SHAPE_MISMATCH" | "FAILED";
   reason?: FailureReason;
   detail?: string;
 }

@@ -76,6 +76,11 @@ export interface TurnView {
   /** assistant text blocks after the witness, in order (excl. isApiErrorMessage); for a file-delivered
    * turn only those after the Read result that completed coverage */
   assistantText: string[];
+  /** the last content block of the turn's last assistant API response (records grouped by
+   * `message.id`): its type, and its text when it is a text block; never cut at the task Read, so
+   * an error written as that response's final text is seen. null with no such response, or when
+   * the last one is an `isApiErrorMessage` record */
+  lastResponseEnd: { blockType: string; text: string | null } | null;
   lastAssistant: { messageId: string; stopReason: string | null; isApiError: boolean } | null;
   turnDurationAfterLast: { pendingBackgroundAgentCount: number | null } | null;
   /** the record time (ISO) of the `turn_duration` behind `turnDurationAfterLast`; null without one */
@@ -170,6 +175,8 @@ interface TurnState {
     isApiError: boolean;
     offset: number;
   } | null;
+  /** the last non-empty content block seen in `lastAssistant`'s response */
+  lastBlock: { blockType: string; text: string | null } | null;
   td: { pendingBackgroundAgentCount: number | null } | null;
   tdAt: string | null;
   stopHookAfterLast: boolean;
@@ -475,8 +482,10 @@ function isComplete(rs: ReadState): boolean {
 function applyAssistant(state: FollowerState, t: TurnState, r: Rec, offset: number): void {
   const m = r.message ?? {};
   const isApiError = r.isApiErrorMessage === true;
+  const messageId = String(m.id ?? "");
+  trackResponseEnd(t, messageId, isApiError ? [] : (m.content ?? []));
   t.lastAssistant = {
-    messageId: String(m.id ?? ""),
+    messageId,
     stopReason: m.stop_reason ?? null,
     isApiError,
     offset,
@@ -498,6 +507,25 @@ function applyAssistant(state: FollowerState, t: TurnState, r: Rec, offset: numb
       if (t.steps.length > RECENT_STEP_LIMIT) t.steps.shift();
     }
   }
+}
+
+/**
+ * Keep the last content block of the response this record belongs to. Claude Code writes one
+ * record per content block under one `message.id`; a record with no id is its own response.
+ * Runs before `lastAssistant` moves to this record.
+ */
+function trackResponseEnd(t: TurnState, messageId: string, content: Rec[]): void {
+  if (!messageId || t.lastAssistant?.messageId !== messageId) t.lastBlock = null;
+  for (const b of content) t.lastBlock = contentBlockOf(b) ?? t.lastBlock;
+}
+
+/** A content block's type and text; null for a malformed or empty text block. */
+function contentBlockOf(b: Rec): { blockType: string; text: string | null } | null {
+  if (typeof b?.type !== "string") return null;
+  if (b.type !== "text") return { blockType: b.type, text: null };
+  return typeof b.text === "string" && b.text.length > 0
+    ? { blockType: "text", text: b.text }
+    : null;
 }
 
 function apiErrorOf(r: Rec): TurnView["apiError"] {
@@ -755,6 +783,7 @@ function newTurnState(t: {
     texts: [],
     writes: [],
     lastAssistant: null,
+    lastBlock: null,
     td: null,
     tdAt: null,
     stopHookAfterLast: false,
@@ -778,6 +807,13 @@ function newTurnState(t: {
   };
 }
 
+/** The last content block of the turn's last assistant response; null after an API error record. */
+function lastResponseEndOf(t: TurnState): TurnView["lastResponseEnd"] {
+  const last = t.lastAssistant;
+  if (!last || last.isApiError) return null;
+  return t.lastBlock;
+}
+
 export function turnView(t: TurnState): TurnView {
   const rs = t.read;
   let texts = t.texts;
@@ -799,6 +835,7 @@ export function turnView(t: TurnState): TurnView {
     acceptedAt: t.acceptedAt,
     acceptedOffset: t.acceptedOffset,
     assistantText: texts.map((x) => x.text),
+    lastResponseEnd: lastResponseEndOf(t),
     lastAssistant: t.lastAssistant
       ? {
           messageId: t.lastAssistant.messageId,

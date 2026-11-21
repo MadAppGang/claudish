@@ -165,6 +165,7 @@ import {
   agentCountMismatch,
   decideSettle,
 } from "./settle-rule.js";
+import { type TurnCore, settledTurnCoreOf } from "./settled-turn.js";
 import {
   type Phase,
   type PhaseEvent,
@@ -545,9 +546,6 @@ interface ResizeWaiter {
   reject: (e: unknown) => void;
 }
 
-/** A settled turn before the chain fields are added (§4.10). */
-type TurnCore = Omit<SettledTurn, "chainAnswers" | "chainDelivery" | "hookTurns" | "hookCaused">;
-
 interface ScreenTurn {
   echo: string;
   acceptedAt: number;
@@ -566,6 +564,7 @@ const EVENT_REASON: Partial<Record<PhaseEvent, FailureReason>> = {
 const VERDICT_EVENT: Record<FinalVerdict["state"], PhaseEvent> = {
   COMPLETED: "verdict_completed",
   EMPTY: "verdict_empty",
+  SHAPE_MISMATCH: "verdict_shape_mismatch",
   FAILED: "verdict_failed",
 };
 
@@ -1323,6 +1322,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       case "CANCELLED":
       case "TIMEOUT":
       case "EMPTY":
+      case "SHAPE_MISMATCH":
         break;
       default:
         assertNever(phase);
@@ -2633,33 +2633,13 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     decision: SettleDecision & { settled: true },
     note: (key: string) => void = (key) => this.anomaly(key)
   ): TurnCore {
-    const d = this.currentDelivery;
-    // R3-M3: a file-carrying COMMAND turn hands its text to the command's own expansion,
-    // which may never Read the pointer file (directly or through a subagent). Zero Reads is
-    // then unverified coverage, not a failed read: complete null, never prompt_not_read.
-    const unverified = d?.mode === "command" && !!t.delivery && t.readCoverage.reads === 0;
-    if (unverified) note("read_coverage_unverified");
-    return {
-      index: t.index,
-      // a local command's answer is its own stdout: it has no assistant message (path L)
-      answer:
-        decision.by === "local_command"
-          ? (t.localCommandOutput ?? "")
-          : t.assistantText.join("\n\n"),
-      apiError: t.apiError,
-      stopReason: decision.stopReason,
-      captureSource: "transcript",
-      settledBy: decision.by,
+    // R3-M3: a file-carrying COMMAND turn with zero Reads is unverified coverage (settled-turn.ts).
+    const { core, unverified } = settledTurnCoreOf(t, decision, {
+      delivery: this.currentDelivery,
       shape: this.shape,
-      delivery: {
-        mode: d && d.mode !== "refused" ? d.mode : "typed",
-        linesTotal: t.delivery ? t.delivery.lines : null,
-        linesRead: t.delivery ? t.readCoverage.linesReturned : null,
-        complete: t.delivery && !unverified ? t.readCoverage.complete : null,
-        preambleBytes: t.preambleBytes,
-      },
-      writtenFiles: decision.by === "local_command" ? [] : t.writtenFiles,
-    };
+    });
+    if (unverified) note("read_coverage_unverified");
+    return core;
   }
 
   private settle(
@@ -3379,6 +3359,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       case "CANCELLED":
       case "TIMEOUT":
       case "EMPTY":
+      case "SHAPE_MISMATCH":
         return null;
       default:
         return assertNever(phase);

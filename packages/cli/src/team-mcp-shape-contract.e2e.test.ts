@@ -12,7 +12,7 @@
  * Every slot is an interactive pane (the fake interactive child, via CLAUDISH_BIN, in
  * a real headless magmux). The answer `require_pattern` is matched against is the
  * turn's assistant text read from the transcript. A model that answers without the
- * shape is EMPTY `shape_mismatch`; the same model with no pattern is COMPLETED; a
+ * shape is SHAPE_MISMATCH `shape_mismatch`; the same model with no pattern is COMPLETED; a
  * pattern contained in the answer passes.
  */
 
@@ -353,7 +353,7 @@ describe.skipIf(!MAGMUX)("MCP team shape contract", () => {
           "```vote"
         );
         expect(mismatched).toBeDefined();
-        expect(mismatched?.state).toBe("EMPTY");
+        expect(mismatched?.state).toBe("SHAPE_MISMATCH");
         expect(mismatched?.error?.reason).toBe("shape_mismatch");
 
         // This control is load-bearing: the same child must succeed when no shape is

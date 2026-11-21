@@ -10,10 +10,10 @@
  *      for concurrent conversations sharing the same handler
  */
 
-import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
 import { TOOL_NAME_SHAPE } from "../../adapters/tool-name-utils.js";
 import { type PlanUsage, isPlanStale } from "../../auth/quota/types.js";
+import { writeFileAtomic } from "../../fs-atomic.js";
+import { type InBandApiErrorRecord, inBandErrorCodeKey } from "../../in-band-api-error.js";
 import { log } from "../../logger.js";
 import { hasProviderPrefix } from "../../providers/model-parser.js";
 import { resolveTokenFilePath } from "../../session/token-file.js";
@@ -170,6 +170,12 @@ interface TokenFileTotals {
   totalTokens: number;
   toolCalls: Map<string, number>;
   startedAt: number;
+  /**
+   * The last in-band API error a request of this file wrote (`recordInBandApiError`),
+   * published as `in_band_api_error`. Per file, like the totals, so a /model switch to
+   * another tracker keeps it.
+   */
+  inBandApiError?: InBandApiErrorRecord;
 }
 
 const tokenFileTotals = new Map<string, TokenFileTotals>();
@@ -366,6 +372,22 @@ export class TokenTracker {
     if (next === this.lastAllowanceSerialized) return;
     this.allowanceLabel = label;
     this.lastAllowanceSerialized = next;
+    this.rewrite();
+  }
+
+  /**
+   * Record that a request of this session ended its stream in an in-band API error
+   * (`onApiError`, the `[API Error: <code> <message>]` text block), and write the file.
+   * Only the code and the time are kept: the message is upstream text and the token file
+   * is not a redacted surface. The code is stored as `inBandErrorCodeKey` keys it (its
+   * first word, or `malformed` when that is not an identifier or redaction changes it), the key a marker's parsed
+   * code is compared by. A team slot or one-shot session reads a marker block as an `api_error` only with this
+   * record, since a model can write the same text.
+   */
+  recordInBandApiError(code: string): void {
+    if (this.config.writesTokenFile === false) return;
+    const totals = this.fileTotals(resolveTokenFilePath(this.port));
+    totals.inBandApiError = { code: inBandErrorCodeKey(code), at: new Date().toISOString() };
     this.rewrite();
   }
 
@@ -670,7 +692,8 @@ export class TokenTracker {
    * `inputTokens` is the context of the request being written: this tracker's
    * `total_tokens` share is that context plus its own cumulative output.
    */
-  private addToFileTotals(path: string, inputTokens: number): TokenFileTotals {
+  /** The totals of the token file at `path`, created empty on first use. */
+  private fileTotals(path: string): TokenFileTotals {
     let totals = tokenFileTotals.get(path);
     if (!totals) {
       totals = {
@@ -683,6 +706,11 @@ export class TokenTracker {
       };
       tokenFileTotals.set(path, totals);
     }
+    return totals;
+  }
+
+  private addToFileTotals(path: string, inputTokens: number): TokenFileTotals {
+    const totals = this.fileTotals(path);
     totals.startedAt = Math.min(totals.startedAt, this.startedAt);
     totals.totalCost += this.sessionTotalCost - this.reported.totalCost;
     totals.billedInputTokens += this.sessionBilledInputTokens - this.reported.billedInputTokens;
@@ -821,13 +849,18 @@ export class TokenTracker {
         };
       }
 
+      if (totals.inBandApiError) data.in_band_api_error = { ...totals.inBandApiError };
+
       // CLAUDISH_TOKEN_FILE lets a parent process dictate where these stats land.
       // The default path is keyed to a port the child picks for itself, so an
       // orchestrator spawning N children has no way to tell which file belongs
       // to which model. Pointing each child at a known path is what makes
       // per-model token/cost reporting possible.
-      mkdirSync(dirname(outPath), { recursive: true });
-      writeFileSync(outPath, JSON.stringify(data), "utf-8");
+      // A temp file and a rename, never an in-place rewrite: a reader (a team slot's
+      // settle read of `in_band_api_error`, the status line) that lands during the write
+      // sees the whole old file or the whole new one. A truncated file parses as "not
+      // written yet", and the error record it held would be lost to that read.
+      writeFileAtomic(outPath, JSON.stringify(data));
     } catch (e) {
       log(`[TokenTracker] Error writing token file: ${e}`);
     }

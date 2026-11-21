@@ -151,6 +151,7 @@ describe("exported session seams (pure)", () => {
       ["COMPLETED", null, "completed", null],
       ["FAILED", null, "failed", null],
       ["EMPTY", null, "failed", null],
+      ["SHAPE_MISMATCH", null, "failed", null],
       ["CANCELLED", null, "cancelled", null],
       ["TIMEOUT", null, "timeout", null],
     ];

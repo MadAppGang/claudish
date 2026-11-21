@@ -1084,3 +1084,66 @@ describe("MTL-229 written files after the task Read", () => {
     expect(view({ pending: true }).writtenFiles).toEqual([]);
   });
 });
+
+describe("the turn's last API response", () => {
+  const PEAR = "Reply with exactly PEAR and nothing else.";
+  const MARKER =
+    "\n\n[API Error: cyber_policy This content was flagged for possible cybersecurity risk.]";
+
+  /** The captured pear turn, its two records rewritten into responses of the given ids and texts. */
+  function view(responses: Array<{ id: string; texts: string[]; after?: Rec[] }>) {
+    const records = transcriptRecords("pear-hookless");
+    const state = initialFollowerState((p) => p);
+    openTurnState(state, { index: 1, offset: 0, witness: text(PEAR) });
+    let offset = 1;
+    const feed = (r: Rec) => applyRecord(state, r, offset++);
+    feed(records[witnessIndex("pear-hookless", PEAR)]!);
+    for (const [n, resp] of responses.entries()) {
+      // Claude Code writes one record per content block, all under the response's message.id.
+      const thinking = structuredClone(records[18]!);
+      thinking.uuid = `thinking-${n}`;
+      thinking.message.id = resp.id;
+      feed(thinking);
+      for (const [k, t] of resp.texts.entries()) {
+        const rec = structuredClone(records[19]!);
+        rec.uuid = `text-${n}-${k}`;
+        rec.message.id = resp.id;
+        rec.message.content = [{ type: "text", text: t }];
+        feed(rec);
+      }
+      for (const [k, block] of (resp.after ?? []).entries()) {
+        const rec = structuredClone(records[19]!);
+        rec.uuid = `after-${n}-${k}`;
+        rec.message.id = resp.id;
+        rec.message.content = [block];
+        feed(rec);
+      }
+    }
+    return turnView(state.turns[0]!);
+  }
+
+  test("holds only the text blocks of the last message.id, after the turn's earlier progress", () => {
+    const v = view([
+      { id: "msg_progress", texts: ["Reading the module first."] },
+      { id: "msg_final", texts: [MARKER] },
+    ]);
+    expect(v.assistantText).toEqual(["Reading the module first.", MARKER]);
+    expect(v.lastResponseEnd).toEqual({ blockType: "text", text: MARKER });
+  });
+
+  test("ends on the last text block of a response written as several records", () => {
+    const v = view([{ id: "msg_final", texts: ["one", MARKER] }]);
+    expect(v.lastResponseEnd).toEqual({ blockType: "text", text: MARKER });
+  });
+
+  test("ends on a later non-text block of the same response, not the marker before it", () => {
+    const v = view([
+      {
+        id: "msg_final",
+        texts: [MARKER],
+        after: [{ type: "tool_use", id: "toolu_after", name: "Bash", input: { command: "ls" } }],
+      },
+    ]);
+    expect(v.lastResponseEnd).toEqual({ blockType: "tool_use", text: null });
+  });
+});

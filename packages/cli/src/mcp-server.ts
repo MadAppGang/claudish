@@ -136,6 +136,7 @@ import {
   listTeamRuns,
   listTeamViewSlots,
   preflightTeamRun,
+  readSessionInput,
   readTeamInputFile,
   readTeamStatus,
   replayTargetOfTeamSlot,
@@ -1311,7 +1312,8 @@ function failureLines(id: string, m: ModelStatus): string[] {
 export function formatTeamResult(status: TeamStatus, sessionPath: string): string {
   const entries = Object.entries(status.models).sort(([a], [b]) => a.localeCompare(b));
   // Everything that is not COMPLETED belongs with the failures: EMPTY (the turn settled
-  // but its answer is unusable), CANCELLED (the caller stopped it), FAILED and TIMEOUT.
+  // but its answer is unusable), SHAPE_MISMATCH (an answer that misses require_pattern),
+  // CANCELLED (the caller stopped it), FAILED and TIMEOUT.
   // Filing EMPTY under "succeeded" is what forced callers to infer failure from
   // outputSize by hand.
   const succeeded = entries.filter(([, m]) => m.state === "COMPLETED");
@@ -2376,7 +2378,7 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
             "user's Claude subscription through the native passthrough (no API key, no " +
             "translation), and — unlike a Task agent — they are covered by require_pattern, " +
             "so a native reviewer that never produced the required shape is reported " +
-            "EMPTY 'shape_mismatch' instead of silently succeeding.",
+            "SHAPE_MISMATCH (reason 'shape_mismatch') instead of silently succeeding.",
         },
         efforts: {
           type: "object",
@@ -2432,8 +2434,9 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
         require_pattern: {
           type: "string",
           description:
-            "Regex (no flags) the slot's answer MUST match, or the slot is reported EMPTY " +
-            "with reason 'shape_mismatch' instead of succeeded. The answer is the turn's " +
+            "Regex (no flags) the slot's answer MUST match, or the slot ends in state " +
+            "SHAPE_MISMATCH (reason 'shape_mismatch') instead of COMPLETED; its answer is " +
+            "still in response-<slot>.md. A slot with no answer at all is EMPTY. The answer is the turn's " +
             "assistant text, read from the transcript; for a prompt delivered as a file it " +
             "starts after the child read that file, so `^` anchors to the answer's start. " +
             "Strongly recommended whenever your prompt mandates an output shape — e.g. " +
@@ -2592,11 +2595,8 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
         };
 
         /** The prompt the slots will get: `input`, else an input.md already in the dir. */
-        const promptText = (): string | undefined => {
-          if (input !== undefined) return input;
-          const existing = join(resolved, "input.md");
-          return existsSync(existing) ? readFileSync(existing, "utf-8") : undefined;
-        };
+        const promptText = (): string | undefined =>
+          input !== undefined ? input : readSessionInput(resolved);
 
         // No projectRulesReadable here: team children run in this process's cwd
         // (team-orchestrator.ts) and `path` must lie inside it, so they route by the

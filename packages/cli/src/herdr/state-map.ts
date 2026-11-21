@@ -29,6 +29,7 @@ const TERMINAL_STATES: ReadonlySet<string> = new Set([
   "TIMEOUT",
   "CANCELLED",
   "EMPTY",
+  "SHAPE_MISMATCH",
 ]);
 
 /** One line, no control characters, at most `max` characters. */

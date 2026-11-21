@@ -25,7 +25,11 @@ function modelStatus(
   const id = options.id ?? "01";
   const isCompleted = state === "COMPLETED";
   const isFailure =
-    state === "FAILED" || state === "TIMEOUT" || state === "EMPTY" || state === "CANCELLED";
+    state === "FAILED" ||
+    state === "TIMEOUT" ||
+    state === "EMPTY" ||
+    state === "SHAPE_MISMATCH" ||
+    state === "CANCELLED";
   const withError = options.withError ?? isFailure;
 
   let error: ModelError | undefined;
@@ -170,9 +174,11 @@ describe("formatTeamResult", () => {
           ? "TIMEOUT"
           : reason === "cancelled"
             ? "CANCELLED"
-            : ["shape_mismatch", "empty_output", "refused"].includes(reason)
-              ? "EMPTY"
-              : "FAILED";
+            : reason === "shape_mismatch"
+              ? "SHAPE_MISMATCH"
+              : ["empty_output", "refused"].includes(reason)
+                ? "EMPTY"
+                : "FAILED";
       const output = formatTeamResult(
         status({ "01": modelStatus(state, { id: "01", reason }) }),
         SESSION_PATH
@@ -238,7 +244,7 @@ describe("formatTeamResult", () => {
   it("warns that a shape-mismatch answer was not produced and must not become a vote", () => {
     const output = formatTeamResult(
       status({
-        "01": modelStatus("EMPTY", { id: "01", reason: "shape_mismatch" }),
+        "01": modelStatus("SHAPE_MISMATCH", { id: "01", reason: "shape_mismatch" }),
       }),
       SESSION_PATH
     );
@@ -252,7 +258,7 @@ describe("formatTeamResult", () => {
     const output = formatTeamResult(
       status({
         "01": modelStatus("COMPLETED", { id: "01" }),
-        "02": modelStatus("EMPTY", { id: "02", reason: "shape_mismatch" }),
+        "02": modelStatus("SHAPE_MISMATCH", { id: "02", reason: "shape_mismatch" }),
       }),
       SESSION_PATH
     );
@@ -260,7 +266,7 @@ describe("formatTeamResult", () => {
 
     expect(output).toContain("status: partial — 1/2 succeeded");
     expect(output).not.toContain("2/2 succeeded");
-    expect(failures).toContain("02  EMPTY");
+    expect(failures).toContain("02  SHAPE_MISMATCH");
     expect(failures).toContain("reason=shape_mismatch");
   });
 

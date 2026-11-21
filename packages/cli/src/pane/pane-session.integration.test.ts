@@ -357,7 +357,7 @@ describe.skipIf(!MAGMUX)(
             decide: (turn) =>
               /^VERDICT:/.test(turn.answer)
                 ? { state: "COMPLETED" }
-                : { state: "EMPTY", reason: "shape_mismatch" },
+                : { state: "SHAPE_MISMATCH", reason: "shape_mismatch" },
           });
           const snap = await finish(r);
           expect(snap.state).toBe("COMPLETED");

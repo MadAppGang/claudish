@@ -1261,9 +1261,18 @@ A peer's Claude Code mod polls claudish at about 1 Hz to draw every slot and ses
 types live in **`pane/contract.ts`**, the single source; within version 1 no field changes meaning or
 type and new fields may only be added.
 
-- `SlotState` is a closed set of nine: STARTING, RUNNING, AWAITING_INPUT, AWAITING_PERMISSION
-  (non-terminal), COMPLETED, FAILED, CANCELLED, TIMEOUT, EMPTY (terminal). `FailureReason` is a
-  closed set of fifteen, produced by both owners.
+- `SlotState` is a closed set of ten: STARTING, RUNNING, AWAITING_INPUT, AWAITING_PERMISSION
+  (non-terminal), COMPLETED, FAILED, CANCELLED, TIMEOUT, EMPTY, SHAPE_MISMATCH (terminal).
+  `FailureReason` is a closed set of fifteen, produced by both owners. SHAPE_MISMATCH (a team slot
+  whose answer missed `require_pattern`, reason `shape_mismatch`; a session never reaches it) was
+  added within v1 with no version bump, as `resize` and `allowance` were: the installed mod
+  declines any answer whose `contract_version !== 1` (see the `allowance` capability below), so a
+  v2 would blank every user's run band. `CONTRACT_VERSION` stays 1.
+- **Readers use explicit lists.** Every reader of `state` decides "finished" from its own list
+  of terminal states (claudish's `herdr/app-mod/model.ts` `isFinished`, `runs.ts`,
+  `herdr/state-map.ts`, and the external status mod), so a `state` value a reader does not know
+  reads as NOT finished. A new terminal state therefore ships after the readers know it, reader
+  first: within v1 and with no version bump, as SHAPE_MISMATCH did.
 - A `SlotRow` per team slot is also the base of every `list_sessions` row: state, reason, tokens in
   and out, `cost_usd` (always null for native Claude routes — Claude Code's own cost is API-rate
   pricing, fictional spend for a subscription user; D12), tool calls, turns completed,

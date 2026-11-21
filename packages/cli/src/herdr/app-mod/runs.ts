@@ -25,6 +25,7 @@ export const STATE_LOOK: Readonly<Record<SlotState, { code: string; tone: Tone; 
   FAILED: { code: "ERR", tone: "fail", group: "failed" },
   TIMEOUT: { code: "TMO", tone: "fail", group: "failed" },
   EMPTY: { code: "NIL", tone: "fail", group: "failed" },
+  SHAPE_MISMATCH: { code: "SHP", tone: "fail", group: "failed" },
   CANCELLED: { code: "STP", tone: "stopped", group: "stopped" },
 };
 
@@ -35,6 +36,7 @@ const TERMINAL: ReadonlySet<SlotState> = new Set([
   "TIMEOUT",
   "CANCELLED",
   "EMPTY",
+  "SHAPE_MISMATCH",
 ]);
 const DASH = "—";
 /** at least this many run tabs, however narrow the panel */

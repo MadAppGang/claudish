@@ -13,6 +13,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 // contract.ts directly, not the pane facade: pane/accounting.ts imports this file.
+import type { InBandApiErrorRecord } from "./in-band-api-error.js";
 import { isTerminalState } from "./pane/contract.js";
 import type { ModelStatus, TeamManifest, TeamStatus } from "./team-orchestrator.js";
 
@@ -39,6 +40,12 @@ export interface ModelTokenStats {
    * not just a total — see `TokenTracker.getToolCalls`.
    */
   tool_calls?: { name?: string; count?: number }[];
+  /**
+   * The last in-band API error the proxy wrote into the stream: its code and ISO time,
+   * never the message (`TokenTracker.recordInBandApiError`). The proof a classifier needs
+   * to read a final `[API Error: ...]` text block as an error, not as the model's text.
+   */
+  in_band_api_error?: InBandApiErrorRecord;
 }
 
 /** Directory holding one token file per model, inside the session dir. */
@@ -63,7 +70,11 @@ export function tokenFileFor(sessionPath: string, anonId: string): string {
 export function readTokenStatsAt(path: string): ModelTokenStats | null {
   if (!existsSync(path)) return null;
   try {
-    return JSON.parse(readFileSync(path, "utf-8")) as ModelTokenStats;
+    const record = JSON.parse(readFileSync(path, "utf-8")) as ModelTokenStats;
+    // The launch's window-only seed (seedTokenFileWindow) carries neither counts nor a
+    // provider: the child has not written yet.
+    if (record?.total_tokens === undefined && record?.provider_name === undefined) return null;
+    return record;
   } catch {
     // A partially-written file is expected — the child rewrites it on every
     // token update, so a read can land mid-write. Treat as "not ready yet".
@@ -112,6 +123,8 @@ function fmtState(state: ModelStatus["state"]): string {
       return "TIME";
     case "EMPTY":
       return "EMPT";
+    case "SHAPE_MISMATCH":
+      return "SHAP";
     case "STARTING":
       return "boot";
     case "AWAITING_INPUT":

@@ -61,7 +61,11 @@ fails.
 
 **The verdict is the owner's (D8).** A one-shot session's settled turn is classified by
 `classifyRunOutput` with no byte floor and no pattern (`api_error`, `prompt_not_read`, `refused`,
-`empty_output`), and the session is terminal at that verdict, before its pane is reaped. An
+`empty_output`), and the session is terminal at that verdict, before its pane is reaped. The
+rule is the team's own (`oneShotVerdictOf` passes the turn's `lastResponseEnd` and the session
+token file's `in_band_api_error`), so a turn whose last API response ends in a text block that is
+only an in-band API error marker, which the session's proxy recorded during the turn, is
+`api_error` after any progress text; without that record the block is the model's text. An
 interactive session continues after each turn and fails only on an API-error turn (D20); a turn
 whose task file was not fully read records a `prompt_not_read` anomaly in `events.jsonl`. A question or a permission dialog waits for `send_input` (team fails it instead).
 Terminal states are absorbing: a late pane exit can never upgrade or overturn a CANCELLED or

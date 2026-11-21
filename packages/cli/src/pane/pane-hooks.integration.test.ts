@@ -182,7 +182,14 @@ async function until(pred: () => boolean, what: string, ms = 20_000): Promise<vo
   }
 }
 
-const TERMINAL: SlotState[] = ["COMPLETED", "FAILED", "CANCELLED", "TIMEOUT", "EMPTY"];
+const TERMINAL: SlotState[] = [
+  "COMPLETED",
+  "FAILED",
+  "CANCELLED",
+  "TIMEOUT",
+  "EMPTY",
+  "SHAPE_MISMATCH",
+];
 
 interface Chan {
   t: PaneTestEnv;
@@ -640,7 +647,7 @@ wait $child
 
     for (const [pattern, state] of [
       ["^VOTE", "COMPLETED"],
-      ["^NOPE", "EMPTY"],
+      ["^NOPE", "SHAPE_MISMATCH"],
     ] as const) {
       test(
         `H-11 require_pattern ${pattern} on a chain: one verdict, response A1\\n\\nA2, ${state}`,
@@ -659,7 +666,7 @@ wait $child
             const status = await x.handle.done;
             expect(x.response()).toBe("thinking about it\n\nVOTE: yes");
             expect(status.models[x.slot]?.state).toBe(state);
-            if (state === "EMPTY")
+            if (state === "SHAPE_MISMATCH")
               expect(status.models[x.slot]?.error?.reason).toBe("shape_mismatch");
           } finally {
             await teamDone(x);

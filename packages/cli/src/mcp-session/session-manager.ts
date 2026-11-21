@@ -56,6 +56,7 @@ import {
   reportOwnerWithoutHooks,
   sessionHooksNeedBinding,
 } from "../hooks/session/binding.js";
+import type { InBandApiErrorRecord } from "../in-band-api-error.js";
 import {
   type Accounting,
   type CaptureResult,
@@ -374,7 +375,8 @@ const INHERITED_SETTINGS = "inherited-settings.json";
 // "hook": a settled turn held while session hooks run (§7.3); not a tool
 const NON_TOOL_ACTIVITY = new Set(["thinking", "background", "finishing", "hook"]);
 
-/** `meta.json` `status` for each terminal state (§20.1): EMPTY is a failure to the monitor. */
+/** `meta.json` `status` for each terminal state (§20.1): EMPTY and SHAPE_MISMATCH are failures
+ * to the monitor. */
 const META_STATUS: Record<SlotState, string> = {
   STARTING: "starting",
   RUNNING: "running",
@@ -383,6 +385,7 @@ const META_STATUS: Record<SlotState, string> = {
   COMPLETED: "completed",
   FAILED: "failed",
   EMPTY: "failed",
+  SHAPE_MISMATCH: "failed",
   CANCELLED: "cancelled",
   TIMEOUT: "timeout",
 };
@@ -718,6 +721,35 @@ function unknownSession(sessionId: string): ContractErrorException {
     "unknown_session",
     `no session ${JSON.stringify(sessionId)} is held by this server`
   );
+}
+
+/**
+ * A one-shot session's settled turn, classified by the team's rule with no byte floor and no
+ * pattern: a turn whose last API response ends in a text block that is exactly an in-band API
+ * error marker failed, whatever progress text came before it, when `proxyInBandError` (the
+ * session's token file `in_band_api_error`, written by the session's own proxy) records that
+ * code during the turn; without it the block is the model's text. A hook-extended turn chain
+ * is classified as one answer, with the CHAIN HEAD's prompt-read result (§4.7 rule 9).
+ * Without hooks both equal the turn's own.
+ */
+export function oneShotVerdictOf(
+  turn: SettledTurn,
+  proxyInBandError: InBandApiErrorRecord | null = null
+): FinalVerdict {
+  const v = classifyRunOutput({
+    answer: chainAnswerOf(turn),
+    lastResponseEnd: turn.lastResponseEnd,
+    proxyInBandError,
+    turnStartedAt: turn.acceptedAt ?? null,
+    apiError: turn.apiError,
+    stopReason: turn.stopReason,
+    promptRead: turn.chainDelivery,
+    minOutputBytes: 0,
+  });
+  if (v) return { state: v.state, reason: v.reason, detail: v.detail };
+  return turn.stopReason === "max_tokens"
+    ? { state: "COMPLETED", detail: TRUNCATION_NOTE }
+    : { state: "COMPLETED" };
 }
 
 export class SessionManager {
@@ -1262,21 +1294,8 @@ export class SessionManager {
     this.appendAnswer(entry, turn.index, turn.answer);
     // The pane's shape at the settle, not entry.info's copy: a send_input whose own step
     // settles the turn has converted the session before sendInput could update the copy.
-    if (turn.shape === "one-shot") {
-      // A hook-extended turn chain is classified as one answer, with the CHAIN HEAD's
-      // prompt-read result (§4.7 rule 9). Without hooks both equal the turn's own.
-      const v = classifyRunOutput({
-        answer: chainAnswerOf(turn),
-        apiError: turn.apiError,
-        stopReason: turn.stopReason,
-        promptRead: turn.chainDelivery,
-        minOutputBytes: 0,
-      });
-      if (v) return { state: v.state, reason: v.reason, detail: v.detail };
-      return turn.stopReason === "max_tokens"
-        ? { state: "COMPLETED", detail: TRUNCATION_NOTE }
-        : { state: "COMPLETED" };
-    }
+    if (turn.shape === "one-shot")
+      return oneShotVerdictOf(turn, readTokenStatsAt(entry.tokenFile)?.in_band_api_error ?? null);
     if (turn.apiError) {
       const v = classifyRunOutput({ answer: turn.answer, apiError: turn.apiError });
       return { state: "FAILED", reason: "api_error", detail: v?.detail ?? "API error" };

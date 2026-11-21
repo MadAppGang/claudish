@@ -58,6 +58,8 @@ import {
 } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { claudeCodeConfigDir } from "../../auth/claude-code-facts.js";
+import { writeFileAtomic } from "../../fs-atomic.js";
+import { inBandErrorCodeKey, parseInBandApiError } from "../../in-band-api-error.js";
 import { projectDirNameFor } from "../../mcp-session/home-dir.js";
 import { wrapPrompt } from "./repl-wrap.js";
 
@@ -869,6 +871,33 @@ async function runScripted(sc: TurnScript, d: Delivered): Promise<void> {
   }
 }
 
+/**
+ * What the proxy does before an in-band marker reaches Claude Code: when `reply` is
+ * exactly one marker, record its code in the token file (`in_band_api_error`), keeping
+ * every other field and replacing the file atomically. No token file, no record. A file
+ * that holds only the launch's window seed gets the counts and provider every tracker
+ * write carries, or `readTokenStatsAt` reads it as not written yet.
+ */
+function recordProxyInBandError(reply: string): void {
+  const file = env.CLAUDISH_TOKEN_FILE;
+  const marker = parseInBandApiError(reply);
+  if (!file || !marker) return;
+  let data: Record<string, unknown> = {};
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(file, "utf-8"));
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed))
+      data = parsed as Record<string, unknown>;
+  } catch {
+    // No token file yet: the record starts one.
+  }
+  data.input_tokens ??= 0;
+  data.output_tokens ??= 0;
+  data.total_tokens ??= 0;
+  data.provider_name ??= "fake";
+  data.in_band_api_error = { code: inBandErrorCodeKey(marker.code), at: new Date().toISOString() };
+  writeFileAtomic(file, JSON.stringify(data, null, 2));
+}
+
 async function runScenario(name: string, d: Delivered): Promise<void> {
   const c = d.content;
   switch (name) {
@@ -894,6 +923,7 @@ async function runScenario(name: string, d: Delivered): Promise<void> {
       );
       if (env.FAKE_WRITE_DELETE === "1") unlinkSync(file);
       const reply = env.FAKE_WRITE_REPLY ?? "I wrote the deliverable to the requested file.";
+      if (env.FAKE_NO_PROXY_RECORD !== "1") recordProxyInBandError(reply);
       rec.text(reply);
       rec.td();
       showHistory(`⏺ ${reply}`, finishedRow());

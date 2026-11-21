@@ -262,8 +262,8 @@ every slot is terminal, not every pane reaped: `done` awaits each slot's
 
 `summarise` counts `COMPLETED` as ok, a terminal slot whose `error.reason` is
 `cancelled` as cancelled (every CANCELLED row carries it), and every other state —
-the non-terminal STARTING, RUNNING, AWAITING_INPUT and AWAITING_PERMISSION
-included — as failed; the verdict is `completed` when any slot is ok (the channel
+EMPTY and SHAPE_MISMATCH, and the non-terminal STARTING, RUNNING, AWAITING_INPUT and
+AWAITING_PERMISSION included — as failed; the verdict is `completed` when any slot is ok (the channel
 frame's rule), `cancelled` when all were cancelled. Only `run` writes a record:
 `run-and-judge` returns its verdict in the call, and `judge`/`status`/`list`/
 `capture`/`cancel`/`resize` start no work. `loadDiskRecord` returns null for a
