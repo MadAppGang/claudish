@@ -1142,7 +1142,9 @@ describe.skipIf(!MAGMUX)(
           const r = await start("tool_slow", {
             shape: "interactive",
             decide: () => "continue",
-            env: { FAKE_GAP_MS_TOOL: "1500" },
+            // The send must land while turn 1 is still RUNNING; a short tool gap lets
+            // turn 1 settle between two polls of a loaded event loop.
+            env: { FAKE_GAP_MS_TOOL: "4000" },
           });
           await until(r, (s) => s.activity === "Bash");
           expect(r.s.send("queued one")).toEqual({ ok: true, queued: 1 });
