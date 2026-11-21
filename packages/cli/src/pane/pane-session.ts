@@ -620,6 +620,8 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   private turnsCompleted = 0;
   private rewakeOfSettled = false;
   private settledChatOffset: number | null = null;
+  /** the settled turn was read from the follower's shadow view (`TurnView.unwitnessed`) */
+  private settledOnShadow = false;
   private lastChatOffset: number | null = null;
   private lastChatSeenAt = 0;
   private currentDelivery: Delivery | null = null;
@@ -1683,6 +1685,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     this.screenTurn = null;
     this.rewakeOfSettled = false;
     this.settledChatOffset = null;
+    this.settledOnShadow = false;
     this.turnAcceptedAt = null;
     this.witnessMissingCounted = false;
     this.abandonedIndex = null;
@@ -2614,7 +2617,8 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     // Code 2.1.282–2.1.285 write the command's own records into the settled turn.
     if (!t || this.settledChatOffset === null || this.exitRequested) return;
     // A background notification woke the model with no prompt of ours (D23): same turn.
-    if (t.lastChatOffset !== null && t.lastChatOffset > this.settledChatOffset) {
+    const off = this.chatOffsetSinceSettle(t);
+    if (off !== null && off > this.settledChatOffset) {
       this.rewakeOfSettled = true;
       this.fire("rewake");
       this.activity = "thinking";
@@ -2623,13 +2627,18 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
 
   /* ───────────────────────────── settle ───────────────────────────── */
 
-  private settledTurnOf(t: TurnView, decision: SettleDecision & { settled: true }): TurnCore {
+  /** `note` receives the anomalies the turn carries; a caller that may still not settle defers them. */
+  private settledTurnOf(
+    t: TurnView,
+    decision: SettleDecision & { settled: true },
+    note: (key: string) => void = (key) => this.anomaly(key)
+  ): TurnCore {
     const d = this.currentDelivery;
     // R3-M3: a file-carrying COMMAND turn hands its text to the command's own expansion,
     // which may never Read the pointer file (directly or through a subagent). Zero Reads is
     // then unverified coverage, not a failed read: complete null, never prompt_not_read.
     const unverified = d?.mode === "command" && !!t.delivery && t.readCoverage.reads === 0;
-    if (unverified) this.anomaly("read_coverage_unverified");
+    if (unverified) note("read_coverage_unverified");
     return {
       index: t.index,
       // a local command's answer is its own stdout: it has no assistant message (path L)
@@ -2663,7 +2672,13 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     this.finishTurn(this.settledTurnOf(t, decision), t.lastChatOffset, exitCode);
   }
 
-  private finishTurn(core: TurnCore, chatOffset: number | null, exitCode: number | null): void {
+  private finishTurn(
+    core: TurnCore,
+    chatOffset: number | null,
+    exitCode: number | null,
+    onShadow = false
+  ): void {
+    this.settledOnShadow = onShadow;
     if (this.hooks) {
       this.recordTurn(core, chatOffset, exitCode);
       return;
@@ -2976,13 +2991,24 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   private rewokeDuringHold(view: TranscriptView): boolean {
     const t = view.current;
     if (!t || this.settledChatOffset === null) return false;
-    if (t.lastChatOffset === null || t.lastChatOffset <= this.settledChatOffset) return false;
+    const off = this.chatOffsetSinceSettle(t);
+    if (off === null || off <= this.settledChatOffset) return false;
     this.endHold("rewake");
     this.heldTurn = null;
     this.rewakeOfSettled = true;
     this.fire("hold_rewake");
     this.activity = "thinking";
     return true;
+  }
+
+  /**
+   * The last chat offset of the view the settled turn was read from, compared against
+   * `settledChatOffset`: the shadow while a turn settled from it is still unwitnessed (new
+   * records fold there), otherwise the turn's own.
+   */
+  private chatOffsetSinceSettle(t: TurnView): number | null {
+    if (this.settledOnShadow && t.unwitnessed) return t.unwitnessed.lastChatOffset;
+    return t.lastChatOffset;
   }
 
   /** A sessionStart dispatch no hold took (§7.3 "other session events"). */
@@ -3068,7 +3094,9 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       return;
     }
     const st = this.screenTurn;
-    if (!st || !this.client) return;
+    if (!st) return;
+    if (this.settleUnwitnessedEnd(view, st)) return;
+    if (!this.client) return;
     const answer = screenAnswer(this.screen, st.echo);
     const apiError = this.screenApiError(st, answer);
     this.activity = "thinking";
@@ -3099,6 +3127,59 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       null,
       null
     );
+  }
+
+  /**
+   * A screen turn whose witness never arrives still ends at Claude Code's own end record:
+   * the `turn_duration` the follower folded from this turn's records past its offset
+   * (`TurnView.unwitnessed`), written after the screen turn began. The same `decideSettle`
+   * as a witnessed turn decides, so a background agent still pending, a pending tool or a
+   * waking record holds the turn open exactly as it does there. The answer is that
+   * transcript's assistant text; with none, the screen's, read from the live bottom of a
+   * connected client. The turn settles at the shadow's last chat offset, so a re-wake past
+   * it is seen while held or idle.
+   */
+  private settleUnwitnessedEnd(view: TranscriptView, st: ScreenTurn): boolean {
+    const u = view.current?.index === this.turnIndex ? view.current.unwitnessed : null;
+    if (!u?.turnDurationAfterLast || u.turnDurationAt === null) return false;
+    // an end record whose time cannot be read is never proven to follow the acceptance
+    const endedAt = Date.parse(u.turnDurationAt);
+    if (!Number.isFinite(endedAt) || endedAt < st.acceptedAt) return false;
+    const quiet = Date.now() - (view.lastAppendAt ?? st.acceptedAt);
+    const turn: TurnView = { ...u, acceptedAt: new Date(st.acceptedAt).toISOString() };
+    const decision = decideSettle({
+      turn,
+      session: view.session,
+      transcriptQuietMs: quiet,
+      chatQuietMs: quiet,
+      facts: this.corroborationFacts(),
+      paneExited: false,
+      secondaryQuietMs: this.secondaryQuietMs,
+      corroborationMs: this.corroborationMs,
+      corroborationGraceMs: this.t("gateGraceMs", GATE_GRACE_MS),
+    });
+    if (!decision.settled) return false;
+    // counted only once the turn really settles: the screen branch below may still wait
+    const notes: string[] = [];
+    let core = this.settledTurnOf(turn, decision, (key) => notes.push(key));
+    if (!core.answer && !core.apiError) {
+      // the screen and the scroll position are the last frame before a dropped client
+      if (!this.client || !this.screenViewLive()) return false;
+      const answer = screenAnswer(this.screen, st.echo);
+      core = {
+        ...core,
+        answer,
+        apiError: this.screenApiError(st, answer),
+        captureSource: "screen",
+      };
+      this.anomaly("screen_answer_may_be_truncated");
+    }
+    for (const key of notes) this.anomaly(key);
+    this.anomaly("unwitnessed_turn_duration");
+    for (const a of decision.anomalies) this.anomaly(a);
+    for (const cmd of turn.backgroundShellsOpen) this.anomaly(`background_shell_open: ${cmd}`);
+    this.finishTurn(core, u.lastChatOffset, null, true);
+    return true;
   }
 
   private errorLogPath(): string | null {

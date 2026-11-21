@@ -78,6 +78,8 @@ export interface TurnView {
   assistantText: string[];
   lastAssistant: { messageId: string; stopReason: string | null; isApiError: boolean } | null;
   turnDurationAfterLast: { pendingBackgroundAgentCount: number | null } | null;
+  /** the record time (ISO) of the `turn_duration` behind `turnDurationAfterLast`; null without one */
+  turnDurationAt: string | null;
   stopHookSummaryAfterLast: boolean;
   interruptAfterLast: { forToolUse: boolean } | null;
   /** a main-chain user record that wakes the model (task notification, Stop-hook feedback, an isMeta
@@ -114,6 +116,13 @@ export interface TurnView {
    * witness of a doubled submit (k > 1); null until accepted.
    */
   witnessCopies: number | null;
+  /**
+   * Before the witness: this turn's facts folded, by the same reducer, from every main-chain
+   * record past the turn's offset, as if the turn had been accepted there; its own
+   * `acceptedAt` is null and its `unwitnessed` null. A screen-read turn whose witness never
+   * arrives reads its end record here. null once the witness arrived.
+   */
+  unwitnessed: TurnView | null;
 }
 
 export interface SessionFacts {
@@ -162,6 +171,7 @@ interface TurnState {
     offset: number;
   } | null;
   td: { pendingBackgroundAgentCount: number | null } | null;
+  tdAt: string | null;
   stopHookAfterLast: boolean;
   interrupt: { forToolUse: boolean } | null;
   waking: boolean;
@@ -180,6 +190,8 @@ interface TurnState {
   steps: SlotStep[];
   unwitnessedChat: number | null;
   witnessCopies: number | null;
+  /** the records past the offset folded as if accepted, until the witness arrives */
+  shadow: TurnState | null;
 }
 
 export interface FollowerState {
@@ -471,6 +483,7 @@ function applyAssistant(state: FollowerState, t: TurnState, r: Rec, offset: numb
   };
   t.lastChatOffset = offset;
   t.td = null;
+  t.tdAt = null;
   t.stopHookAfterLast = false;
   t.interrupt = null;
   t.waking = false;
@@ -642,11 +655,20 @@ export function applyRecord(
 
   if (t.acceptedAt === null) {
     acceptIfWitness(t, r, offset);
-    if (t.acceptedAt === null && t.unwitnessedChat === null && wakesModel(r))
-      t.unwitnessedChat = offset;
+    if (t.acceptedAt !== null) {
+      t.shadow = null;
+      return state;
+    }
+    if (t.unwitnessedChat === null && wakesModel(r)) t.unwitnessedChat = offset;
+    if (t.shadow) foldTurnRecord(state, t.shadow, r, offset);
     return state;
   }
+  foldTurnRecord(state, t, r, offset);
+  return state;
+}
 
+/** Fold one main-chain record into an accepted turn (or an unwitnessed turn's shadow). */
+function foldTurnRecord(state: FollowerState, t: TurnState, r: Rec, offset: number): void {
   if (r.type === "assistant") applyAssistant(state, t, r, offset);
   else if (r.type === "user") applyUser(t, r, offset);
   else if (isLocalCommandSystem(r)) applyLocalCommandRecord(t, String(r.content ?? ""), offset);
@@ -655,7 +677,6 @@ export function applyRecord(
   } else if (r.type === "system" && r.subtype === "turn_duration") applyTurnDuration(state, t, r);
   applyQueuedNotification(t, r); // attachment records only; the predicate rejects every other type
   // compact_boundary carries no turn fact; compactions are counted on the isCompactSummary record
-  return state;
 }
 
 /** A main-chain record that shows the model working with no prompt: its reply, or a notification. */
@@ -669,6 +690,7 @@ function applyTurnDuration(state: FollowerState, t: TurnState, r: Rec): void {
   if (!la || t.waking) return;
   const p = r.pendingBackgroundAgentCount;
   t.td = { pendingBackgroundAgentCount: typeof p === "number" ? p : null };
+  t.tdAt = isoOf(r);
   // `end_turn` → `turn_duration` with no stop_hook_summary between proves the session has no
   // Stop hooks (attachments and state records in between are normal: prompt_snapshot, mode, …).
   const proves =
@@ -693,8 +715,9 @@ export function applySubagentRecord(
   const r = record as Rec;
   recordUsage(state, r);
   if (agentId) state.ledger.foldSubRecord(agentId, r, isoOf(r));
-  const t = state.turns[state.turns.length - 1];
-  if (!t?.read || t.acceptedAt === null) return state;
+  const last = state.turns[state.turns.length - 1];
+  const t = last && last.acceptedAt === null ? last.shadow : last;
+  if (!t?.read) return state;
   if (r.type === "assistant") for (const b of r.message?.content ?? []) applyReadUse(state, t, b);
   if (r.type === "user" && Array.isArray(contentOf(r)))
     for (const b of contentOf(r) as Rec[]) applyReadResult(t, r, b, offsetKey);
@@ -711,7 +734,19 @@ export function openTurnState(
   t: { index: number; offset: number; witness: Witness; delivery?: TurnDelivery | null }
 ): FollowerState {
   state.turns.length = 0;
-  state.turns.push({
+  const turn = newTurnState(t);
+  turn.shadow = newTurnState(t);
+  state.turns.push(turn);
+  return state;
+}
+
+function newTurnState(t: {
+  index: number;
+  offset: number;
+  witness: Witness;
+  delivery?: TurnDelivery | null;
+}): TurnState {
+  return {
     index: t.index,
     offset: t.offset,
     witness: t.witness,
@@ -721,6 +756,7 @@ export function openTurnState(
     writes: [],
     lastAssistant: null,
     td: null,
+    tdAt: null,
     stopHookAfterLast: false,
     interrupt: null,
     waking: false,
@@ -738,8 +774,8 @@ export function openTurnState(
     steps: [],
     unwitnessedChat: null,
     witnessCopies: null,
-  });
-  return state;
+    shadow: null,
+  };
 }
 
 export function turnView(t: TurnState): TurnView {
@@ -771,6 +807,7 @@ export function turnView(t: TurnState): TurnView {
         }
       : null,
     turnDurationAfterLast: t.td,
+    turnDurationAt: t.tdAt,
     stopHookSummaryAfterLast: t.stopHookAfterLast,
     interruptAfterLast: t.interrupt,
     wakingAfterLast: t.waking,
@@ -798,6 +835,7 @@ export function turnView(t: TurnState): TurnView {
     recent: [...t.steps],
     unwitnessedChatOffset: t.unwitnessedChat,
     witnessCopies: t.witnessCopies,
+    unwitnessed: t.acceptedAt === null && t.shadow ? turnView(t.shadow) : null,
   };
 }
 

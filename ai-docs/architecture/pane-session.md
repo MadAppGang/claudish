@@ -457,6 +457,34 @@ turn's `turnSource` is `screen`, and it REVERTS (`degraded_reverted`) as soon as
 the witness — a slow UserPromptSubmit hook is the usual cause. A screen-settled turn records
 `screen_answer_may_be_truncated`, and a file-delivered one `read_coverage_unverified`.
 
+**A screen turn still ends at Claude Code's own end record.** Under load the screen heuristic can
+miss an ending the transcript recorded (slots RUNNING 18+ minutes on a transcript ending
+`end_turn`, `stop_hook_summary`, `turn_duration`), and no timer ends a slot. This covers only a
+turn already in screen mode: the transcript off, or absent or empty at entry as above. A witness
+Claude Code wrote garbled on a healthy transcript keeps the turn in transcript mode
+(`witness_missing`), and this fallback does not reach it. Until the witness arrives the follower
+folds every main-chain record past the turn's offset, by the same reducer, into
+`TurnView.unwitnessed`, and a screen turn settles when that view holds a `turn_duration` after
+the last assistant message whose record time parses and is at or after the prompt's acceptance.
+`decideSettle` decides on that view exactly as on a witnessed one: a
+`pendingBackgroundAgentCount` above 0, background agents not balanced, a pending tool or a waking
+record after the last assistant message hold it open, because a background agent finishing wakes
+the parent and a later `turn_duration` follows. Sidechain records and an older `turn_duration`
+never count. The answer is that transcript's assistant text (`captureSource` `transcript`,
+`settledBy` `turn_duration`; `settledBy` `interrupt` when an interrupt marker AND a
+`turn_duration` both follow the last assistant message), else the screen's (`captureSource`
+`screen`, `screen_answer_may_be_truncated`), read only from the live bottom of a connected
+magmux client: after a disconnect the screen is the last frame before the drop, and the turn
+waits. Either way the turn records `unwitnessed_turn_duration`, and its anomalies are counted
+once, when it settles. The turn settles at the shadow's last chat offset, and the re-wake check,
+in IDLE and during the `SETTLING` hold alike, reads the shadow's offset while the turn is still
+unwitnessed, so a background agent or hook that wakes the model after the settle is seen.
+
+Known limit: without the witness only the record time orders the end after the acceptance, so a
+turn Claude Code starts by itself after the acceptance (a background shell's task notification,
+say) can be settled as the prompt's turn, its answer taken for the prompt's.
+`unwitnessed_turn_duration` marks every such settle.
+
 ## The input box is located by the cursor, and what still reads the screen
 
 The screen is now read only for TEXT and for quiet, never for an input decision. Where a reader
