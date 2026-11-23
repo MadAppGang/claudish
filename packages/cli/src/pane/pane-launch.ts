@@ -708,13 +708,19 @@ export const KNOWN_CLAUDISH_FLAGS: readonly string[] = Object.keys(CLAUDISH_FLAG
 /* ───────────────────────────── magmux binary ───────────────────────────── */
 
 /**
- * The first magmux that serves a read-only view socket beside the control socket (0.19.0,
- * `--view-sock`). It also carries what 0.18.0 and 0.17.0 introduced: a socket at any path
- * depth, and the Claude Code input gate with a declared transcript (`--session-id`,
- * `--transcript`, and `list`'s `bound`/`sessionId`/`transcriptPath`). A pre-release such as
- * `0.19.0-rc1` passes: `versionAtLeast` compares the numeric triple only.
+ * The first magmux whose gated send keeps typing through a not-ready frame and reports how much
+ * it wrote (0.20.3: `writes`, `writesTotal`, and `typingStopped` when it stopped partway), so a
+ * box settled on the written part of a stopped send is cleared and typed again instead of being
+ * waited on as the start of a copy still being drawn. From 0.20.2 a gated send types once and
+ * never retypes or clears: a send whose box stays empty answers `text_mismatch` with
+ * `boxEmpty: true`, so at most the one copy claudish sent can be queued unread behind the box,
+ * which is what lets the admission act on settled screen text (`awaitDraw`). It also carries the read-only view socket beside the
+ * control socket (0.19.0, `--view-sock`), a socket at any path depth (0.18.0), and the Claude
+ * Code input gate with a declared transcript (0.17.0: `--session-id`, `--transcript`, and
+ * `list`'s `bound`/`sessionId`/`transcriptPath`). A pre-release such as `0.20.3-rc1` passes:
+ * `versionAtLeast` compares the numeric triple only.
  */
-export const MIN_MAGMUX_VERSION = "0.19.0";
+export const MIN_MAGMUX_VERSION = "0.20.3";
 
 export class MagmuxUnavailableError extends Error {
   readonly code = "magmux_unavailable";

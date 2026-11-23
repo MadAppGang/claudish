@@ -471,14 +471,14 @@ describe("watcher argv and version gate", () => {
   });
 
   // REGRESSION: G-10 deep socket paths (>= 100 bytes) refused — Fixed in /dev:fix session dev-fix-20261017-g10-socket
-  test("panes need magmux 0.19.0, the first release that serves a read-only view socket", async () => {
-    expect(MIN_MAGMUX_VERSION).toBe("0.19.0");
+  test("panes need magmux 0.20.3, the first release that reports a send it stopped partway", async () => {
+    expect(MIN_MAGMUX_VERSION).toBe("0.20.3");
     const dir = tmp();
-    const old = join(dir, "magmux-0.18.0");
-    writeFileSync(old, "#!/bin/sh\necho 'magmux 0.18.0'\n");
+    const old = join(dir, "magmux-0.20.2");
+    writeFileSync(old, "#!/bin/sh\necho 'magmux 0.20.2'\n");
     chmodSync(old, 0o755);
     const refusal = assertMagmuxAvailable(old);
-    await expect(refusal).rejects.toThrow("is version 0.18.0; panes need >= 0.19.0");
+    await expect(refusal).rejects.toThrow("is version 0.20.2; panes need >= 0.20.3");
     await expect(refusal).rejects.toThrow("a read-only view socket");
   });
 

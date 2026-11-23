@@ -106,9 +106,12 @@ describe("child isolation and additive contract", () => {
 
   test.each([
     ["0.18.1", false],
-    ["0.19.0", true],
-    ["0.19.0-rc1", true],
-    ["0.20.0", true],
+    ["0.19.0", false],
+    ["0.20.1", false],
+    ["0.20.2", false],
+    ["0.20.3", true],
+    ["0.20.3-rc1", true],
+    ["0.21.0", true],
     ["0.100.0", true],
     ["1.0.0", false],
     ["3.4.2", false],

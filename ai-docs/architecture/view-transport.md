@@ -69,12 +69,15 @@ running, and herdr shows no screen for it. This catches a magmux that passed the
 ignored the flag: 0.18.0 given `--view-sock` prints nothing and keeps running (measured, killed by
 `timeout` at 4 s), so there is no stderr line to match.
 
-**The floor is `MIN_MAGMUX_VERSION = "0.19.0"`, on the 0.x line only.** A major version other
-than 0 is refused. `probeMagmux` walks every candidate in order: bundled `native/`, the
-`@claudish/magmux-*` package, then `PATH`. It takes the first that passes. With none, it refuses
-and names every candidate with its version. The walk exists because of one install: the global
-claudish carried `@claudish/magmux-darwin-arm64` at 0.18.0, found before `PATH`, while Homebrew
-had 0.19.0. With only the floor raised, every pane session on that install was refused.
+**The floor is `MIN_MAGMUX_VERSION = "0.20.3"`, on the 0.x line only** (the view socket came
+in 0.19.0; 0.20.2 is the first gated send that never retypes, and 0.20.3 the first that reports a
+send it stopped partway, `pane-session.md`). A major
+version other than 0 is refused. `probeMagmux` walks every candidate in order: bundled
+`native/`, the `@claudish/magmux-*` package, then `PATH`. It takes the first that passes. With
+none, it refuses and names every candidate with its version. The walk exists because of one
+install: the global claudish carried `@claudish/magmux-darwin-arm64` at 0.18.0, found before
+`PATH`, while Homebrew had 0.19.0. With only the floor raised, every pane session on that install
+was refused.
 
 A failed view bind is fatal to the pane: magmux exits 1 with `magmux: view socket <path>: <err>`,
 which `FATAL_MAGMUX_STDERR` maps to `pane_lost`. Both socket inodes are mode 0755 (the umask;
