@@ -2,11 +2,13 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { next as nextQueue } from "../hooks/injection/queue.js";
 import {
   ALT_SPLIT_MARKER,
   MAX_TYPED_LINE,
   READ_LINE_LIMIT,
   SPLIT_MARKER,
+  deliveryRefusal,
   fileTemplate,
   isPlainLine,
   joinSplitLines,
@@ -35,6 +37,60 @@ describe("plain lines are typed", () => {
         witness: { kind: "text", text: t },
       });
     }
+  });
+
+  test("with Read: whitespace at either end, or any whitespace but the ASCII space, goes to the file with the exact text", () => {
+    for (const t of [
+      "  Reply with exactly PEAR.  ",
+      "Reply with exactly PEAR. ",
+      "Reply with exactly PEAR.",
+      "Reply with PEAR.",
+    ]) {
+      const plan = planDelivery(t, TURN_DIR, 1, true);
+      expect(plan.mode).toBe("file");
+      if (plan.mode !== "file") continue;
+      expect(plan.fileContent).toBe(t);
+    }
+  });
+
+  test("with Read: a line with only ASCII spaces inside is typed unchanged", () => {
+    expect(planDelivery("Reply with exactly PEAR.", TURN_DIR, 1, true)).toEqual({
+      mode: "typed",
+      line: "Reply with exactly PEAR.",
+      witness: { kind: "text", text: "Reply with exactly PEAR." },
+    });
+  });
+
+  test("without Read: the line is typed trimmed, other whitespace made ASCII spaces, and says so", () => {
+    expect(planDelivery("  Reply with exactly PEAR.  ", TURN_DIR, 1, false)).toEqual({
+      mode: "typed",
+      line: "Reply with exactly PEAR.",
+      witness: { kind: "text", text: "Reply with exactly PEAR." },
+      normalized: true,
+    });
+    expect(deliveryRefusal("  Reply with exactly PEAR.  ", false)).toBeNull();
+    // a tab or an inner newline is still not a typed line, as before
+    expect(planDelivery("a\tb", TURN_DIR, 1, false).mode).toBe("refused");
+    expect(planDelivery("a\nb", TURN_DIR, 1, false).mode).toBe("refused");
+  });
+
+  test("without Read: a padded hook injection is delivered, not dropped", () => {
+    const item = {
+      kind: "hook" as const,
+      text: "  Check the build output.  ",
+      hookIds: ["h1"],
+      queuedAt: Date.now(),
+      callerSeq: 0,
+      source: "proxy" as const,
+    };
+    const d = nextQueue(
+      { items: [item], callerAdmitted: 0, consecutiveHookTurns: 0, maxConsecutive: 5 },
+      Date.now(),
+      "IDLE",
+      (text: string) => deliveryRefusal(text, false) === null
+    );
+    expect(d.drop).toEqual([]);
+    expect(d.deliver?.text).toBe("  Check the build output.  ");
   });
 
   test("not plain: leading ! # ? @ & \\, trailing @x or /x, control chars, tab, CR, newline, > 512 chars", () => {

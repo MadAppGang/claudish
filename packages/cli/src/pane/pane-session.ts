@@ -49,7 +49,15 @@ import type {
 } from "../hooks/session/binding.js";
 import { log } from "../logger.js";
 import { redactSecrets } from "../redact.js";
-import { locateBox, locatedBoxText } from "./box-locate.js";
+import {
+  type BoxMatch,
+  cursorGapAfterText,
+  locateBox,
+  locatedBoxText,
+  matchBoxText,
+} from "./box-locate.js";
+// the box-text matcher lives with the box reader; these names stay importable from here
+export { type BoxMatch, boxShowsLine, matchBoxText } from "./box-locate.js";
 import {
   type CaptureResult,
   type CaptureUnchanged,
@@ -66,10 +74,13 @@ import {
   SEND_READY_WAIT_DEFAULT_MS,
   type SendOutcome,
   type SendOutcomeKind,
+  type TypingStop,
   assertNever,
   classifySendReply,
+  mismatchBoxStayedEmpty,
   parseGateInput,
   sendBudgetMs,
+  writtenPrefix,
 } from "./input-gate.js";
 import { MagmuxClient, type MagmuxConnectError, type MagmuxReply } from "./magmux-client.js";
 import {
@@ -173,7 +184,12 @@ import {
   nextPhase,
   wireState,
 } from "./slot-state.js";
-import { TranscriptFollower, type TranscriptView, type TurnView } from "./transcript-follower.js";
+import {
+  TranscriptFollower,
+  type TranscriptView,
+  type TurnView,
+  type Witness,
+} from "./transcript-follower.js";
 import type { FinalVerdict, PaneSnapshot, SettledTurn } from "./types.js";
 import { type ControlCapabilities, verifyViewSocket } from "./view-socket.js";
 
@@ -207,19 +223,36 @@ export const REPL_STABLE_MS = 3_000;
 const SEND_CLIENT_SLACK_MS = 2_000;
 /** No attempt is started with less readiness wait than this (R1.4). */
 const MIN_READY_TIMEOUT_MS = 1_000;
+/**
+ * The readiness floor of an Enter-only send. Its box already holds the text (a typed send
+ * verified it, or the screen showed it settled), so magmux is ready for the key at once;
+ * a pane that is not answers `busy` with no key pressed, and the loop tries again. The
+ * lower floor lets a line whose draw settles late still get its Enter: the send then needs
+ * its fixed part (10 824 ms), the client slack and this, 13 074 ms in all.
+ */
+const ENTER_MIN_READY_TIMEOUT_MS = 250;
 /** A `busy` refusal (Enter not pressed): the next attempt after this. */
 const BUSY_RETRY_MS = 250;
-/** After a `text_mismatch`: magmux's verify settle, so a late draw has landed (sendbudget.go). */
-const MISMATCH_SETTLE_MS = 1_000;
 /** After a ctrl-u from the admission loop: wait at most this for a fresh `ready` reading. */
 const CLEAR_WAIT_MS = 1_000;
 
 /**
+ * After a mismatch whose box stayed empty: how long the box's text must stay unchanged on
+ * the screen before claudish acts on it (`awaitDraw`). Claude Code draws typed text 300–800 ms
+ * after reading it at rest, and a backlog read in more than one read is drawn read by read,
+ * so text that is still growing can be the first part of what was sent. Two seconds is more
+ * than twice the at-rest draw lag, so a later read of the same backlog is drawn inside the
+ * window, and it still leaves most of a 30 s admission for the Enter or the resend.
+ */
+const DRAW_SETTLE_MS = 2_000;
+
+/**
  * The number of ctrl-u keys that empties a box holding this admission's leftover text.
  * Claude Code's ctrl-u deletes ONE wrapped screen row, not the whole box, and extra ctrl-u
- * keys on an empty box do nothing (both measured on Claude Code 2.1.330). Leftover text is
- * at most two copies of the line per gated send made so far (magmux retypes once inside a
- * send), so the count covers that many screen cells (a wide character takes two) wrapped at
+ * keys on an empty box do nothing (both measured on Claude Code 2.1.330). A gated send types
+ * its line once (magmux 0.20.2 never retypes), so leftover text is at most one copy per send
+ * made so far; the count is still sized for two copies per send, as headroom for text that
+ * is not ours, and covers that many screen cells (a wide character takes two) wrapped at
  * half the box width (word wrap can leave a row far shorter than the box), plus one row.
  */
 export function clearKeyCount(line: string, attempts: number, cols: number): number {
@@ -427,7 +460,6 @@ export interface PaneLastSend {
   reason?: string;
   accept?: string;
   evidence?: string;
-  retypeCause?: string;
   /** gated sends of the admission (or control line) it belongs to */
   attempts: number;
 }
@@ -481,7 +513,7 @@ export interface PaneSession {
  * line and presses Enter in one send; a slash command is `type` (no Enter), a menu check,
  * then `enter` (`{keys:["enter"]}`, itself a gated SUBMIT).
  */
-type SubmitStep = "submit" | "type" | "enter";
+export type SubmitStep = "submit" | "type" | "enter";
 
 /**
  * Why no further send of an admission is made: Enter may have been pressed and nothing
@@ -530,6 +562,52 @@ interface Admission {
    * delivery's text is still being drawn (Revision 3 item 2, DB-2).
    */
   clearAfter: number;
+  /**
+   * When a `text_mismatch` reply said the box stayed EMPTY: the copy sent may still sit
+   * unread in Claude Code's input queue, so nothing is typed or cleared until the box shows
+   * text (`awaitDraw`). Null otherwise.
+   */
+  awaitingDraw: number | null;
+  /**
+   * While `awaitingDraw`, what the screen last showed in the box, for the detail at the
+   * deadline: nothing, the start of the line (still being drawn), or text still changing.
+   */
+  drawState: DrawState;
+  /**
+   * The line of an earlier admission's copy that may still sit unread in Claude Code's input
+   * queue (`unreadCopy`): while set, the box is read against THAT line, and this admission
+   * types nothing until the leftover has shown and settled, or shown and gone.
+   */
+  leftoverOf: string | null;
+  /** the earlier copy's witness, offset and written part, kept with `leftoverOf` (`inheritUnreadCopy`) */
+  leftoverCopy: { witness: Witness; after: number; part: string | null } | null;
+  /**
+   * A send of this admission may have typed its line (`mayHaveTyped`) and no ctrl-u has been
+   * sent since: if the admission ends unwitnessed, that copy may still be unread
+   * (`rememberUnreadCopy`).
+   */
+  uncleared: boolean;
+  /**
+   * Proof that this admission's whole line was in the box since its last send that may have
+   * typed: magmux verified it (`in_box`, a `still_in_box` or `unconfirmed` reply, an
+   * `accepted`), or a trusted frame drew it whole. Every byte of it was read, so it leaves no
+   * unread copy behind (`rememberUnreadCopy`). A later send that may have typed resets it.
+   */
+  readWhole: boolean;
+  /** the transcript offset marked before this admission was delivered: its copy's records land after it */
+  mark: number;
+  /**
+   * The copy this admission waits on (`leftoverOf`) has its own transcript record
+   * (`releaseRecordedCopy`): it was submitted, so an empty settled box now ends the wait.
+   */
+  copyReleased: boolean;
+  /** when `awaitCopyRecord` began waiting for the earlier copy's record (null: it has not) */
+  recordWaitFrom: number | null;
+  /**
+   * The part of this admission's line magmux wrote before it stopped typing partway
+   * (`noteStoppedTyping`); null when the whole line was written or the reply had no counts.
+   */
+  writtenPart: string | null;
   /** a TYPE whose reply was lost: its delivery may still be typing until `until` (R1.5.3) */
   lostType: { client: MagmuxClient; until: number } | null;
   /** the latest reply, for `prompt_not_accepted`'s detail */
@@ -690,6 +768,20 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   private gate: GateInput | null = null;
   /** this connection passed the binding check: its gate readings may be trusted */
   private gateTrusted = false;
+  /** numbers each attached connection; its frames are stamped with it (`onFrame`) */
+  private connectionGen = 0;
+  /** the connection whose binding check passed last (`gateTrusted` while it is current) */
+  private trustedGen = 0;
+  /**
+   * Counts every time trust is (re)established. A reader that saw one value and now sees
+   * another knows the connection changed under it, however briefly, even between its polls.
+   */
+  private trustEpoch = 0;
+  /**
+   * The connection that delivered the latest frame, visible or not: `applyFrame` keeps the
+   * screen object on a frame that changes nothing, so only this stamp says a frame came.
+   */
+  private lastFrameGen = 0;
   private gateInFlight = false;
   private gateTimer: ReturnType<typeof setInterval> | null = null;
   /** when `list` first showed pane 0 dead with no `exit` event yet; 0 = not dead */
@@ -707,6 +799,35 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   private witnessCopiesTurn = 0;
   /** a later send abandoned unwitnessed: a witness arriving in IDLE re-wakes this turn (§5.3) */
   private abandonedIndex: number | null = null;
+  /**
+   * The line of a copy that may still sit unread in Claude Code's input queue: an admission
+   * expired after typing it, waiting on a box that showed none of it, or not all. The next
+   * admission types nothing until that copy has shown (then clears it) or shown and gone.
+   * Forgotten when the clear path runs, when a trusted frame shows the box empty and settled
+   * after the copy had shown, or when that copy's own witness arrives.
+   */
+  private unreadCopy: string | null = null;
+  /** the remembered copy's witness and the transcript offset it was typed after (`rememberCopy`) */
+  private unreadCopyWitness: Witness | null = null;
+  private unreadCopyAfter = 0;
+  /**
+   * The part of the remembered copy that was written when magmux stopped typing it partway
+   * (`writtenPart`); null when the whole copy was written or the reply had no counts.
+   */
+  private unreadCopyPart: string | null = null;
+  /**
+   * The remembered copy showed WHOLE and then left the box (`awaitCopyRecord`): every byte of it
+   * was read, so nothing of it can be queued, only its transcript record is still to come. Keys
+   * go again (`keysWithheld`), and an empty settled box ends a wait on it. Cleared by
+   * `rememberCopy` and `forgetCopy`.
+   */
+  private unreadCopyReadWhole = false;
+  /** moves on every `rememberCopy`, so a copy of the same text remembered again is watched afresh */
+  private unreadCopyGen = 0;
+  /** the copy the follower watches (`syncCopyWatch`) */
+  private watchedCopyKey: string | null = null;
+  /** a control line (`/exit`, `/quit`) waiting out `unreadCopy`: nothing else is admitted */
+  private controlPending = false;
 
   /* session hooks (§7.3); untouched without a binding */
   private readonly hooks: SessionHookBinding | null;
@@ -895,7 +1016,8 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       return;
     }
     client.on("snapshot", (e) => this.onSnapshot(e));
-    client.on("frame", (f: MagmuxFrame) => this.onFrame(f));
+    const gen = ++this.connectionGen;
+    client.on("frame", (f: MagmuxFrame) => this.onFrame(f, gen));
     client.on("exit", (e) => void this.onPaneExit(e));
     client.on("pane_closed", (e) => {
       if (e?.pane === 0) this.paneClosed = true;
@@ -949,6 +1071,8 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       return;
     }
     if (!this.verifyGateBinding(client, list, magmuxVersion) || !list.ok) return;
+    this.trustedGen = gen;
+    this.trustEpoch++;
     this.gateTrusted = true;
     this.onGateList(client, list.result);
   }
@@ -1077,8 +1201,9 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     });
   }
 
-  private onFrame(f: MagmuxFrame): void {
+  private onFrame(f: MagmuxFrame, gen: number): void {
     if (f.pane !== undefined && f.pane !== 0) return;
+    this.lastFrameGen = gen;
     const seq = this.screen.seq;
     this.screen = applyFrame(this.screen, f);
     if (this.screen.seq !== seq && !this.inResizeQuiet(this.screen.changedAt))
@@ -1270,9 +1395,11 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       (this.framePending && since >= debounce) ||
       since >= this.t("pollBackstopMs", POLL_BACKSTOP_MS)
     ) {
+      this.syncCopyWatch(false);
       this.follower.poll();
       this.lastPollAt = now;
       this.framePending = false;
+      this.syncCopyWatch(true);
     }
     const view = this.follower.view();
     const off = view.current?.lastChatOffset ?? null;
@@ -1596,7 +1723,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
 
   /** IDLE (or boot-ready) with a queued item: admit synchronously, then deliver. */
   private pump(): void {
-    if (isTerminalPhase(this.phase) || this.admission) return;
+    if (isTerminalPhase(this.phase) || this.admission || this.controlPending) return;
     if (this.q.items.length === 0) return;
     const d = nextQueueDecision(this.q, Date.now(), this.phase, this.canDeliver);
     if (this.phase === "IDLE") {
@@ -1620,6 +1747,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       (this.phase === "QUESTION" || this.phase === "PERMISSION") &&
       d.pressEscape &&
       this.escapeArmed &&
+      !this.keysWithheld() &&
       this.escapeSentAt === null
     ) {
       // Esc declines the dialog AND interrupts the turn; it settles through path I (D17).
@@ -1666,6 +1794,11 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   private readonly canDeliver = (text: string): boolean =>
     !text.trimStart().startsWith("/") && deliveryRefusal(text, this.o.readAvailable) === null;
 
+  /** No Read tool: the only delivery whose typed text is not the caller's own (`normalizedLine`). */
+  private noteNormalized(plan: Delivery): void {
+    if (plan.mode === "typed" && plan.normalized) this.anomaly("typed_normalized");
+  }
+
   private startAdmission(item: QueueItem, initial: boolean): void {
     const text = item.text;
     // §7.2 L1: both counters change here, when the item leaves the queue
@@ -1681,12 +1814,13 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       this.hooks?.noteDelivered?.(item);
       this.anomaly("hook_injection_delivered");
     }
-    this.follower.poll();
-    this.lastPollAt = Date.now();
+    // through the copy watch: a record of a copy remembered just now is read as that copy's
+    this.pollFollower(true);
     const offset = this.follower.size(); // mark BEFORE deliver: the single turn boundary
     const index = ++this.turnIndex;
     const plan = planDelivery(text, this.turnDir, index, this.o.readAvailable);
     this.currentDelivery = plan;
+    this.noteNormalized(plan);
     this.turnSource = "transcript";
     this.screenTurn = null;
     this.rewakeOfSettled = false;
@@ -1726,6 +1860,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       plan,
       initial,
       bound: this.admitBoundMs(initial),
+      mark: offset,
     });
     this.admission = adm;
     void this.runAdmission(adm);
@@ -1740,9 +1875,9 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
    * The admission loop (architecture-v2 §5.3, R1.4): at most one gated send in flight, each
    * sized so that its client timeout ends by the admission deadline, and every reply handled
    * by the exhaustive switch of `onSendOutcome`. magmux's gate presses Enter only on a box
-   * holding exactly the line; claudish never reads the box to decide a retype, never resends
-   * a SUBMIT whose reply was lost or that may have been submitted, and never accepts on the
-   * screen. Claudish's own transcript witness accepts in `evalAdmission` whatever the loop is
+   * holding exactly the line; claudish reads the box only to WITHHOLD a retype while a copy
+   * may sit unread (`awaitDraw`), never resends a SUBMIT whose reply was lost or that may have
+   * been submitted, and never accepts on the screen. Claudish's own transcript witness accepts in `evalAdmission` whatever the loop is
    * doing ("the witness always wins"); the loop sees that at its next check and stops.
    *
    * The loop ends with no decision when Enter may have been pressed unproven
@@ -1750,6 +1885,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
    * before the deadline; `evalAdmission` then expires the admission at its deadline.
    */
   private async runAdmission(adm: Admission): Promise<void> {
+    this.inheritUnreadCopy(adm);
     try {
       while (this.admitting(adm) && adm.submittedUnproven === null && !adm.stopped) {
         if (Date.now() >= adm.deadline) return;
@@ -1758,7 +1894,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
           await this.pause(adm, TICK_MS);
           continue;
         }
-        if (!this.trustedConnection() || this.needsAdmissionLiveBottom(adm)) {
+        if (this.needsConnectionStep(adm)) {
           await this.connectionStep(adm);
           continue;
         }
@@ -1769,6 +1905,17 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     } finally {
       adm.inFlight = false;
     }
+  }
+
+  /**
+   * The loop waits for a trusted connection, or returns the view to the live bottom. No ctrl-End
+   * goes while a copy may be unread (`keysWithheld`) or this admission's own copy is still being
+   * drawn: it runs at a later step, once that wait has resolved.
+   */
+  private needsConnectionStep(adm: Admission): boolean {
+    if (!this.trustedConnection()) return true;
+    if (this.keysWithheld() || adm.awaitingDraw !== null) return false;
+    return this.needsAdmissionLiveBottom(adm);
   }
 
   /**
@@ -1813,6 +1960,8 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     const rt = readyTimeoutFor(step, adm.line, adm.deadline - Date.now());
     if (rt === null) return false;
     const timeout = sendBudgetMs({ ...shape.budget, readyTimeoutMs: rt }) + SEND_CLIENT_SLACK_MS;
+    // from its first send on, a record of its own line may be this turn's
+    this.follower.holdTurn(false);
     const sentAt = Date.now();
     adm.inFlight = true;
     adm.attempts++;
@@ -1825,6 +1974,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     const out = classifySendReply(reply);
     adm.last = out;
     this.noteLastSend(out, adm.attempts);
+    this.noteTyping(adm, step, out);
     // the witness accepted it, or the session ended, while the send was out
     if (!this.admitting(adm)) return false;
     await this.onSendOutcome(adm, out, step, { client: c, until: sentAt + timeout });
@@ -1852,9 +2002,8 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
           this.stopAdmission(adm, "magmux answered in_box to a send that carried an Enter");
           return;
         }
-        if (out.retyped) this.anomaly(`gate_retyped:${out.retypeCause ?? "unknown"}`);
-        await this.menuCheck(adm);
-        adm.step = "enter";
+        if (await this.menuCheck(adm)) adm.step = "enter";
+        else await this.menuWait(adm);
         return;
       case "busy":
         await this.onBusy(adm, out, step);
@@ -1870,10 +2019,12 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       case "reply_lost":
         this.anomaly("send_reply_lost");
         if (step === "type") {
-          // R1.5.3: a TYPE presses no Enter, so its text is cleared and typed again, once the
-          // delivery behind the lost reply can no longer be typing
+          // a TYPE presses no Enter, but whether Claude Code read its text is unknown (the
+          // reply's timeout bounds magmux, not Claude Code): as after a mismatch, nothing is
+          // cleared or typed until the box has settled; a clear then still waits out the lost
+          // delivery on a new connection (R1.5.3)
           adm.lostType = sent;
-          markClearFirst(adm);
+          startDrawWait(adm);
           return;
         }
         // magmux carries the delivery on, Enter included: never resent; the witness decides
@@ -1904,7 +2055,6 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   private onGateAccepted(adm: Admission, out: Extract<SendOutcome, { kind: "accepted" }>): void {
     if (out.accept === "resent_enter") this.anomaly("gate_resent_enter");
     if (out.accept === "submitted_by_other") this.anomaly("gate_submitted_by_other");
-    if (out.retyped) this.anomaly(`gate_retyped:${out.retypeCause ?? "unknown"}`);
     if (out.dismissed.length > 0) this.anomaly("gate_dismissed_unexpected");
     if (out.evidence === "transcript") {
       this.anomaly("gate_transcript_evidence");
@@ -1925,7 +2075,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   ): Promise<void> {
     const reason = out.reason || "unknown";
     if (this.stopOnGateBlock(adm, reason, out.dialog)) return;
-    if (out.dialog === "select" && step === "enter") {
+    if (out.dialog === "select" && step === "enter" && adm.plan.mode === "command") {
       // the command's own Enter met a picker or panel: dismiss it (§5.4 `panelStep`)
       this.noteOnce(adm, "gate_dialog_at_admission:select");
       adm.panel = { showingSince: null, escaped: false, entered: false };
@@ -1934,13 +2084,18 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     if (out.dialog) {
       // a re-woken turn owns the dialog; evalIdle/evalRunning see it
       this.noteOnce(adm, `gate_dialog_at_admission:${out.dialog}`);
-      // text typed before the dialog opened may sit in the box behind it; the clear sends
-      // no key while a dialog shows, so it runs once the dialog has closed
-      if (out.typed) markClearFirst(adm);
+      // text typed before the dialog opened may sit unread behind it: nothing is cleared or
+      // typed until the box, once located again, has settled (`awaitDraw`)
+      if (out.typed) {
+        this.noteStoppedTyping(adm, out);
+        startDrawWait(adm);
+      }
     } else if (out.typed) {
-      // the box may hold all or part of the text: the next send's precondition clears it
+      // all or part of the text may be in Claude Code's input, read or not: as after a
+      // mismatch, nothing is cleared or typed until the box has settled
       this.anomaly("gate_typed_withheld");
-      markClearFirst(adm);
+      this.noteStoppedTyping(adm, out);
+      startDrawWait(adm);
     } else if (reason === "box_not_empty") {
       this.anomaly("gate_box_not_empty");
       markClearFirst(adm);
@@ -1994,14 +2149,25 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   }
 
   /**
-   * The preconditions of a send that types: leftover text cleared, then the pre-check. A
-   * command's Enter types nothing and has none.
+   * The preconditions of a send: after a mismatch whose box stayed empty, the box showing
+   * text (`awaitDraw`); then, for a send that types, leftover text cleared and the pre-check.
+   * A command's Enter types nothing and has no other.
    */
   private async beforeSend(adm: Admission): Promise<"send" | "stopped" | "waited"> {
+    if (adm.awaitingDraw !== null) {
+      // the box stayed empty after a send: nothing is typed or cleared until it shows text
+      await this.awaitDraw(adm);
+      return "waited";
+    }
     if (adm.step === "enter") return "send";
-    // R1.5.2 / R1.5.3: clear leftover text BEFORE a send that types
-    await this.clearLeftover(adm);
+    // R1.5.2 / R1.5.3: clear leftover text BEFORE a send that types; a clear whose keys were
+    // not sent types nothing behind it, and the loop clears again
+    const cleared = await this.clearLeftover(adm);
     if (!this.admitting(adm)) return "stopped";
+    if (!cleared) {
+      await this.pause(adm, BUSY_RETRY_MS);
+      return "waited";
+    }
     return this.precheckGate(adm);
   }
 
@@ -2021,16 +2187,19 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
           return;
         }
         this.anomaly("gate_text_mismatch");
-        markClearFirst(adm);
-        if (adm.plan.mode === "command") adm.step = "type";
-        // magmux's verify settle: a late draw lands before the box is read again
-        await this.pause(adm, MISMATCH_SETTLE_MS);
+        if (mismatchBoxStayedEmpty(out)) this.noteOnce(adm, "gate_text_mismatch_box_empty");
+        this.noteStoppedTyping(adm, out);
+        // Empty or not, part of this copy may sit unread in Claude Code's input queue: magmux
+        // types in short writes, and Claude Code can draw the first and stop reading. A ctrl-u
+        // or a new copy would queue behind that tail and be read with it in one long read, so
+        // the box's settled text decides (`awaitDraw`)
+        startDrawWait(adm);
         return;
       case "empty_box":
         if (step === "enter") {
-          // R1.1: the typed command left the box without claudish's Enter, so it may have
-          // run; retyping it is the D-B duplicate in another form
-          this.anomaly("gate_command_left_box");
+          // R1.1: the text left the box without claudish's Enter, so it may have been
+          // submitted (a command run); typing it again is the D-B duplicate in another form
+          this.anomaly(leftBoxAnomaly(adm.plan));
           adm.submittedUnproven = "maybe_submitted_by_other";
           return;
         }
@@ -2050,17 +2219,285 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
         }
         adm.stuckRetried = true;
         await this.clearBox(adm);
-        if (adm.plan.mode === "command") adm.step = "type";
+        adm.step = typingStep(adm.plan);
         return;
       case "unconfirmed":
         // Enter was pressed with no attributable evidence: never retyped
         this.anomaly("gate_unconfirmed");
         adm.submittedUnproven = "unconfirmed";
-        if (step === "enter") adm.panel = { showingSince: null, escaped: false, entered: true };
+        if (step === "enter" && adm.plan.mode === "command")
+          adm.panel = { showingSince: null, escaped: false, entered: true };
         return;
       default:
         assertNever(out.reason);
     }
+  }
+
+  /**
+   * While a copy may sit unread in Claude Code's input queue (`awaitingDraw`): after any
+   * `text_mismatch` reply that may not have been submitted, the box empty or not, and at the
+   * start of an admission that follows one that expired so (`leftoverOf`, `unreadCopy`).
+   * magmux types a line in short writes, and Claude Code can draw the first and then stop
+   * reading stdin (measured under concurrent boot: a box drawn empty for about 20 s). Every
+   * byte sent meanwhile queues unread behind the copy, and the backlog is then read in long
+   * reads, inside which Claude Code 2.1.330 ignores ctrl-u (a read of about 64 bytes or more;
+   * its early-input capture drops it too). A clear plus a new copy would land as copies
+   * joined end to end, so nothing is typed or cleared until the box settles.
+   *
+   * magmux (≥ 0.20.2, the floor) types a send once and never retypes or clears, so the only
+   * bytes that can be queued behind the box are that one copy. Text on the screen is still
+   * not proof it was all read: its first part can be drawn while the rest is unread. So only
+   * box text read from a frame of the trusted connection (`drawnBox`), unchanged for
+   * `DRAW_SETTLE_MS`, decides; a gate reading of `box_not_empty` ahead of the frame only
+   * means the frame is coming. Each time trust is established the trust epoch moves on, and a
+   * wait that sees it move (even when the drop and the reattach both fell between two of its
+   * polls) starts its settle again, on frames of the new connection only. The box is read
+   * against the copy that may be unread: this admission's line, or the earlier one's. The
+   * wait ends, within the deadline, on:
+   * - the witness (`evalAdmission` accepts; the admission ends);
+   * - settled text that is exactly this admission's line in the normal `❯` prompt
+   *   (`matchBoxText`): the one copy was read, and only its Enter is sent;
+   * - settled other text, any text in a `!` (bash mode) box, or an earlier copy settled:
+   *   Claude Code is visibly reading, so the box is cleared and this line typed
+   *   (`clearFirst`);
+   * - an earlier copy that showed and then left the box, empty and settled: it was read and
+   *   is gone, so this line is typed;
+   * - a boot dialog or vim mode: the stop rows decide.
+   * Text that ENDS with the start of the line (alone, or after other text) may be that copy
+   * with its rest still unread: it is never acted on, however long it holds. At the deadline
+   * the loop ends and the admission expires, its detail saying whether the box stayed empty,
+   * showed the start of the line, or was still changing (`describeLastReply`).
+   */
+  private async awaitDraw(adm: Admission): Promise<void> {
+    const r = await this.waitDrawn({
+      against: adm.leftoverOf ?? adm.line,
+      earlier: adm.leftoverOf !== null,
+      live: () => this.admitting(adm),
+      ms: Math.max(0, adm.deadline - Date.now()),
+      // the earlier copy's record released it, or it was read whole: an empty box is not its tail
+      emptyEnds: () => adm.copyReleased || (adm.leftoverOf !== null && this.unreadCopyReadWhole),
+      // magmux stopped partway: the part it wrote, settled in the box, is all there is to read
+      partOnly: adm.leftoverOf === null ? adm.writtenPart : (adm.leftoverCopy?.part ?? null),
+      onRead: (box) => {
+        adm.drawState = drawStateOf(box);
+        // its own whole line drawn: every byte of this copy was read
+        if (adm.leftoverOf === null && box?.match === "line") this.noteReadWhole(adm);
+      },
+    });
+    if (!this.admitting(adm)) return;
+    const g = this.drawBlocked();
+    if (g && this.stopOnGateBlock(adm, g.reason ?? "unknown", g.dialog)) return;
+    if (r.ended === null || r.seen === undefined) return; // the deadline: the loop ends at its top
+    await this.afterDraw(adm, r.ended === "gone" ? null : r.seen);
+  }
+
+  /** A boot dialog or vim mode: the stop rows decide, so a draw wait ends on it. */
+  private drawBlocked(): GateInput | null {
+    const g = this.gateNow();
+    if (!g) return null;
+    return (g.dialog && BOOT_DIALOG_KINDS.has(g.dialog)) || g.reason === "vim_mode" ? g : null;
+  }
+
+  /**
+   * The settle wait of `awaitDraw`, shared with a control line (`awaitControlCopy`): box text
+   * read against `against` from frames of the trusted connection, until it has been
+   * unchanged for `DRAW_SETTLE_MS` (`drawOutcome`), `live` turns false, a stop row shows or
+   * `ms` passes. `earlier`: `against` is an earlier copy, so its leaving the box may end the
+   * wait as "gone". A move of the trust epoch, or a reading with no box located (a dialog
+   * drawn over it, a redraw), is nothing trustworthy read: the settle starts again, and only
+   * a move of the epoch also forgets that the whole line had shown.
+   */
+  private async waitDrawn(o: {
+    against: string;
+    earlier: boolean;
+    live: () => boolean;
+    ms: number;
+    /** true: an empty box settled ends the wait as "gone" even though the whole line never showed */
+    emptyEnds?: () => boolean;
+    /**
+     * The only text that was written (`writtenPart`): a normal box settled on exactly it ends the
+     * wait as "settled", although it reads as the start of the line.
+     */
+    partOnly?: string | null;
+    onRead?: (box: DrawnBox) => void;
+  }): Promise<{ ended: "settled" | "gone" | null; seen: DrawnBox | undefined }> {
+    let epoch = this.trustEpoch;
+    // undefined: nothing trustworthy read since the settle last started
+    let last: DrawnBox | undefined;
+    let changedAt = Date.now();
+    // the WHOLE earlier line was read from a trusted frame in this epoch: only then can an
+    // empty box mean that copy is gone (`drawOutcome`)
+    let wholeShown = false;
+    let ended: "settled" | "gone" | null = null;
+    const settle = (): boolean => {
+      const at = Date.now();
+      if (this.trustEpoch !== epoch) {
+        epoch = this.trustEpoch;
+        last = undefined;
+        wholeShown = false;
+      }
+      const now = this.drawnBox(o.against);
+      if (now === undefined || last === undefined || !sameDrawnBox(now, last)) {
+        last = now;
+        changedAt = at;
+        if (now !== undefined) o.onRead?.(now);
+        if (now?.match === "line") wholeShown = true;
+      }
+      ended = drawEnded(
+        now,
+        (wholeShown && o.earlier) || o.emptyEnds?.() === true,
+        at - changedAt,
+        o.partOnly ?? null
+      );
+      return ended !== null;
+    };
+    await this.waitFor(() => !o.live() || this.drawBlocked() !== null || settle(), o.ms);
+    return { ended, seen: last };
+  }
+
+  /** What `awaitDraw` does with what settled: null, an earlier copy shown and gone. */
+  private async afterDraw(adm: Admission, seen: DrawnBox): Promise<void> {
+    adm.awaitingDraw = null;
+    if (adm.leftoverOf !== null) {
+      const copy = adm.leftoverOf;
+      adm.leftoverOf = null;
+      if (seen === null) {
+        await this.afterCopyGone(adm, copy);
+        return;
+      }
+      // the earlier copy is visibly read: cleared (`clearBox` forgets it), then this line typed
+      this.anomaly("unread_copy_drawn");
+      markClearFirst(adm);
+      adm.step = typingStep(adm.plan);
+      return;
+    }
+    if (seen?.match === "line") {
+      this.anomaly("box_drawn_after_mismatch");
+      this.noteReadWhole(adm);
+      if (adm.plan.mode === "command" && !(await this.menuCheck(adm))) {
+        await this.menuWait(adm);
+        return;
+      }
+      adm.step = "enter";
+      return;
+    }
+    // settled on exactly the part magmux wrote before it stopped: all of it read, none queued
+    if (seen?.match === "prefix") {
+      this.anomaly("box_drawn_written_part");
+      this.noteReadWhole(adm);
+      adm.writtenPart = null;
+      markClearFirst(adm);
+      adm.step = typingStep(adm.plan);
+      return;
+    }
+    this.anomaly("box_drawn_other_after_mismatch");
+    markClearFirst(adm);
+    adm.step = typingStep(adm.plan);
+  }
+
+  /** The earlier copy `copy` showed whole and then left the box (`afterDraw`). */
+  private async afterCopyGone(adm: Admission, copy: string): Promise<void> {
+    this.anomaly("unread_copy_gone");
+    // a copy that left the box may have been submitted: when it has this line's text, its
+    // record (read fresh, not at the next poll, and with the copy still watched, so a held
+    // turn may accept it) is this turn's witness, and nothing is typed
+    if (this.witnessNow()) {
+      this.forgetCopy();
+      this.acceptAdmission(adm);
+      return;
+    }
+    if (copy === adm.line && this.unreadCopy === copy) {
+      adm.leftoverOf = copy;
+      this.unreadCopyReadWhole = true;
+      await this.awaitCopyRecord(adm);
+      return;
+    }
+    if (this.unreadCopy === copy) this.departCopy();
+    else this.forgetCopy();
+  }
+
+  /**
+   * The remembered copy left the box, submitted, and is forgotten before its record landed: that
+   * record, when it lands, must never be read as a later line's (`refuseDeparted`: a late
+   * "PEARPEAR" is two joined copies of "PEAR").
+   */
+  private departCopy(): void {
+    if (this.unreadCopyWitness)
+      this.follower.refuseDeparted(this.unreadCopyWitness, this.unreadCopyAfter);
+    this.forgetCopy();
+  }
+
+  /**
+   * An earlier copy of this same line showed whole and left the box, which only claudish
+   * writes: it was submitted, and its record can lag far behind (a UserPromptSubmit hook delays
+   * it: 12,501 ms measured with `sleep 12`). Nothing is typed. The copy stays remembered and
+   * watched and the turn held, until its record accepts this turn (one copy of the line,
+   * `heldMayAccept`), or releases the copy without accepting it (joined copies: this line is
+   * then typed by the normal rules), or the deadline expires the admission with nothing typed
+   * and the copy still remembered, marked read whole (`unreadCopyReadWhole`): keys go again,
+   * and the next wait on it ends on an empty settled box.
+   */
+  private async awaitCopyRecord(adm: Admission): Promise<void> {
+    this.anomaly("unread_copy_gone_unrecorded");
+    adm.recordWaitFrom = Date.now();
+    await this.waitFor(
+      () =>
+        !this.admitting(adm) ||
+        this.unreadCopy === null ||
+        this.witnessed(this.pollFollower().current),
+      Math.max(0, adm.deadline - Date.now())
+    );
+    if (!this.admitting(adm)) return;
+    if (this.witnessed(this.follower.view().current)) {
+      this.forgetCopy();
+      this.acceptAdmission(adm);
+      return;
+    }
+    // released by a record that was not this turn's: no copy is left to wait for
+    if (this.unreadCopy === null) adm.leftoverOf = null;
+  }
+
+  /** A copy that may be unread (`unreadCopy`) makes a fresh admission wait before typing. */
+  private inheritUnreadCopy(adm: Admission): void {
+    if (this.unreadCopy === null || adm.attempts > 0 || adm.awaitingDraw !== null) return;
+    adm.awaitingDraw = Date.now();
+    adm.drawState = "none";
+    adm.leftoverOf = this.unreadCopy;
+    adm.leftoverCopy = {
+      witness: this.unreadCopyWitness ?? { kind: "text", text: this.unreadCopy },
+      after: this.unreadCopyAfter,
+      part: this.unreadCopyPart,
+    };
+    // it has typed nothing: only one copy of its own line, when that is the copy's, accepts it
+    this.follower.holdTurn(true);
+    this.anomaly("unread_copy_wait");
+  }
+
+  /**
+   * The input box as the latest frame of the trusted connection draws it: null when it is
+   * located and empty, else its text and how it reads against `line`. undefined when no box
+   * is located (a runtime dialog over it, a redraw), or while no frame of the trusted
+   * connection has arrived: disconnected, the binding not yet checked, or a new connection
+   * whose first frame is still to come. A frame received on a
+   * connection before its binding check passed counts once it passes: it is that
+   * connection's own picture of pane 0. Every frame counts, visible or not, so a keyframe
+   * identical to the screen held across a disconnect still proves the box is current.
+   */
+  private drawnBox(line: string): DrawnBox | undefined {
+    if (!this.trustedConnection() || this.lastFrameGen !== this.trustedGen) return undefined;
+    const box = locateBox(this.screen);
+    // a box not located (a dialog drawn over it, a redraw) is not an empty box: nothing is read
+    if (!box) return undefined;
+    const text = locatedBoxText(this.screen, box);
+    if (text === "") return null;
+    // only the normal prompt takes the line as a prompt: a `!` box is bash mode, and Enter
+    // there would run the text as a shell command
+    const normal = (this.screen.lines[box.top + 1] ?? "").startsWith("❯");
+    return {
+      text,
+      match: normal ? matchBoxText(text, line) : "other",
+      cursorGap: cursorGapAfterText(this.screen, box),
+    };
   }
 
   /** Accept from the async loop, inside one event-processing step. */
@@ -2078,6 +2515,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     adm.stopped = true;
     this.step(() => {
       if (!this.admitting(adm)) return;
+      this.rememberUnreadCopy(adm);
       this.admission = null;
       if (adm.initial) {
         this.fire("admit_deadline", { reason, detail: `${detail}\n${screenTailOf(this.screen)}` });
@@ -2119,13 +2557,35 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
    * One KEYS send of `clearKeyCount` ctrl-u keys (one ctrl-u deletes one wrapped row), then
    * wait at most `CLEAR_WAIT_MS` for a fresh `ready` reading. The keys are lane-ordered after
    * every byte typed before them, so they empty Claude Code's buffer whether its text is drawn
-   * yet or not.
+   * yet or not. False when the keys were not sent (no connection, or the send failed): then
+   * nothing is forgotten, and `clearFirst` is set so the next attempt clears again.
    */
-  private async clearBox(adm: Admission): Promise<void> {
+  private async clearBox(adm: Admission): Promise<boolean> {
     const at = Date.now();
-    const n = clearKeyCount(adm.line, adm.attempts, this.screen.cols);
-    await this.keys(Array.from({ length: n }, () => "ctrl-u"));
+    if (!(await this.sendClear(clearKeyCount(adm.line, adm.attempts, this.screen.cols)))) {
+      markClearFirst(adm);
+      return false;
+    }
+    adm.uncleared = false;
     await this.waitFor(() => !this.admitting(adm) || this.freshReady(at), CLEAR_WAIT_MS);
+    return true;
+  }
+
+  /**
+   * `own` ctrl-u keys, or more when an earlier copy that may be in the box (`unreadCopy`)
+   * fills more rows: it is cleared with it. That copy is forgotten only once the keys were
+   * sent; while they were not, the next clear is still sized for it.
+   */
+  private async sendClear(own: number): Promise<boolean> {
+    const earlier =
+      this.unreadCopy === null ? 0 : clearKeyCount(this.unreadCopy, 1, this.screen.cols);
+    const n = Math.max(own, earlier);
+    if (!(await this.keys(Array.from({ length: n }, () => "ctrl-u")))) {
+      this.anomaly("clear_unsent");
+      return false;
+    }
+    this.forgetCopy();
+    return true;
   }
 
   /**
@@ -2145,20 +2605,21 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
    * lane-ordered behind that delivery; one on a NEW connection is not and could land
    * mid-typing, so it waits until the lost TYPE's own client timeout has passed.
    */
-  private async clearLeftover(adm: Admission): Promise<void> {
+  private async clearLeftover(adm: Admission): Promise<boolean> {
     const lost = adm.lostType;
     if (lost) {
       adm.lostType = null;
       if (lost.client !== this.client || lost.client.isClosed)
         await this.pause(adm, Math.max(0, lost.until - Date.now()));
-      if (!this.admitting(adm)) return;
+      if (!this.admitting(adm)) return true;
     }
-    if (adm.clearFirst) await this.clearOwnLeftover(adm);
-    else if (this.gateNow()?.reason === "box_not_empty") await this.clearBox(adm);
+    if (adm.clearFirst) return this.clearOwnLeftover(adm);
+    if (this.gateNow()?.reason === "box_not_empty") return this.clearBox(adm);
+    return true;
   }
 
   /** `clearFirst`: cleared unless a reading newer than the reply names a dialog or vim mode. */
-  private async clearOwnLeftover(adm: Admission): Promise<void> {
+  private async clearOwnLeftover(adm: Admission): Promise<boolean> {
     // the published view trails the pane by up to one refresh: a reading received within
     // that interval of the reply may still show the box as it was before the text landed
     const after = adm.clearAfter + GATE_POLL_MS;
@@ -2170,21 +2631,25 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       () => !this.admitting(adm) || newer() !== null,
       CLEAR_WAIT_MS + GATE_POLL_MS
     );
-    if (!this.admitting(adm)) return;
+    if (!this.admitting(adm)) return true;
     const g = newer();
     // a dialog or vim mode: no key; the pre-check decides, and the flag waits for a clear box
-    if (g && (g.dialog !== null || g.reason === "vim_mode")) return;
+    if (g && (g.dialog !== null || g.reason === "vim_mode")) return true;
+    // the flag stays until the keys were sent, so a failed clear is tried again
+    if (!(await this.clearBox(adm))) return false;
     adm.clearFirst = false;
-    await this.clearBox(adm);
+    return true;
   }
 
   /**
    * After a command's TYPE (`in_box`): Enter on an open `/` menu runs the HIGHLIGHTED item,
    * not the typed one, and the gate has no menu handling, so a menu whose highlight is not
    * the typed name is closed with Escape first (§5.4). Read on the box located by the cursor;
-   * a box not located is `menu_unverified`, and no Escape.
+   * a box not located is `menu_unverified`, and no Escape. False when that Escape was not sent
+   * (withheld, `keysWithheld`, or its send failed): `menu_unverified`, and the caller sends no
+   * Enter; the admission waits, and expires at its deadline with the menu still open.
    */
-  private async menuCheck(adm: Admission): Promise<void> {
+  private async menuCheck(adm: Admission): Promise<boolean> {
     const name = adm.line.match(/^\/\S+/)?.[0] ?? "";
     // our frames trail magmux's own verify by up to one frame interval
     await this.waitFor(() => {
@@ -2192,14 +2657,26 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       const box = locateBox(this.screen);
       return !!box && locatedBoxText(this.screen, box).startsWith(name);
     }, 2 * TICK_MS);
-    if (!this.admitting(adm)) return;
+    if (!this.admitting(adm)) return false;
     const box = locateBox(this.screen);
     if (!box) {
       this.anomaly("menu_unverified");
-      return;
+      return true;
     }
     const menu = menuAbove(this.screen.lines, box.top);
-    if (menu.menuOpen && menu.menuItem !== name) await this.key("escape");
+    if (!menu.menuOpen || menu.menuItem === name) return true;
+    // Enter would run the highlighted item: with the Escape not sent, nothing proves it closed
+    if (await this.key("escape")) return true;
+    this.anomaly("menu_unverified");
+    return false;
+  }
+
+  /**
+   * After `menuCheck` sent no Escape: nothing more is sent. Waits to the deadline, or until the
+   * admission ends; the loop's deadline check then expires it.
+   */
+  private async menuWait(adm: Admission): Promise<void> {
+    await this.waitFor(() => !this.admitting(adm), Math.max(0, adm.deadline - Date.now()));
   }
 
   /** The last gated send, as `get_diagnostics` reports it. */
@@ -2209,11 +2686,9 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       case "accepted":
         s.accept = out.accept;
         s.evidence = out.evidence;
-        if (out.retypeCause) s.retypeCause = out.retypeCause;
         break;
       case "in_box":
         s.accept = "in_box";
-        if (out.retypeCause) s.retypeCause = out.retypeCause;
         break;
       case "busy":
       case "not_accepted":
@@ -2237,29 +2712,120 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
 
   /**
    * `/exit` / `/quit` (§5.4 `control`): one gated SUBMIT. Its reply is only recorded; the
-   * pane's exit decides.
+   * pane's exit decides. A copy that may still be unread (`unreadCopy`) is waited out first
+   * (`awaitControlCopy`), so the line never lands behind it; nothing else is admitted
+   * meanwhile. When the session ends first, nothing is typed: cancel and the session timeout
+   * close the pane without a keystroke.
    */
   private async submitControl(line: string): Promise<void> {
-    const c = this.client;
-    if (!c) {
-      this.anomaly("control_send:unsent");
-      return;
+    this.controlPending = true;
+    try {
+      if (!(await this.awaitControlCopy())) {
+        this.anomaly("control_send:unread_copy");
+        return;
+      }
+      const c = this.client;
+      if (!c) {
+        this.anomaly("control_send:unsent");
+        return;
+      }
+      const mark = this.follower.size();
+      const rt = SEND_READY_WAIT_DEFAULT_MS;
+      const shape = sendShape("submit", line);
+      // remembered (and so watched) before it is sent: a record of it polled while the request
+      // is out is read as this copy's, which releases it
+      this.rememberCopy(line, { kind: "command", name: line.slice(1), line }, mark);
+      const gen = this.unreadCopyGen;
+      const r = await c.request(
+        { ...shape.msg, readyTimeoutMs: rt },
+        sendBudgetMs({ ...shape.budget, readyTimeoutMs: rt }) + SEND_CLIENT_SLACK_MS
+      );
+      const out = classifySendReply(r);
+      const s = this.noteLastSend(out, 1);
+      const own = this.unreadCopy !== null && this.unreadCopyGen === gen;
+      if (out.kind !== "accepted")
+        this.anomaly(`control_send:${out.kind}${s.reason ? `:${s.reason}` : ""}`);
+      // accepted, or nothing typed: no copy of it is left. Otherwise the pane may not exit on
+      // it, and a later prompt waits for this copy too (unless its record released it already)
+      if (own && (out.kind === "accepted" || !mayHaveTyped("submit", out))) this.forgetCopy();
+    } finally {
+      this.controlPending = false;
     }
-    const rt = SEND_READY_WAIT_DEFAULT_MS;
-    const shape = sendShape("submit", line);
-    const r = await c.request(
-      { ...shape.msg, readyTimeoutMs: rt },
-      sendBudgetMs({ ...shape.budget, readyTimeoutMs: rt }) + SEND_CLIENT_SLACK_MS
-    );
-    const out = classifySendReply(r);
-    const s = this.noteLastSend(out, 1);
-    if (out.kind !== "accepted")
-      this.anomaly(`control_send:${out.kind}${s.reason ? `:${s.reason}` : ""}`);
   }
 
-  /** One KEYS send of one key (Escape): no text and no final Enter, never gated. */
+  /**
+   * A stop row with no admission to stop (vim mode, a boot dialog): the control wait holds
+   * until it closes or the session ends, and says so once (`control_wait_blocked:<row>`).
+   * True once noted.
+   */
+  private async controlBlockedWait(live: () => boolean, noted: boolean): Promise<boolean> {
+    const g = this.drawBlocked();
+    if (g && !noted) this.anomaly(`control_wait_blocked:${g.dialog ?? g.reason ?? "unknown"}`);
+    await this.waitFor(() => !live() || this.drawBlocked() === null, BUSY_RETRY_MS);
+    return noted || g !== null;
+  }
+
+  /**
+   * The wait an admission inherits from `unreadCopy` (`awaitDraw`), for a control line, which
+   * has no admission and no deadline: until the copy settles in the box (cleared, then
+   * forgotten), settles on exactly its written part (`unreadCopyPart`: cleared too), shows
+   * whole and leaves (forgotten), shows an empty settled box after it was read whole
+   * (`unreadCopyReadWhole`: forgotten), or its record releases it (`syncCopyWatch`). A stop row, a
+   * clear whose keys were not sent, or a reconnect only starts the wait again. False when the
+   * session ended first.
+   */
+  private async awaitControlCopy(): Promise<boolean> {
+    const live = () => !isTerminalPhase(this.phase);
+    if (this.unreadCopy !== null) this.anomaly("unread_copy_wait");
+    let blockedNoted = false;
+    while (this.unreadCopy !== null) {
+      const gen = this.unreadCopyGen;
+      // the copy forgotten or replaced meanwhile (its record released it) ends this wait
+      const copyLive = () => live() && this.unreadCopy !== null && this.unreadCopyGen === gen;
+      const r = await this.waitDrawn({
+        against: this.unreadCopy,
+        earlier: true,
+        live: copyLive,
+        ms: Number.POSITIVE_INFINITY,
+        emptyEnds: () => this.unreadCopyReadWhole,
+        partOnly: this.unreadCopyPart,
+      });
+      if (!live()) return false;
+      if (!copyLive()) continue;
+      if (r.ended === "gone") {
+        this.anomaly("unread_copy_gone");
+        this.departCopy();
+      } else if (r.ended === "settled") {
+        this.anomaly("unread_copy_drawn");
+        const at = Date.now();
+        if (await this.sendClear(0))
+          await this.waitFor(() => !live() || this.freshReady(at), CLEAR_WAIT_MS);
+        else await this.waitFor(() => !live(), BUSY_RETRY_MS);
+      } else blockedNoted = await this.controlBlockedWait(live, blockedNoted);
+    }
+    return live();
+  }
+
+  /**
+   * One KEYS send of one key (Escape): no text and no final Enter, never gated. Withheld while
+   * a copy may be unread (`keysWithheld`): false, and nothing is sent.
+   */
   private key(k: string): Promise<boolean> {
+    if (this.keysWithheld()) {
+      this.anomaly(`key_withheld:${k}`);
+      return Promise.resolve(false);
+    }
     return this.keys([k]);
+  }
+
+  /**
+   * A copy that may still be unread is remembered (`unreadCopy`): no key bytes other than the
+   * clear of a settled copy (`sendClear`) go to the pane, since bytes queued behind an unread
+   * tail are read with it in one long read. A caller scroll is refused, a ctrl-End waits, and
+   * an Escape is not sent. A copy read whole (`unreadCopyReadWhole`) withholds nothing.
+   */
+  private keysWithheld(): boolean {
+    return this.unreadCopy !== null && !this.unreadCopyReadWhole;
   }
 
   /** One KEYS send of `ks` in order (ctrl-u ×n): no text and no final Enter, never gated. */
@@ -2294,6 +2860,9 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     const adm = this.admission;
     if (!adm) return;
     if (this.witnessed(view.current)) {
+      // an admission still waiting on an earlier copy of its own text typed nothing: the record
+      // is that copy, submitted, so no copy is left to wait for
+      if (adm.leftoverOf !== null && adm.leftoverOf === adm.line) this.forgetCopy();
       this.accept();
       return;
     }
@@ -2330,6 +2899,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       const now = Date.now();
       p.showingSince ??= now;
       if (now - p.showingSince < PANEL_SETTLE_MS) return;
+      if (this.keysWithheld()) return;
       p.escaped = true;
       this.anomaly(g?.dialog === "select" ? "picker_dismissed" : "panel_dismissed");
       void this.key("escape");
@@ -2364,7 +2934,131 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     this.fire("prompt_accepted");
   }
 
+  /**
+   * magmux stopped typing partway (`stopped`, 0.20.3+, on a `text_mismatch` or a `busy` that
+   * typed): only the first `writes` writes reached the pane, so nothing of this copy is queued
+   * beyond that written part (`writtenPart`). The box is still waited on until it settles, and
+   * a box settled on exactly that part is cleared and the line typed again (`waitDrawn`'s
+   * `partOnly`), never waited on to the deadline as the start of a copy still being drawn. A
+   * stop for a dialog keeps the part too: the wait holds while the dialog covers the box, and
+   * the same rule applies once it is located again.
+   */
+  private noteStoppedTyping(adm: Admission, out: { stopped: TypingStop | null }): void {
+    adm.writtenPart = null;
+    if (!out.stopped) return;
+    this.anomaly(`typing_stopped:${out.stopped.reason}`);
+    adm.writtenPart = writtenPrefix(adm.line, out.stopped.writes);
+  }
+
+  /** What one reply says about this admission's copy (`mayHaveTyped`, `provesReadWhole`). */
+  private noteTyping(adm: Admission, step: SubmitStep, out: SendOutcome): void {
+    // only this reply can say its send stopped partway (`noteStoppedTyping`)
+    adm.writtenPart = null;
+    if (mayHaveTyped(step, out)) {
+      adm.uncleared = true;
+      adm.readWhole = false;
+    }
+    if (provesReadWhole(out)) this.noteReadWhole(adm);
+  }
+
+  /** The whole line was in the box: none of this copy can be unread. */
+  private noteReadWhole(adm: Admission): void {
+    adm.uncleared = false;
+    adm.readWhole = true;
+  }
+
+  /**
+   * An admission ending unwitnessed (its deadline, or a stop row) leaves behind the copy that
+   * may still be unread: the earlier one it was waiting on, or its own, typed by a send whose
+   * outcome is unknown and not cleared since, with the part of it written when magmux stopped
+   * partway. The next admission then types nothing until that copy has shown
+   * (`inheritUnreadCopy`).
+   */
+  private rememberUnreadCopy(adm: Admission): void {
+    if (adm.leftoverOf !== null) {
+      // still the earlier copy (its witness, offset and part kept), unless its record released it
+      const c = adm.leftoverCopy;
+      if (!adm.copyReleased && this.unreadCopy !== adm.leftoverOf && c)
+        this.rememberCopy(adm.leftoverOf, c.witness, c.after, c.part);
+      return;
+    }
+    if (adm.readWhole && adm.submittedUnproven !== null) {
+      // read whole and maybe submitted (its Enter reply lost or unconfirmed): its record may
+      // still land, so a retry of the same text waits for it (`awaitCopyRecord`) and another
+      // line refuses it (`departCopy`); nothing of it is queued, so no key is withheld
+      this.rememberCopy(
+        adm.line,
+        "witness" in adm.plan ? adm.plan.witness : { kind: "text", text: adm.line },
+        adm.mark
+      );
+      this.unreadCopyReadWhole = true;
+      return;
+    }
+    if (adm.readWhole || (adm.awaitingDraw === null && !adm.uncleared)) return;
+    this.rememberCopy(
+      adm.line,
+      "witness" in adm.plan ? adm.plan.witness : { kind: "text", text: adm.line },
+      adm.mark,
+      adm.writtenPart
+    );
+  }
+
+  /**
+   * Remember a copy that may be unread: its line, its witness, the offset it was typed after,
+   * and the part written when magmux stopped typing it partway. The follower watches for its
+   * record from here on (`syncCopyWatch`), before any later poll can read that record.
+   */
+  private rememberCopy(
+    line: string,
+    witness: Witness,
+    after: number,
+    part: string | null = null
+  ): void {
+    this.unreadCopy = line;
+    this.unreadCopyWitness = witness;
+    this.unreadCopyAfter = after;
+    this.unreadCopyPart = part;
+    this.unreadCopyReadWhole = false;
+    this.unreadCopyGen++;
+    this.syncCopyWatch(false);
+  }
+
+  /** Forget the remembered copy, and stop watching for its record. */
+  private forgetCopy(): void {
+    this.unreadCopy = null;
+    this.unreadCopyWitness = null;
+    this.unreadCopyPart = null;
+    this.unreadCopyReadWhole = false;
+    this.syncCopyWatch(false);
+  }
+
+  /**
+   * Keep the follower watching the remembered copy (`watchCopy`), and release the copy once a
+   * record of it has landed: it was submitted, so nothing of it is queued, whether the session
+   * is idle or another admission is waiting on it. That admission is not accepted by the record
+   * (the follower holds its turn, `holdTurn`, unless the record is exactly one copy of its own
+   * line); it goes on by the normal rules, now with no copy remembered: an empty settled box
+   * ends its wait (`copyReleased`).
+   */
+  private syncCopyWatch(afterPoll: boolean): void {
+    if (this.unreadCopy === null) this.unreadCopyWitness = null;
+    const key = this.unreadCopy === null ? null : `${this.unreadCopyGen}`;
+    if (key !== this.watchedCopyKey) {
+      this.watchedCopyKey = key;
+      const w =
+        this.unreadCopyWitness ??
+        (this.unreadCopy === null ? null : { kind: "text" as const, text: this.unreadCopy });
+      this.follower.watchCopy(this.unreadCopy === null ? null : w, this.unreadCopyAfter);
+    }
+    if (!afterPoll || this.unreadCopy === null || !this.follower.copySeen()) return;
+    this.anomaly("unread_copy_recorded");
+    const adm = this.admission;
+    if (adm && adm.leftoverOf !== null) adm.copyReleased = true;
+    this.forgetCopy();
+  }
+
   private admitExpired(adm: Admission): void {
+    this.rememberUnreadCopy(adm);
     this.admission = null;
     if (adm.initial) {
       this.fire("admit_deadline", {
@@ -2612,6 +3306,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     ) {
       this.abandonedIndex = null;
       this.anomaly("late_witness");
+      this.forgetCopy();
       this.turnAcceptedAt = Date.now();
       this.turnErrorLogSize = this.errorLogSize();
       this.lastChatSeenAt = Date.now();
@@ -3625,6 +4320,8 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     if (isTerminalPhase(this.phase) || this.final) return "the session has finished";
     if (this.phase === "BOOTING" || this.screen.seq === 0) return "the session is still starting";
     if (this.phase === "ADMITTING") return "a prompt is being delivered to the session";
+    if (this.keysWithheld())
+      return "an earlier prompt's copy may still be unread in the input box; nothing is sent to the pane until it is resolved";
     if (this.screenTurnActive())
       return "the session's turn is being read from its screen (no transcript)";
     // a closed client is not connected: it is replaced only when `disconnected` fires; an
@@ -3640,6 +4337,8 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
    */
   private async returnToLiveBottom(ms: number): Promise<void> {
     if (isLiveBottom(this.scrollPos)) return;
+    // the position stays as it is, so a later step returns the view once the copy is resolved
+    if (this.keysWithheld()) return;
     const c = this.client;
     // an unverified connection is a reconnecting one: nothing is sent, the position stays
     if (!c || c.isClosed || !this.gateTrusted || ms <= 0) return;
@@ -3849,6 +4548,7 @@ function newAdmission(a: {
   plan: Extract<Delivery, { mode: "typed" | "file" | "command" }>;
   initial: boolean;
   bound: number;
+  mark: number;
 }): Admission {
   const now = Date.now();
   return {
@@ -3860,7 +4560,7 @@ function newAdmission(a: {
     initial: a.initial,
     startedAt: now,
     deadline: now + a.bound,
-    step: a.plan.mode === "command" ? "type" : "submit",
+    step: typingStep(a.plan),
     inFlight: false,
     attempts: 0,
     submittedUnproven: null,
@@ -3869,6 +4569,16 @@ function newAdmission(a: {
     stopped: false,
     clearFirst: false,
     clearAfter: 0,
+    awaitingDraw: null,
+    drawState: "none",
+    leftoverOf: null,
+    leftoverCopy: null,
+    uncleared: false,
+    readWhole: false,
+    mark: a.mark,
+    copyReleased: false,
+    recordWaitFrom: null,
+    writtenPart: null,
     lostType: null,
     last: null,
     noted: new Set(),
@@ -3876,10 +4586,161 @@ function newAdmission(a: {
   };
 }
 
+/** The anomaly of an Enter-only step whose text left the box without claudish's Enter. */
+function leftBoxAnomaly(plan: Delivery): string {
+  return plan.mode === "command" ? "gate_command_left_box" : "gate_line_left_box";
+}
+
+/** The step of a send that types the line: a command's TYPE, else the one-shot SUBMIT. */
+function typingStep(plan: Delivery): SubmitStep {
+  return plan.mode === "command" ? "type" : "submit";
+}
+
+/** What the screen last showed while a copy may be unread, for the deadline detail. */
+type DrawState = "none" | "prefix" | "changing";
+
+/**
+ * The box as one trusted frame draws it: null when it is located and empty, else its text, how
+ * it reads against the line, and the blank cells the cursor proves were drawn after the text on
+ * its last text row (`cursorGapAfterText`, null when it proves none).
+ */
+type DrawnBox = { text: string; match: BoxMatch; cursorGap: number | null } | null;
+
+function sameDrawnBox(a: DrawnBox, b: DrawnBox): boolean {
+  return a?.text === b?.text && a?.match === b?.match && a?.cursorGap === b?.cursorGap;
+}
+
+/** A box read empty again resets the detail: it never says "changing" for an empty box. */
+function drawStateOf(seen: DrawnBox): DrawState {
+  if (seen === null) return "none";
+  return seen.match === "prefix" ? "prefix" : "changing";
+}
+
+/**
+ * How a box unchanged for `quietMs` ends `awaitDraw`: "settled" (text that is not the start
+ * of the line), "gone" (empty, after an earlier copy's WHOLE line showed in a trusted frame
+ * of the same trust epoch: `goneCounts`), or null (keep waiting: no trusted frame, still
+ * changing, empty, or the start of the line). "gone" is safe only after the whole line was
+ * read: nothing of that copy can still be unread, so its leaving the box means it was taken
+ * away. After only its start showed, an empty box may be a redraw while the rest is still
+ * queued, and a new copy typed then would land behind that rest.
+ */
+function drawOutcome(
+  now: DrawnBox | undefined,
+  goneCounts: boolean,
+  quietMs: number
+): "settled" | "gone" | null {
+  if (now === undefined || quietMs < DRAW_SETTLE_MS) return null;
+  if (now === null) return goneCounts ? "gone" : null;
+  return now.match === "prefix" ? null : "settled";
+}
+
+/**
+ * `drawOutcome`, or "settled" for a box settled on exactly the written part (`partOnly`). Text
+ * that may be that part with its final spaces unread never settles (`unprovenSpaces`).
+ */
+function drawEnded(
+  now: DrawnBox | undefined,
+  goneCounts: boolean,
+  quietMs: number,
+  partOnly: string | null
+): "settled" | "gone" | null {
+  const ended = drawOutcome(now, goneCounts, quietMs);
+  if (!partOnly) return ended;
+  if (ended === "settled" && unprovenSpaces(now, partOnly)) return null;
+  if (ended !== null) return ended;
+  return isWrittenPart(now, partOnly, quietMs) ? "settled" : null;
+}
+
+/**
+ * The written part ends in spaces, the cursor does not prove them drawn (`writtenPartShown`),
+ * and the box, with every space and row break removed, shows a start of the part with every
+ * space removed. However its rows were matched ("other" included: a space run wrapped over
+ * several rows), the box may be that part with its final spaces still unread, and a clear
+ * would queue behind them: nothing is proved, so it is waited on.
+ */
+function unprovenSpaces(now: DrawnBox | undefined, part: string): boolean {
+  if (!now || !part.endsWith(" ") || writtenPartShown(part, now)) return false;
+  return part.replace(/\s+/g, "").startsWith(now.text.replace(/\s+/g, ""));
+}
+
+/** A normal box, unchanged for the settle window, showing exactly the written part of the line. */
+function isWrittenPart(now: DrawnBox | undefined, part: string, quietMs: number): boolean {
+  return quietMs >= DRAW_SETTLE_MS && writtenPartShown(part, now);
+}
+
+/**
+ * A normal box showing exactly the written part `part`. A drawn row loses its trailing
+ * whitespace (`locatedBoxText`), so a part that ends in k ASCII spaces matches only when the box
+ * shows the rest of it AND the cursor proves the k spaces were drawn after that text on the
+ * same row (`cursorGap === k`). Anything less (spaces not drawn yet, spaces wrapped to another
+ * row, a cursor elsewhere) proves nothing, and the box is waited on, never cleared.
+ */
+export function writtenPartShown(part: string, now: DrawnBox | undefined): boolean {
+  if (!now || now.match !== "prefix") return false;
+  const shown = trimTrailingSpaces(part);
+  if (matchBoxText(now.text, shown) !== "line") return false;
+  const spaces = part.length - shown.length;
+  return spaces === 0 || now.cursorGap === spaces;
+}
+
+function trimTrailingSpaces(s: string): string {
+  let end = s.length;
+  while (end > 0 && s[end - 1] === " ") end--;
+  return s.slice(0, end);
+}
+
 /** The box may hold this admission's own text, as of the reply received now. */
 function markClearFirst(adm: Admission): void {
   adm.clearFirst = true;
   adm.clearAfter = Date.now();
+}
+
+/** Nothing is cleared or typed until the box has settled (`awaitDraw`). */
+function startDrawWait(adm: Admission): void {
+  adm.awaitingDraw = Date.now();
+  adm.drawState = "none";
+}
+
+/**
+ * The reply proves the whole line was in the box: magmux verified it there (`in_box`, and the
+ * `still_in_box` and `unconfirmed` replies, whose Enter it pressed only after verifying it), or
+ * Enter was pressed with its evidence seen (`accepted`). Every byte of it was read.
+ */
+export function provesReadWhole(out: SendOutcome): boolean {
+  if (out.kind === "accepted" || out.kind === "in_box") return true;
+  return (
+    out.kind === "not_accepted" && (out.reason === "still_in_box" || out.reason === "unconfirmed")
+  );
+}
+
+/**
+ * Whether a send of `step` answered by `out` may have left its line in Claude Code's input
+ * unread: every outcome of a send that types, except those that prove nothing was written
+ * (`bad_request`, `unsent`, an untyped `busy`, `not_accepted` or `pane_gone`) and those that
+ * prove the whole line was in the box (`provesReadWhole`): nothing of it is queued. An
+ * Enter-only send types nothing.
+ */
+export function mayHaveTyped(step: SubmitStep, out: SendOutcome): boolean {
+  if (step === "enter") return false;
+  switch (out.kind) {
+    case "accepted":
+    case "bad_request":
+    case "unsent":
+      return false;
+    case "busy":
+    case "pane_gone":
+      return out.typed;
+    case "not_accepted":
+      return out.typed && !provesReadWhole(out);
+    case "in_box":
+      return false;
+    case "reply_lost":
+    case "unexpected":
+      return true;
+    default:
+      return assertNever(out);
+  }
 }
 
 /**
@@ -3927,35 +4788,83 @@ function fixedSendMs(step: SubmitStep, line: string): number {
  * The `readyTimeoutMs` of the next attempt, or null when none fits (R1.4): the client
  * timeout (`sendBudgetMs + SEND_CLIENT_SLACK_MS`) must end by the deadline, and a command's
  * TYPE leaves room for its Enter SUBMIT. Never above magmux's default 10 s, never below
- * `MIN_READY_TIMEOUT_MS`.
+ * `MIN_READY_TIMEOUT_MS` (`ENTER_MIN_READY_TIMEOUT_MS` for an Enter-only send).
  */
-function readyTimeoutFor(step: SubmitStep, line: string, leftMs: number): number | null {
+export function readyTimeoutFor(step: SubmitStep, line: string, leftMs: number): number | null {
   const reserve =
     step === "type" ? fixedSendMs("enter", line) + SEND_CLIENT_SLACK_MS + MIN_READY_TIMEOUT_MS : 0;
   const rt = Math.min(
     SEND_READY_WAIT_DEFAULT_MS,
     leftMs - fixedSendMs(step, line) - SEND_CLIENT_SLACK_MS - reserve
   );
-  return rt < MIN_READY_TIMEOUT_MS ? null : Math.floor(rt);
+  const floor = step === "enter" ? ENTER_MIN_READY_TIMEOUT_MS : MIN_READY_TIMEOUT_MS;
+  return rt < floor ? null : Math.floor(rt);
+}
+
+/** What the screen showed of an earlier prompt's copy that may be unread, at the deadline. */
+const EARLIER_COPY_SEEN: Record<DrawState, string> = {
+  none: "it never showed",
+  prefix: "only its start showed",
+  changing: "it showed and was still changing",
+};
+
+/** What a deadline detail adds while the box stayed empty after a send (`awaitDraw`). */
+function stayedEmptyNote(adm: { awaitingDraw: number | null; drawState: DrawState }): string {
+  if (adm.awaitingDraw === null) return "";
+  switch (adm.drawState) {
+    case "none":
+      return " (the input box stayed empty: Claude Code drew none of the typed text, so it was neither cleared nor typed again)";
+    case "prefix":
+      return " (the input box was empty after typing, then showed text ending in the start of the typed text, its rest perhaps unread, at the deadline, so no key was sent)";
+    case "changing":
+      return " (the input box was empty after typing, then showed text that was still changing at the deadline, so no key was sent)";
+    default:
+      return assertNever(adm.drawState);
+  }
+}
+
+/** An admission's detail when no gated send of it was answered. */
+function noReplyNote(
+  adm: {
+    attempts: number;
+    awaitingDraw: number | null;
+    drawState: DrawState;
+    leftoverOf: string | null;
+    recordWaitFrom?: number | null;
+  },
+  gate: GateInput | null
+): string {
+  const g = gate ? (gate.ready ? "ready" : (gate.reason ?? "not ready")) : "unknown";
+  if (adm.leftoverOf !== null && adm.recordWaitFrom != null) {
+    const s = Math.round((Date.now() - adm.recordWaitFrom) / 1000);
+    return `nothing was typed: an earlier copy of this prompt left the input box, and its transcript record did not appear in ${s} s (gate: ${g})`;
+  }
+  if (adm.leftoverOf !== null && adm.awaitingDraw !== null)
+    return `nothing was typed: the input box may still hold an earlier prompt's copy that Claude Code has not read (${EARLIER_COPY_SEEN[adm.drawState]}), and a new copy would queue behind it (gate: ${g})`;
+  return adm.attempts === 0
+    ? `no gated send fitted before the deadline (gate: ${g})`
+    : `no magmux reply (gate: ${g})`;
 }
 
 /** The latest reply of an admission that ended with nothing submitted, in the gate's words. */
 function describeLastReply(
-  adm: { last: SendOutcome | null; attempts: number },
+  adm: {
+    last: SendOutcome | null;
+    attempts: number;
+    awaitingDraw: number | null;
+    drawState: DrawState;
+    leftoverOf: string | null;
+    recordWaitFrom?: number | null;
+  },
   gate: GateInput | null
 ): string {
   const o = adm.last;
-  if (!o) {
-    const g = gate ? (gate.ready ? "ready" : (gate.reason ?? "not ready")) : "unknown";
-    return adm.attempts === 0
-      ? `no gated send fitted before the deadline (gate: ${g})`
-      : `no magmux reply (gate: ${g})`;
-  }
+  if (!o) return noReplyNote(adm, gate);
   switch (o.kind) {
     case "busy":
       return `last magmux reply: busy ${o.reason || "unknown"}${o.typed ? " (typed, Enter withheld)" : ""}${gate?.detail ? ` (${gate.detail})` : ""}`;
     case "not_accepted":
-      return `last magmux reply: not_accepted ${o.reason}`;
+      return `last magmux reply: not_accepted ${o.reason}${stayedEmptyNote(adm)}`;
     case "accepted":
       return `last magmux reply: ok ${o.accept} (${o.evidence})`;
     case "in_box":

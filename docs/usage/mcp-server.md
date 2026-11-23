@@ -460,7 +460,7 @@ session's final screen, the upstream error bodies, the recent state records, ano
 resolved model chain, accounting, and the paths to the full records (the transcript included).
 For a prompt that was not accepted, `gate` is magmux's current input-gate reading (`ready`,
 `reason`, `detail`) and `lastSend` is magmux's answer to claudish's last gated send (`kind`,
-`reason`, `accept`, `evidence`, `retypeCause`, `attempts`).
+`reason`, `accept`, `evidence`, `attempts`).
 
 **Parameters:**
 - `session_id` (required) - Session ID from `create_session`
@@ -533,8 +533,9 @@ prompt, it returns the view to the live bottom.
 changed screen within 1 s, else the current one (at the top or the bottom nothing changes). Errors
 are JSON `{error: {code, message}}` with `unknown_session`, `invalid_args` (neither or both of `by`
 and `to`, `by: 0`, a non-integer `by`, or a `to` other than `"end"`), or `scroll_unavailable`: the
-session is still starting, finished, delivering a prompt, reading its turn from the screen or
-reconnecting, or magmux did not confirm the send (the scroll may still land). Nothing is queued.
+session is still starting, finished, delivering a prompt, waiting for an earlier prompt's copy that may
+still be unread in its input box, reading its turn from the screen or reconnecting, or magmux did
+not confirm the send (the scroll may still land). Nothing is queued.
 `list_sessions` and `team` list `scroll` in `capabilities`.
 `team(mode:"scroll", path, slot, run_id?, by | to)` does the same for a team slot and answers
 `{run_id, path, slot, seq}`.

@@ -451,7 +451,34 @@ function fit(l: string): string {
   return Array.from(l).slice(0, COLS).join("");
 }
 
+/**
+ * `FAKE_BLANK_FRAME_AFTER_BYTES=<n>`: right after the read that brings the printable bytes
+ * received to n or more (once per process), one frame is drawn with no input box and held for
+ * `FAKE_BLANK_FRAME_MS` (default 300 ms) while stdin is still read; then the screen is drawn
+ * again as usual. To magmux that frame is a pane with no box between two writes of a typed
+ * send.
+ */
+const blankFrameAfterBytes = Math.max(0, Number(env.FAKE_BLANK_FRAME_AFTER_BYTES) || 0);
+const blankFrameMs = Math.max(0, Number(env.FAKE_BLANK_FRAME_MS) || 300);
+let blankPrintable = 0;
+let blankFrameDone = false;
+let blankUntil = 0;
+
+function noteBlankFrame(buf: Buffer): void {
+  if (!blankFrameAfterBytes || blankFrameDone) return;
+  blankPrintable += buf.filter((b) => b >= 0x20).length;
+  if (blankPrintable < blankFrameAfterBytes) return;
+  blankFrameDone = true;
+  blankUntil = Date.now() + blankFrameMs;
+  process.stdout.write("\x1b[H\x1b[2J");
+  setTimeout(() => {
+    blankUntil = 0;
+    render();
+  }, blankFrameMs);
+}
+
 function render(): void {
+  if (blankUntil > Date.now()) return;
   let out = "\x1b[H\x1b[2J";
   const rows = S.full ? S.full.slice(0, ROWS) : replRows();
   let cursorRow = 0;
@@ -1506,7 +1533,67 @@ function consumeSequence(s: string): string | null | undefined {
   return null;
 }
 
-function onData(buf: Buffer): void {
+/**
+ * `FAKE_STDIN_STALL_MS=<n>`: once the box is first drawn, stdin is not read for n ms, as
+ * Claude Code 2.1.330 did under concurrent boot (a box drawn empty for about 20 s). Every
+ * byte sent meanwhile is held, then read as ONE chunk. In this mode a read of 64 bytes or
+ * more drops every byte below 0x20 except TAB, LF and CR, as Claude Code does (measured:
+ * a ctrl-u inside a read of about 64 bytes or more is ignored, so text + ctrl-u + text
+ * reads as both copies joined). `FAKE_STDIN_STALL_LOG` names a file that receives one JSON
+ * line when the stall ends: `{ endedAt, text }`, `text` the held bytes as read.
+ * `FAKE_STDIN_STALL_LEFTOVER=<text>`: when the stall ends, that text is read first, ahead of
+ * the held bytes, as text another writer left in the box (not a copy of anything sent).
+ * `FAKE_STDIN_STALL_AFTER_BYTES=<n>`: the stall does not start at boot but right after the read
+ * that brings the printable bytes received to n or more, so the first write of a typed send
+ * is read and drawn and the rest held: magmux sees a partial box.
+ */
+const stdinStallMs = Math.max(0, Number(env.FAKE_STDIN_STALL_MS) || 0);
+const COALESCED_READ_BYTES = 64;
+let stalledInput: Buffer[] | null = null;
+
+const stallAfterBytes = Math.max(0, Number(env.FAKE_STDIN_STALL_AFTER_BYTES) || 0);
+let printableRead = 0;
+let stallAfterDone = false;
+
+function startStdinStall(): void {
+  if (!stdinStallMs) return;
+  stalledInput = [];
+  setTimeout(() => {
+    const held = Buffer.concat(stalledInput ?? []);
+    stalledInput = null;
+    const log = env.FAKE_STDIN_STALL_LOG;
+    if (log)
+      appendFileSync(
+        log,
+        `${JSON.stringify({ endedAt: Date.now(), text: held.toString("utf8") })}\n`
+      );
+    const leftover = env.FAKE_STDIN_STALL_LEFTOVER ?? "";
+    if (leftover) onData(Buffer.from(leftover, "utf8"));
+    if (held.length) onData(held);
+  }, stdinStallMs);
+}
+
+/** One read as Claude Code sees it in stall mode: control bytes lost in a long read. */
+function asRead(buf: Buffer): Buffer {
+  if (!stdinStallMs || buf.length < COALESCED_READ_BYTES) return buf;
+  return Buffer.from(buf.filter((b) => b >= 0x20 || b === 0x09 || b === 0x0a || b === 0x0d));
+}
+
+function onData(raw: Buffer): void {
+  if (stalledInput) {
+    stalledInput.push(raw);
+    return;
+  }
+  const buf = asRead(raw);
+  noteBlankFrame(buf);
+  if (stallAfterBytes && !stallAfterDone) {
+    printableRead += buf.filter((b) => b >= 0x20).length;
+    // this read is handled below; every later one is held until the stall ends
+    if (printableRead >= stallAfterBytes) {
+      stallAfterDone = true;
+      startStdinStall();
+    }
+  }
   // Opt-in observation only: keep the existing REPL semantics unchanged. Log raw chunks
   // before parsing so a test can reassemble a sequence split across PTY reads.
   const inputLog = env.FAKE_INPUT_BYTES_LOG;
@@ -1699,6 +1786,7 @@ async function boot(): Promise<void> {
   S.vim = scenario === "vim_insert" && !env.FAKE_VIM_FILE;
   if (scenario === "never_submit_transcript_off") S.history.push("  ⎿  Transcript saving is off");
   render();
+  if (!stallAfterBytes) startStdinStall();
   // F1: the first box precedes Claude Code's cooked → raw startup reset.
   if (scenario !== "no_boot_reset" && process.stdin.isTTY) {
     await sleep(100);

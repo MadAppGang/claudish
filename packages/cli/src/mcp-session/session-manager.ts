@@ -209,7 +209,7 @@ export interface SessionDiagnostics {
   gate: PaneDiagnostics["gate"];
   /**
    * The last gated send's outcome in the gate's words (`kind`, `reason`, `accept`,
-   * `evidence`, `retypeCause`, `attempts`); null before the first send or when not live.
+   * `evidence`, `attempts`); null before the first send or when not live.
    */
   lastSend: PaneDiagnostics["lastSend"];
   claudeCodeVersion: string | null;

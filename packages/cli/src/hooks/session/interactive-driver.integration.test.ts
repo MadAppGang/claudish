@@ -658,6 +658,53 @@ describe.skipIf(!MAGMUX)(
         T
       );
     }
+    test(
+      "the box shows the line's first 40 characters and then other text after a lost reply: no Enter is sent",
+      async () => {
+        const line = "HOOK-LONG reply with exactly the word PEAR, and nothing else at all";
+        const shown = `${line.slice(0, 40)} something else entirely`;
+        const proto = MagmuxClient.prototype as unknown as {
+          request(msg: Record<string, unknown>, ms?: number): Promise<unknown>;
+        };
+        const original = proto.request;
+        const enters: Array<Record<string, unknown>> = [];
+        const lose = () => {
+          proto.request = async function (
+            this: unknown,
+            msg: Record<string, unknown>,
+            ms?: number
+          ) {
+            if (msg.type === "send" && Array.isArray(msg.keys) && msg.keys.includes("enter"))
+              enters.push(msg);
+            if (msg.type !== "send" || msg.text !== line) return original.call(this, msg, ms);
+            // typed as other text that shares the line's first 40 characters, then the reply is lost
+            await original.call(this, { ...msg, text: shown, enter: false }, ms);
+            return { ok: false, code: "client_timeout", error: "no reply (test)" };
+          };
+        };
+        const dbl = controlled();
+        const r = await rig([{ say: "A1" }, { say: "A2" }], { binding: dbl.binding });
+        try {
+          const d = r.driver as InteractiveDriver;
+          await until(() => d.snapshot().booted, "boot");
+          await r.type("go");
+          await until(() => dbl.calls.length === 1, "settle 1");
+          lose();
+          dbl.calls[0]?.resolve(inject(line));
+          await until(
+            () => dbl.dropped.length === 1 || enters.length > 0 || r.keylog().length > 1,
+            "the drop, or an Enter",
+            25_000
+          );
+          expect(enters).toEqual([]);
+          expect(r.keylog()).toEqual(["go"]);
+        } finally {
+          proto.request = original;
+          await finish(r);
+        }
+      },
+      T
+    );
   }
 );
 

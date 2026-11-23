@@ -20,8 +20,9 @@ import {
   readyWaitMs,
   sendBudgetMs,
   typedWriteCount,
+  writtenPrefix,
 } from "./input-gate.js";
-import type { MagmuxReply } from "./magmux-client.js";
+import { type MagmuxReply, failureOf } from "./magmux-client.js";
 
 const DIALOG_KINDS = [
   "permission",
@@ -64,8 +65,6 @@ const ACCEPTED: Extract<SendOutcome, { kind: "accepted" }> = {
   accept: "confirmed",
   evidence: "history",
   enterByMagmux: true,
-  retyped: false,
-  retypeCause: null,
   dismissed: [],
   waitedMs: 0,
   verified: null,
@@ -73,8 +72,6 @@ const ACCEPTED: Extract<SendOutcome, { kind: "accepted" }> = {
 
 const IN_BOX: Extract<SendOutcome, { kind: "in_box" }> = {
   kind: "in_box",
-  retyped: false,
-  retypeCause: null,
   waitedMs: 0,
   verified: null,
 };
@@ -156,48 +153,19 @@ describe("U1 classifySendReply", () => {
     );
   });
 
-  test("preserves both retype causes on accepted and in_box replies", () => {
-    for (const retypeCause of ["terminal_reset", "never_drawn"] as const) {
-      expect(
-        classifySendReply({
-          ok: true,
-          result: {
-            accept: "confirmed",
-            evidence: "history",
-            enter: true,
-            retyped: true,
-            retypeCause,
-          },
-        })
-      ).toEqual({ ...ACCEPTED, retyped: true, retypeCause });
-      expect(
-        classifySendReply({
-          ok: true,
-          result: { accept: "in_box", enter: false, retyped: true, retypeCause },
-        })
-      ).toEqual({ ...IN_BOX, retyped: true, retypeCause });
-    }
-  });
-
-  test("uses unknown for an absent or future retype cause only when retyped", () => {
-    for (const shape of [
-      { accept: "confirmed", evidence: "history", enter: true },
-      { accept: "in_box", enter: false },
-    ]) {
-      for (const cause of [{}, { retypeCause: "future_loss_signal" }]) {
-        expect(
-          classifySendReply({ ok: true, result: { ...shape, retyped: true, ...cause } })
-        ).toMatchObject({ retyped: true, retypeCause: "unknown" });
-      }
-      for (const flag of [{}, { retyped: false }]) {
-        expect(
-          classifySendReply({
-            ok: true,
-            result: { ...shape, ...flag, retypeCause: "terminal_reset" },
-          })
-        ).toMatchObject({ retyped: false, retypeCause: null });
-      }
-    }
+  test("ignores the retype keys magmux before 0.20.2 sent", () => {
+    expect(
+      classifySendReply({
+        ok: true,
+        result: {
+          accept: "confirmed",
+          evidence: "history",
+          enter: true,
+          retyped: true,
+          retypeCause: "never_drawn",
+        },
+      })
+    ).toEqual(ACCEPTED);
   });
 
   test("does not accept ungated, unknown-accept or evidence-free success replies", () => {
@@ -238,6 +206,7 @@ describe("U1 classifySendReply", () => {
           reason,
           dialog,
           typed: fields.typed === true,
+          stopped: null,
         });
       }
     }
@@ -251,6 +220,7 @@ describe("U1 classifySendReply", () => {
           reason,
           dialog: null,
           typed,
+          stopped: null,
         });
       }
     }
@@ -267,7 +237,9 @@ describe("U1 classifySendReply", () => {
           kind: "not_accepted",
           reason,
           maybeSubmitted: false,
+          boxEmpty: false,
           typed: fields.typed === true,
+          stopped: null,
           detail: "pane 0: refusal detail",
         });
       }
@@ -285,18 +257,19 @@ describe("U1 classifySendReply", () => {
       kind: "not_accepted",
       reason: "text_mismatch",
       maybeSubmitted: true,
+      boxEmpty: false,
       typed: true,
+      stopped: null,
       detail: error,
     });
   });
 
-  test("does not mark noLoss, windowCut or lostAgain mismatches maybeSubmitted", () => {
-    // Exact detail tails from inputgate_send.go:864, :866 and :868, with fmt values filled in.
+  test("does not mark the stayed-empty mismatches maybeSubmitted", () => {
+    // Exact detail tails of magmux 0.20.2's stayed-empty clauses (mux/inputgate_send.go), with fmt values filled in.
     for (const detail of [
       "it differs from what was sent; it stayed empty but the terminal showed no stdin reset, and the deadline left less than the 3s verify window that tells a silent drop from a slow draw, so the text was not retyped",
       "it differs from what was sent; it stayed empty but the terminal showed no stdin reset, and the box was not seen empty on every read for the whole 3s verify window, so the text was not retyped",
-      "it differs from what was sent; the text was already retyped once (terminal reset) and the box stayed empty again, so it was not retyped a second time",
-      "it differs from what was sent; the text was already retyped once (never drawn) and the box stayed empty again, so it was not retyped a second time",
+      "it differs from what was sent; it stayed empty on every read of the whole 3s verify window (never drawn), but an empty box does not prove Claude Code read the text, so it was not retyped (a second copy could land behind the first, unread)",
     ]) {
       const error = formatDetail(MISMATCH_MESSAGE, detail);
       expect(
@@ -305,7 +278,9 @@ describe("U1 classifySendReply", () => {
         kind: "not_accepted",
         reason: "text_mismatch",
         maybeSubmitted: false,
+        boxEmpty: true,
         typed: true,
+        stopped: null,
         detail: error,
       });
     }
@@ -892,5 +867,61 @@ describe("U11 checkGateBinding and normaliseTranscriptPath", () => {
       if (priorConfig === undefined) delete process.env.CLAUDE_CONFIG_DIR;
       else process.env.CLAUDE_CONFIG_DIR = priorConfig;
     }
+  });
+});
+
+describe("a send magmux stopped partway (0.20.3 counts)", () => {
+  const stoppedLine = (extra: Record<string, unknown>) =>
+    failureOf({
+      ok: false,
+      code: "not_accepted",
+      reason: "text_mismatch",
+      typed: true,
+      error:
+        "typing stopped after 2 of 7 writes (deadline), so the rest of the text was never written",
+      ...extra,
+    });
+
+  test("the wire fields are kept when well formed", () => {
+    expect(stoppedLine({ writes: 2, writesTotal: 7, typingStopped: "deadline" })).toMatchObject({
+      writes: 2,
+      writesTotal: 7,
+      typingStopped: "deadline",
+    });
+  });
+
+  test("a count that is not a non-negative integer, or an unknown stop reason, reads as absent", () => {
+    for (const bad of [2.5, -1, "2", null]) {
+      const r = stoppedLine({ writes: bad, writesTotal: bad, typingStopped: "deadline" });
+      expect("writes" in r).toBe(false);
+      expect("writesTotal" in r).toBe(false);
+    }
+    expect(
+      "typingStopped" in stoppedLine({ writes: 2, writesTotal: 7, typingStopped: "nap" })
+    ).toBe(false);
+  });
+
+  test("classified: stopped only when the reply says part was not written", () => {
+    const outcome = (extra: Record<string, unknown>) => {
+      const o = classifySendReply(stoppedLine(extra));
+      return o.kind === "not_accepted" ? o.stopped : "wrong kind";
+    };
+    expect(outcome({ writes: 2, writesTotal: 7, typingStopped: "deadline" })).toEqual({
+      reason: "deadline",
+      writes: 2,
+      total: 7,
+    });
+    expect(outcome({ writes: 7, writesTotal: 7 })).toBeNull();
+    expect(outcome({})).toBeNull();
+    expect(outcome({ writes: 2, writesTotal: 7 })).toBeNull();
+  });
+
+  test("writtenPrefix: the text of the first writes, in 32-rune runs", () => {
+    const line = "a".repeat(100);
+    expect(writtenPrefix(line, 0)).toBe("");
+    expect(writtenPrefix(line, 2)).toBe("a".repeat(64));
+    expect(writtenPrefix(line, 4)).toBe(line);
+    expect(writtenPrefix(line, 9)).toBe(line);
+    expect(writtenPrefix("ab\ncd", 2)).toBe("ab\n");
   });
 });

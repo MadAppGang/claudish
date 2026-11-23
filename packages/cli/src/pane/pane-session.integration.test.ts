@@ -1187,12 +1187,13 @@ describe.skipIf(!MAGMUX)(
           expect(r.s.snapshot().anomalies).toContain("send_reply_lost");
           r.s.cancel();
           await finish(r);
-          expect(sends.filter(({ message }) => message.text === "/model haiku")).toHaveLength(2);
+          // the lost TYPE waits for the box: the line drawn there settles, and only its Enter goes
+          expect(sends.filter(({ message }) => message.text === "/model haiku")).toHaveLength(1);
           expect(
             sends.filter(
               ({ message }) => Array.isArray(message.keys) && message.keys.includes("ctrl-u")
             )
-          ).toHaveLength(1);
+          ).toHaveLength(0);
           expect(r.submits.map(({ text }) => text)).toEqual(["/model haiku"]);
         },
         T

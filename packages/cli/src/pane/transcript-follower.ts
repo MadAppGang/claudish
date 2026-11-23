@@ -213,6 +213,25 @@ export interface FollowerState {
   agentSetting: string | null;
   records: number;
   resolvePath: (p: string) => string;
+  /**
+   * A copy that may still be unread in Claude Code's input (the session's `unreadCopy`): its
+   * witness, and the offset it was typed after. `seen` once a main-chain record of it lands
+   * after that offset, whichever turn is open, or none.
+   */
+  copy: { witness: Witness; after: number; seen: boolean } | null;
+  /**
+   * The open turn's admission has typed nothing yet (it waits on `copy`): a record accepts it
+   * only when it is exactly one copy of its own line and that line is the copy's
+   * (`heldMayAccept`). Any other matching record is the earlier copy's.
+   */
+  held: boolean;
+  /**
+   * A copy of another line that left the input box and was forgotten before its record landed
+   * (`refuseDeparted`): its witness, and the offset it was typed after. The first record that
+   * is exactly one copy of it (`isOneCopyOf`) is that copy's, and accepts no turn; it is then
+   * cleared. Without it, "PEARPEAR" landing late reads as two joined copies of "PEAR".
+   */
+  departed: { witness: Witness; after: number } | null;
   /** the session's subagents; lives across turns and survives `rewindTo` */
   ledger: SubagentLedger;
 }
@@ -230,6 +249,9 @@ export function initialFollowerState(
     agentSetting: null,
     records: 0,
     resolvePath,
+    copy: null,
+    held: false,
+    departed: null,
     ledger: new SubagentLedger(),
   };
 }
@@ -357,7 +379,7 @@ function matchesWitness(r: Rec, w: Witness): boolean {
   // Some local commands are written as system records, not user records (captured:
   // 2.1.291 `/color yellow` → two `system/local_command` records).
   if (w.kind === "command" && isLocalCommandSystem(r))
-    return String(r.content ?? "").includes(`<command-name>/${w.name}</command-name>`);
+    return isCommandRecordOf(String(r.content ?? ""), w);
   if (!isMainUser(r) || hasToolResult(r)) return false;
   const text = userText(r);
   if (w.kind === "text") return !r.isMeta && wholeCopies(text, w.text) > 0;
@@ -365,7 +387,46 @@ function matchesWitness(r: Rec, w: Witness): boolean {
   // minutes on a real context; the plain record of the typed line is written at submit
   // (captured: 2.1.290 and 2.1.291, `"content":"/compact"`, no isMeta), so it is the witness.
   if (w.line !== undefined && !r.isMeta && text.trim() === w.line.trim()) return true;
-  return text.includes(`<command-name>/${w.name}</command-name>`);
+  return isCommandRecordOf(text, w);
+}
+
+/**
+ * A command record (`<command-name>/x</command-name>`, `<command-args>…</command-args>`) of
+ * THIS turn's command: the same name and the same arguments as its typed line. A pointer
+ * line's arguments name its own turn file, so a record of an earlier `/x` with other arguments,
+ * or another turn file, never matches. A record with no `<command-args>` matches only a line
+ * with none.
+ */
+function isCommandRecordOf(text: string, w: Extract<Witness, { kind: "command" }>): boolean {
+  const tags = commandTags(text);
+  if (!tags || tags.get("name") !== `/${w.name}`) return false;
+  if (w.line === undefined) return true;
+  const want = w.line
+    .trim()
+    .slice(w.name.length + 1)
+    .trim();
+  return (tags.get("args") ?? "").trim() === want;
+}
+
+const COMMAND_TAG = /<command-(name|message|args)>([\s\S]*?)<\/command-\1>/g;
+
+/**
+ * The tags of a record in the shape Claude Code writes for a command: its whole content is
+ * `<command-name>`, `<command-message>` and `<command-args>` elements, each at most once and
+ * separated only by whitespace, with a name. Anything else, such as a prompt that quotes those
+ * markers inside its own text, is null.
+ */
+function commandTags(text: string): Map<string, string> | null {
+  const t = text.trim();
+  const tags = new Map<string, string>();
+  let at = 0;
+  for (const m of t.matchAll(COMMAND_TAG)) {
+    const [whole, tag = "", body = ""] = m;
+    if (t.slice(at, m.index).trim() !== "" || tags.has(tag)) return null;
+    tags.set(tag, body);
+    at = m.index + whole.length;
+  }
+  return tags.has("name") && t.slice(at).trim() === "" ? tags : null;
 }
 
 function recordUsage(state: FollowerState, r: Rec): void {
@@ -643,6 +704,59 @@ function applyUser(t: TurnState, r: Rec, offset: number): void {
   }
 }
 
+/** A main-chain record of the remembered copy, after the offset it was typed at (`FollowerState.copy`). */
+function noteCopyRecord(state: FollowerState, r: Rec, offset: number): void {
+  const c = state.copy;
+  if (!c || c.seen || offset <= c.after || r.isSidechain) return;
+  if (matchesWitness(r, c.witness)) c.seen = true;
+}
+
+/** The departed copy's own record (`FollowerState.departed`), taken once: it is no witness. */
+function takeDepartedRecord(state: FollowerState, r: Rec, offset: number): boolean {
+  const d = state.departed;
+  if (!d || offset <= d.after || !isOneCopyOf(r, d.witness)) return false;
+  state.departed = null;
+  return true;
+}
+
+/** A main-chain record of exactly one submission of the line `w` stands for. */
+function isOneCopyOf(r: Rec, w: Witness): boolean {
+  if (w.kind === "text")
+    return isMainUser(r) && !r.isMeta && !hasToolResult(r) && userText(r).trim() === w.text.trim();
+  return w.kind === "command" && matchesWitness(r, w);
+}
+
+/**
+ * `acceptIfWitness`, except that a held turn accepts only what `heldMayAccept` allows, and the
+ * departed copy's own record (`departed`, `takeDepartedRecord`) accepts nothing.
+ */
+function acceptUnlessHeld(
+  state: FollowerState,
+  t: TurnState,
+  r: Rec,
+  offset: number,
+  departed: boolean
+): void {
+  if (departed) return;
+  if (!state.held || heldMayAccept(state, t, r)) acceptIfWitness(t, r, offset);
+}
+
+/**
+ * A held turn (`FollowerState.held`) is accepted only by one copy of its own line, and only
+ * when that line is the remembered copy's: the admission typed nothing, so the record is that
+ * copy, submitted once. Joined copies, or a record of a line that is not the copy's, are not
+ * this turn's. A command is held the same way: the remembered copy is the same command line,
+ * and its own record (bound to its arguments, `isCommandRecordOf`) is one submission of it.
+ */
+function heldMayAccept(state: FollowerState, t: TurnState, r: Rec): boolean {
+  const w = t.witness;
+  const c = state.copy?.witness;
+  if (w.kind === "command")
+    return c?.kind === "command" && c.name === w.name && c.line === w.line && matchesWitness(r, w);
+  if (w.kind !== "text" || c?.kind !== "text" || c.text !== w.text) return false;
+  return isMainUser(r) && !r.isMeta && wholeCopies(userText(r), w.text) === 1;
+}
+
 function acceptIfWitness(t: TurnState, r: Rec, offset: number): void {
   if (!matchesWitness(r, t.witness)) return;
   t.acceptedAt = typeof r.timestamp === "string" ? r.timestamp : new Date().toISOString();
@@ -678,11 +792,15 @@ export function applyRecord(
     state.session.stopHooksSeen = true;
     state.session.provenHookless = false;
   }
+  // the departed copy's own record is read first: it marks no watched copy seen ("PEARPEAR"
+  // would read as two copies of a watched "PEAR") and accepts no turn
+  const departed = takeDepartedRecord(state, r, offset);
+  if (!departed) noteCopyRecord(state, r, offset);
   const t = turnFor(state, offset);
   if (!t) return state;
 
   if (t.acceptedAt === null) {
-    acceptIfWitness(t, r, offset);
+    acceptUnlessHeld(state, t, r, offset, departed);
     if (t.acceptedAt !== null) {
       t.shadow = null;
       return state;
@@ -762,6 +880,7 @@ export function openTurnState(
   t: { index: number; offset: number; witness: Witness; delivery?: TurnDelivery | null }
 ): FollowerState {
   state.turns.length = 0;
+  state.held = false;
   const turn = newTurnState(t);
   turn.shadow = newTurnState(t);
   state.turns.push(turn);
@@ -1053,6 +1172,30 @@ export class TranscriptFollower {
     this.main.seek(t.offset);
     openTurnState(this.state, t);
     this.poll();
+  }
+
+  /** Watch for a record of the copy that may still be unread (null: none). */
+  watchCopy(witness: Witness | null, after: number): void {
+    this.state.copy = witness ? { witness, after, seen: false } : null;
+  }
+
+  /** A record of the watched copy has landed. */
+  copySeen(): boolean {
+    return this.state.copy?.seen === true;
+  }
+
+  /**
+   * A copy of another line left the input box and is forgotten before its record landed: that
+   * record, when it lands after `after`, is the copy's and accepts no turn
+   * (`FollowerState.departed`). A later departed copy replaces this one.
+   */
+  refuseDeparted(witness: Witness, after: number): void {
+    this.state.departed = { witness, after };
+  }
+
+  /** The open turn's admission has typed nothing (`FollowerState.held`). */
+  holdTurn(held: boolean): void {
+    this.state.held = held;
   }
 
   markSettled(): void {

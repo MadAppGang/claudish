@@ -311,7 +311,7 @@ screen, so that is what is captured.
   `connected`, the redacted `screenTail`, `sockPath`, the head of magmux's own stderr,
   `preambleBytes`, the current turn's `readCoverage`, the child's `claudeCodeVersion`,
   `anomalies`, the input gate's fresh reading `gate: {ready, reason, detail, ageMs} | null` and the
-  last gated send `lastSend: {kind, reason?, accept?, evidence?, retypeCause?, attempts} | null`;
+  last gated send `lastSend: {kind, reason?, accept?, evidence?, attempts} | null`;
   the tail of the event ring; the upstream error bodies; and the paths: the
   transcript, the session directory, `events.jsonl`, `upstream-errors.jsonl`. A session no longer in
   memory answers from its directory, including `screen.txt`.
@@ -484,7 +484,8 @@ toward older content, or `to:"end"`) scrolls the child's own transcript view and
 `{run_id, path, slot, seq}`. A capture has no rows above the visible screen (the child draws on
 the alternate screen), so the scroll goes to the child as SGR wheel events, `|by|` capped at 200
 and a target ± 1 row. Its one error code is `scroll_unavailable` (starting, finished, delivering a
-prompt, a screen-read turn, reconnecting, or magmux did not confirm); nothing is queued.
+prompt, an earlier prompt's copy that may still be unread, a screen-read turn, reconnecting, or
+magmux did not confirm); nothing is queued.
 `capabilities` lists `scroll`. The argument errors come before the run lookup, as for `resize`. It
 is not a nested tool. Mechanism, rows and states: `pane-session.md`, "Scrolling the child's view".
 
