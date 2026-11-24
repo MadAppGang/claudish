@@ -18,7 +18,22 @@ import { realpathSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { gateBasisOf, parseGateBinding, parseGateInput } from "./input-gate.js";
 
-export type GateBindingCheck = { ok: true } | { ok: false; detail: string };
+/**
+ * How long, and how often, `list` is read again while the check answers `unpublished`.
+ * magmux refreshes a pane's input view about four times a second, so the first one is normally
+ * a few reads away; the bound is for a machine too busy to schedule it.
+ */
+export const GATE_INPUT_WAIT_MS = 5_000;
+export const GATE_INPUT_RETRY_MS = 100;
+
+/**
+ * `unpublished`: pane 0 is declared, its input view is not published yet, and nothing it does
+ * publish names another session, another path or another kind of binding. The one failure a
+ * later `list` can turn into a pass; every other one is final.
+ */
+export type GateBindingCheck = { ok: true } | { ok: false; detail: string; unpublished?: true };
+
+type ExpectedBinding = { sessionUuid: string; transcriptPath: string; magmuxVersion: string };
 
 /**
  * `p` made absolute, with its deepest EXISTING ancestor realpath-resolved and the rest
@@ -51,19 +66,39 @@ function unavailableDetail(v: string, basis: string | null | undefined): string 
   return `input_gate_unavailable: magmux ${v} did not gate pane 0 (gateBasis ${basis ?? "none"})`;
 }
 
+/** Pane 0 publishes an `input` view, in a form this module knows or not. */
+function inputPublished(listResult: unknown): boolean {
+  const panes = (listResult as { panes?: unknown } | null)?.panes;
+  const row = Array.isArray(panes) ? panes.find((p) => p?.pane === 0) : undefined;
+  return row?.input !== undefined && row?.input !== null;
+}
+
+/** A published binding field that is not this session's: no later `list` can fix it. */
+function namesAnother(listResult: unknown, expected: ExpectedBinding): boolean {
+  const b = parseGateBinding(listResult);
+  if (!b) return false;
+  if (b.boundRaw === "prompt" || b.boundRaw === "mtime") return true;
+  if (b.sessionId && b.sessionId !== expected.sessionUuid) return true;
+  if (!b.transcriptPath) return false;
+  return (
+    normaliseTranscriptPath(b.transcriptPath) !== normaliseTranscriptPath(expected.transcriptPath)
+  );
+}
+
 /**
  * One `list` result → whether pane 0's gate may be trusted for this session. Fails with
  * `input_gate_unavailable` when pane 0 is not gated as a declared pane, and with
  * `input_gate_unbound` when the binding is not by name, or names another session or path.
  */
-export function checkGateBinding(
-  listResult: unknown,
-  expected: { sessionUuid: string; transcriptPath: string; magmuxVersion: string }
-): GateBindingCheck {
+export function checkGateBinding(listResult: unknown, expected: ExpectedBinding): GateBindingCheck {
   const v = expected.magmuxVersion || "?";
   const basis = gateBasisOf(listResult);
-  if (basis !== "declared" || !parseGateInput(listResult, 0))
-    return { ok: false, detail: unavailableDetail(v, basis) };
+  if (basis !== "declared" || !parseGateInput(listResult, 0)) {
+    const detail = unavailableDetail(v, basis);
+    const early =
+      basis === "declared" && !inputPublished(listResult) && !namesAnother(listResult, expected);
+    return early ? { ok: false, detail, unpublished: true } : { ok: false, detail };
+  }
   const b = parseGateBinding(listResult);
   const ours = normaliseTranscriptPath(expected.transcriptPath);
   const theirs = b?.transcriptPath ? normaliseTranscriptPath(b.transcriptPath) : null;

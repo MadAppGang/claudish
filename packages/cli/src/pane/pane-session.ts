@@ -66,7 +66,12 @@ import {
   type SlotState,
 } from "./contract.js";
 import { childExitEvidence } from "./exit-evidence.js";
-import { checkGateBinding } from "./gate-binding.js";
+import {
+  GATE_INPUT_RETRY_MS,
+  GATE_INPUT_WAIT_MS,
+  type GateBindingCheck,
+  checkGateBinding,
+} from "./gate-binding.js";
 import {
   BOOT_DIALOG_KINDS,
   type GateDialogKind,
@@ -624,6 +629,11 @@ interface ResizeWaiter {
   reject: (e: unknown) => void;
 }
 
+/** A `list` result, as far as it is read here. */
+interface ListResult {
+  panes?: Array<Record<string, unknown>>;
+}
+
 interface ScreenTurn {
   echo: string;
   acceptedAt: number;
@@ -768,6 +778,8 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   private gate: GateInput | null = null;
   /** this connection passed the binding check: its gate readings may be trusted */
   private gateTrusted = false;
+  /** ends the pause between two `list` reads of an attach at once; null when none is running */
+  private endGatePause: (() => void) | null = null;
   /** numbers each attached connection; its frames are stamped with it (`onFrame`) */
   private connectionGen = 0;
   /** the connection whose binding check passed last (`gateTrusted` while it is current) */
@@ -1020,7 +1032,9 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     client.on("frame", (f: MagmuxFrame) => this.onFrame(f, gen));
     client.on("exit", (e) => void this.onPaneExit(e));
     client.on("pane_closed", (e) => {
-      if (e?.pane === 0) this.paneClosed = true;
+      if (e?.pane !== 0) return;
+      this.paneClosed = true;
+      this.endGatePause?.();
     });
     client.on("disconnected", () => this.onDisconnected(client));
     const caps = await client.request<{
@@ -1060,21 +1074,107 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     this.lastSentSize = null;
     if (this.supportsResize && !samePaneSize(this.appliedSize, this.desiredSize)) this.kickResize();
     await client.request({ type: "watch", pane: 0, mode: "frames", fps: WATCH_FPS });
-    // An `exit` pushed before this connection subscribed (a child that dies in its first
-    // milliseconds, or one that exited in a reconnect gap) is only visible in `list`.
-    const list = await client.request<{ panes?: Array<Record<string, unknown>> }>({ type: "list" });
-    const p0 = list.ok ? list.result.panes?.find((p) => p.pane === 0) : undefined;
-    if (typeof p0?.pid === "number" && !this.panePidValue) this.setPanePid(p0.pid);
-    if (p0?.dead === true && !this.paneExited) {
-      if (!reconnect) await this.nextFrame(500); // let the keyframe land: the final screen decides agent_rejected
-      void this.onPaneExit({ exitCode: p0.exitCode ?? null, lastLine: "" });
-      return;
-    }
-    if (!this.verifyGateBinding(client, list, magmuxVersion) || !list.ok) return;
+    const bound = await this.awaitBoundPane(client, reconnect, magmuxVersion);
+    if (!bound) return;
     this.trustedGen = gen;
     this.trustEpoch++;
     this.gateTrusted = true;
-    this.onGateList(client, list.result);
+    this.onGateList(client, bound);
+  }
+
+  /**
+   * The `list` result that passed the binding check, or null when this attach ends here: the
+   * pane failed, is dead or gone, or the connection or the session ended. `list` is read again
+   * only while pane 0 is declared and its input view is not published yet
+   * (`GateBindingCheck.unpublished`), until `gateWaitEnd`; then that check's detail fails the
+   * pane. The connection is not trusted meanwhile, so no gate reading is taken from it and
+   * nothing is typed.
+   */
+  private async awaitBoundPane(
+    client: MagmuxClient,
+    reconnect: boolean,
+    magmuxVersion: string
+  ): Promise<ListResult | null> {
+    let list = await client.request<ListResult>({ type: "list" });
+    let end: number | null = null;
+    for (;;) {
+      // An `exit` pushed before this connection subscribed (a child that dies in its first
+      // milliseconds, or one that exited in a reconnect gap) is only visible in `list`.
+      const p0 = list.ok ? list.result.panes?.find((p) => p.pane === 0) : undefined;
+      if (typeof p0?.pid === "number" && !this.panePidValue) this.setPanePid(p0.pid);
+      if (p0?.dead === true && !this.paneExited) {
+        if (!reconnect) await this.nextFrame(500); // let the keyframe land: the final screen decides agent_rejected
+        void this.onPaneExit({ exitCode: p0.exitCode ?? null, lastLine: "" });
+        return null;
+      }
+      const check = this.gateBindingOf(client, list, magmuxVersion);
+      if (!check) return null;
+      if (check.ok) return list.ok ? list.result : null;
+      if (!check.unpublished) return this.failGateBinding(check.detail);
+      end ??= this.gateWaitEnd();
+      const again = await this.relistBefore(client, end);
+      // whatever ended the wait decides; a reply that arrived with it is not acted on
+      if (this.gateWaitOver(client)) return null;
+      if (!again) return this.failGateBinding(check.detail);
+      list = again;
+    }
+  }
+
+  /** After a pause, another `list`; null when it is over or no answer arrived by `end`. */
+  private async relistBefore(
+    client: MagmuxClient,
+    end: number
+  ): Promise<MagmuxReply<ListResult> | null> {
+    const left = end - Date.now();
+    if (left <= 0 || this.gateWaitOver(client)) return null;
+    await this.gatePause(Math.min(GATE_INPUT_RETRY_MS, left));
+    const rest = end - Date.now();
+    if (rest <= 0 || this.gateWaitOver(client)) return null;
+    const list = await client.request<ListResult>({ type: "list" }, rest);
+    return !list.ok && list.code === "client_timeout" ? null : list;
+  }
+
+  /**
+   * When the wait for the input view ends: GATE_INPUT_WAIT_MS from now, or one tick before the
+   * boot or admission deadline when that is sooner, so the pane fails with the gate's own
+   * detail and not with the deadline's.
+   */
+  private gateWaitEnd(): number {
+    const deadline =
+      this.phase === "BOOTING"
+        ? this.startedAtMs + (this.o.bootTimeoutMs ?? BOOT_TIMEOUT_MS)
+        : (this.admission?.deadline ?? Number.POSITIVE_INFINITY);
+    return Math.min(Date.now() + GATE_INPUT_WAIT_MS, deadline - TICK_MS);
+  }
+
+  /** Nothing is left to wait for: the connection, the pane or the session ended. */
+  private gateWaitOver(client: MagmuxClient): boolean {
+    return (
+      client.isClosed ||
+      this.client !== client ||
+      this.paneExited ||
+      this.paneClosed ||
+      this.reaping ||
+      isTerminalPhase(this.phase)
+    );
+  }
+
+  /** A pause `endGatePause` ends at once, leaving no timer. */
+  private gatePause(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      const done = () => {
+        clearTimeout(timer);
+        if (this.endGatePause === done) this.endGatePause = null;
+        resolve();
+      };
+      const timer = setTimeout(done, ms);
+      this.endGatePause = done;
+    });
+  }
+
+  private failGateBinding(detail: string): null {
+    this.step(() => this.fire("pane_lost", { detail }));
+    return null;
   }
 
   /** The two-socket check for this connection; a failure leaves the session running unpublished. */
@@ -1097,35 +1197,27 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
    * The binding check (architecture-v2 R1.0), on every attach: magmux's input gate is
    * trusted only for a pane it bound BY NAME to this session's id and transcript. Anything
    * else fails the pane; claudish never falls back to magmux's transcript discovery.
-   * True only when the gate of this connection may be read.
+   * null: nothing to decide on this connection (dropped, session over, or no pane 0).
    */
-  private verifyGateBinding(
+  private gateBindingOf(
     client: MagmuxClient,
-    list: MagmuxReply<{ panes?: Array<Record<string, unknown>> }>,
+    list: MagmuxReply<ListResult>,
     magmuxVersion: string
-  ): boolean {
+  ): GateBindingCheck | null {
     // dropped while asking: the redial attaches again and re-checks
-    if (client.isClosed || isTerminalPhase(this.phase)) return false;
-    if (!list.ok) {
-      this.step(() =>
-        this.fire("pane_lost", {
-          detail: `input_gate_unbound: magmux ${magmuxVersion || "?"} list failed (${list.code}: ${list.error}), so the binding of pane 0 is unknown`,
-        })
-      );
-      return false;
-    }
+    if (client.isClosed || isTerminalPhase(this.phase)) return null;
+    if (!list.ok)
+      return {
+        ok: false,
+        detail: `input_gate_unbound: magmux ${magmuxVersion || "?"} list failed (${list.code}: ${list.error}), so the binding of pane 0 is unknown`,
+      };
     // no pane 0: it is gone, and the exit path owns that
-    if (!list.result.panes?.some((p) => p.pane === 0)) return false;
-    const check = checkGateBinding(list.result, {
+    if (!list.result.panes?.some((p) => p.pane === 0)) return null;
+    return checkGateBinding(list.result, {
       sessionUuid: this.o.sessionUuid,
       transcriptPath: this.o.transcriptPath,
       magmuxVersion,
     });
-    if (!check.ok) {
-      this.step(() => this.fire("pane_lost", { detail: check.detail }));
-      return false;
-    }
-    return true;
   }
 
   /* ───────────────────────────── the input gate ───────────────────────────── */
@@ -1222,6 +1314,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       // a reading from before the drop says nothing about now
       this.gate = null;
       this.gateTrusted = false;
+      this.endGatePause?.();
     }
     if (this.reaping || !alive(this.magmux)) return;
     if (isTerminalPhase(this.phase)) return;
@@ -1240,7 +1333,8 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
           const c = await MagmuxClient.dial(this.sockPath);
           this.anomaly("socket_reconnected");
           await this.attach(c, true);
-          return;
+          // dropped during its attach: `onDisconnected` left the redial to this loop
+          if (!c.isClosed) return;
         } catch (e) {
           enoent = (e as MagmuxConnectError).errno === "ENOENT" ? enoent + 1 : 0;
           if (enoent >= 20) {
@@ -1288,6 +1382,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     this.paneExited = true;
     this.exitCode = code;
     this.exitLastLine = lastLine;
+    this.endGatePause?.();
     // The final screen, with scrollback, so a long agent list cannot hide the refusal (L8).
     const slow = this.o.timings?.exitCaptureDelayMs;
     if (slow) await Bun.sleep(slow);
@@ -4438,6 +4533,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   private onTerminal(): void {
     this.endedAtMs = Date.now();
     this.final = true;
+    this.endGatePause?.();
     this.admission = null;
     if (this.timeoutTimer) clearTimeout(this.timeoutTimer);
     if (this.hooks) {

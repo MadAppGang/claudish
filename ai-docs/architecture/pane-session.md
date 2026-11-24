@@ -150,6 +150,24 @@ made. `transcriptSeen: false` is normal before the first prompt and is not read.
 (fake child, hermetic env): `bound named`, the claudish uuid and the path under `CLAUDE_CONFIG_DIR`,
 50 ms after launch, before any transcript file existed.
 
+**The one answer that is waited on.** magmux publishes pane 0's `input` view only after its first
+poll of the pane, so a `list` read before that shows `gateBasis: "declared"` with no `input`.
+Measured on 0.20.3: 6 of 62 slots attached that early and, when the first `list` decided, failed
+within about 1 s. So while pane 0 is declared and has no `input`, the attach reads `list` again
+every 100 ms (`GATE_INPUT_RETRY_MS`) for at most 5 s (`GATE_INPUT_WAIT_MS`), or until 250 ms (one
+tick) before the boot or admission deadline when that is sooner, so the pane fails with this
+detail and not the deadline's. At the bound it fails `input_gate_unavailable … declared the input
+gate for pane 0 but has not published its input view yet`, as does a re-read never answered by
+then. Nothing else waits: no gate, gate basis `direct`, an `input` in an unknown form, a failed
+`list`, a binding that names another session or path or is bound by `prompt` or `mtime` (with or
+without an `input`) each decide on the read that shows them, the first or a later one. A dead
+pane 0 in a re-read takes the exit path. The exit event, `pane_closed`, a dropped connection,
+magmux's exit, cancel and the session timeout end the pause at once and clear its timer. The
+connection is not trusted during the wait, so nothing is typed. The wait is in `PaneSession`'s
+attach (`awaitBoundPane`), `checkGateBinding`'s only caller; `checkGateBinding` stays one verdict
+on one reply (`unpublished` marks this one). A redialled connection that drops during its own
+attach is dialled again by the same redial loop.
+
 **What the gate is read from.** magmux publishes no readiness event (`snapshotChanged` does not
 compare `input`), so `PaneSession` polls `list` every 250 ms (`GATE_POLL_MS`; magmux refreshes
 `input` at 4 Hz), one request in flight, reply timeout 1 s. A reading older than 1 s
