@@ -123,14 +123,17 @@ describe.skipIf(!MAGMUX)(
     }
 
     test(
-      "I8: ignored Enters yield still_in_box twice, one ctrl-u, no third typed copy",
+      "I8: an ignored Enter yields still_in_box once: no ctrl-u, no second typed copy, a loud loss",
       async () => {
         const r = await startGatePane("enter_ignored_forever", {
           shape: "one-shot",
           initialPrompt: PROMPT,
         });
         await assertLoudLoss(r, "still_in_box");
-        expect(gatedSends(r)).toHaveLength(2);
+        expect(r.s.snapshot().detail).toContain(
+          "Enter was pressed and Claude Code had not read it"
+        );
+        expect(gatedSends(r)).toHaveLength(1);
         expect(
           gatedSends(r).every(({ reply }) => !reply?.ok && reply?.reason === "still_in_box")
         ).toBe(true);
@@ -138,7 +141,7 @@ describe.skipIf(!MAGMUX)(
           r.sends.filter(({ message }) =>
             (message.keys as string[] | undefined)?.includes("ctrl-u")
           )
-        ).toHaveLength(1);
+        ).toHaveLength(0);
         const count = r.sends.length;
         await Bun.sleep(1000);
         expect(r.sends).toHaveLength(count);

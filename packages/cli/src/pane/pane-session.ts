@@ -524,11 +524,7 @@ export type SubmitStep = "submit" | "type" | "enter";
  * Why no further send of an admission is made: Enter may have been pressed and nothing
  * proves it, so only claudish's own transcript witness can accept now (§5.6, R1.3).
  */
-type SubmittedUnproven =
-  | "unconfirmed"
-  | "reply_lost"
-  | "still_in_box_twice"
-  | "maybe_submitted_by_other";
+type SubmittedUnproven = "unconfirmed" | "reply_lost" | "still_in_box" | "maybe_submitted_by_other";
 
 interface Admission {
   index: number;
@@ -548,8 +544,6 @@ interface Admission {
   /** gated sends made */
   attempts: number;
   submittedUnproven: SubmittedUnproven | null;
-  /** the one ctrl-u + resend after `still_in_box` was used */
-  stuckRetried: boolean;
   /** a command that opened a panel or picker (§5.4 `panelStep`) */
   panel: null | {
     showingSince: number | null;
@@ -834,6 +828,14 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
    * `rememberCopy` and `forgetCopy`.
    */
   private unreadCopyReadWhole = false;
+  /**
+   * The remembered copy was answered `still_in_box`: its whole line was in the box and Enter was
+   * pressed, but Claude Code may not have read that Enter, so it may still be queued. The line
+   * shown and settled in the box proves nothing then: only the box emptying (the Enter read, the
+   * line submitted) or the copy's record ends a wait on it. Keys stay withheld meanwhile.
+   * Cleared by `rememberCopy` and `forgetCopy`.
+   */
+  private unreadCopyEnterPending = false;
   /** moves on every `rememberCopy`, so a copy of the same text remembered again is watched afresh */
   private unreadCopyGen = 0;
   /** the copy the follower watches (`syncCopyWatch`) */
@@ -2302,19 +2304,16 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
         await this.pause(adm, BUSY_RETRY_MS);
         return;
       case "still_in_box":
-        // Enter was pressed and ignored, the text proven present
+        // Enter was pressed and the line is still in the box: Claude Code may not have read
+        // the Enter yet. Any byte sent now queues behind it and is read after it, so a ctrl-u
+        // would clear nothing and a second copy would be submitted too: nothing is sent, and
+        // only the line's own record accepts it
         if (this.witnessNow()) {
           this.acceptAdmission(adm);
           return;
         }
         this.anomaly("gate_still_in_box");
-        if (adm.stuckRetried) {
-          adm.submittedUnproven = "still_in_box_twice";
-          return;
-        }
-        adm.stuckRetried = true;
-        await this.clearBox(adm);
-        adm.step = typingStep(adm.plan);
+        adm.submittedUnproven = "still_in_box";
         return;
       case "unconfirmed":
         // Enter was pressed with no attributable evidence: never retyped
@@ -2370,7 +2369,10 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       live: () => this.admitting(adm),
       ms: Math.max(0, adm.deadline - Date.now()),
       // the earlier copy's record released it, or it was read whole: an empty box is not its tail
-      emptyEnds: () => adm.copyReleased || (adm.leftoverOf !== null && this.unreadCopyReadWhole),
+      emptyEnds: () =>
+        adm.copyReleased ||
+        (adm.leftoverOf !== null && (this.unreadCopyReadWhole || this.unreadCopyEnterPending)),
+      shownEnds: () => adm.leftoverOf === null || !this.unreadCopyEnterPending,
       // magmux stopped partway: the part it wrote, settled in the box, is all there is to read
       partOnly: adm.leftoverOf === null ? adm.writtenPart : (adm.leftoverCopy?.part ?? null),
       onRead: (box) => {
@@ -2414,6 +2416,8 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
      * wait as "settled", although it reads as the start of the line.
      */
     partOnly?: string | null;
+    /** false: text settled in the box ends nothing (an Enter may be queued behind it) */
+    shownEnds?: () => boolean;
     onRead?: (box: DrawnBox) => void;
   }): Promise<{ ended: "settled" | "gone" | null; seen: DrawnBox | undefined }> {
     let epoch = this.trustEpoch;
@@ -2444,6 +2448,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
         at - changedAt,
         o.partOnly ?? null
       );
+      if (ended === "settled" && o.shownEnds?.() === false) ended = null;
       return ended !== null;
     };
     await this.waitFor(() => !o.live() || this.drawBlocked() !== null || settle(), o.ms);
@@ -2882,7 +2887,8 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
         earlier: true,
         live: copyLive,
         ms: Number.POSITIVE_INFINITY,
-        emptyEnds: () => this.unreadCopyReadWhole,
+        emptyEnds: () => this.unreadCopyReadWhole || this.unreadCopyEnterPending,
+        shownEnds: () => !this.unreadCopyEnterPending,
         partOnly: this.unreadCopyPart,
       });
       if (!live()) return false;
@@ -3077,6 +3083,16 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
         this.rememberCopy(adm.leftoverOf, c.witness, c.after, c.part);
       return;
     }
+    if (adm.submittedUnproven === "still_in_box") {
+      // its line was read, its Enter maybe not: queued behind the line, so no key may follow
+      this.rememberCopy(
+        adm.line,
+        "witness" in adm.plan ? adm.plan.witness : { kind: "text", text: adm.line },
+        adm.mark
+      );
+      this.unreadCopyEnterPending = true;
+      return;
+    }
     if (adm.readWhole && adm.submittedUnproven !== null) {
       // read whole and maybe submitted (its Enter reply lost or unconfirmed): its record may
       // still land, so a retry of the same text waits for it (`awaitCopyRecord`) and another
@@ -3114,6 +3130,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     this.unreadCopyAfter = after;
     this.unreadCopyPart = part;
     this.unreadCopyReadWhole = false;
+    this.unreadCopyEnterPending = false;
     this.unreadCopyGen++;
     this.syncCopyWatch(false);
   }
@@ -3124,6 +3141,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     this.unreadCopyWitness = null;
     this.unreadCopyPart = null;
     this.unreadCopyReadWhole = false;
+    this.unreadCopyEnterPending = false;
     this.syncCopyWatch(false);
   }
 
@@ -3206,8 +3224,8 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
         const code = adm.last?.kind === "reply_lost" ? adm.last.code : "client_lost";
         return `the magmux send reply was lost (${code}) and no transcript record of the prompt appeared in ${secs} s`;
       }
-      case "still_in_box_twice":
-        return "magmux not_accepted still_in_box: the prompt stayed in the input box after Enter, twice";
+      case "still_in_box":
+        return `magmux not_accepted still_in_box: Enter was pressed and Claude Code had not read it (the prompt stayed in the input box), and no transcript record of it appeared in ${secs} s`;
       case null:
         return `prompt not accepted in ${secs} s; ${describeLastReply(adm, this.gateNow())}`;
       default:
@@ -4660,7 +4678,6 @@ function newAdmission(a: {
     inFlight: false,
     attempts: 0,
     submittedUnproven: null,
-    stuckRetried: false,
     panel: null,
     stopped: false,
     clearFirst: false,

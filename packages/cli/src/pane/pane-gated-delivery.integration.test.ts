@@ -126,9 +126,12 @@ describe.skipIf(!MAGMUX)(
           initialPrompt: PROMPT,
         });
         await assertLoudLoss(r, "still_in_box");
+        expect(gatedSends(r).filter(({ message }) => message.text === PROMPT)).toHaveLength(1);
         expect(
-          gatedSends(r).filter(({ message }) => message.text === PROMPT).length
-        ).toBeLessThanOrEqual(2);
+          r.sends.filter(({ message }) =>
+            (message.keys as string[] | undefined)?.includes("ctrl-u")
+          )
+        ).toHaveLength(0);
       },
       T
     );

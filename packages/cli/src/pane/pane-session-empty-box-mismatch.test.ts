@@ -260,7 +260,6 @@ function admit(s: PaneSessionImpl, boundMs: number, line = LINE): any {
     inFlight: false,
     attempts: 0,
     submittedUnproven: null,
-    stuckRetried: false,
     panel: null,
     stopped: false,
     clearFirst: false,
@@ -395,7 +394,7 @@ describe("a text_mismatch whose box stayed empty", () => {
     expect(sc.accepted).toBe(true);
   }, 20_000);
 
-  test("Enter alone answered still_in_box: the box is cleared and the line typed again, never Enter on the cleared box", async () => {
+  test("Enter alone answered still_in_box: no ctrl-u and no second copy after it, only the record can accept", async () => {
     const s = session();
     const stillInBox: MagmuxReply = {
       ok: false,
@@ -410,11 +409,11 @@ describe("a text_mismatch whose box stayed empty", () => {
     sc.box = LINE;
     await loop;
     const all = messagesOf(sc);
-    const clearAt = all.findIndex(isClear);
-    expect(clearAt).toBeGreaterThan(0);
-    expect(all[clearAt - 1]).toMatchObject({ keys: ["enter"] });
-    expect(isTyped(all[clearAt + 1] ?? {})).toBe(true);
-    expect(sc.accepted).toBe(true);
+    expect(all.filter(isClear)).toHaveLength(0);
+    expect(all.filter(isTyped)).toHaveLength(1);
+    expect(all.at(-1)).toMatchObject({ keys: ["enter"] });
+    expect(adm.submittedUnproven).toBe("still_in_box");
+    expect(sc.accepted).toBe(false);
   }, 20_000);
 
   test("Enter alone answered busy dialog:select on a plain prompt: no panel handling, the Enter is tried again", async () => {

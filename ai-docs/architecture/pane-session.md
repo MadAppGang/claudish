@@ -628,10 +628,30 @@ gate never touches. `pane/input-gate.ts` translates each reply into a closed `Se
 | `busy vim_mode`, `busy dialog:trust\|bypass\|api_key\|onboarding` | no | stop, never a key: `prompt_not_accepted` (vim) or `first_run_dialog` |
 | `busy dialog:permission\|question\|plan` | no | wait for the dialog to leave, within the deadline; a re-woken turn owns it |
 | `not_accepted empty_box` | no | next attempt; on an Enter-only step, `gate_command_left_box` (a command) or `gate_line_left_box` (a plain prompt after an empty-box mismatch), `maybe_submitted_by_other`, and no retype (below) |
-| `not_accepted still_in_box` | yes, ignored | witness present → accepted; else once: ctrl-u and one more attempt; twice: wait for the witness |
+| `not_accepted still_in_box` | yes, maybe unread | witness present → accepted; else NO key and NO new copy: only the line's own record accepts, until the deadline; the copy stays unread after it (below) |
 | `not_accepted unconfirmed`, `text_mismatch` with `maybeSubmitted`, a lost reply (`client_timeout`, `client_lost`) | maybe | NEVER typed again. Only claudish's own witness can accept, until the deadline |
 | `bad_request`, `unknown_verb`, `unsupported`, `internal` | — | stop: `send_bad_request` / `send_unexpected:<code>` |
 | `pane_dead`, `no_such_pane` | — | the exit path decides |
+
+**`still_in_box`: Enter pressed, and maybe not read.** magmux 0.20.3 answers `still_in_box`
+after it pressed Enter, pressed it again at about 2 s and 4 s, and the line still sat in the box.
+That is what a Claude Code that has stopped reading stdin produces: measured with a stall test
+that sent SIGSTOP to one slot's Claude Code right after magmux wrote Enter (the Enter byte unread
+at the stop), 4 of 4 paused slots answered `still_in_box`, 0 of 2 control slots did. The Enter is
+then queued behind the line. claudish used to clear the box with ctrl-u and type the line once
+more; those bytes queued behind the Enter, so on resume Claude Code submitted the line, the ctrl-u
+cleared an empty box, and the second copy was submitted too: two user records of the prompt. So
+after `still_in_box` nothing is sent at all, no key and no text (`submittedUnproven:
+"still_in_box"`). Only the line's own transcript record accepts it, within the admission's
+deadline, never the screen (a box that empties under a submitted entry is not acceptance); the
+deadline is not extended. With no record by then the CREATED prompt fails `prompt_not_accepted`
+(`magmux not_accepted still_in_box: Enter was pressed and Claude Code had not read it (the prompt
+stayed in the input box), and no transcript record of it appeared in N s`), and a later prompt
+goes back to idle (`send_not_accepted`). Either way the copy is remembered as unread with its
+Enter pending (`unreadCopyEnterPending`): keys are withheld, and the line drawn whole and settled
+in the box proves nothing, since the Enter may still be queued behind it; only the box emptying
+(the Enter read, the line submitted) or the copy's own record ends a later prompt's or `/exit`'s
+wait on it.
 
 **`maybeSubmitted` (magmux 0.17.0).** A `text_mismatch` has two variants that say it is UNKNOWN
 whether the text was submitted: the box showed the text and then emptied without magmux's Enter
@@ -786,8 +806,7 @@ The box text (`locatedBoxText`) is read against the line by `matchBoxText`, as o
 
 On settled text: the line in the normal `❯` prompt → the gated Enter alone
 (`box_drawn_after_mismatch`), handled as a plain SUBMIT's Enter: no picker or panel handling, which
-stays a command's; after `still_in_box` the box is cleared and the line typed again, never Enter
-on the cleared box. Other text → Claude Code is visibly reading, so the clear and resend below run
+stays a command's; after `still_in_box` nothing more is sent (above). Other text → Claude Code is visibly reading, so the clear and resend below run
 (`box_drawn_other_after_mismatch`). The witness accepts at any point; a boot dialog or vim mode
 takes the stop rows.
 
@@ -827,7 +846,8 @@ the box (`awaitingDraw`), and whenever a send of it may have typed its line and 
 since (`uncleared`). `mayHaveTyped` sets `uncleared` for any send that types, except `accepted`,
 the outcomes that prove nothing was written (`bad_request`, `unsent`, an untyped `busy`,
 `not_accepted` or `pane_gone`) and those that prove the whole line was in the box
-(`provesReadWhole`: `in_box`, `still_in_box`, `unconfirmed`, each verified by magmux). A submit
+(`provesReadWhole`: `in_box`, `still_in_box`, `unconfirmed`, each verified by magmux; for
+`still_in_box` that covers the line, not its Enter, below). A submit
 whose reply was lost is one of those; so is a lost TYPE, and a `busy` that typed. Any proof that
 the whole line was in the box (those replies, a settled draw of the line, the whole line drawn in
 the admission's own wait) clears `uncleared` and sets `readWhole`, so every byte of that copy was
@@ -1012,9 +1032,8 @@ is never evidence: "a lost prompt looks exactly like a submitted one" (magmux RE
 is issued by the admission loop between two of its own sends, never beside an acceptance decision.
 D-B was a frame read ~150 ms after typing that saw an empty box (Claude Code draws typed text
 300–800 ms late), so claudish typed again and `/model haiku` arrived as `haiku/model haiku`. claudish
-reads the box only to WITHHOLD a retype (the empty-box rule above); it types again only after
-`still_in_box` (Enter pressed and ignored, the text proven present, once, after ctrl-u) or once
-the box visibly holds other text, always through the gate. The gate types only into an
+reads the box only to WITHHOLD a retype (the empty-box rule above); it types again only once the
+box visibly holds other text, always through the gate, and never after `still_in_box`. The gate types only into an
 empty box and presses Enter only on an exact match; from 0.20.2 (the floor) magmux never retypes.
 claudish keeps `typed:true` on every send so no line is ever a paste. Two copies could be TYPED,
 and SUBMITTED, with magmux before 0.20.2: under load Claude Code reads typed bytes into its buffer
@@ -1050,7 +1069,7 @@ dialog), and when the gate is ready again its admission ends without a turn (`pa
 
 The prompt a session was CREATED with must be accepted within 30 s, else FAILED
 `prompt_not_accepted`, whose `reason_detail` names the gate's answer (`magmux not_accepted
-still_in_box: …`, `magmux not_accepted unconfirmed: …`, `the magmux send reply was lost (<code>)
+still_in_box: Enter was pressed and Claude Code had not read it …`, `magmux not_accepted unconfirmed: …`, `the magmux send reply was lost (<code>)
 …`, `busy vim_mode: vim editing mode is on …`, or `prompt not accepted in N s; last magmux reply:
 busy <reason> (<gate detail>)`); a later `send_input` that is never accepted returns the session to
 idle with the anomaly `send_not_accepted`. `get_diagnostics` carries the fresh `gate` reading and the
