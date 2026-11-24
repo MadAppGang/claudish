@@ -26,10 +26,9 @@ import { reasoningForCall } from "./reasoning-cache.js";
  *
  * @param modelId - Original model name (e.g., "gpt-4.5", "cx@gpt-4.5", "openai/gpt-5-codex")
  * @returns Normalized model name for the ChatGPT backend
+ * @throws when no model id is left: a request never gets a model the caller did not name
  */
-export function normalizeCodexModel(modelId: string | undefined): string {
-  if (!modelId) return "gpt-5.2";
-
+export function normalizeCodexModel(modelId: string): string {
   // Strip provider prefix if present (e.g., "cx@gpt-4.5" → "gpt-4.5", "openai/gpt-5-codex" → "gpt-5-codex")
   const strippedModel = modelId.includes("@")
     ? modelId.split("@").pop()!
@@ -37,7 +36,9 @@ export function normalizeCodexModel(modelId: string | undefined): string {
       ? modelId.split("/").pop()!
       : modelId;
 
-  return strippedModel.trim();
+  const model = strippedModel.trim();
+  if (!model) throw new Error(`no model id for the ChatGPT backend in "${modelId}"`);
+  return model;
 }
 
 export class CodexAPIFormat extends BaseAPIFormat {
