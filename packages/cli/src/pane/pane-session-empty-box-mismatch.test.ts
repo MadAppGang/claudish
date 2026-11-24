@@ -231,6 +231,19 @@ function wire(
   return sc;
 }
 
+/**
+ * Runs `adm`'s loop for 5 s, over twice the 2 s the box must hold still, and ends it with its
+ * deadline still far enough away for a send: a loop that sent nothing had time and room to.
+ */
+async function runWithRoomToSend(s: PaneSessionImpl, adm: any): Promise<void> {
+  const any = s as any;
+  const done = any.runAdmission(adm) as Promise<void>;
+  await Bun.sleep(5_000);
+  expect(readyTimeoutFor(adm.step, adm.line, adm.deadline - Date.now())).not.toBeNull();
+  if (any.admission === adm) any.admission = null;
+  await done;
+}
+
 /** A typed-mode admission of `line`, live, with `boundMs` until its deadline. */
 function admit(s: PaneSessionImpl, boundMs: number, line = LINE): any {
   const now = Date.now();
@@ -1897,11 +1910,11 @@ describe("a late record, unproven spaces, and keys while a copy may be unread", 
     any.admitExpired(adm);
     any.phase = "ADMITTING";
     const againAt = Date.now();
-    const again = admit(s, 6_000);
+    const again = admit(s, 30_000);
     again.initial = false;
     again.index = 3;
     openTurnFor(s, again);
-    await any.runAdmission(again);
+    await runWithRoomToSend(s, again);
     expect(messagesOf(sc, againAt)).toEqual([]);
     expect(s.snapshot().anomalies).toContain("unread_copy_gone_unrecorded ×2");
     expect(sc.accepted).toBe(false);
@@ -1992,11 +2005,11 @@ describe("a late record, unproven spaces, and keys while a copy may be unread", 
     expect(any.unreadCopy).toBe(NEW);
     expect(any.follower.copySeen()).toBe(false);
     // a later prompt still waits on the PEAR copy: the box shows nothing, so nothing is typed
-    const adm = admit(s, 8_000, NEXT_LINE);
+    const adm = admit(s, 30_000, NEXT_LINE);
     adm.initial = false;
     adm.index = 2;
     openTurnFor(s, adm);
-    await any.runAdmission(adm);
+    await runWithRoomToSend(s, adm);
     expect(messagesOf(sc).filter(isTyped)).toEqual([]);
     expect(any.unreadCopy).toBe(NEW);
   }, 30_000);
