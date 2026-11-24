@@ -3,6 +3,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
 import { gateBasisOf, parseGateBinding } from "./input-gate.js";
 import {
+  LOSS_RECORD_WAIT_MS,
   PROMPT,
   SKIP_LOADED,
   T,
@@ -119,9 +120,10 @@ describe.skipIf(!MAGMUX)(
     );
 
     test(
-      "DA-1: transcript off and Enter ignored fails loudly at 30 s, never as an empty answer",
+      "DA-1: transcript off and Enter ignored fails loudly at the record wait's end, never as an empty answer",
       async () => {
         const r = await startGatePane("never_submit_transcript_off", {
+          unprovenRecordWaitMs: LOSS_RECORD_WAIT_MS,
           shape: "one-shot",
           initialPrompt: PROMPT,
         });
@@ -175,6 +177,7 @@ describe.skipIf(!MAGMUX)(
                 shape: "one-shot",
                 initialPrompt: PROMPT,
                 env: { FAKE_GAP_MS_WITNESS: "12000" },
+                ...(loses ? { unprovenRecordWaitMs: LOSS_RECORD_WAIT_MS } : {}),
               });
               if (loses) await assertLoudLoss(r, "still_in_box");
               else {

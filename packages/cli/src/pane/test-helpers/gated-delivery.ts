@@ -87,8 +87,11 @@ export async function allRuns(runs: Promise<void>[]): Promise<void> {
   if (failed?.status === "rejected") throw failed.reason;
 }
 
+/** The record wait a losing pane is started with (`assertLoudLoss` expects its failure then). */
+export const LOSS_RECORD_WAIT_MS = 35_000;
+
 export async function assertLoudLoss(r: GateRun, reason: string): Promise<void> {
-  const snapshot = await gateUntil(r, (s) => s.state === "FAILED", 40_000);
+  const snapshot = await gateUntil(r, (s) => s.state === "FAILED", LOSS_RECORD_WAIT_MS + 10_000);
   expect(snapshot.reason).toBe("prompt_not_accepted");
   expect(snapshot.detail).toContain(`magmux not_accepted ${reason}`);
   expect(snapshot.anomalies).not.toContain("degraded_mode");
@@ -100,9 +103,9 @@ export async function assertLoudLoss(r: GateRun, reason: string): Promise<void> 
   expect(typed.length).toBe(r.s.diagnostics().lastSend?.attempts ?? -1);
   const failedAt = r.transitions.find(({ to }) => to === "FAILED")?.at ?? 0;
   expect(failedAt - (gatedSends(r)[0]?.at ?? Number.POSITIVE_INFINITY)).toBeGreaterThanOrEqual(
-    29_000
+    LOSS_RECORD_WAIT_MS - 1_000
   );
-  expect(failedAt - (gatedSends(r)[0]?.at ?? 0)).toBeLessThanOrEqual(31_000);
+  expect(failedAt - (gatedSends(r)[0]?.at ?? 0)).toBeLessThanOrEqual(LOSS_RECORD_WAIT_MS + 1_000);
 }
 
 // The two "loaded" tests run six panes beside one busy worker per core. On the CI macOS

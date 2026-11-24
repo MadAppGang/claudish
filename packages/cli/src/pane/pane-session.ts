@@ -13,7 +13,8 @@
  * reports nothing) and coalesces `onChange` to at most 4 per second.
  *
  * No claudish timer ends a turn after its prompt was accepted (D10). The only bounds are
- * boot (90 s) and admission of the CREATED prompt (30 s), before any work exists, and a
+ * boot (90 s) and admission of the CREATED prompt (30 s, or boot and admission together,
+ * 120 s, once Enter was pressed with no proof), before any work exists, and a
  * MCP session's own `timeoutMs`.
  *
  * Session hooks (architecture §7.3). With a `hooks` binding, a settled turn is RECORDED
@@ -55,6 +56,7 @@ import {
   locateBox,
   locatedBoxText,
   matchBoxText,
+  rowsAboveBox,
 } from "./box-locate.js";
 // the box-text matcher lives with the box reader; these names stay importable from here
 export { type BoxMatch, boxShowsLine, matchBoxText } from "./box-locate.js";
@@ -145,6 +147,7 @@ import {
   dialogText,
   flatText,
   hasChoiceDialog,
+  hasEcho,
   inputBox,
   isWorking,
   menuAbove,
@@ -202,6 +205,13 @@ export type { FinalVerdict, PaneSnapshot, SettledTurn } from "./types.js";
 
 export const BOOT_TIMEOUT_MS = 90_000;
 export const ADMIT_TIMEOUT_MS = 30_000;
+/**
+ * Once Enter was pressed with no proof (`still_in_box`, `unconfirmed`) nothing more is typed, and
+ * the prompt's own transcript record is waited for this long from the admission's start: a Claude
+ * Code under load takes the prompt and writes its record late. See `recordWaitEnd` for the
+ * created prompt's smaller bound.
+ */
+export const UNPROVEN_RECORD_WAIT_MS = 120_000;
 /**
  * A turn the input gate accepted with no transcript witness this long after the acceptance
  * settles from the screen (degraded mode). Acceptance itself is never inferred from the
@@ -409,6 +419,8 @@ export interface PaneSessionOptions {
     exitCaptureDelayMs?: number;
     /** a LATER admission's bound, through owners that do not pass `admitTimeoutMs` (H-13 … H-15) */
     admitTimeoutMs?: number;
+    /** UNPROVEN_RECORD_WAIT_MS */
+    unprovenRecordWaitMs?: number;
     /** a frame polls the transcript only this long after the last poll (default 250) */
     pollDebounceMs?: number;
     /** with no frame, the transcript is polled this often (default 1 000) */
@@ -536,7 +548,7 @@ interface Admission {
   line: string;
   initial: boolean;
   startedAt: number;
-  /** startedAt + (initial ? admitTimeoutMs : ADMIT_TIMEOUT_MS); no attempt outlives it */
+  /** startedAt + (initial ? admitTimeoutMs : ADMIT_TIMEOUT_MS); no attempt outlives it (`recordWaitEnd`) */
   deadline: number;
   step: SubmitStep;
   /** a gated send of this admission awaits its reply */
@@ -1145,7 +1157,9 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     const deadline =
       this.phase === "BOOTING"
         ? this.startedAtMs + (this.o.bootTimeoutMs ?? BOOT_TIMEOUT_MS)
-        : (this.admission?.deadline ?? Number.POSITIVE_INFINITY);
+        : this.admission
+          ? this.recordWaitEnd(this.admission)
+          : Number.POSITIVE_INFINITY;
     return Math.min(Date.now() + GATE_INPUT_WAIT_MS, deadline - TICK_MS);
   }
 
@@ -1724,6 +1738,22 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   }
 
   /**
+   * When an admission expires: its deadline, or, once Enter was pressed with no proof
+   * (`still_in_box`, `unconfirmed`), the end of the wait for its record
+   * (`UNPROVEN_RECORD_WAIT_MS`). The created prompt's wait ends no later than boot and admission
+   * together after the session started: `team` run returns only when every slot has left
+   * STARTING, and that is its bound. Never before the admission's own deadline.
+   */
+  private recordWaitEnd(adm: Admission): number {
+    if (!enterPressedUnproven(adm)) return adm.deadline;
+    const wait = adm.startedAt + this.t("unprovenRecordWaitMs", UNPROVEN_RECORD_WAIT_MS);
+    const cap = adm.initial
+      ? this.startedAtMs + BOOT_TIMEOUT_MS + ADMIT_TIMEOUT_MS
+      : Number.POSITIVE_INFINITY;
+    return Math.max(adm.deadline, Math.min(wait, cap));
+  }
+
+  /**
    * Boot (architecture-v2 §6.2): ready is magmux's `input.ready`, which already requires the
    * box and a raw terminal both still for 1 s and Claude Code's boot stdin reset seen (or
    * 3.5 s since the terminal went raw). What blocks boot is the gate's dialog kind, named
@@ -1979,7 +2009,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
    *
    * The loop ends with no decision when Enter may have been pressed unproven
    * (`submittedUnproven`), when a stop row decided (`stopped`), or when no attempt fits
-   * before the deadline; `evalAdmission` then expires the admission at its deadline.
+   * before the deadline; `evalAdmission` then expires the admission (`recordWaitEnd`).
    */
   private async runAdmission(adm: Admission): Promise<void> {
     this.inheritUnreadCopy(adm);
@@ -2955,7 +2985,9 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   /**
    * Synchronous, on every evaluation: the witness accepts whatever the loop is doing; a
    * command's panel is stepped; the deadline expires the admission once no gated send is
-   * out (every attempt is sized to end by it).
+   * out (every attempt is sized to end by it). Past the deadline, while a record is still
+   * waited for (`recordWaitEnd`), nothing is sent: `panelStep` sends no Escape, and a boot dialog
+   * or vim mode ends the wait at once.
    */
   private evalAdmission(view: TranscriptView): void {
     const adm = this.admission;
@@ -2968,8 +3000,13 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       return;
     }
     if (adm.panel) this.panelStep(adm);
-    if (!this.admitting(adm)) return;
-    if (Date.now() >= adm.deadline && !adm.inFlight) this.admitExpired(adm);
+    if (!this.admitting(adm) || Date.now() < adm.deadline || adm.inFlight) return;
+    if (Date.now() >= this.recordWaitEnd(adm)) {
+      this.admitExpired(adm);
+      return;
+    }
+    const g = this.drawBlocked();
+    if (g) this.stopOnGateBlock(adm, g.reason ?? "unknown", g.dialog);
   }
 
   /** A full-screen panel or picker: the gate sees no box (or a `select` dialog), and `Esc to cancel`. */
@@ -3000,7 +3037,8 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       const now = Date.now();
       p.showingSince ??= now;
       if (now - p.showingSince < PANEL_SETTLE_MS) return;
-      if (this.keysWithheld()) return;
+      // past the deadline only the record is waited for: no key
+      if (this.keysWithheld() || now >= adm.deadline) return;
       p.escaped = true;
       this.anomaly(g?.dialog === "select" ? "picker_dismissed" : "panel_dismissed");
       void this.key("escape");
@@ -3219,18 +3257,33 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       case "maybe_submitted_by_other":
         return "magmux could not tell whether the prompt was submitted (the box emptied without its Enter) and no transcript record of it appeared";
       case "unconfirmed":
-        return `magmux not_accepted unconfirmed: Enter was pressed with no evidence it was submitted, and no transcript record appeared in ${secs} s`;
+        return `${unconfirmedReply(adm)}; last screen: ${this.lastScreenOf(adm)}; no transcript record of it in ${secs} s`;
       case "reply_lost": {
         const code = adm.last?.kind === "reply_lost" ? adm.last.code : "client_lost";
         return `the magmux send reply was lost (${code}) and no transcript record of the prompt appeared in ${secs} s`;
       }
       case "still_in_box":
-        return `magmux not_accepted still_in_box: Enter was pressed and Claude Code had not read it (the prompt stayed in the input box), and no transcript record of it appeared in ${secs} s`;
+        return `magmux not_accepted still_in_box: Enter pressed, line then still in the box; last screen: ${this.lastScreenOf(adm)}; no transcript record of it in ${secs} s`;
       case null:
         return `prompt not accepted in ${secs} s; ${describeLastReply(adm, this.gateNow())}`;
       default:
         return assertNever(adm.submittedUnproven);
     }
+  }
+
+  /**
+   * What the last trusted frame shows of the line, for the failure's wording only: it says
+   * nothing about whether the prompt was read, and never accepts it.
+   */
+  private lastScreenOf(adm: Admission): string {
+    const drawn = this.drawnBox(adm.line);
+    const box = locateBox(this.screen);
+    if (drawn === undefined || !box) return "box not located";
+    if (drawn === null)
+      return hasEcho(rowsAboveBox(this.screen, box), adm.line)
+        ? "a submitted entry of the line"
+        : "box empty";
+    return drawn.match === "line" ? "line still in the box" : "other text in the box";
   }
 
   /**
@@ -4702,6 +4755,18 @@ function newAdmission(a: {
 /** The anomaly of an Enter-only step whose text left the box without claudish's Enter. */
 function leftBoxAnomaly(plan: Delivery): string {
   return plan.mode === "command" ? "gate_command_left_box" : "gate_line_left_box";
+}
+
+/** Enter was pressed with no proof, so nothing more is typed and only the record accepts. */
+function enterPressedUnproven(adm: Admission): boolean {
+  return adm.submittedUnproven === "still_in_box" || adm.submittedUnproven === "unconfirmed";
+}
+
+/** magmux's answer behind `unconfirmed`: its own code, or an `ok` whose record was not found. */
+function unconfirmedReply(adm: Admission): string {
+  return adm.last?.kind === "accepted"
+    ? "magmux ok on transcript evidence claudish did not find"
+    : "magmux not_accepted unconfirmed: Enter pressed, no evidence of a submit";
 }
 
 /** The step of a send that types the line: a command's TYPE, else the one-shot SUBMIT. */

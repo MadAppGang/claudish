@@ -628,8 +628,9 @@ gate never touches. `pane/input-gate.ts` translates each reply into a closed `Se
 | `busy vim_mode`, `busy dialog:trust\|bypass\|api_key\|onboarding` | no | stop, never a key: `prompt_not_accepted` (vim) or `first_run_dialog` |
 | `busy dialog:permission\|question\|plan` | no | wait for the dialog to leave, within the deadline; a re-woken turn owns it |
 | `not_accepted empty_box` | no | next attempt; on an Enter-only step, `gate_command_left_box` (a command) or `gate_line_left_box` (a plain prompt after an empty-box mismatch), `maybe_submitted_by_other`, and no retype (below) |
-| `not_accepted still_in_box` | yes, maybe unread | witness present → accepted; else NO key and NO new copy: only the line's own record accepts, until the deadline; the copy stays unread after it (below) |
-| `not_accepted unconfirmed`, `text_mismatch` with `maybeSubmitted`, a lost reply (`client_timeout`, `client_lost`) | maybe | NEVER typed again. Only claudish's own witness can accept, until the deadline |
+| `not_accepted still_in_box` | yes, maybe unread | witness present → accepted; else NO key and NO new copy: only the line's own record accepts, until the record wait ends (below); the copy stays unread after it (below) |
+| `not_accepted unconfirmed` | yes | NEVER typed again. Only claudish's own witness can accept, until the record wait ends (below) |
+| `text_mismatch` with `maybeSubmitted`, a lost reply (`client_timeout`, `client_lost`) | maybe | NEVER typed again. Only claudish's own witness can accept, until the deadline |
 | `bad_request`, `unknown_verb`, `unsupported`, `internal` | — | stop: `send_bad_request` / `send_unexpected:<code>` |
 | `pane_dead`, `no_such_pane` | — | the exit path decides |
 
@@ -642,16 +643,40 @@ then queued behind the line. claudish used to clear the box with ctrl-u and type
 more; those bytes queued behind the Enter, so on resume Claude Code submitted the line, the ctrl-u
 cleared an empty box, and the second copy was submitted too: two user records of the prompt. So
 after `still_in_box` nothing is sent at all, no key and no text (`submittedUnproven:
-"still_in_box"`). Only the line's own transcript record accepts it, within the admission's
-deadline, never the screen (a box that empties under a submitted entry is not acceptance); the
-deadline is not extended. With no record by then the CREATED prompt fails `prompt_not_accepted`
-(`magmux not_accepted still_in_box: Enter was pressed and Claude Code had not read it (the prompt
-stayed in the input box), and no transcript record of it appeared in N s`), and a later prompt
+"still_in_box"`). Only the line's own transcript record accepts it, never the
+screen (a box that empties under a submitted entry is not acceptance). With no record by the end of
+the record wait (next paragraph) the CREATED prompt fails `prompt_not_accepted`, and a later prompt
 goes back to idle (`send_not_accepted`). Either way the copy is remembered as unread with its
 Enter pending (`unreadCopyEnterPending`): keys are withheld, and the line drawn whole and settled
 in the box proves nothing, since the Enter may still be queued behind it; only the box emptying
 (the Enter read, the line submitted) or the copy's own record ends a later prompt's or `/exit`'s
 wait on it.
+
+**The record wait, past the 30 s deadline.** A live slot at high load answered `still_in_box`, had no
+record 30 s in, and its screen showed the prompt submitted once with `running UserPromptSubmit hook ·
+2s`: Claude Code had taken it and its record came late. So once Enter was pressed with no proof
+(`still_in_box`, or `unconfirmed`), and so nothing more will be typed, the admission keeps waiting for
+the prompt's own record up to `UNPROVEN_RECORD_WAIT_MS` (120 s) from the admission's start
+(`recordWaitEnd`). For the CREATED prompt the wait also ends no later than 120 s after the session
+started (boot 90 s + admission 30 s, and never before its own 30 s deadline): `team` run returns only
+when every slot has left STARTING, and that is its bound. With a 4 s boot that leaves about 116 s; a
+boot of 90 s leaves 30 s. A later prompt (a `send_input`, a queued prompt, a hook injection) has the
+whole 120 s. During the wait past 30 s nothing is sent: no text, no Enter, no panel Escape. Prompts
+queued behind it stay queued. A boot dialog or vim mode the gate reports ends it at once; so do the
+pane's exit, magmux's exit, `pane_lost`, cancel and the session's own timeout. The wait adds no timer:
+the evaluation ticker checks it. With Enter never pressed, with nothing typed, and after a lost reply
+or `maybeSubmitted`, the 30 s deadline is unchanged.
+
+The failure's first line says only what was observed: magmux's answer, then what the last trusted
+frame shows, then the record (`magmux not_accepted still_in_box: Enter pressed, line then still in the
+box; last screen: <shown>; no transcript record of it in N s`, and `magmux not_accepted unconfirmed:
+Enter pressed, no evidence of a submit; last screen: …`). `<shown>` is `line still in the box`, `box
+empty`, `a submitted entry of the line` (an echo of the whole line above an empty box; an earlier
+identical prompt still on screen reads the same), `other text in the box` (the start of the line
+included), or `box not located` (a dialog over it, or no frame of the trusted connection). An
+`unconfirmed` that came from magmux's `ok` on transcript evidence claudish did not find says `magmux ok
+on transcript evidence claudish did not find` instead. The screen is used for this wording only. The
+line fits `reason_detail`'s 160 characters.
 
 **`maybeSubmitted` (magmux 0.17.0).** A `text_mismatch` has two variants that say it is UNKNOWN
 whether the text was submitted: the box showed the text and then emptied without magmux's Enter
@@ -1067,9 +1092,10 @@ Enter; once the gate says `no_input_box` or `dialog:select` with `Esc to cancel`
 500 ms it gets one Escape (`panel_dismissed` / `picker_dismissed`, never while the gate names a boot
 dialog), and when the gate is ready again its admission ends without a turn (`panel_command`).
 
-The prompt a session was CREATED with must be accepted within 30 s, else FAILED
+The prompt a session was CREATED with must be accepted within 30 s (later when Enter was pressed with
+no proof, see *The record wait*), else FAILED
 `prompt_not_accepted`, whose `reason_detail` names the gate's answer (`magmux not_accepted
-still_in_box: Enter was pressed and Claude Code had not read it …`, `magmux not_accepted unconfirmed: …`, `the magmux send reply was lost (<code>)
+still_in_box: Enter pressed, line then still in the box; …`, `magmux not_accepted unconfirmed: …`, `the magmux send reply was lost (<code>)
 …`, `busy vim_mode: vim editing mode is on …`, or `prompt not accepted in N s; last magmux reply:
 busy <reason> (<gate detail>)`); a later `send_input` that is never accepted returns the session to
 idle with the anomaly `send_not_accepted`. `get_diagnostics` carries the fresh `gate` reading and the
@@ -1620,8 +1646,9 @@ reserves N panes before a run's spawn loop; each start consumes one, whether it 
 ## Bounds (D9, D10)
 
 - **`team(mode:"run")` returns once every slot has left STARTING**: its prompt was accepted
-  (RUNNING) or it failed boot or admission. Bounded by boot 90 s + admission 30 s, and every admission attempt is sized so its
-  client timeout ends by the 30 s deadline ("Delivery mechanics"). With the fake child the gate is
+  (RUNNING) or it failed boot or admission. Bounded by boot 90 s + admission 30 s = 120 s: every admission attempt is sized so its
+  client timeout ends by the 30 s deadline ("Delivery mechanics"), and a longer wait for a record
+  (*The record wait*) ends by the same 120 s from the session's start. With the fake child the gate is
   ready 3.9–4.2 s after spawn (it waits magmux's 3.5 s boot floor; the fake never resets stdin);
   1.2–1.9 s to RUNNING was measured before the gate. The dev plugin's team gate polls until no slot is RUNNING, so
   a slot still STARTING on its first poll would end the gate with zero ballots. Slots of one run spawn
@@ -1640,7 +1667,7 @@ terminals absorb, so a late pane `exit` cannot overturn a CANCELLED or TIMEOUT.
 | phase | wire state | leaves by |
 |---|---|---|
 | BOOTING | STARTING | gate `ready` (IDLE, or ADMITTING with a queued prompt); boot dialog, blocked screen, 90 s → FAILED; binding check failed → FAILED `pane_lost` |
-| ADMITTING | STARTING for the prompt the session was created with, else RUNNING | gate `ok` with history evidence, or the witness → RUNNING; a stop row (vim mode, boot dialog, `bad_request`, an unexpected code), a panel command, or 30 s → FAILED `prompt_not_accepted` / `first_run_dialog` (created prompt) or back to IDLE with `send_not_accepted` (a later send); an unaccepted hook injection in a one-shot session → SETTLING (`hook_admit_abandoned`), which concludes on the chain so far |
+| ADMITTING | STARTING for the prompt the session was created with, else RUNNING | gate `ok` with history evidence, or the witness → RUNNING; a stop row (vim mode, boot dialog, `bad_request`, an unexpected code), a panel command, or 30 s (with Enter pressed and no proof, the end of the record wait) → FAILED `prompt_not_accepted` / `first_run_dialog` (created prompt) or back to IDLE with `send_not_accepted` (a later send); an unaccepted hook injection in a one-shot session → SETTLING (`hook_admit_abandoned`), which concludes on the chain so far |
 | RUNNING | RUNNING | question → QUESTION; permission → PERMISSION; `decide` → IDLE (`continue`) or COMPLETED / EMPTY / FAILED; with a hook binding and idle work, `settle_hold` → SETTLING |
 | SETTLING | RUNNING (activity `hook`) | only with a hook binding: the settled turn is recorded and `sessionIdle` runs. `hold_inject` → IDLE (an injection is admitted next); `hold_rewake` → RUNNING (same turn); `turn_continue` → IDLE; the verdict → COMPLETED / EMPTY / FAILED. See [`hooks.md`](hooks.md) |
 | IDLE | AWAITING_INPUT | queued send → ADMITTING; background re-wake → RUNNING (same turn); clean exit after `/exit` or ≥ 1 settled turn → COMPLETED |

@@ -984,7 +984,10 @@ describe.skipIf(!MAGMUX)(
             shape: "interactive",
             initialPrompt: undefined,
             decide: () => "continue",
-            timings: { admitTimeoutMs: LATER_ADMIT_BOUND_MS },
+            timings: {
+              admitTimeoutMs: LATER_ADMIT_BOUND_MS,
+              unprovenRecordWaitMs: LATER_ADMIT_BOUND_MS,
+            },
           });
           await r.s.ready;
           const sends = traceInput(r);

@@ -4,6 +4,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { classifySendReply, mismatchBoxStayedEmpty } from "./input-gate.js";
 import {
+  LOSS_RECORD_WAIT_MS,
   PROMPT,
   T,
   assertLoudLoss,
@@ -126,12 +127,13 @@ describe.skipIf(!MAGMUX)(
       "I8: an ignored Enter yields still_in_box once: no ctrl-u, no second typed copy, a loud loss",
       async () => {
         const r = await startGatePane("enter_ignored_forever", {
+          unprovenRecordWaitMs: LOSS_RECORD_WAIT_MS,
           shape: "one-shot",
           initialPrompt: PROMPT,
         });
         await assertLoudLoss(r, "still_in_box");
         expect(r.s.snapshot().detail).toContain(
-          "Enter was pressed and Claude Code had not read it"
+          "Enter pressed, line then still in the box; last screen: line still in the box; no transcript record of it in"
         );
         expect(gatedSends(r)).toHaveLength(1);
         expect(

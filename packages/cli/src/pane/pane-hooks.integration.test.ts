@@ -706,7 +706,10 @@ wait $child
           script: [{ say: "ANS-ONE" }, { noWitness: true }],
           binding: ctl.binding,
           // room for one gated send; magmux answers `unconfirmed`, the bound drops the item
-          timings: { admitTimeoutMs: HOOK_ADMIT_BOUND_MS },
+          timings: {
+            admitTimeoutMs: HOOK_ADMIT_BOUND_MS,
+            unprovenRecordWaitMs: HOOK_ADMIT_BOUND_MS,
+          },
         });
         try {
           await until(() => ctl.calls.length === 1, "settle() 1");
@@ -756,7 +759,10 @@ wait $child
           script: [{ say: "ANS-ONE" }, { noWitness: true }],
           binding: ctl.binding,
           // room for one gated send; magmux answers `unconfirmed`, the bound drops the item
-          timings: { admitTimeoutMs: HOOK_ADMIT_BOUND_MS },
+          timings: {
+            admitTimeoutMs: HOOK_ADMIT_BOUND_MS,
+            unprovenRecordWaitMs: HOOK_ADMIT_BOUND_MS,
+          },
         });
         try {
           await until(() => ctl.calls.length === 1, "settle()");
@@ -785,7 +791,10 @@ wait $child
           binding: ctl.binding,
           prompt: null,
           // room for one gated send; magmux answers `unconfirmed`, the bound drops the item
-          timings: { admitTimeoutMs: HOOK_ADMIT_BOUND_MS },
+          timings: {
+            admitTimeoutMs: HOOK_ADMIT_BOUND_MS,
+            unprovenRecordWaitMs: HOOK_ADMIT_BOUND_MS,
+          },
         });
         try {
           await until(() => c.info().state === "AWAITING_INPUT", "boot");
