@@ -406,6 +406,14 @@ describe("DevinModelResolver expand", () => {
       new Set(permutations.map((entries) => entries.map((entry) => entry.wireId).join("\0"))).size
     ).toBe(permutations.length);
 
+    // The expand helpers always resolve against the fixture order first, so this
+    // list holds only the other orderings. The fixture order and its exact
+    // reverse put every pair of tied candidates in both relative orders, so a
+    // first-match tie-break returns two different ids between them. The four
+    // shuffles add orderings where tied candidates are not adjacent and where
+    // a group's members are interleaved with other groups.
+    const expandOrderings = [[...modelsCatalog].reverse(), ...permutations.slice(0, 4)];
+
     const exactNames = fixtureNameGroups(modelsCatalog).map(({ selection }) => selection);
     expect(exactNames.length).toBeGreaterThan(0);
 
@@ -413,7 +421,7 @@ describe("DevinModelResolver expand", () => {
       { label: "no effort", ctx: {} },
       ...EFFORT_LEVELS.map((effort) => ({ label: effort, ctx: { effort } })),
     ];
-    const flaps = exactNamePermutationFlaps(exactNames, contexts, permutations);
+    const flaps = exactNamePermutationFlaps(exactNames, contexts, expandOrderings);
 
     // Bun prints every string in this list on failure, naming each exact
     // (label/family, effort) pair and every wire id it alternated between.
@@ -436,11 +444,11 @@ describe("DevinModelResolver expand", () => {
       { selection: "not-in-the-captured-models-catalog", passesThrough: true },
     ];
     for (const choice of choices) {
-      expectPermutationInvariant(choice.id, false, {}, permutations);
+      expectPermutationInvariant(choice.id, false, {}, expandOrderings);
     }
     for (const ctx of [{}, { effort: "high" as const }]) {
       for (const { selection, passesThrough } of passThroughSelections) {
-        expectPermutationInvariant(selection, passesThrough, ctx, permutations);
+        expectPermutationInvariant(selection, passesThrough, ctx, expandOrderings);
       }
     }
   });
