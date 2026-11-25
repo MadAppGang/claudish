@@ -42,7 +42,8 @@
  *
  * Gaps come from `FAKE_GAP_MS_<NAME>` so scenarios keep their ORDER at a fraction of real
  * time. `CONTRACT_FAKE_MAX_MS` (default 20 s) is a safety exit so a broken test never
- * leaves a REPL behind. `CONTRACT_FAKE_SIGTERM_MARKER` is written on SIGTERM or SIGHUP.
+ * leaves a REPL behind. `CONTRACT_FAKE_SIGTERM_MARKER` gets a `READY <scenario>` line once
+ * the SIGTERM and SIGHUP handlers are installed, and the signal's name on each of them.
  */
 
 import { spawn, spawnSync } from "node:child_process";
@@ -1669,11 +1670,11 @@ async function quit(code: number): Promise<void> {
   process.exit(code);
 }
 
-function markSignal(sig: string): void {
+function markLine(line: string): void {
   const m = env.CONTRACT_FAKE_SIGTERM_MARKER;
   if (m) {
     try {
-      appendFileSync(m, `${sig}\n`);
+      appendFileSync(m, `${line}\n`);
     } catch {
       // ignore
     }
@@ -1711,13 +1712,14 @@ function installSignals(): void {
   const ignoreTerm = scenario === "ignore_term";
   const ignoreHup = scenario === "ignore_hup" || ignoreTerm;
   process.on("SIGTERM", () => {
-    markSignal("SIGTERM");
+    markLine("SIGTERM");
     if (!ignoreTerm) process.exit(143);
   });
   process.on("SIGHUP", () => {
-    markSignal("SIGHUP");
+    markLine("SIGHUP");
     if (!ignoreHup) process.exit(129);
   });
+  markLine(`READY ${scenario}`);
 }
 
 function dumpClaudeMode(): void {

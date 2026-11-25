@@ -15,7 +15,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { chmodSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { orphanReport, requireProcessTable } from "./pane/test-helpers/hermetic-env.js";
+import { orphanReport } from "./pane/test-helpers/hermetic-env.js";
 import { setupSession, startModels } from "./team-orchestrator.js";
 import {
   FINISH_PANE_TEST_HOOK_MS,
@@ -26,6 +26,7 @@ import {
   makePaneTestEnv,
   paneRunOptions,
   teamDirOf,
+  waitForProcess,
   waitUntil,
 } from "./test-helpers/team-pane.js";
 
@@ -64,16 +65,16 @@ describe.skipIf(!MAGMUX)("team spawn-loop failure", () => {
         settledCalls++;
       },
     }).catch((err: unknown) => err);
-    await waitUntil(
-      () =>
-        requireProcessTable().some(
-          (r) =>
-            r.command.includes("--model fake-ignore_term") && r.command.includes(panes.sockRoot)
-        ),
+    await waitForProcess(
+      (r) => r.command.includes("--model fake-ignore_term") && r.command.includes(panes.sockRoot),
       "slot 1's stubborn child",
       5_000
     );
-    await Bun.sleep(600); // its module loads and boot() installs the trap
+    await waitUntil(
+      () => existsSync(marker) && /^READY ignore_term$/m.test(readFileSync(marker, "utf8")),
+      "slot 1's child to install its SIGTERM trap",
+      5_000
+    );
     // The next slot's atomic STARTING status write cannot create its temp file.
     chmodSync(sessionPath, 0o555);
     const error = await run;
