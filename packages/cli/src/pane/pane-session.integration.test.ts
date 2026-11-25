@@ -7,11 +7,13 @@
 
 import { afterAll, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SlotState } from "./contract.js";
 import {
+  ADMIT_TIMEOUT_MS,
   type PaneBlock,
   type PaneSession,
   type PaneSessionOptions,
@@ -215,6 +217,7 @@ function screenOfSession(s: PaneSession): ScreenState {
     alt: false,
     changedAt: 0,
     aboveBoxChangedAt: 0,
+    boxChangedAt: 0,
   };
 }
 
@@ -663,6 +666,8 @@ describe.skipIf(!MAGMUX)(
           expect(r.s.send("/model haiku").ok).toBe(true);
           expect(r.s.send("/color yellow").ok).toBe(true);
           expect(r.s.send("Reply with exactly KIWI.").ok).toBe(true);
+          // one wait per queued send: each settled turn is the evidence the next one started
+          for (const n of [1, 2, 3]) await until(r, (s) => s.turnsCompleted >= n);
           await until(r, (s) => s.turnsCompleted === 4 && s.state === "AWAITING_INPUT");
           expect(r.turns.map((t) => t.settledBy)).toEqual([
             "local_command",
@@ -737,13 +742,18 @@ describe.skipIf(!MAGMUX)(
             decide: () => "continue",
           });
           await r.s.ready;
+          const sends = traceInput(r);
           const at = Date.now();
           expect(r.s.send("/cost").ok).toBe(true);
           expect(r.s.send("Reply with exactly KIWI.").ok).toBe(true);
+          // Held behind the panel, the prompt would be typed only once the /cost admission's
+          // bound ran out: its first typed send must leave before that bound
+          const typedKiwi = ({ message }: InputSend) =>
+            message.typed === true && message.text !== "/cost";
+          await until(r, () => sends.some(typedKiwi));
+          const kiwiAt = sends.find(typedKiwi)?.at as number;
+          expect(kiwiAt - at).toBeLessThan(ADMIT_TIMEOUT_MS);
           const s = await until(r, (x) => x.turnsCompleted === 1 && x.state === "AWAITING_INPUT");
-          // Held behind the panel means the 30 s admission bound (≈ 30 s); 20 s leaves room
-          // for full-suite load, which measured 13.3 s for a prompt that was not held.
-          expect(Date.now() - at).toBeLessThan(20_000);
           expect(s.anomalies).toContain("panel_dismissed");
           expect(s.anomalies).toContain("panel_command");
           expect(s.anomalies).not.toContain("send_not_accepted");
@@ -1034,15 +1044,24 @@ describe.skipIf(!MAGMUX)(
       test(
         "slow_prompt_hook: degraded entry, then the late witness reverts to the transcript",
         async () => {
-          const r = await start("slow_prompt_hook", {
-            env: { FAKE_GAP_MS_PROMPT_HOOK: "5000" },
-            timings: { degradedEntryMs: 1500, resendAfterMs: 1500 },
-          });
-          const snap = await finish(r);
-          expect(snap.state).toBe("COMPLETED");
-          expect(snap.anomalies).toContain("degraded_mode");
-          expect(snap.anomalies).toContain("degraded_reverted");
-          expect(r.turns[0]?.captureSource).toBe("transcript");
+          // the fake's hook holds the prompt's record until this file exists, so the record
+          // lands only after degraded mode has begun
+          const gate = join(tmpdir(), `claudish-prompt-hook-gate-${randomUUID()}`);
+          try {
+            const r = await start("slow_prompt_hook", {
+              env: { FAKE_PROMPT_HOOK_GATE_FILE: gate },
+              timings: { degradedEntryMs: 1500, resendAfterMs: 1500 },
+            });
+            await until(r, (s) => s.anomalies.includes("degraded_mode"));
+            writeFileSync(gate, "go");
+            const snap = await finish(r);
+            expect(snap.state).toBe("COMPLETED");
+            expect(snap.anomalies).toContain("degraded_mode");
+            expect(snap.anomalies).toContain("degraded_reverted");
+            expect(r.turns[0]?.captureSource).toBe("transcript");
+          } finally {
+            rmSync(gate, { force: true });
+          }
         },
         T
       );

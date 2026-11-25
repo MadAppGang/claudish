@@ -767,7 +767,8 @@ export async function assertMagmuxAvailable(binary?: string): Promise<MagmuxBina
 
 async function probeMagmux(binary?: string): Promise<MagmuxBinary> {
   if (binary !== undefined) return probeOneMagmux(binary);
-  return selectMagmux(findMagmuxCandidates());
+  const found = findMagmuxCandidates();
+  return selectMagmux(found.paths, found.lookupError);
 }
 
 /**
@@ -804,13 +805,15 @@ async function probeOneMagmux(found: string): Promise<MagmuxBinary> {
 /**
  * The first candidate that passes `isUsableMagmuxVersion`, probed in order; the walk stops at the
  * first pass. Only when none passes is the session refused, naming every candidate and what it
- * reported, so a stale bundled copy never hides a good magmux on PATH.
+ * reported, so a stale bundled copy never hides a good magmux on PATH. `lookupError` is why the
+ * PATH lookup failed (`findMagmuxCandidates`); a failed lookup is not an absent magmux, so the
+ * refusal names it instead of saying "not found".
  */
-export async function selectMagmux(candidates: readonly string[]): Promise<MagmuxBinary> {
-  if (candidates.length === 0)
-    throw new MagmuxUnavailableError(
-      "magmux_unavailable: magmux not found (bundled package or PATH); install it: brew install MadAppGang/tap/magmux"
-    );
+export async function selectMagmux(
+  candidates: readonly string[],
+  lookupError: string | null = null
+): Promise<MagmuxBinary> {
+  if (candidates.length === 0) throw noMagmuxFound(lookupError);
   const refused: string[] = [];
   for (const found of candidates) {
     let version: string;
@@ -829,7 +832,21 @@ export async function selectMagmux(candidates: readonly string[]): Promise<Magmu
     else refused.push(`${found} reports ${version}`);
   }
   throw new MagmuxUnavailableError(
-    `magmux_unavailable: no usable magmux; panes need a 0.x release >= ${MIN_MAGMUX_VERSION} (${MAGMUX_NEEDS}): ${refused.join(", ")}; upgrade: brew upgrade MadAppGang/tap/magmux`
+    `magmux_unavailable: no usable magmux; panes need a 0.x release >= ${MIN_MAGMUX_VERSION} (${MAGMUX_NEEDS}): ${refused.join(", ")}${lookupNote(lookupError)}; upgrade: brew upgrade MadAppGang/tap/magmux`
+  );
+}
+
+/** A failed PATH lookup, as a clause of a refusal that names other candidates; "" when none. */
+function lookupNote(lookupError: string | null): string {
+  return lookupError ? `; magmux lookup failed: ${lookupError}` : "";
+}
+
+/** The refusal when no candidate exists: a failed lookup, or no magmux anywhere. */
+function noMagmuxFound(lookupError: string | null): MagmuxUnavailableError {
+  return new MagmuxUnavailableError(
+    lookupError
+      ? `magmux_unavailable: magmux lookup failed: ${lookupError}`
+      : "magmux_unavailable: magmux not found (bundled package or PATH); install it: brew install MadAppGang/tap/magmux"
   );
 }
 

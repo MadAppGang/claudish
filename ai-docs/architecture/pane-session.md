@@ -623,7 +623,8 @@ gate never touches. `pane/input-gate.ts` translates each reply into a closed `Se
 | `ok`, `evidence:"history"` (`accept` `confirmed`, `resent_enter`, or `submitted_by_other`) | yes | accepted: RUNNING. `resent_enter` and `submitted_by_other` are counted (`gate_resent_enter`, `gate_submitted_by_other`), never failures |
 | `ok`, `evidence:"transcript"` | yes | accepted only if claudish's own witness is present, else treated as `unconfirmed` (`gate_transcript_evidence[_unwitnessed]`) |
 | `busy` `starting`, `terminal_not_ready`, `no_input_box`, `typing_in_progress`, `queue_full`, `in_flight` | no | next attempt after 250 ms |
-| `busy` with `typed:true`, `busy box_not_empty` | no | the next send first clears the box (below) |
+| `busy` with `typed:true` (a dialog named or not) | no | NO ctrl-u and NO new copy until the box settles, as after an empty-box `text_mismatch` (`startDrawWait`, below) |
+| `busy box_not_empty` | no | the next send first clears the box (below) |
 | `not_accepted text_mismatch` (not `maybeSubmitted`), the box read empty (`boxEmpty: true`, else magmux's empty-box phrases) or holding text | no | NO ctrl-u and NO new copy until the box settles: text settled 2 s on the screen: exactly the line → its Enter only; text ending with the start of the line → wait; other text → cleared and typed again; nothing settled by the deadline → `prompt_not_accepted` (below) |
 | `busy vim_mode`, `busy dialog:trust\|bypass\|api_key\|onboarding` | no | stop, never a key: `prompt_not_accepted` (vim) or `first_run_dialog` |
 | `busy dialog:permission\|question\|plan` | no | wait for the dialog to leave, within the deadline; a re-woken turn owns it |
@@ -792,6 +793,38 @@ later read of the same copy is drawn inside the window, with most of the 30 s ad
 reading of `box_not_empty` ahead of the frame only means the frame is coming; it never counts as
 text.
 
+*The window counts from the box's last change, not from the wait's start.* A box that has already
+been unchanged for 2 s when a wait begins (an inherited copy's admission starting long after the
+copy was written, its box empty all along) decides at once. The screen model keeps `boxChangedAt`,
+moved by any frame that changes what a reading of the box depends on: where the box is, the rows
+between its rules with their cell attributes, the cursor or the width; a frame with no located box
+on either side moves it too. The working row above the box and the status line under it do not.
+The window starts at the latest of `boxChangedAt`, the reply to the last write to the pane's
+input (`lastInputAt`: every gated send, ctrl-u, ctrl-End and scroll goes through `writeInput`),
+and the first frame that counts on the trusted connection (`trustedFramesFrom`); while a write
+is still out, or before that first frame, it starts at the reading itself. The rule itself is
+unchanged: only a box seen unchanged, with nothing written, for `DRAW_SETTLE_MS` decides.
+
+The start is worked out again at EVERY reading, not only when the box changes, and it only ever
+moves later. A write that was still out at the wait's first reading and is answered a moment later
+moves the start to its reply, so the box must then stay unchanged for the whole window after that
+reply.
+
+A write whose reply was lost is different. `client_timeout` (claudish's own timer), `client_lost`
+(the connection closed after the request was written) and magmux's `timeout` say only that the
+answer did not arrive; magmux may still hold the write and make it later (`lostInputs`). While
+such a write is outstanding, the window starts no earlier than the draw wait's own start: the box
+must stay unchanged for `DRAW_SETTLE_MS` from then, as it did before the window counted from the
+box's last change, so the box seen before the wait proves nothing. The wait never stalls on it.
+The write stops counting once magmux really answers a later write on the SAME connection: one
+connection's writes run in order on its own queue in magmux, so that answer proves the lost one
+finished, and the window counts from the box's last change again. A new connection proves nothing:
+magmux keeps running what a closed connection had queued, and a new connection's writes go on a
+different queue, so a write lost on a closed connection keeps the floor for the session. Counting
+from the admission's start instead spent 2 s of an inherited admission on a box already settled,
+and a later admission with a 16 s bound was then left with less than the submit's 13 846 ms
+(`readyTimeoutFor`), so it sent nothing and expired.
+
 Only frames of the trusted connection count, and each reconnect starts the settle again, by
 counters rather than by the screen object. `applyFrame` returns the SAME screen object for a frame
 that changes nothing visible, so after a reconnect to an unchanged box no identity test can tell a
@@ -907,7 +940,9 @@ still with magmux: two submissions. The copy is then marked read whole (`unreadC
 cleared by `rememberCopy` and `forgetCopy`): every byte of it was read, so nothing of it can be
 queued, and only its record is still to come. So keys are not withheld for it (scroll, ctrl-End
 and Escape go again), and an empty settled box ends the inherited wait and the control wait
-(`emptyEnds`). The next prompt of the same text goes back into `awaitCopyRecord`; a prompt of
+(`emptyEnds`). The settle counts from the box's last change (*The window counts from the box's last
+change* above), so a box that stayed empty and untouched since the earlier admission ends the
+inherited wait as soon as it starts. The next prompt of the same text goes back into `awaitCopyRecord`; a prompt of
 other text forgets the copy and is typed; `/exit` forgets it and is typed. Without the mark a
 copy whose record never landed wedged the session: every later prompt expired with nothing typed,
 scroll was refused, Escape withheld, and `/exit` waited forever.
@@ -1047,6 +1082,13 @@ bound, `team(mode:"run")`'s 120 s, and a later send's return to idle at 30 s str
 let an in-flight reply run past the deadline. Drift in magmux's constants is safe in direction: an
 under-estimate becomes a lost reply (no resend, a slower failure), never a duplicate. A bump of the
 pin re-reads `protocol/sendbudget.go`.
+
+When no attempt fits, the step's own send is not made, the loop ends, and the admission sits in
+ADMITTING until its deadline expires it. For `submit` and `type` that means nothing of the line
+was sent; for `enter` the TYPE before it was already sent, and only the Enter is missing. That idle
+stretch records the anomaly `send_no_room:<step>` (`submit`, `type` or `enter`), so
+`get_diagnostics` says why the step's send was not made instead of showing an admission that
+simply stopped.
 
 **Why neither a lost prompt nor a doubled one can happen (D-A, D-B), by construction.** D-A was two
 10 s timers racing: claudish's ctrl-u nudge emptied the box, its screen-based acceptance then saw

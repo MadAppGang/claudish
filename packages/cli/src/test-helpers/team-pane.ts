@@ -8,6 +8,7 @@
  */
 
 import { join } from "node:path";
+import { type PsRow, readProcessTableAsync } from "../pane/process-identity.js";
 import {
   MAGMUX,
   NO_MAGMUX_MESSAGE,
@@ -74,6 +75,31 @@ export async function waitUntil(
   const end = Date.now() + ms;
   while (!pred()) {
     if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
+    await Bun.sleep(intervalMs);
+  }
+}
+
+/**
+ * Wait up to `ms` for a process `match` accepts; returns its row. A read `ps` could not
+ * make is read again on the next poll. Every read is asynchronous: the code the test waits
+ * on runs on this same event loop, and a synchronous `ps` every `intervalMs` would starve it
+ * for as long as each read takes.
+ */
+export async function waitForProcess(
+  match: (row: PsRow) => boolean,
+  what: string,
+  ms = 10_000,
+  intervalMs = 25
+): Promise<PsRow> {
+  const end = Date.now() + ms;
+  for (;;) {
+    const table = await readProcessTableAsync();
+    const row = table?.find(match);
+    if (row) return row;
+    if (Date.now() > end) {
+      const why = table ? "" : " (process table unavailable: ps could not run)";
+      throw new Error(`timed out waiting for ${what}${why}`);
+    }
     await Bun.sleep(intervalMs);
   }
 }

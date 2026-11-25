@@ -18,6 +18,7 @@
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import {
+  DEAD_ENDPOINT_RESET,
   type FixturePool,
   type ProxyHandle,
   createRawFixturePool,
@@ -100,7 +101,9 @@ describe("CP-4 — exhaustion with no banner on screen", () => {
     const [authPort] = reservePorts(1);
     const auth401 = startStatusFixture(401, authPort);
     const [deadPort] = reservePorts(1);
-    const dead = startRawFixture(deadPort);
+    // The body below is asserted word for word, so the reset must come after the
+    // proxy has connected; see DEAD_ENDPOINT_RESET.
+    const dead = startRawFixture(deadPort, { resetWhen: DEAD_ENDPOINT_RESET });
     let chainProxy: ProxyHandle | undefined;
     try {
       chainProxy = await startProxy(

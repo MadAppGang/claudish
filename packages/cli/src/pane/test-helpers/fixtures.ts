@@ -28,6 +28,7 @@ export function loadScreen(name: string): ScreenState {
     alt: j.alt,
     changedAt: 0,
     aboveBoxChangedAt: 0,
+    boxChangedAt: 0,
   };
 }
 

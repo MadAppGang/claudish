@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { locateBox } from "./box-locate.js";
 import {
   type MagmuxFrame,
   applyCapture,
@@ -169,6 +170,107 @@ describe("aboveBoxChangedAt", () => {
       300
     );
     expect(tick.aboveBoxChangedAt).toBe(300);
+  });
+});
+
+describe("boxChangedAt", () => {
+  /** A delta frame at `now` that rewrites `rows` and puts the cursor at `cur`. */
+  const delta = (
+    s: ReturnType<typeof emptyScreen>,
+    rows: Array<{ y: number; t: string }>,
+    now: number,
+    cur = s.cursor
+  ) => applyFrame(s, { rows: 50, cols: 160, alt: true, key: false, cur, lines: rows }, now);
+
+  test("moves only when the box's rows, its place or the cursor change", () => {
+    const screen = loadScreen("stop-hook-running");
+    const s = applyFrame(
+      emptyScreen(160, 50),
+      {
+        rows: 50,
+        cols: 160,
+        alt: true,
+        key: true,
+        cur: screen.cursor,
+        lines: screen.lines.map((t, y) => ({ y, t, r: screen.spans[y] })),
+      },
+      100
+    );
+    expect(s.boxChangedAt).toBe(100);
+    const top = boxTopRow(s.lines, s.cols);
+    // the status line under the box and the working row above it tick: the box did not change
+    const status = delta(s, [{ y: 48, t: "  cwd • haiku • $0.001 • N/A" }], 200);
+    expect(status.seq).toBe(s.seq + 1);
+    expect(status.boxChangedAt).toBe(100);
+    const workingRow = s.lines.findIndex((l) => l.includes("running Stop hook"));
+    const tick = delta(
+      status,
+      [{ y: workingRow, t: s.lines[workingRow]!.replace("· Processing", "✽ Processing") }],
+      300
+    );
+    expect(tick.aboveBoxChangedAt).toBe(300);
+    expect(tick.boxChangedAt).toBe(100);
+    // text drawn in the box moves it
+    const typed = delta(tick, [{ y: top + 1, t: "❯ hello" }], 400);
+    expect(typed.boxChangedAt).toBe(400);
+    // the cursor alone moving moves it: the cursor proves which cells were drawn
+    const moved = delta(typed, [], 500, { x: typed.cursor.x + 1, y: typed.cursor.y });
+    expect(moved.seq).toBe(typed.seq + 1);
+    expect(moved.boxChangedAt).toBe(500);
+    // a frame with no box located is no evidence about the box
+    const gone = delta(moved, [{ y: top, t: "" }], 600);
+    expect(gone.boxChangedAt).toBe(600);
+  });
+
+  /** A keyframe at `now` of a screen whose box (rules `cols` wide) holds `box`, styled `r`. */
+  const boxKeyframe = (
+    cols: number,
+    box: string,
+    now: number,
+    s = emptyScreen(cols, 24),
+    r: Array<[number, number, number, number, number]> = []
+  ) => {
+    const rule = "─".repeat(cols);
+    const rows: NonNullable<MagmuxFrame["lines"]> = Array.from({ length: 24 }, (_, y) => ({
+      y,
+      t: "",
+    }));
+    rows[14] = { y: 14, t: rule };
+    rows[15] = { y: 15, t: box ? `❯\u00a0${box}` : "❯", r };
+    rows[16] = { y: 16, t: rule };
+    rows[17] = { y: 17, t: "  ? for shortcuts" };
+    return applyFrame(
+      s,
+      { rows: 24, cols, key: true, cur: { x: 2 + box.length, y: 15 }, lines: rows },
+      now
+    );
+  };
+
+  test("a change of the box row's cell attributes alone moves it", () => {
+    const s = boxKeyframe(80, "hello", 100);
+    expect(s.boxChangedAt).toBe(100);
+    expect(locateBox(s)).not.toBeNull();
+    const faint = boxKeyframe(80, "hello", 200, s, [[2, 5, -1, -1, 2]]);
+    expect(faint.lines).toEqual(s.lines);
+    expect(faint.seq).toBe(s.seq + 1);
+    expect(faint.boxChangedAt).toBe(200);
+  });
+
+  test("a change of width moves it, the box redrawn at the new width", () => {
+    const s = boxKeyframe(80, "hello", 100);
+    const wider = boxKeyframe(100, "hello", 200, s);
+    expect(wider.cols).toBe(100);
+    // located on both sides: the width itself, not a lost box, moves it
+    expect(locateBox(s)).not.toBeNull();
+    expect(locateBox(wider)).not.toBeNull();
+    expect(wider.boxChangedAt).toBe(200);
+  });
+
+  test("a keyframe identical to the screen keeps it", () => {
+    const s = boxKeyframe(80, "hello", 100);
+    const again = boxKeyframe(80, "hello", 200, s);
+    expect(again).toBe(s);
+    expect(again.boxChangedAt).toBe(100);
   });
 });
 

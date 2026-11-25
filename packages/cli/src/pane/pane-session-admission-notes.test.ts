@@ -1,10 +1,11 @@
 /**
  * What one admission records about a send, driven without a pane.
  *
- * A `busy` reply means Enter was NOT pressed. When it also reports `typed: true`, the text
- * may be in the box, also when the reply names a turn's own dialog that covers the box: the
- * next send must clear the box first, or it types onto that leftover. The clear itself waits
- * for the dialog to close (`clearOwnLeftover` sends no key while a dialog shows).
+ * A `busy` reply means Enter was NOT pressed. When it also reports `typed: true`, all or part
+ * of the text may sit in Claude Code's input, read or not, also when the reply names a turn's
+ * own dialog that covers the box. A ctrl-u sent now would queue behind those unread bytes and
+ * clear nothing, so no clear is marked: the admission enters the draw wait (`awaitDraw`) and
+ * sends nothing until the box, located again, has settled.
  *
  * A text witness matched by a record holding the launch line k > 1 times is counted as
  * `witness_copies:<k>`, once per turn, however often the view is read.
@@ -59,7 +60,14 @@ function session(): PaneSessionImpl {
 
 /** The admission fields `onBusy` reads and writes. */
 function admission() {
-  return { clearFirst: false, clearAfter: 0, noted: new Set<string>(), stopped: false };
+  return {
+    clearFirst: false,
+    clearAfter: 0,
+    awaitingDraw: null as number | null,
+    drawState: "unset",
+    noted: new Set<string>(),
+    stopped: false,
+  };
 }
 
 function anomalies(s: PaneSessionImpl): Map<string, number> {
@@ -75,30 +83,37 @@ async function busy(
 }
 
 describe("a busy reply that names a turn's dialog", () => {
-  test("with typed: true, the next send clears the box first and the dialog is noted", async () => {
+  test("with typed: true, no clear is marked, the draw wait starts and the dialog is noted", async () => {
     const s = session();
     const adm = admission();
     const before = Date.now();
     await busy(s, adm, { reason: "dialog:permission", dialog: "permission", typed: true });
-    expect(adm.clearFirst).toBe(true);
-    expect(adm.clearAfter).toBeGreaterThanOrEqual(before);
+    expect(adm.clearFirst).toBe(false);
+    expect(adm.awaitingDraw).not.toBeNull();
+    expect(adm.awaitingDraw as number).toBeGreaterThanOrEqual(before);
+    expect(adm.drawState).toBe("none");
     expect(adm.noted.has("gate_dialog_at_admission:permission")).toBe(true);
     expect(anomalies(s).get("gate_dialog_at_admission:permission")).toBe(1);
   });
 
-  test("with typed: false, nothing was typed and no clear is marked", async () => {
+  test("with typed: false, nothing was typed: no clear is marked and no draw wait starts", async () => {
     const s = session();
     const adm = admission();
     await busy(s, adm, { reason: "dialog:question", dialog: "question", typed: false });
     expect(adm.clearFirst).toBe(false);
+    expect(adm.awaitingDraw).toBeNull();
     expect(adm.noted.has("gate_dialog_at_admission:question")).toBe(true);
   });
 
-  test("with no dialog and typed: true, the clear is marked as before", async () => {
+  test("with no dialog and typed: true, no clear is marked and the draw wait starts", async () => {
     const s = session();
     const adm = admission();
+    const before = Date.now();
     await busy(s, adm, { reason: "typing_in_progress", dialog: null, typed: true });
-    expect(adm.clearFirst).toBe(true);
+    expect(adm.clearFirst).toBe(false);
+    expect(adm.awaitingDraw).not.toBeNull();
+    expect(adm.awaitingDraw as number).toBeGreaterThanOrEqual(before);
+    expect(adm.drawState).toBe("none");
     expect(anomalies(s).get("gate_typed_withheld")).toBe(1);
   });
 });

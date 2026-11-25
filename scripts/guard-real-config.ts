@@ -67,7 +67,7 @@
  * changed secrets are kept like every other valid file, forced back to 0600; a
  * valid login created during the run is kept at 0600 too.
  */
-import { spawn } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import {
   chmodSync,
@@ -581,10 +581,29 @@ for (const name of HOME_BYPASS_OVERRIDES) delete childEnv[name];
 // ORIGINAL environment back. Deleting them here, from the OS environment of the
 // whole run, is the second layer: no descendant of a guarded run can inherit them.
 for (const name of SESSION_ENV_VARS) delete childEnv[name];
-const child = spawn(cmd[0], cmd.slice(1), {
+
+let finished = false;
+let forwardedSignal: NodeJS.Signals | null = null;
+let child: ChildProcess | null = null;
+function forwardSignal(signal: NodeJS.Signals): void {
+  forwardedSignal ??= signal;
+  child?.kill(signal);
+}
+// The handlers go in before the spawn. A signal that lands between the spawn and a
+// later install meets the default disposition: the guard dies without `finish`, so
+// nothing is restored, the run home stays, and the orphaned child keeps the caller's
+// stderr pipe open. SIGHUP too: its default disposition would end the guard the same
+// way (a closed terminal, or test:macos forwarding it).
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+  process.on(signal, () => forwardSignal(signal));
+}
+
+child = spawn(cmd[0], cmd.slice(1), {
   stdio: "inherit",
   env: childEnv,
 });
+// A signal that arrived before the child existed is delivered to it now.
+if (forwardedSignal) child.kill(forwardedSignal);
 
 /**
  * Put the pre-run bytes back through a same-directory temp file renamed over the
@@ -852,18 +871,6 @@ function checkRunHome(): boolean {
     );
   }
   return hit;
-}
-
-let finished = false;
-let forwardedSignal: NodeJS.Signals | null = null;
-function forwardSignal(signal: NodeJS.Signals): void {
-  forwardedSignal ??= signal;
-  child.kill(signal);
-}
-// SIGHUP too: its default disposition would end the guard before `finish` restores the
-// guarded files and removes the run home (a closed terminal, or test:macos forwarding it).
-for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
-  process.on(signal, () => forwardSignal(signal));
 }
 
 /**

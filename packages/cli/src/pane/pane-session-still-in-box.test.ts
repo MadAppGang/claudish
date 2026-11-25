@@ -14,6 +14,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { locateBox } from "./box-locate.js";
 import type { SlotState } from "./contract.js";
 import type { MagmuxReply } from "./magmux-client.js";
 import { PaneSessionImpl, type PaneSessionOptions } from "./pane-session.js";
@@ -134,7 +135,32 @@ function screenWith(box: string, above: readonly string[]): ScreenState {
     alt: true,
     changedAt: Date.now(),
     aboveBoxChangedAt: 0,
+    // a screen built fresh: its box counts as drawn just now, unless the refresh keeps the
+    // held screen's box unchanged (`keepBoxChangedAt`)
+    boxChangedAt: Date.now(),
   };
+}
+
+/**
+ * `next`, keeping the held screen's `boxChangedAt` when its box reads the same (place, rows,
+ * cursor, width), as the screen model keeps it for a frame that leaves the box alone.
+ */
+function keepBoxChangedAt(prev: ScreenState | undefined, next: ScreenState): ScreenState {
+  const key = (s: ScreenState | undefined): string | null => {
+    const box = s ? locateBox(s) : null;
+    if (!s || !box) return null;
+    return JSON.stringify([
+      s.cols,
+      box.top,
+      box.bottom,
+      s.cursor,
+      s.lines.slice(box.top, box.bottom + 1),
+    ]);
+  };
+  const k = key(next);
+  return k !== null && prev && k === key(prev)
+    ? { ...next, boxChangedAt: prev.boxChangedAt }
+    : next;
 }
 
 interface Pane {
@@ -191,7 +217,7 @@ function wire(s: PaneSessionImpl): Pane {
   };
   any.gateTrusted = true;
   const refresh = () => {
-    any.screen = screenWith(pane.box, pane.above);
+    any.screen = keepBoxChangedAt(any.screen, screenWith(pane.box, pane.above));
     if (pane.noBox) any.screen.lines[15] = "";
     any.gate =
       pane.box === "" && pane.reason === null

@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resolveDefaultProvider } from "./default-provider.js";
+import { planDefaultProviderFlag, resolveDefaultProvider } from "./default-provider.js";
 import type { ClaudishProfileConfig } from "./profile-config.js";
 
 const STAGE4_CATALOG_FIXTURE = join(
@@ -183,7 +183,45 @@ interface ProbeJson {
   }>;
 }
 
-function sandboxedProbe(flagBeforeProbe: boolean, provider: string): ProbeJson {
+const PROBE_ARGS = ["--probe", "no-such-model-xyz", "--json", "--no-probe"];
+
+describe("planDefaultProviderFlag", () => {
+  test("takes the flag when it appears before --probe", () => {
+    expect(planDefaultProviderFlag(["--default-provider", "poe", ...PROBE_ARGS])).toEqual({
+      kind: "apply",
+      value: "poe",
+      argv: PROBE_ARGS,
+    });
+  });
+
+  test("takes the flag when it appears after the probed model", () => {
+    expect(
+      planDefaultProviderFlag([
+        "--probe",
+        "no-such-model-xyz",
+        "--default-provider",
+        "poe",
+        "--json",
+        "--no-probe",
+      ])
+    ).toEqual({ kind: "apply", value: "poe", argv: PROBE_ARGS });
+  });
+
+  test("keeps an empty flag value, which disables the fallback hop", () => {
+    expect(planDefaultProviderFlag(["--default-provider", "", ...PROBE_ARGS])).toEqual({
+      kind: "apply",
+      value: "",
+      argv: PROBE_ARGS,
+    });
+  });
+});
+
+/**
+ * Runs the real CLI with the flag after the probed model. `--probe` runs and exits
+ * inside parseArgs's argv loop, so in this order the flag reaches the probe only
+ * when index.ts applies `planDefaultProviderFlag` before parseArgs runs.
+ */
+function sandboxedProbeWithFlagAfterModel(provider: string): ProbeJson {
   const home = mkdtempSync(join(tmpdir(), "claudish-default-provider-probe-"));
   const configDir = join(home, ".claudish");
   mkdirSync(configDir, { recursive: true });
@@ -194,11 +232,15 @@ function sandboxedProbe(flagBeforeProbe: boolean, provider: string): ProbeJson {
     "utf8"
   );
 
-  const flag = ["--default-provider", provider];
-  const probe = ["--probe", "no-such-model-xyz"];
-  const args = flagBeforeProbe
-    ? [CLI_ENTRY, ...flag, ...probe, "--json", "--no-probe"]
-    : [CLI_ENTRY, ...probe, ...flag, "--json", "--no-probe"];
+  const args = [
+    CLI_ENTRY,
+    "--probe",
+    "no-such-model-xyz",
+    "--default-provider",
+    provider,
+    "--json",
+    "--no-probe",
+  ];
   const env: Record<string, string> = {
     HOME: home,
     PATH: process.env.PATH ?? "",
@@ -228,21 +270,8 @@ function sandboxedProbe(flagBeforeProbe: boolean, provider: string): ProbeJson {
 }
 
 describe("--default-provider pre-scan reaches --probe", () => {
-  test("uses poe when the flag appears before --probe", () => {
-    const result = sandboxedProbe(true, "poe");
-    expect([...result.chain, ...result.dropped].map((entry) => entry.provider)).toEqual(["poe"]);
-    expect(result.dropped).toEqual([
-      expect.objectContaining({
-        provider: "poe",
-        position: "fallback",
-        label: "fallback",
-        outcome: "no-credential",
-      }),
-    ]);
-  });
-
   test("uses poe when the flag appears after the probed model", () => {
-    const result = sandboxedProbe(false, "poe");
+    const result = sandboxedProbeWithFlagAfterModel("poe");
     expect([...result.chain, ...result.dropped].map((entry) => entry.provider)).toEqual(["poe"]);
     expect(result.dropped).toEqual([
       expect.objectContaining({
@@ -252,9 +281,5 @@ describe("--default-provider pre-scan reaches --probe", () => {
         outcome: "no-credential",
       }),
     ]);
-  });
-
-  test("an empty flag value produces an empty chain", () => {
-    expect(sandboxedProbe(true, "").chain).toEqual([]);
   });
 });

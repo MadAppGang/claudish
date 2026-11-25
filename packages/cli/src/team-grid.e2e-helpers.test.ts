@@ -15,8 +15,7 @@ describe("findMagmuxForTest", () => {
       writeFileSync(magmux, "#!/bin/sh\necho 'magmux 0.0.0'\n");
       chmodSync(magmux, 0o755);
       // A bundled or npm-installed copy outranks PATH by design (findMagmuxCandidates).
-      process.env.PATH = "/nonexistent";
-      const shipped = findMagmuxCandidates()[0];
+      const shipped = findMagmuxCandidates({ PATH: "/nonexistent" }).paths[0];
       process.env.PATH = `${dir}:${savedPath ?? ""}`;
       expect(findMagmuxForTest()).toBe(shipped ?? magmux);
     } finally {

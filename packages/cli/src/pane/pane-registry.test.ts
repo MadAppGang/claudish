@@ -69,6 +69,7 @@ import {
   makePaneTestEnv,
   orphanReport,
   requireProcessTable,
+  requireProcessTableAsync,
   waitNoOrphans,
   withProcessTableUnavailable,
 } from "./test-helpers/hermetic-env.js";
@@ -538,7 +539,7 @@ describe.skipIf(!MAGMUX)(`pane registry, real magmux (${MAGMUX ? "" : NO_MAGMUX_
     await s.reaped();
     expect(livePaneCount(t.sockRoot)).toBe(0);
     expect(
-      requireProcessTable().some(
+      (await requireProcessTableAsync()).some(
         (r) => r.command.includes("claudish-pane-watcher") && r.command.includes(t.sockRoot)
       )
     ).toBe(false);

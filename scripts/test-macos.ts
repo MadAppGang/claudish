@@ -632,10 +632,7 @@ export function installPinnedMagmux(pin: MagmuxPin, runDir: string): string {
   }
   // The pane suites take the first candidate (bundled, npm package, then PATH); with the pinned
   // directory first on PATH that must be it, or they would test another magmux.
-  const savedPath = process.env.PATH;
-  process.env.PATH = `${binDir}:${savedPath ?? ""}`;
-  const first = findMagmuxCandidates()[0];
-  process.env.PATH = savedPath;
+  const first = findMagmuxCandidates({ PATH: `${binDir}:${process.env.PATH ?? ""}` }).paths[0];
   if (first !== exe) {
     fail(`the pane suites would use ${first}, not the pinned ${exe}: remove ${first}`);
   }
