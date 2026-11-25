@@ -19,7 +19,14 @@ export const cases = [
 export function screen(r: GateRun): ScreenState {
   const capture = r.s.capture(undefined, { spans: true });
   if (!("lines" in capture)) throw new Error("full capture required");
-  return { ...capture, spans: capture.spans ?? [], alt: true, changedAt: 0, aboveBoxChangedAt: 0 };
+  return {
+    ...capture,
+    spans: capture.spans ?? [],
+    alt: true,
+    changedAt: 0,
+    aboveBoxChangedAt: 0,
+    boxChangedAt: 0,
+  };
 }
 
 export function listResult(reply: MagmuxReply): Record<string, unknown> {

@@ -172,6 +172,56 @@ describe("aboveBoxChangedAt", () => {
   });
 });
 
+describe("boxChangedAt", () => {
+  /** A delta frame at `now` that rewrites `rows` and puts the cursor at `cur`. */
+  const delta = (
+    s: ReturnType<typeof emptyScreen>,
+    rows: Array<{ y: number; t: string }>,
+    now: number,
+    cur = s.cursor
+  ) => applyFrame(s, { rows: 50, cols: 160, alt: true, key: false, cur, lines: rows }, now);
+
+  test("moves only when the box's rows, its place or the cursor change", () => {
+    const screen = loadScreen("stop-hook-running");
+    const s = applyFrame(
+      emptyScreen(160, 50),
+      {
+        rows: 50,
+        cols: 160,
+        alt: true,
+        key: true,
+        cur: screen.cursor,
+        lines: screen.lines.map((t, y) => ({ y, t, r: screen.spans[y] })),
+      },
+      100
+    );
+    expect(s.boxChangedAt).toBe(100);
+    const top = boxTopRow(s.lines, s.cols);
+    // the status line under the box and the working row above it tick: the box did not change
+    const status = delta(s, [{ y: 48, t: "  cwd • haiku • $0.001 • N/A" }], 200);
+    expect(status.seq).toBe(s.seq + 1);
+    expect(status.boxChangedAt).toBe(100);
+    const workingRow = s.lines.findIndex((l) => l.includes("running Stop hook"));
+    const tick = delta(
+      status,
+      [{ y: workingRow, t: s.lines[workingRow]!.replace("· Processing", "✽ Processing") }],
+      300
+    );
+    expect(tick.aboveBoxChangedAt).toBe(300);
+    expect(tick.boxChangedAt).toBe(100);
+    // text drawn in the box moves it
+    const typed = delta(tick, [{ y: top + 1, t: "❯ hello" }], 400);
+    expect(typed.boxChangedAt).toBe(400);
+    // the cursor alone moving moves it: the cursor proves which cells were drawn
+    const moved = delta(typed, [], 500, { x: typed.cursor.x + 1, y: typed.cursor.y });
+    expect(moved.seq).toBe(typed.seq + 1);
+    expect(moved.boxChangedAt).toBe(500);
+    // a frame with no box located is no evidence about the box
+    const gone = delta(moved, [{ y: top, t: "" }], 600);
+    expect(gone.boxChangedAt).toBe(600);
+  });
+});
+
 describe("applyCapture", () => {
   test("pads a capture's text back to rows and keeps seq monotonic", () => {
     const s0 = applyFrame(emptyScreen(160, 50), loadFrames("agent-rejected")[0]!, 1);

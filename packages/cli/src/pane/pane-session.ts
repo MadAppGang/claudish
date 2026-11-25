@@ -800,6 +800,17 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
    * screen object on a frame that changes nothing, so only this stamp says a frame came.
    */
   private lastFrameGen = 0;
+  /**
+   * When frames of the trusted connection began to count as evidence about the box: the moment
+   * its binding check passed when a frame of it had already arrived, else its first frame after
+   * that. null while trusted with no frame of it yet. A box that looks the same across a
+   * reconnect says nothing about the time the connection was down.
+   */
+  private trustedFramesFrom: number | null = 0;
+  /** when the last write to the pane's input (a gated send, keys, scroll bytes) was answered */
+  private lastInputAt = 0;
+  /** writes to the pane's input still waiting for their reply: magmux may be writing them now */
+  private inputsInFlight = 0;
   private gateInFlight = false;
   private gateTimer: ReturnType<typeof setInterval> | null = null;
   /** when `list` first showed pane 0 dead with no `exit` event yet; 0 = not dead */
@@ -1090,10 +1101,20 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     await client.request({ type: "watch", pane: 0, mode: "frames", fps: WATCH_FPS });
     const bound = await this.awaitBoundPane(client, reconnect, magmuxVersion);
     if (!bound) return;
+    this.noteTrusted(gen);
+    this.onGateList(client, bound);
+  }
+
+  /**
+   * Connection `gen` passed the binding check: its frames and gate readings count from now. A
+   * frame of it that arrived before the check is that connection's own picture of pane 0, so
+   * the box is known from this moment; otherwise from its first frame (`onFrame`).
+   */
+  private noteTrusted(gen: number): void {
     this.trustedGen = gen;
     this.trustEpoch++;
+    this.trustedFramesFrom = this.lastFrameGen === gen ? Date.now() : null;
     this.gateTrusted = true;
-    this.onGateList(client, bound);
   }
 
   /**
@@ -1312,6 +1333,8 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   private onFrame(f: MagmuxFrame, gen: number): void {
     if (f.pane !== undefined && f.pane !== 0) return;
     this.lastFrameGen = gen;
+    if (this.trustedFramesFrom === null && gen === this.trustedGen && this.gateTrusted)
+      this.trustedFramesFrom = Date.now();
     const seq = this.screen.seq;
     this.screen = applyFrame(this.screen, f);
     if (this.screen.seq !== seq && !this.inResizeQuiet(this.screen.changedAt))
@@ -2085,7 +2108,11 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     const step = adm.step;
     const shape = sendShape(step, adm.line);
     const rt = readyTimeoutFor(step, adm.line, adm.deadline - Date.now());
-    if (rt === null) return false;
+    if (rt === null) {
+      // the loop ends here and the admission waits for its deadline: say why nothing was sent
+      this.anomaly(`send_no_room:${step}`);
+      return false;
+    }
     const timeout = sendBudgetMs({ ...shape.budget, readyTimeoutMs: rt }) + SEND_CLIENT_SLACK_MS;
     // from its first send on, a record of its own line may be this turn's
     this.follower.holdTurn(false);
@@ -2094,7 +2121,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     adm.attempts++;
     let reply: MagmuxReply;
     try {
-      reply = await c.request({ ...shape.msg, readyTimeoutMs: rt }, timeout);
+      reply = await this.writeInput(c, { ...shape.msg, readyTimeoutMs: rt }, timeout);
     } finally {
       adm.inFlight = false;
     }
@@ -2428,8 +2455,9 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   /**
    * The settle wait of `awaitDraw`, shared with a control line (`awaitControlCopy`): box text
    * read against `against` from frames of the trusted connection, until it has been
-   * unchanged for `DRAW_SETTLE_MS` (`drawOutcome`), `live` turns false, a stop row shows or
-   * `ms` passes. `earlier`: `against` is an earlier copy, so its leaving the box may end the
+   * unchanged for `DRAW_SETTLE_MS` (`drawOutcome`; counted from when it last changed or was
+   * last written to, `boxUnchangedSince`, not from the wait's start), `live` turns false, a
+   * stop row shows or `ms` passes. `earlier`: `against` is an earlier copy, so its leaving the box may end the
    * wait as "gone". A move of the trust epoch, or a reading with no box located (a dialog
    * drawn over it, a redraw), is nothing trustworthy read: the settle starts again, and only
    * a move of the epoch also forgets that the whole line had shown.
@@ -2451,6 +2479,8 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     onRead?: (box: DrawnBox) => void;
   }): Promise<{ ended: "settled" | "gone" | null; seen: DrawnBox | undefined }> {
     let epoch = this.trustEpoch;
+    // a move of the epoch seen here: nothing before it counts, even if the screen looks the same
+    let epochSeenAt = 0;
     // undefined: nothing trustworthy read since the settle last started
     let last: DrawnBox | undefined;
     let changedAt = Date.now();
@@ -2462,13 +2492,16 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       const at = Date.now();
       if (this.trustEpoch !== epoch) {
         epoch = this.trustEpoch;
+        epochSeenAt = at;
         last = undefined;
         wholeShown = false;
       }
       const now = this.drawnBox(o.against);
       if (now === undefined || last === undefined || !sameDrawnBox(now, last)) {
         last = now;
-        changedAt = at;
+        // the box may have looked like this for a while already: the window counts from when it
+        // last changed, or was last written to, not from this reading
+        changedAt = now === undefined ? at : Math.max(this.boxUnchangedSince(at), epochSeenAt);
         if (now !== undefined) o.onRead?.(now);
         if (now?.match === "line") wholeShown = true;
       }
@@ -2866,7 +2899,8 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       // is out is read as this copy's, which releases it
       this.rememberCopy(line, { kind: "command", name: line.slice(1), line }, mark);
       const gen = this.unreadCopyGen;
-      const r = await c.request(
+      const r = await this.writeInput(
+        c,
         { ...shape.msg, readyTimeoutMs: rt },
         sendBudgetMs({ ...shape.budget, readyTimeoutMs: rt }) + SEND_CLIENT_SLACK_MS
       );
@@ -2959,11 +2993,45 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     return this.unreadCopy !== null && !this.unreadCopyReadWhole;
   }
 
+  /**
+   * Every write to the pane's input goes through here, so a settle window can tell whether bytes
+   * were written after the box last changed (`boxUnchangedSince`).
+   */
+  private async writeInput(
+    c: MagmuxClient,
+    msg: Record<string, unknown>,
+    ms: number
+  ): Promise<MagmuxReply> {
+    this.inputsInFlight++;
+    try {
+      return await c.request(msg, ms);
+    } finally {
+      this.inputsInFlight--;
+      this.lastInputAt = Date.now();
+    }
+  }
+
+  /**
+   * The earliest time from which the box, as the trusted connection shows it now, is known to
+   * have stayed exactly as it is with nothing written to the pane: the latest of its last
+   * observed change (`boxChangedAt`), the first frame that counts on the trusted connection
+   * (`trustedFramesFrom`) and the reply to the last write (`lastInputAt`). `at` while a write is
+   * still out or no frame of the trusted connection has come: nothing is known before now.
+   */
+  private boxUnchangedSince(at: number): number {
+    if (this.inputsInFlight > 0 || this.trustedFramesFrom === null) return at;
+    return Math.min(
+      at,
+      Math.max(this.screen.boxChangedAt, this.trustedFramesFrom, this.lastInputAt)
+    );
+  }
+
   /** One KEYS send of `ks` in order (ctrl-u ×n): no text and no final Enter, never gated. */
   private async keys(ks: string[]): Promise<boolean> {
     const c = this.client;
     if (!c) return false;
-    const r = await c.request(
+    const r = await this.writeInput(
+      c,
       { type: "send", pane: 0, keys: ks, enter: false, noGate: true },
       10_000
     );
@@ -4450,7 +4518,8 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     this.scrollPos = plan.next;
     const seq0 = this.screen.seq;
     this.extendResizeQuiet();
-    const r = await c.request(
+    const r = await this.writeInput(
+      c,
       { type: "send", pane: 0, text: plan.bytes, enter: false, noGate: true },
       SCROLL_REPLY_MS
     );
@@ -4512,7 +4581,8 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     this.extendResizeQuiet();
     this.scrollEndsInFlight++;
     try {
-      const r = await c.request(
+      const r = await this.writeInput(
+        c,
         { type: "send", pane: 0, text: CTRL_END, enter: false, noGate: true },
         Math.min(SCROLL_REPLY_MS, ms)
       );

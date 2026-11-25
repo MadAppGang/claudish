@@ -134,6 +134,8 @@ function screenWith(box: string, above: readonly string[]): ScreenState {
     alt: true,
     changedAt: Date.now(),
     aboveBoxChangedAt: 0,
+    // a screen built fresh on every refresh: its box counts as drawn just now
+    boxChangedAt: Date.now(),
   };
 }
 

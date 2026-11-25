@@ -110,6 +110,8 @@ function screenWith(text: string, glyph = "❯", menu: readonly string[] = []): 
     alt: true,
     changedAt: Date.now(),
     aboveBoxChangedAt: 0,
+    // a screen built fresh on every refresh: its box counts as drawn just now
+    boxChangedAt: Date.now(),
   };
 }
 

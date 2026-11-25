@@ -215,6 +215,7 @@ function screenOfSession(s: PaneSession): ScreenState {
     alt: false,
     changedAt: 0,
     aboveBoxChangedAt: 0,
+    boxChangedAt: 0,
   };
 }
 

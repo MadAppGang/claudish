@@ -15,6 +15,12 @@
  * Claude Code 2.1.290 the working row (`· Processing… (running Stop hook · 2s …)`) sits
  * above the box and is rewritten every second while anything runs, which is what keeps
  * that window closed during a Stop hook (phase-2 capture s04).
+ *
+ * `boxChangedAt` moves when anything a reading of the box depends on changes: where the box
+ * is, the rows between its rules (text and cell attributes), the cursor, or the width. A
+ * frame where either screen has no located box moves it too, so an unchanged `boxChangedAt`
+ * means every frame since showed the same box. The working row and the status line do not
+ * move it.
  */
 
 import { locateBox } from "./box-locate.js";
@@ -30,6 +36,7 @@ export interface ScreenState {
   alt: boolean;
   changedAt: number;
   aboveBoxChangedAt: number;
+  boxChangedAt: number;
 }
 
 /** One magmux `frame` event (protocol/frame.go), as it arrives on the socket. */
@@ -67,6 +74,7 @@ export function emptyScreen(cols: number, rows: number): ScreenState {
     alt: false,
     changedAt: 0,
     aboveBoxChangedAt: 0,
+    boxChangedAt: 0,
   };
 }
 
@@ -121,9 +129,28 @@ function aboveBoxText(s: ScreenState): string | null {
   return box ? s.lines.slice(0, box.top).join("\n") : null;
 }
 
+/**
+ * Everything a reading of the box depends on: its rule rows, the rows between them with their
+ * cell attributes (faint text is not typed text), the cursor and the width. null when the frame
+ * has no located box.
+ */
+function boxKey(s: ScreenState): string | null {
+  const box = locateBox(s);
+  if (!box) return null;
+  return JSON.stringify([
+    s.cols,
+    box.top,
+    box.bottom,
+    s.cursor.x,
+    s.cursor.y,
+    s.lines.slice(box.top, box.bottom + 1),
+    s.spans.slice(box.top, box.bottom + 1),
+  ]);
+}
+
 function finish(
   prev: ScreenState,
-  next: Omit<ScreenState, "seq" | "changedAt" | "aboveBoxChangedAt">,
+  next: Omit<ScreenState, "seq" | "changedAt" | "aboveBoxChangedAt" | "boxChangedAt">,
   now: number
 ): ScreenState {
   const visible =
@@ -141,11 +168,16 @@ function finish(
     seq: prev.seq + 1,
     changedAt: now,
     aboveBoxChangedAt: prev.aboveBoxChangedAt,
+    boxChangedAt: prev.boxChangedAt,
   };
   // conservative: a change while either frame has no located box counts as above the box
   const before = prev.seq === 0 ? null : aboveBoxText(prev);
   const after = aboveBoxText(out);
   if (before === null || after === null || before !== after) out.aboveBoxChangedAt = now;
+  // the same rule for the box itself: no located box on either side is a change
+  const boxBefore = prev.seq === 0 ? null : boxKey(prev);
+  const boxAfter = boxKey(out);
+  if (boxBefore === null || boxAfter === null || boxBefore !== boxAfter) out.boxChangedAt = now;
   return out;
 }
 
