@@ -580,7 +580,12 @@ declares `responseEnd` or a session event.
   or a turn file in the `--add-dir` directory. Never Esc. The text witness must appear within 30 s,
   else `send_not_accepted`. A **lost reply** (`client_timeout`, `client_lost`) is not a refusal:
   as in a pane's `typeLine`, the driver waits a frame, presses Enter when the line sits in the box,
-  and otherwise accepts it when its echo or witness is there. `client_lost` means the connection
+  and otherwise accepts it when its echo or witness is there. "Sits in the box" means the box shows
+  exactly the whole typed line (`boxShowsLine`, read across the wrap, against the line as typed,
+  trimmed when it was normalized) and has not changed for 1 s, read for up to 4 s
+  (`boxSettledOn`). A box showing only the line's first 40 characters, or those and other text,
+  once took Enter and submitted that text; it now gets no key, and only the echo or witness check
+  runs. `client_lost` means the connection
   closed and its client delivers nothing more, so the screen is judged and Enter sent through the
   client `reconnect()` brought up (waiting up to 10 s), after a frame it delivered, only while the
   same admission is pending, and Enter counts only on its own `ok` reply (one retry), else on the

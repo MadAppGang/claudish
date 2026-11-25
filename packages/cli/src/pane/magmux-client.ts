@@ -20,7 +20,11 @@ import { Socket } from "node:net";
  * `dialog:permission`, …; `not_accepted` → `still_in_box`, …), and `typed: true`, which
  * says bytes of this request reached the pane before it failed. Since 0.17.0 a
  * `text_mismatch` may also carry `maybeSubmitted: true`: the text may already have been
- * submitted without magmux's Enter. magmux omits all three when they do not apply (README
+ * submitted without magmux's Enter; since 0.20.2 a gated send's `text_mismatch` also carries
+ * `boxEmpty`: whether the box was read empty after typing. Since 0.20.3 a gated reply that wrote
+ * anything carries `writes` (text chunks and keys that reached the pane, Enter and Escape not
+ * counted) and `writesTotal`, and, only when it stopped partway (`writes < writesTotal`),
+ * `typingStopped`, why (`TYPING_STOPPED_REASONS`). magmux omits these when they do not apply (README
  * "Request/response"), and so does this type: a failure without them is the reply it
  * always was. `input-gate.ts` reads them; `code` alone still decides everything else.
  */
@@ -33,15 +37,35 @@ export type MagmuxReply<T = Record<string, unknown>> =
       reason?: string;
       typed?: boolean;
       maybeSubmitted?: boolean;
+      boxEmpty?: boolean;
+      writes?: number;
+      writesTotal?: number;
+      typingStopped?: TypingStopped;
     };
+
+/** Why magmux 0.20.3+ stopped a gated send partway: the rest of its text was never written. */
+export const TYPING_STOPPED_REASONS = [
+  "dialog",
+  "terminal_reset",
+  "box_changed",
+  "deadline",
+  "cancelled",
+  "pane_dead",
+  "not_ready",
+] as const;
+export type TypingStopped = (typeof TYPING_STOPPED_REASONS)[number];
+
+const isCount = (v: unknown): v is number => Number.isInteger(v) && (v as number) >= 0;
 
 type MagmuxFailure = Extract<MagmuxReply, { ok: false }>;
 
 /**
- * A wire failure line → the reply, keeping `reason`, `typed` and `maybeSubmitted` only
- * when magmux sent them.
+ * A wire failure line → the reply, keeping `reason`, `typed`, `maybeSubmitted`, `boxEmpty`,
+ * `writes`, `writesTotal` and `typingStopped` only when magmux sent them in a form this client
+ * knows: a count that is not a non-negative integer, or a stop reason it has never seen, is
+ * read as absent.
  */
-function failureOf(m: Record<string, unknown>): MagmuxFailure {
+export function failureOf(m: Record<string, unknown>): MagmuxFailure {
   const out: MagmuxFailure = {
     ok: false,
     code: String(m.code ?? "error"),
@@ -51,6 +75,12 @@ function failureOf(m: Record<string, unknown>): MagmuxFailure {
   // Present means present: an explicit false is information too.
   if (typeof m.typed === "boolean") out.typed = m.typed;
   if (typeof m.maybeSubmitted === "boolean") out.maybeSubmitted = m.maybeSubmitted;
+  if (typeof m.boxEmpty === "boolean") out.boxEmpty = m.boxEmpty;
+  if (isCount(m.writes)) out.writes = m.writes;
+  if (isCount(m.writesTotal)) out.writesTotal = m.writesTotal;
+  const stop = m.typingStopped;
+  if (typeof stop === "string" && (TYPING_STOPPED_REASONS as readonly string[]).includes(stop))
+    out.typingStopped = stop as TypingStopped;
   return out;
 }
 

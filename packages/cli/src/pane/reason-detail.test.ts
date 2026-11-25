@@ -118,6 +118,7 @@ describe("reasonDetail state gating", () => {
     ["CANCELLED", "cancelled"],
     ["TIMEOUT", "timeout"],
     ["EMPTY", "empty_output"],
+    ["SHAPE_MISMATCH", "shape_mismatch"],
   ] as const)(
     "REQ-7: returns null for %s with reason %s and no detail or records",
     (state, reason) => {

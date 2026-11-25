@@ -9,9 +9,60 @@
  * bench, run12). One definition, so the writer and the reader cannot drift.
  */
 
+import { redactSecrets } from "./redact.js";
+
 /** The in-band text for a terminal in-stream API error. */
 export function formatInBandApiError(code: string, message: string): string {
   return `\n\n[API Error: ${code} ${message}]`;
+}
+
+/**
+ * The proxy's record of the last in-band error it wrote, as the token file's
+ * `in_band_api_error` (`TokenTracker.recordInBandApiError`): the code only, never the
+ * message, which is upstream text. `at` is the ISO time the proxy saw the error.
+ */
+export interface InBandApiErrorRecord {
+  code: string;
+  at: string;
+}
+
+const ERROR_CODE_SHAPE = /^[A-Za-z0-9_.:-]{1,80}$/;
+
+/**
+ * The code as the token file stores it and as a marker is compared: the code's first
+ * whitespace-free word, verbatim when that word is an identifier that `redactSecrets`
+ * leaves unchanged, else `malformed`. The first word because the marker is
+ * `<code> <message>`, so a parser reads only the code's first word back from it; the
+ * identifier and redaction checks because the code comes from the provider's error body
+ * and the token file is not a redacted surface, so a live signing value or a key-shaped
+ * word never reaches it. The writer and the reader both key through this function. A
+ * word the redaction changes keys to `malformed`, so a record written while that value
+ * was live never matches a marker carrying it: the proof fails closed.
+ */
+export function inBandErrorCodeKey(code: string): string {
+  const word = /\S+/.exec(code)?.[0] ?? "";
+  if (!ERROR_CODE_SHAPE.test(word)) return "malformed";
+  return redactSecrets(word) === word ? word : "malformed";
+}
+
+/**
+ * Whether the proxy proved that a marker with `code` is its own: its token file records an
+ * in-band error with the same code at or after the turn's start. Text alone cannot tell
+ * the writer's `[API Error: <code> <message>]` from a model quoting one, because the
+ * message is upstream text that may hold `]` and newlines. A missing record, an unknown
+ * or unreadable turn start, or a record from before the turn proves nothing.
+ */
+export function proxyProvesInBandError(
+  code: string,
+  record: InBandApiErrorRecord | null | undefined,
+  turnStartedAt: string | null | undefined
+): boolean {
+  if (!record || typeof record.code !== "string" || typeof record.at !== "string") return false;
+  if (!turnStartedAt) return false;
+  const at = Date.parse(record.at);
+  const start = Date.parse(turnStartedAt);
+  if (!Number.isFinite(at) || !Number.isFinite(start) || at < start) return false;
+  return record.code === inBandErrorCodeKey(code);
 }
 
 /**

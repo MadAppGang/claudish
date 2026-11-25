@@ -28,7 +28,13 @@ export const SPLIT_MARKER = "↩"; // U+21A9
 export const ALT_SPLIT_MARKER = "⤶"; // U+2936, used when an original line already ends in ↩
 
 export type Delivery =
-  | { mode: "typed"; line: string; witness: Witness }
+  | {
+      mode: "typed";
+      line: string;
+      witness: Witness;
+      /** the line differs from the caller's text (`normalizedLine`): no Read tool, no file path */
+      normalized?: true;
+    }
   | {
       mode: "command";
       line: string;
@@ -50,6 +56,14 @@ export type Delivery =
 
 const SLASH = /^\/([A-Za-z0-9][A-Za-z0-9:_-]*)(\s|$)/;
 
+/**
+ * `text` trimmed, with every whitespace other than the ASCII space made one: the only line
+ * typed with text that differs from the caller's, when the Read tool is unavailable.
+ */
+export function normalizedLine(text: string): string {
+  return text.trim().replace(OTHER_SPACE_ALL, " ");
+}
+
 /** Remove C0 controls and DEL. */
 function stripControl(s: string): string {
   let out = "";
@@ -68,9 +82,21 @@ function printable(s: string): boolean {
   return true;
 }
 
-/** A plain line: typed exactly as given. */
+/**
+ * Whitespace other than the ASCII space and the C0 controls (`printable` refuses those): the
+ * no-break space and the other Unicode spaces.
+ */
+const OTHER_SPACE = /[^\S\t\n\v\f\r ]/u;
+const OTHER_SPACE_ALL = /[^\S\t\n\v\f\r ]/gu;
+
+/**
+ * A plain line: typed exactly as given. It has no whitespace at either end and none but the
+ * ASCII space inside: the box drops whitespace at a row's end and may draw another space at a
+ * row break, so such a line could not be checked against the box character for character.
+ */
 export function isPlainLine(text: string): boolean {
   if (!text.trim()) return false;
+  if (text !== text.trim() || OTHER_SPACE.test(text)) return false;
   if (text.length > MAX_TYPED_LINE) return false;
   if (!printable(text)) return false;
   const first = text.trimStart()[0] ?? "";
@@ -199,12 +225,17 @@ export function planDelivery(
 
   if (isPlainLine(text)) return { mode: "typed", line: text, witness: { kind: "text", text } };
 
-  if (!readAvailable)
+  if (!readAvailable) {
+    // no file path: a line that is plain once normalized is typed so, and says so
+    const line = normalizedLine(text);
+    if (isPlainLine(line))
+      return { mode: "typed", line, witness: { kind: "text", text: line }, normalized: true };
     return {
       mode: "refused",
       reason:
         "the prompt is not a plain single line and the Read tool is unavailable, so it cannot be delivered as a file",
     };
+  }
   const file = turnFilePath(turnDir, turnIndex);
   const tf = renderTurnFile(text);
   const line = fileTemplate(file, tf.marker);

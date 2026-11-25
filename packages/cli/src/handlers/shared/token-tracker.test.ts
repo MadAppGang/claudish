@@ -1,8 +1,22 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, unlinkSync } from "node:fs";
+import {
+  chmodSync,
+  closeSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  readSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  unlinkSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { acquireSigningLease } from "../../redact.js";
 import { readSessionStats } from "../../session/session-stats.js";
 import { resolveTokenFilePath } from "../../session/token-file.js";
 import { TokenTracker, computeCacheReadDiscount, stripProviderPrefix } from "./token-tracker.js";
@@ -326,6 +340,189 @@ describe("TokenTracker cache-read discount", () => {
     tracker.updateWithDelta(CAPTURE_PROMPT_TOKENS, 100, detail);
     tracker.updateWithDelta(CAPTURE_PROMPT_TOKENS + CAPTURE_GROWTH, 5, detail);
     expect(tracker.getTotalCost()).toBeGreaterThanOrEqual(0);
+  });
+});
+
+describe("TokenTracker in-band API error record", () => {
+  test("records the code and time of an in-band error and keeps every token field", () => {
+    const { tracker, tokenFile } = createTracker();
+    tracker.update(1000, 10);
+    const before = Date.now();
+    tracker.recordInBandApiError("cyber_policy");
+    const file = JSON.parse(readFileSync(tokenFile, "utf8"));
+    expect(file.in_band_api_error.code).toBe("cyber_policy");
+    expect(Date.parse(file.in_band_api_error.at)).toBeGreaterThanOrEqual(before);
+    expect(Object.keys(file.in_band_api_error).sort()).toEqual(["at", "code"]);
+    expect(file.input_tokens).toBe(1000);
+    expect(file.output_tokens).toBe(10);
+    expect(file.total_tokens).toBe(1010);
+    expect(file.provider_name).toBeDefined();
+  });
+
+  test("a later token update keeps the record, and a later error replaces it", () => {
+    const { tracker, tokenFile } = createTracker();
+    tracker.recordInBandApiError("server_is_overloaded");
+    tracker.update(2000, 5);
+    expect(JSON.parse(readFileSync(tokenFile, "utf8")).in_band_api_error.code).toBe(
+      "server_is_overloaded"
+    );
+    tracker.recordInBandApiError("cyber_policy");
+    expect(JSON.parse(readFileSync(tokenFile, "utf8")).in_band_api_error.code).toBe("cyber_policy");
+  });
+
+  test("another tracker writing the same file keeps the record", () => {
+    const { tracker, tokenFile } = createTracker();
+    tracker.recordInBandApiError("cyber_policy");
+    const other = new TokenTracker(1, {
+      contextWindow: 1000,
+      providerName: "openai",
+      modelName: "other-model",
+    });
+    other.update(100, 1);
+    expect(JSON.parse(readFileSync(tokenFile, "utf8")).in_band_api_error.code).toBe("cyber_policy");
+  });
+
+  test("a code that is not an identifier is stored as `malformed`, never verbatim", () => {
+    const { tracker, tokenFile } = createTracker();
+    tracker.recordInBandApiError("key=abc123 rejected");
+    const raw = readFileSync(tokenFile, "utf8");
+    expect(JSON.parse(raw).in_band_api_error.code).toBe("malformed");
+    expect(raw).not.toContain("abc123");
+  });
+
+  test("a code whose first word is a registered signing value is stored as `malformed`", () => {
+    const { tracker, tokenFile } = createTracker();
+    const signingValue = "opaqueSigningValue0123456789";
+    const lease = acquireSigningLease();
+    lease.add([signingValue]);
+    try {
+      tracker.recordInBandApiError(`${signingValue} rejected`);
+    } finally {
+      lease.release();
+    }
+    const raw = readFileSync(tokenFile, "utf8");
+    expect(JSON.parse(raw).in_band_api_error.code).toBe("malformed");
+    expect(raw).not.toContain(signingValue);
+  });
+
+  test("an ordinary code is stored unchanged while a signing value is registered", () => {
+    const { tracker, tokenFile } = createTracker();
+    const lease = acquireSigningLease();
+    lease.add(["opaqueSigningValue0123456789"]);
+    try {
+      tracker.recordInBandApiError("cyber_policy");
+    } finally {
+      lease.release();
+    }
+    expect(JSON.parse(readFileSync(tokenFile, "utf8")).in_band_api_error.code).toBe("cyber_policy");
+  });
+
+  test("a code holding whitespace is stored as its first word, the key the marker parses to", () => {
+    const { tracker, tokenFile } = createTracker();
+    tracker.recordInBandApiError("bad code");
+    const raw = readFileSync(tokenFile, "utf8");
+    expect(JSON.parse(raw).in_band_api_error.code).toBe("bad");
+    expect(raw).not.toContain("bad code");
+  });
+
+  test("a tracker that never writes the token file records nothing", () => {
+    const { tokenFile } = createTracker();
+    const panel = new TokenTracker(2, {
+      contextWindow: 1000,
+      providerName: "openai",
+      modelName: "panel",
+      writesTokenFile: false,
+    });
+    panel.recordInBandApiError("cyber_policy");
+    expect(existsSync(tokenFile)).toBe(false);
+  });
+});
+
+describe("TokenTracker token file write: a reader never sees half of it", () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const d of dirs.splice(0)) {
+      chmodSync(d, 0o755);
+      rmSync(d, { recursive: true, force: true });
+    }
+  });
+
+  function trackerIn(dir: string): { tracker: TokenTracker; tokenFile: string } {
+    const tokenFile = join(dir, "01.json");
+    process.env.CLAUDISH_TOKEN_FILE = tokenFile;
+    return {
+      tracker: new TokenTracker(nextPort++, {
+        contextWindow: 400_000,
+        providerName: "openai",
+        modelName: "test-model",
+      }),
+      tokenFile,
+    };
+  }
+
+  function tempDir(): string {
+    const d = mkdtempSync(join(tmpdir(), "claudish-token-atomic-"));
+    dirs.push(d);
+    return d;
+  }
+
+  /** Every byte a descriptor opened before a rewrite still reads. */
+  function readAll(fd: number): string {
+    const chunks: Buffer[] = [];
+    const buf = Buffer.alloc(4096);
+    let pos = 0;
+    for (;;) {
+      const n = readSync(fd, buf, 0, buf.length, pos);
+      if (n === 0) break;
+      chunks.push(Buffer.from(buf.subarray(0, n)));
+      pos += n;
+    }
+    return Buffer.concat(chunks).toString("utf8");
+  }
+
+  test("a rewrite replaces the file whole: a reader holding the old file reads it complete", () => {
+    const dir = tempDir();
+    const { tracker, tokenFile } = trackerIn(dir);
+    tracker.update(1000, 10);
+    tracker.recordInBandApiError("cyber_policy");
+    const fd = openSync(tokenFile, "r");
+    try {
+      tracker.update(2000, 5);
+      const before = JSON.parse(readAll(fd));
+      expect(before.input_tokens).toBe(1000);
+      expect(before.in_band_api_error.code).toBe("cyber_policy");
+    } finally {
+      closeSync(fd);
+    }
+    const after = JSON.parse(readFileSync(tokenFile, "utf8"));
+    expect(after.input_tokens).toBe(2000);
+    expect(after.in_band_api_error.code).toBe("cyber_policy");
+    for (const key of ["output_tokens", "total_tokens", "provider_name", "context_window"])
+      expect(after).toHaveProperty(key);
+    expect(readdirSync(dir)).toEqual(["01.json"]);
+  });
+
+  test("a write that cannot complete leaves the previous file intact and no temp file", () => {
+    const dir = tempDir();
+    const { tracker, tokenFile } = trackerIn(dir);
+    tracker.update(1000, 10);
+    const previous = readFileSync(tokenFile, "utf8");
+    const ino = statSync(tokenFile).ino;
+    chmodSync(dir, 0o555);
+    tracker.update(2000, 5);
+    chmodSync(dir, 0o755);
+    expect(readFileSync(tokenFile, "utf8")).toBe(previous);
+    expect(statSync(tokenFile).ino).toBe(ino);
+    expect(readdirSync(dir)).toEqual(["01.json"]);
+  });
+
+  test("a rename that fails removes its temp file", () => {
+    const dir = tempDir();
+    const { tracker, tokenFile } = trackerIn(dir);
+    mkdirSync(join(tokenFile, "occupied"), { recursive: true });
+    tracker.update(1000, 10);
+    expect(readdirSync(dir)).toEqual(["01.json"]);
+    expect(statSync(tokenFile).isDirectory()).toBe(true);
   });
 });
 

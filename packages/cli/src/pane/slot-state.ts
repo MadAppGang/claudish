@@ -23,7 +23,8 @@ export type Phase =
   | "FAILED"
   | "CANCELLED"
   | "TIMEOUT"
-  | "EMPTY";
+  | "EMPTY"
+  | "SHAPE_MISMATCH";
 
 export type PhaseEvent =
   | "boot_ready_idle"
@@ -46,6 +47,7 @@ export type PhaseEvent =
   | "rewake" // interactive IDLE: a background notification woke the model (D23)
   | "verdict_completed"
   | "verdict_empty"
+  | "verdict_shape_mismatch"
   | "verdict_failed"
   | "exit_clean" // interactive child exited 0 while IDLE after a requested /exit or ≥ 1 settled turn
   | "pane_exit"
@@ -66,6 +68,7 @@ export const PHASES: readonly Phase[] = [
   "CANCELLED",
   "TIMEOUT",
   "EMPTY",
+  "SHAPE_MISMATCH",
 ];
 
 export const TERMINAL_PHASES: readonly Phase[] = [
@@ -74,6 +77,7 @@ export const TERMINAL_PHASES: readonly Phase[] = [
   "CANCELLED",
   "TIMEOUT",
   "EMPTY",
+  "SHAPE_MISMATCH",
 ];
 
 const ANY_LIVE = {
@@ -106,6 +110,7 @@ export const TRANSITIONS = {
     settle_hold: "SETTLING",
     verdict_completed: "COMPLETED",
     verdict_empty: "EMPTY",
+    verdict_shape_mismatch: "SHAPE_MISMATCH",
     verdict_failed: "FAILED",
     ...ANY_LIVE,
   },
@@ -115,6 +120,7 @@ export const TRANSITIONS = {
     turn_continue: "IDLE",
     verdict_completed: "COMPLETED",
     verdict_empty: "EMPTY",
+    verdict_shape_mismatch: "SHAPE_MISMATCH",
     verdict_failed: "FAILED",
     ...ANY_LIVE,
   },
@@ -126,6 +132,7 @@ export const TRANSITIONS = {
   CANCELLED: {},
   TIMEOUT: {},
   EMPTY: {},
+  SHAPE_MISMATCH: {},
 } as const satisfies Record<Phase, Partial<Record<PhaseEvent, Phase>>>;
 
 /** The phase `ev` leads to from `from`, or null when the table has no such edge. */
@@ -165,6 +172,7 @@ export function wireState(p: Phase, initialDelivery: boolean): SlotState {
     case "CANCELLED":
     case "TIMEOUT":
     case "EMPTY":
+    case "SHAPE_MISMATCH":
       return p;
     default:
       return assertNever(p);

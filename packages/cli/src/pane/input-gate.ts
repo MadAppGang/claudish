@@ -4,8 +4,8 @@
  * magmux 0.16 owns input readiness for a declared Claude Code pane: a gated `send` waits
  * for the box, types, verifies the box holds exactly the text, presses Enter and answers
  * once, when it has attributable evidence (magmux README "Claude Code panes: the input
- * gate"). Its reply vocabulary (codes, reasons, `typed`, `accept`, `evidence`,
- * `retypeCause`) is third-party; this module is the one place that reads it.
+ * gate"). Its reply vocabulary (codes, reasons, `typed`, `accept`, `evidence`, `boxEmpty`)
+ * is third-party; this module is the one place that reads it.
  *
  * Pure: no I/O, no clock, no policy. `classifySendReply` only TRANSLATES a reply into the
  * closed `SendOutcome` union; what to do about each outcome (retry, ctrl-u, fail) is the
@@ -14,7 +14,7 @@
  * re-diffs those three, the two "unknown whether" strings, and the `list` binding fields.
  */
 
-import type { MagmuxReply } from "./magmux-client.js";
+import type { MagmuxReply, TypingStopped } from "./magmux-client.js";
 
 // ── dialogs and readiness ────────────────────────────────────────────────────
 
@@ -159,9 +159,6 @@ export function parseGateBinding(listResult: unknown): GateBinding | null {
 /** `not_accepted` reasons. `text_mismatch`/`empty_box`: Enter NOT pressed; the other two: it was. */
 export type NotAcceptedReason = "text_mismatch" | "empty_box" | "still_in_box" | "unconfirmed";
 
-/** The loss signal behind magmux's one automatic retype (inputgate_send.go:67-78). */
-export type RetypeCause = "terminal_reset" | "never_drawn";
-
 /**
  * The phrase both "it is unknown whether the text was submitted" `text_mismatch` details
  * carry (inputgate_send.go:884 leftBox, :893 convMoved). magmux 0.17.0 answers M11 with the
@@ -169,6 +166,50 @@ export type RetypeCause = "terminal_reset" | "never_drawn";
  * lacks the field.
  */
 export const MAYBE_SUBMITTED_MARKER = "check the conversation before sending";
+
+/**
+ * magmux 0.20.2's own phrases in a `text_mismatch` detail whose box was read EMPTY after
+ * typing. The reply's `boxEmpty` field decides; these are read only for a reply without it.
+ * Each is quoted from 0.20.2's source:
+ * - mux/controller_claude_input.go, `judgeBox`, the empty-box verdict: "the input box is
+ *   empty";
+ * - mux/inputgate_send.go, the clauses a failed verify adds when the box stayed empty: "it
+ *   stayed empty but the terminal showed no stdin reset" (two variants) and "it stayed empty
+ *   on every read of the whole … verify window (never drawn)".
+ * The verdicts of a box holding other text ("the box holds …", `judgeBox`) match none of them.
+ */
+const BOX_STAYED_EMPTY = new RegExp(
+  [
+    "the input box is empty",
+    "it stayed empty but the terminal showed no stdin reset",
+    "it stayed empty on every read of the whole [^;]* verify window \\(never drawn\\)",
+  ].join("|")
+);
+
+/** Whether a `text_mismatch` reply read the box empty: magmux's `boxEmpty` field, else its prose. */
+function boxReadEmpty(r: Extract<MagmuxReply, { ok: false }>): boolean {
+  return typeof r.boxEmpty === "boolean" ? r.boxEmpty : BOX_STAYED_EMPTY.test(r.error);
+}
+
+/**
+ * A `text_mismatch` whose box showed none of the typed text: Claude Code drew nothing, so
+ * the copy may still sit unread in its input queue. Not for a `maybeSubmitted` reply, which
+ * no further send may follow at all.
+ */
+export function mismatchBoxStayedEmpty(out: SendOutcome): boolean {
+  return (
+    out.kind === "not_accepted" &&
+    out.reason === "text_mismatch" &&
+    !out.maybeSubmitted &&
+    out.boxEmpty
+  );
+}
+
+/**
+ * magmux (0.20.3+) stopped typing a send partway (`typingStopped`, `writes < writesTotal`):
+ * only the first `writes` of its `total` writes reached the pane; the rest was never written.
+ */
+export type TypingStop = { reason: TypingStopped; writes: number; total: number };
 
 /**
  * Every gated-send reply, closed (§3.1 as revised by R1.1-R1.3).
@@ -194,26 +235,36 @@ export type SendOutcome =
       evidence: "history" | "transcript";
       /** the reply's `enter`: on a gated reply, whether MAGMUX pressed Enter */
       enterByMagmux: boolean;
-      retyped: boolean;
-      /** null iff not retyped; `unknown` for a retype with an absent or unrecognised cause */
-      retypeCause: RetypeCause | "unknown" | null;
       dismissed: string[];
       waitedMs: number;
       verified: string | null;
     }
   | {
       kind: "in_box";
-      retyped: boolean;
-      retypeCause: RetypeCause | "unknown" | null;
       waitedMs: number;
       verified: string | null;
     }
-  | { kind: "busy"; reason: string; dialog: GateDialogKind | null; typed: boolean }
+  | {
+      kind: "busy";
+      reason: string;
+      dialog: GateDialogKind | null;
+      typed: boolean;
+      /** magmux stopped typing partway before it answered busy (`TypingStop`); null otherwise */
+      stopped: TypingStop | null;
+    }
   | {
       kind: "not_accepted";
       reason: NotAcceptedReason;
       maybeSubmitted: boolean;
+      /** a `text_mismatch` that read the box empty after typing (`boxEmpty`, else its prose); false otherwise */
+      boxEmpty: boolean;
       typed: boolean;
+      /**
+       * magmux (0.20.3+) stopped typing partway (`typingStopped`, `writes < writesTotal`): only
+       * the first `writes` writes reached the pane, and the rest was never written. null when
+       * the whole line was written, or the reply carries no counts.
+       */
+      stopped: TypingStop | null;
       detail: string;
     }
   | { kind: "bad_request"; error: string }
@@ -229,24 +280,11 @@ export function assertNever(x: never): never {
   throw new Error(`unreachable: ${JSON.stringify(x)}`);
 }
 
-function retypeOf(result: Record<string, unknown>): {
-  retyped: boolean;
-  retypeCause: RetypeCause | "unknown" | null;
-} {
-  if (result.retyped !== true) return { retyped: false, retypeCause: null };
-  const cause = result.retypeCause;
-  return {
-    retyped: true,
-    retypeCause: cause === "terminal_reset" || cause === "never_drawn" ? cause : "unknown",
-  };
-}
-
 function okOutcome(result: Record<string, unknown>): SendOutcome {
-  const { retyped, retypeCause } = retypeOf(result);
   const waitedMs = typeof result.waitedMs === "number" ? result.waitedMs : 0;
   const verified = str(result.verified);
   const accept = result.accept;
-  if (accept === "in_box") return { kind: "in_box", retyped, retypeCause, waitedMs, verified };
+  if (accept === "in_box") return { kind: "in_box", waitedMs, verified };
   if (accept === undefined) {
     return {
       kind: "unexpected",
@@ -277,12 +315,18 @@ function okOutcome(result: Record<string, unknown>): SendOutcome {
     accept,
     evidence,
     enterByMagmux: result.enter === true,
-    retyped,
-    retypeCause,
     dismissed,
     waitedMs,
     verified,
   };
+}
+
+/** A send magmux stopped partway: a known reason and counts that say part was not written. */
+function stoppedOf(r: Extract<MagmuxReply, { ok: false }>): TypingStop | null {
+  const { typingStopped: reason, writes, writesTotal: total } = r;
+  if (reason === undefined || writes === undefined || total === undefined || writes >= total)
+    return null;
+  return { reason, writes, total };
 }
 
 function notAcceptedOutcome(r: Extract<MagmuxReply, { ok: false }>): SendOutcome {
@@ -295,7 +339,9 @@ function notAcceptedOutcome(r: Extract<MagmuxReply, { ok: false }>): SendOutcome
         // The field is the contract (magmux 0.17.0, M11). The text match is a fallback for a
         // reply without the field, so a magmux that predates it is not read as "not submitted".
         maybeSubmitted: r.maybeSubmitted === true || r.error.includes(MAYBE_SUBMITTED_MARKER),
+        boxEmpty: boxReadEmpty(r),
         typed,
+        stopped: stoppedOf(r),
         detail: r.error,
       };
     case "empty_box":
@@ -305,7 +351,9 @@ function notAcceptedOutcome(r: Extract<MagmuxReply, { ok: false }>): SendOutcome
         kind: "not_accepted",
         reason: r.reason,
         maybeSubmitted: false,
+        boxEmpty: false,
         typed,
+        stopped: stoppedOf(r),
         detail: r.error,
       };
     default:
@@ -325,7 +373,13 @@ export function classifySendReply(r: MagmuxReply): SendOutcome {
     case "busy": {
       // An unknown reason stays `busy` with the raw value: Enter was not pressed either way.
       const reason = r.reason ?? "";
-      return { kind: "busy", reason, dialog: dialogKindOf(reason), typed: r.typed === true };
+      return {
+        kind: "busy",
+        reason,
+        dialog: dialogKindOf(reason),
+        typed: r.typed === true,
+        stopped: stoppedOf(r),
+      };
     }
     case "not_accepted":
       return notAcceptedOutcome(r);
@@ -368,35 +422,54 @@ export function readyWaitMs(readyTimeoutMs: number): number {
   return Math.min(readyTimeoutMs, SEND_READY_WAIT_MAX_MS);
 }
 
-/** Writes a typed send makes: runs of ≤ 32 runes, and one per newline (`\n`, `\r\n`, `\r`). */
-export function typedWriteCount(text: string): number {
+/**
+ * Where each write of a typed send ends, as a rune index into `text`: runs of ≤ 32 runes, and
+ * one write per newline (`\n`, `\r\n`, `\r`).
+ */
+function typedWriteEnds(text: string): number[] {
   const rs = Array.from(text);
-  let n = 0;
+  const ends: number[] = [];
   let run = 0;
   for (let i = 0; i < rs.length; i++) {
     const r = rs[i];
     if (r === "\r" || r === "\n") {
+      if (run > 0) ends.push(i);
+      run = 0;
       if (r === "\r" && rs[i + 1] === "\n") i++;
-      if (run > 0) {
-        n++;
-        run = 0;
-      }
-      n++;
-    } else {
-      run++;
-      if (run === SEND_TYPED_CHUNK_RUNES) {
-        n++;
-        run = 0;
-      }
+      ends.push(i + 1);
+    } else if (++run === SEND_TYPED_CHUNK_RUNES) {
+      ends.push(i + 1);
+      run = 0;
     }
   }
-  return run > 0 ? n + 1 : n;
+  if (run > 0) ends.push(rs.length);
+  return ends;
+}
+
+/** Writes a typed send makes: runs of ≤ 32 runes, and one per newline (`\n`, `\r\n`, `\r`). */
+export function typedWriteCount(text: string): number {
+  return typedWriteEnds(text).length;
+}
+
+/**
+ * The text the first `writes` writes of a typed send carried (`typedWriteEnds`): what reached
+ * the pane when magmux stopped typing partway. A count at or past the whole text is the whole
+ * text.
+ */
+export function writtenPrefix(text: string, writes: number): string {
+  if (writes <= 0) return "";
+  const ends = typedWriteEnds(text);
+  if (writes >= ends.length) return text;
+  return Array.from(text)
+    .slice(0, ends[writes - 1])
+    .join("");
 }
 
 /**
  * magmux's upper bound on one gated send, from when it starts running: the readiness wait
  * once, the per-attempt typing + settle + minimum verify + one late verify read twice (for
- * the one retype), and the three acceptance windows for a submit. `keys` counts named keys,
+ * the one retype magmux before 0.20.2 made; from 0.20.2 a send types once, so the second
+ * attempt is headroom, safe in direction), and the three acceptance windows for a submit. `keys` counts named keys,
  * a final Enter key included (an upper bound either way). `typed` defaults to true:
  * every claudish send is typed (R1.2), and only the Go test table needs it false.
  * Drift from magmux is safe in direction: an under-estimate becomes `reply_lost`, never a

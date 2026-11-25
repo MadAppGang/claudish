@@ -31,6 +31,7 @@ const ALL_EVENTS: PhaseEvent[] = [
   "rewake",
   "verdict_completed",
   "verdict_empty",
+  "verdict_shape_mismatch",
   "verdict_failed",
   "exit_clean",
   "pane_exit",
@@ -55,6 +56,7 @@ describe("slot-state transition table (§5)", () => {
     ["RUNNING", "turn_continue", "IDLE"],
     ["RUNNING", "verdict_completed", "COMPLETED"],
     ["RUNNING", "verdict_empty", "EMPTY"],
+    ["RUNNING", "verdict_shape_mismatch", "SHAPE_MISMATCH"],
     ["RUNNING", "verdict_failed", "FAILED"],
     ["RUNNING", "settle_hold", "SETTLING"],
     ["SETTLING", "hold_inject", "IDLE"],
@@ -62,6 +64,7 @@ describe("slot-state transition table (§5)", () => {
     ["SETTLING", "turn_continue", "IDLE"],
     ["SETTLING", "verdict_completed", "COMPLETED"],
     ["SETTLING", "verdict_empty", "EMPTY"],
+    ["SETTLING", "verdict_shape_mismatch", "SHAPE_MISMATCH"],
     ["SETTLING", "verdict_failed", "FAILED"],
     ["IDLE", "admit", "ADMITTING"],
     ["IDLE", "rewake", "RUNNING"],
@@ -120,7 +123,7 @@ describe("slot-state transition table (§5)", () => {
 });
 
 describe("wireState", () => {
-  test("maps every phase into the closed nine-state set", () => {
+  test("maps every phase into the closed ten-state set", () => {
     for (const p of PHASES) {
       expect(SLOT_STATES).toContain(wireState(p, true));
       expect(SLOT_STATES).toContain(wireState(p, false));

@@ -27,7 +27,11 @@ import {
   reportOwnerWithoutHooks,
   sessionHooksNeedBinding,
 } from "./hooks/session/binding.js";
-import { parseInBandApiError } from "./in-band-api-error.js";
+import {
+  type InBandApiErrorRecord,
+  parseInBandApiError,
+  proxyProvesInBandError,
+} from "./in-band-api-error.js";
 import { log } from "./logger.js";
 import {
   type Accounting,
@@ -86,7 +90,13 @@ import {
 import { type ViewDetail, targetOfSlot } from "./pane/view-contract.js";
 import { redactSecrets } from "./redact.js";
 import { projectsDir, transcriptPathFor } from "./session/session-discovery.js";
-import { renderTeamStatsCompact, statsDir, tokenFileFor, writeStatusFile } from "./team-stats.js";
+import {
+  readTokenStatsAt,
+  renderTeamStatsCompact,
+  statsDir,
+  tokenFileFor,
+  writeStatusFile,
+} from "./team-stats.js";
 import { paneChangeKey } from "./view/change-key.js";
 import { promptSummaryOf } from "./view/prompt-summary.js";
 import { watchTokenFile } from "./view/token-watch.js";
@@ -155,7 +165,7 @@ export interface ModelStatus {
   completedAt: string | null;
   /** FINAL answer bytes, written once, when the slot turns terminal (team-lifecycle.md). */
   outputSize: number;
-  /** Populated on FAILED / EMPTY / CANCELLED with details for the failure report. */
+  /** Populated on FAILED / EMPTY / SHAPE_MISMATCH / CANCELLED with details for the failure report. */
   error?: ModelError;
   model?: string;
   spawnModel?: string | null;
@@ -220,7 +230,7 @@ export interface TeamRunOptions {
   minOutputBytes?: number;
   /**
    * Opt-in SHAPE contract: a JS regex source string the answer must match, or the slot
-   * is recorded EMPTY with reason `shape_mismatch`.
+   * is recorded SHAPE_MISMATCH with reason `shape_mismatch`.
    *
    * Byte counts cannot separate a broken answer from a legitimately short one (a
    * measured 96 B reply is valid — see DEFAULT_MIN_OUTPUT_BYTES). A caller that
@@ -333,7 +343,8 @@ export interface TeamHandle {
   /** Absolute session directory. `getStatus` and `judgeResponses` both take it. */
   sessionPath: string;
   /**
-   * Display model → anonymised slot id, e.g. `{"grok-4.6": "02"}`.
+   * Display model → anonymised slot id, e.g. `{"grok-4.6": "02"}`; a repeated model's later
+   * slots are keyed `<model>#2`, `<model>#3` (slotsOfManifest).
    *
    * The slot id addresses everything on disk for that model: `response-<id>.md`,
    * `stats/<id>.json`, `errors/<id>.log`, and the per-model entry in
@@ -382,6 +393,8 @@ export interface TeamVerdict {
   >;
   ranking: string[]; // response IDs sorted by score descending
   votes: VoteResult[];
+  /** Response files left out of judging, each `<file> (skipped: <reason>)`; absent when none. */
+  skipped?: string[];
 }
 
 // ─── Run registry (architecture §3.2) ─────────────────────────────────────────
@@ -1226,14 +1239,31 @@ export const TRUNCATION_NOTE =
  * Decide whether a settled turn produced a usable answer. Returns null when it did.
  *
  * Precedence: `api_error` (FAILED) → `prompt_not_read` (FAILED) → `refused` (EMPTY) →
- * whitespace-only `empty_output` → `min_output_bytes` → `shape_mismatch` LAST (all
- * EMPTY). The structural failures come first because they give better detail, and a
+ * whitespace-only `empty_output` → `min_output_bytes` (EMPTY) → `shape_mismatch` LAST
+ * (SHAPE_MISMATCH). The structural failures come first because they give better detail, and a
  * turn that hit one of them would fail the shape contract too — reporting "no ```vote
  * block" for what is really an API error would send the caller after the wrong problem.
  */
 export function classifyRunOutput(input: {
   /** The full answer: text blocks joined with "\n\n", as written to response-<id>.md. */
   answer: string;
+  /**
+   * The last content block of the turn's last assistant API response
+   * (SettledTurn.lastResponseEnd). When it is known it ALONE decides an in-band error: the turn
+   * ended in that error iff the block is text that is exactly one marker and the proxy recorded
+   * that error (`proxyInBandError`), whatever progress text the turn wrote before it and
+   * whatever the read coverage says. Absent or null: the joined-answer rules decide.
+   */
+  lastResponseEnd?: SettledTurn["lastResponseEnd"] | null;
+  /**
+   * The proxy's record of the last in-band error it wrote (the token file's
+   * `in_band_api_error`). A last-response marker is an `api_error` only when this record has
+   * the marker's code and is no older than `turnStartedAt`: a model can write the marker's
+   * text, only the proxy knows it wrote one. Unused without `lastResponseEnd`.
+   */
+  proxyInBandError?: InBandApiErrorRecord | null;
+  /** The turn's start (SettledTurn.acceptedAt), ISO; a proxy record before it is another turn's. */
+  turnStartedAt?: string | null;
   /**
    * A hook-extended turn chain's answers, one per turn (§7.4): `requirePattern` passes
    * when it matches the joined `answer` OR any single element. Absent = the answer only.
@@ -1246,21 +1276,62 @@ export function classifyRunOutput(input: {
   minOutputBytes?: number;
   /** Caller's shape contract (regex source). See TeamRunOptions.requirePattern. */
   requirePattern?: string;
-}): { state: "FAILED" | "EMPTY"; reason: FailureReason; detail: string } | null {
+}): Verdict | null {
   const v = classifyAnswer(input);
   if (v && input.stopReason === "max_tokens") v.detail = `${v.detail} (${TRUNCATION_NOTE})`;
   return v;
 }
 
-type Verdict = { state: "FAILED" | "EMPTY"; reason: FailureReason; detail: string };
+type Verdict = {
+  state: "FAILED" | "EMPTY" | "SHAPE_MISMATCH";
+  reason: FailureReason;
+  detail: string;
+};
+
+/** The in-band error code a vendor's content-policy refusal arrives with. */
+const CONTENT_POLICY_CODE = "cyber_policy";
+
+/**
+ * claudish's in-band error marker as the turn's ending. When the last API response is known,
+ * its last content block alone decides: a text block whose trimmed text is exactly one marker,
+ * AND the proxy's record of an in-band error with that code during this turn. The proxy writes
+ * every marker as its own text block (`endWithText`) after prose that already streamed, so
+ * earlier blocks of that response never matter, and a marker followed by any other block (a
+ * tool_use) did not end the turn. The marker's message is upstream text that may hold `]` and
+ * newlines, so the text cannot tell the writer from a model quoting it; without the record the
+ * block is the model's text. Without last-response data, the whole answer (or its end, for a
+ * turn that never read its task file) decides. A marker inside a longer text block is the
+ * model's text.
+ */
+function inBandErrorOf(
+  input: Parameters<typeof classifyRunOutput>[0]
+): ReturnType<typeof parseInBandApiError> {
+  const end = input.lastResponseEnd;
+  if (end) {
+    if (end.blockType !== "text" || end.text === null) return null;
+    const marker = parseInBandApiError(end.text);
+    const proven =
+      marker !== null &&
+      proxyProvesInBandError(marker.code, input.proxyInBandError, input.turnStartedAt);
+    return proven ? marker : null;
+  }
+  return parseInBandApiError(input.answer, { trailing: input.promptRead?.complete === false });
+}
 
 /** The turn's own failure signals: an API error, an unread task file, a refusal. */
 function classifyTurnSignals(input: Parameters<typeof classifyRunOutput>[0]): Verdict | null {
   const { stopReason, promptRead } = input;
   // An error claudish wrote into the stream as text carries no Claude Code flag.
-  const inBand = input.apiError
-    ? null
-    : parseInBandApiError(input.answer, { trailing: promptRead?.complete === false });
+  const inBand = input.apiError ? null : inBandErrorOf(input);
+  if (inBand?.code === CONTENT_POLICY_CODE) {
+    return {
+      state: "FAILED",
+      reason: "api_error",
+      detail:
+        "The provider refused the request under the vendor's content policy: " +
+        `${inBand.text.slice(0, 300)}. The refusal comes from the vendor, not from the answer's shape.`,
+    };
+  }
   const apiError = input.apiError ?? (inBand ? { status: null, text: inBand.text } : null);
   if (apiError) {
     const status = apiError.status === null ? "" : ` (status ${apiError.status})`;
@@ -1314,7 +1385,7 @@ function classifyShape(
   if (re.test(answer)) return null;
   for (const turn of chainAnswers ?? []) if (re.test(turn)) return null;
   return {
-    state: "EMPTY",
+    state: "SHAPE_MISMATCH",
     reason: "shape_mismatch",
     detail: shapeDetail(answer, requirePattern, null),
   };
@@ -1444,18 +1515,32 @@ function persistErrorLog(
 
 // ─── Path Validation ──────────────────────────────────────────────────────────
 
+/** Why a path was refused: it resolves outside every allowed root, or it is a dangling symlink. */
+type Containment = { real: string } | { refused: "outside" | "dangling" };
+
 /**
- * Validate that sessionPath is within cwd (prevents path traversal in MCP tools).
+ * The realpath of `path` when it lies within one of `roots` (realpaths), else why not.
  *
  * Both sides are compared as realpaths, so symlinks are resolved: another
- * spelling of cwd (macOS `/var` vs `/private/var`) is accepted, and a symlink
- * inside cwd that points outside it — or dangles — is refused. The path may not
+ * spelling of a root (macOS `/var` vs `/private/var`) is accepted, and a symlink
+ * inside a root that points outside it — or dangles — is refused. The path may not
  * exist yet; its nearest existing ancestor is resolved and the rest re-appended.
- * Returns the resolved absolute path in the caller's spelling.
  */
-export function validateSessionPath(sessionPath: string): string {
-  const resolved = resolve(sessionPath);
-  const outside = () => new Error(`Session path must be within current directory: ${sessionPath}`);
+function containedRealPath(path: string, roots: string[]): Containment {
+  const r = realPathOf(path);
+  if ("refused" in r) return r;
+  const { real } = r;
+  return roots.some((root) => real === root || real.startsWith(root + sep))
+    ? { real }
+    : { refused: "outside" };
+}
+
+/**
+ * The realpath of `path`, which may not exist yet: its nearest existing ancestor is resolved
+ * and the rest re-appended. A dangling symlink on the way is refused.
+ */
+function realPathOf(path: string): { real: string } | { refused: "dangling" } {
+  const resolved = resolve(path);
 
   // Walk up to the nearest ancestor that exists (lstat: a dangling link counts as existing).
   let existing = resolved;
@@ -1476,14 +1561,104 @@ export function validateSessionPath(sessionPath: string): string {
   try {
     real = join(realpathSync(existing), ...tail);
   } catch {
-    throw outside(); // a dangling symlink leads nowhere we can vouch for
+    return { refused: "dangling" }; // a dangling symlink leads nowhere we can vouch for
   }
+  return { real };
+}
 
-  const cwd = realpathSync(process.cwd());
-  if (real !== cwd && !real.startsWith(cwd + sep)) {
-    throw outside();
+/** The realpath of `path` when it lies within cwd (prevents path traversal in MCP tools). */
+function realPathWithinCwd(path: string): Containment {
+  return containedRealPath(path, [realpathSync(process.cwd())]);
+}
+
+/** The refusal message for a path outside its allowed root, naming the dangling case. */
+function containmentError(label: string, path: string, refused: "outside" | "dangling"): Error {
+  const why = refused === "dangling" ? DANGLING_NOTE : "";
+  return new Error(`${label} must be within current directory: ${path}${why}`);
+}
+
+/**
+ * Validate that sessionPath is within cwd, on the terms of realPathWithinCwd.
+ * Returns the resolved absolute path in the caller's spelling.
+ */
+export function validateSessionPath(sessionPath: string): string {
+  const c = realPathWithinCwd(sessionPath);
+  if ("refused" in c) throw containmentError("Session path", sessionPath, c.refused);
+  return resolve(sessionPath);
+}
+
+const DANGLING_NOTE = " (a dangling symlink: its target does not exist)";
+
+/**
+ * The session folder as an allowed root for the files claudish reads and writes in it, or
+ * null when it is none. A folder inside the working directory adds nothing the working
+ * directory does not already allow, so it is a root only for the refusal message. A folder
+ * outside it (a programmatic caller's own directory) is a root only when the caller named
+ * the folder itself: one that is a symlink is not, or a link such as a `judging` sub-session
+ * pointing elsewhere would make its target a root.
+ */
+function sessionRootOf(sessionPath: string, cwd: string): string | null {
+  const inCwd = containedRealPath(sessionPath, [cwd]);
+  if ("real" in inCwd) return inCwd.real === cwd ? null : inCwd.real;
+  if (inCwd.refused === "dangling") return null;
+  try {
+    if (lstatSync(resolve(sessionPath)).isSymbolicLink()) return null;
+  } catch {
+    // not created yet: nothing redirects it
   }
-  return resolved;
+  const r = realPathOf(sessionPath);
+  return "real" in r ? r.real : null;
+}
+
+/** A refusal naming every allowed root: the working directory, and the session folder when it is one. */
+function rootedContainmentError(
+  label: string,
+  path: string,
+  refused: "outside" | "dangling",
+  cwd: string,
+  sessionRoot: string | null
+): Error {
+  if (!sessionRoot) return containmentError(label, path, refused);
+  const why = refused === "dangling" ? DANGLING_NOTE : "";
+  return new Error(
+    `${label} must be within the current directory (${cwd}) or the session folder (${sessionRoot}): ${path}${why}`
+  );
+}
+
+/**
+ * Where a file named `name` in a session folder really is, contained to the working directory
+ * or the session folder (sessionRootOf). The folder was checked, but a file inside it can be a
+ * symlink to any file on the machine, which would then be read into a prompt (or, written to,
+ * be overwritten). The path may not exist yet.
+ */
+function sessionFileContainment(
+  sessionPath: string,
+  name: string
+): { file: string; cwd: string; sessionRoot: string | null; c: Containment } {
+  const file = join(sessionPath, name);
+  const cwd = realpathSync(process.cwd());
+  const sessionRoot = sessionRootOf(sessionPath, cwd);
+  const c = containedRealPath(file, sessionRoot ? [cwd, sessionRoot] : [cwd]);
+  return { file, cwd, sessionRoot, c };
+}
+
+/** The contained realpath of a session folder's file `name`, or a refusal naming the allowed roots. */
+function sessionFileRealPath(sessionPath: string, name: string): string {
+  const { file, cwd, sessionRoot, c } = sessionFileContainment(sessionPath, name);
+  if ("refused" in c)
+    throw rootedContainmentError(`Session ${name}`, file, c.refused, cwd, sessionRoot);
+  return c.real;
+}
+
+/** The contained realpath of a session folder's `input.md`, every slot's prompt. */
+function sessionInputRealPath(sessionPath: string): string {
+  return sessionFileRealPath(sessionPath, "input.md");
+}
+
+/** A session folder's `input.md` read through its contained realpath; undefined when absent. */
+export function readSessionInput(sessionPath: string): string | undefined {
+  const real = sessionInputRealPath(sessionPath);
+  return existsSync(real) ? readFileSync(real, "utf-8") : undefined;
 }
 
 /**
@@ -1501,14 +1676,13 @@ export function validateSessionPath(sessionPath: string): string {
  */
 export function readTeamInputFile(inputPath: string): string {
   const resolved = resolve(inputPath);
-  const cwd = process.cwd();
-  if (!resolved.startsWith(`${cwd}/`) && resolved !== cwd) {
-    throw new Error(`Input file must be within current directory: ${inputPath}`);
-  }
-  if (!existsSync(resolved)) {
+  const c = realPathWithinCwd(inputPath);
+  if ("refused" in c) throw containmentError("Input file", inputPath, c.refused);
+  if (!existsSync(c.real)) {
     throw new Error(`Input file not found: ${resolved}`);
   }
-  const text = readFileSync(resolved, "utf-8");
+  // The realpath, so the file read is the one the containment check vouched for.
+  const text = readFileSync(c.real, "utf-8");
   // A silently-empty prompt would spawn N children to answer nothing, and every
   // one of them would bill for the attempt.
   if (text.trim().length === 0) {
@@ -1559,14 +1733,17 @@ export function setupSession(sessionPath: string, models: string[], input?: stri
     );
   }
 
+  // Contained before anything is created: a refused input.md leaves nothing behind.
+  const inputReal = sessionInputRealPath(sessionPath);
+
   // Create directories
   mkdirSync(join(sessionPath, "work"), { recursive: true });
   mkdirSync(join(sessionPath, "errors"), { recursive: true });
 
   // Write input.md if provided, otherwise require it to already exist
   if (input !== undefined) {
-    writeFileSync(join(sessionPath, "input.md"), input, "utf-8");
-  } else if (!existsSync(join(sessionPath, "input.md"))) {
+    writeFileSync(inputReal, input, "utf-8");
+  } else if (!existsSync(inputReal)) {
     throw new Error(`No input.md found at ${sessionPath} and no input provided`);
   }
 
@@ -1728,7 +1905,8 @@ async function startModelsIn(
   const path = resolve(sessionPath);
   const manifest: TeamManifest = JSON.parse(readFileSync(join(path, "manifest.json"), "utf-8"));
   const statusPath = join(path, "status.json");
-  const inputContent = readFileSync(join(path, "input.md"), "utf-8");
+  const inputContent = readSessionInput(path);
+  if (inputContent === undefined) throw new Error(`No input.md found at ${path}`);
   const readAvailable = !flagsRemoveRead(claudeFlags);
   const refusal = deliveryRefusal(inputContent, readAvailable);
   if (refusal) throw new Error(`invalid_args: ${refusal}`);
@@ -1896,6 +2074,10 @@ async function startModelsIn(
     const answer = chainAnswerOf(turn);
     const v = classifyRunOutput({
       answer,
+      lastResponseEnd: turn.lastResponseEnd,
+      // the proxy's proof of an in-band error, read fresh: the classifier itself reads no file
+      proxyInBandError: readTokenStatsAt(e.tokenFile)?.in_band_api_error ?? null,
+      turnStartedAt: turn.acceptedAt ?? null,
       chainAnswers: [...turn.chainAnswers, turn.answer],
       apiError: turn.apiError,
       stopReason: turn.stopReason,
@@ -2404,11 +2586,45 @@ async function startModelsIn(
     // Display model → anonymised slot. The manifest is shuffled for blind JUDGING,
     // which protects the judge children reading response-<id>.md without a manifest.
     // It was never hidden from the orchestrating caller.
-    slots: Object.fromEntries(
-      Object.entries(manifest.models).map(([anonId, entry]) => [entry.model, anonId])
-    ),
+    slots: slotsOfManifest(manifest),
     done,
   };
+}
+
+/**
+ * Display model → slot id, in the caller's `models` order (`shuffleOrder[i]` is the slot of
+ * `models[i]`). A model listed more than once keeps its bare id for its first slot and takes
+ * `<model>#2`, `<model>#3`, … for the later ones, skipping a number whose key is another model
+ * id of the run, so every slot stays in the map and no key is overwritten.
+ */
+export function slotsOfManifest(manifest: TeamManifest): Record<string, string> {
+  const order = manifest.shuffleOrder?.length
+    ? manifest.shuffleOrder
+    : Object.keys(manifest.models);
+  const models = order.map((anonId) => manifest.models[anonId]?.model);
+  // Every model id of the run is reserved, so a generated key never overwrites a literal model
+  // spelled `a#2`: the generated one takes the next free number instead.
+  const used = new Set(models.filter((m): m is string => m !== undefined));
+  const seen = new Set<string>();
+  const next = new Map<string, number>();
+  // No prototype: a model id is any string, and `slots["__proto__"] = id` on a plain object
+  // sets its prototype instead of adding the key, dropping the slot from the map.
+  const slots: Record<string, string> = Object.create(null);
+  for (const [i, anonId] of order.entries()) {
+    const model = models[i];
+    if (model === undefined) continue;
+    let key = model;
+    if (seen.has(model)) {
+      let n = next.get(model) ?? 2;
+      while (used.has(`${model}#${n}`)) n++;
+      key = `${model}#${n}`;
+      next.set(model, n + 1);
+      used.add(key);
+    }
+    seen.add(model);
+    slots[key] = anonId;
+  }
+  return slots;
 }
 
 /**
@@ -2443,31 +2659,27 @@ export async function judgeResponses(
     throw new Error(
       `invalid_args: the team run at ${resolve(sessionPath)} is still ACTIVE (run_id ${active.runId}); judge it once it has settled`
     );
-  // Collect all response files in sorted order
-  const responseFiles = readdirSync(sessionPath)
-    .filter((f) => f.startsWith("response-") && f.endsWith(".md"))
-    .sort();
-
-  if (responseFiles.length < 2) {
-    throw new Error(`Need at least 2 responses to judge, found ${responseFiles.length}`);
+  // The judge sub-session's folder is checked before anything is written.
+  const judgePath = judgeSessionPath(sessionPath);
+  const { responses, skipped } = readJudgeResponses(sessionPath);
+  const found = Object.keys(responses).length;
+  if (found < 2) {
+    const why = skipped.length > 0 ? ` (${skipped.join("; ")})` : "";
+    throw new Error(`Need at least 2 responses to judge, found ${found}${why}`);
   }
 
-  const responses: Record<string, string> = {};
-  for (const file of responseFiles) {
-    const id = file.replace(/^response-/, "").replace(/\.md$/, "");
-    responses[id] = readFileSync(join(sessionPath, file), "utf-8");
-  }
-
-  // Build and save judge prompt
-  const input = readFileSync(join(sessionPath, "input.md"), "utf-8");
+  // Build and save the judge prompt through the same containment as input.md: a planted
+  // judge-prompt.md symlink would otherwise overwrite its target with every response.
+  const input = readSessionInput(sessionPath);
+  if (input === undefined) throw new Error(`No input.md found at ${sessionPath}`);
+  const judgePromptPath = sessionFileRealPath(sessionPath, "judge-prompt.md");
   const judgePrompt = buildJudgePrompt(input, responses);
-  writeFileSync(join(sessionPath, "judge-prompt.md"), judgePrompt, "utf-8");
+  writeFileSync(judgePromptPath, judgePrompt, "utf-8");
 
   // Determine judge models (default: same models that produced responses)
   const judgeModels = opts.judges ?? getDefaultJudgeModels(sessionPath);
 
-  // Run judges in a sub-session under sessionPath/judging/
-  const judgePath = join(sessionPath, "judging");
+  // Run judges in a sub-session under sessionPath/judging/ (checked above)
   mkdirSync(judgePath, { recursive: true });
 
   setupSession(judgePath, judgeModels, judgePrompt);
@@ -2489,10 +2701,55 @@ export async function judgeResponses(
   // Aggregate votes into a verdict
   const verdict = aggregateVerdict(votes, Object.keys(responses));
 
+  if (skipped.length > 0) verdict.skipped = skipped;
+
   // Write verdict.md (reveals model names since judging is complete)
   writeFileSync(join(sessionPath, "verdict.md"), formatVerdict(verdict, sessionPath), "utf-8");
 
   return verdict;
+}
+
+/**
+ * The `response-<id>.md` files of a session, each read through its contained realpath, in id
+ * order. A response file is sent to every judge model, so one that is a symlink resolving
+ * outside the working directory and the session folder is not read: it is listed in
+ * `skipped` as `<file> (skipped: <reason>)` and judging goes on without it.
+ */
+export function readJudgeResponses(sessionPath: string): {
+  responses: Record<string, string>;
+  skipped: string[];
+} {
+  const responseFiles = readdirSync(sessionPath)
+    .filter((f) => f.startsWith("response-") && f.endsWith(".md"))
+    .sort();
+  const responses: Record<string, string> = {};
+  const skipped: string[] = [];
+  for (const file of responseFiles) {
+    const r = containedSessionFile(sessionPath, file);
+    if ("skip" in r) {
+      skipped.push(r.skip);
+      continue;
+    }
+    const id = file.replace(/^response-/, "").replace(/\.md$/, "");
+    responses[id] = readFileSync(r.real, "utf-8");
+  }
+  return { responses, skipped };
+}
+
+/**
+ * The contained realpath of a session folder's file `file`, or `<file> (skipped: <reason>)`
+ * when it is a symlink resolving outside the working directory and the session folder.
+ */
+function containedSessionFile(
+  sessionPath: string,
+  file: string
+): { real: string } | { skip: string } {
+  const { c } = sessionFileContainment(sessionPath, file);
+  if ("refused" in c) {
+    const why = c.refused === "dangling" ? "a dangling symlink" : "outside the working directory";
+    return { skip: `${file} (skipped: ${why})` };
+  }
+  return { real: c.real };
 }
 
 /**
@@ -2585,6 +2842,22 @@ export function fisherYatesShuffle<T>(arr: T[]): T[] {
   return arr;
 }
 
+/**
+ * A session's `judging` sub-session folder, contained to the same roots as the session's
+ * `input.md`: the working directory or the session folder (sessionRootOf). A `judging` that
+ * is a symlink to elsewhere is refused before anything is written, or its target would
+ * receive the judge session's prompt and files.
+ */
+export function judgeSessionPath(sessionPath: string): string {
+  const judging = join(sessionPath, "judging");
+  const cwd = realpathSync(process.cwd());
+  const sessionRoot = sessionRootOf(sessionPath, cwd);
+  const c = containedRealPath(judging, sessionRoot ? [cwd, sessionRoot] : [cwd]);
+  if ("refused" in c)
+    throw rootedContainmentError("Judge folder", judging, c.refused, cwd, sessionRoot);
+  return judging;
+}
+
 function getDefaultJudgeModels(sessionPath: string): string[] {
   const manifest: TeamManifest = JSON.parse(
     readFileSync(join(sessionPath, "manifest.json"), "utf-8")
@@ -2622,6 +2895,27 @@ export function buildJudgePrompt(input: string, responses: Record<string, string
   return prompt;
 }
 
+/**
+ * A judge's answer file read through its contained realpath, as a response file is, or null.
+ * One resolving outside the working directory and the session folder is skipped, and one
+ * that cannot be read is dropped; either way its votes are not counted, and the log says so.
+ */
+function readJudgeAnswer(judgePath: string, file: string): string | null {
+  const r = containedSessionFile(judgePath, file);
+  if ("skip" in r) {
+    log(`[team] judge answer ${r.skip}`);
+    return null;
+  }
+  try {
+    return readFileSync(r.real, "utf-8");
+  } catch (err) {
+    log(
+      `[team] judge answer ${file} unreadable: ${err instanceof Error ? err.message : String(err)}`
+    );
+    return null;
+  }
+}
+
 export function parseJudgeVotes(judgePath: string, responseIds: string[]): VoteResult[] {
   const votes: VoteResult[] = [];
   const responseFiles = readdirSync(judgePath)
@@ -2630,16 +2924,8 @@ export function parseJudgeVotes(judgePath: string, responseIds: string[]): VoteR
 
   for (const file of responseFiles) {
     const judgeId = file.replace(/^response-/, "").replace(/\.md$/, "");
-    let content: string;
-    try {
-      content = readFileSync(join(judgePath, file), "utf-8");
-    } catch (err) {
-      // This judge's votes are dropped from the verdict; say so.
-      log(
-        `[team] judge answer ${file} unreadable: ${err instanceof Error ? err.message : String(err)}`
-      );
-      continue;
-    }
+    const content = readJudgeAnswer(judgePath, file);
+    if (content === null) continue;
 
     // Parse ```vote ... ``` blocks
     const votePattern = /```vote\s*\n([\s\S]*?)\n\s*```/g;
@@ -2722,6 +3008,11 @@ function formatVerdict(verdict: TeamVerdict, sessionPath: string): string {
     const modelName = manifest?.models[id]?.model ?? "unknown";
     const scoreStr = `${(r.score * 100).toFixed(0)}%`;
     output += `| ${i + 1} | ${id} | ${modelName} | ${scoreStr} | ${r.approvals} | ${r.rejections} | ${r.abstentions} |\n`;
+  }
+
+  if (verdict.skipped?.length) {
+    output += "\n## Skipped Responses\n\n";
+    for (const note of verdict.skipped) output += `- ${note}\n`;
   }
 
   output += "\n## Individual Votes\n\n";

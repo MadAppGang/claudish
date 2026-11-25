@@ -96,13 +96,14 @@ export function newSessionManager(
  * (`setupSession` writes it), and `summarise` counts it as failed either way (§20.2).
  */
 export function modelStates(): Record<
-  "COMPLETED" | "FAILED" | "EMPTY" | "TIMEOUT" | "PENDING" | "RUNNING",
+  "COMPLETED" | "FAILED" | "EMPTY" | "SHAPE_MISMATCH" | "TIMEOUT" | "PENDING" | "RUNNING",
   SlotState
 > {
   return {
     COMPLETED: "COMPLETED",
     FAILED: "FAILED",
     EMPTY: "EMPTY",
+    SHAPE_MISMATCH: "SHAPE_MISMATCH",
     TIMEOUT: "TIMEOUT",
     PENDING: "STARTING",
     RUNNING: "RUNNING",

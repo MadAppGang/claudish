@@ -16,6 +16,7 @@ import {
   waitNoOrphans,
 } from "../pane/test-helpers/hermetic-env.js";
 import type { SessionViewItem, ViewItem } from "../pane/view-contract.js";
+import { FINISH_PANE_TEST_HOOK_MS, FINISH_PANE_TEST_MS } from "../test-helpers/team-pane.js";
 import { ViewClaims } from "../view/view-claims.js";
 import { ViewDirectory } from "../view/view-directory.js";
 import { ViewFeed, type ViewFeedEvent } from "../view/view-feed.js";
@@ -50,11 +51,11 @@ describe.skipIf(!MAGMUX)(
 
     afterEach(async () => {
       await manager?.shutdownAll();
-      const report = await waitNoOrphans({ sockRoot: t.sockRoot }, 10_000);
+      const report = await waitNoOrphans({ sockRoot: t.sockRoot }, FINISH_PANE_TEST_MS);
       killLeftovers({ sockRoot: t.sockRoot });
       t.cleanup();
       expect(report).toEqual({ processes: [], files: [] });
-    });
+    }, FINISH_PANE_TEST_HOOK_MS);
 
     test("a subagent file and its meta publish an upsert; its end publishes another", async () => {
       const feed = new ViewFeed();

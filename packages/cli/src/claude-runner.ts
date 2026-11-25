@@ -1453,11 +1453,29 @@ export function initializeTokenFile(tokenFilePath: string): void {
 /**
  * Write the launch window into a token file no response has written yet, so the
  * status line shows the window from the first frame instead of `N/A`. A file the
- * proxy already wrote, an unknown window or a missing file is left as it is.
+ * proxy already wrote, an unknown window or a file in a missing folder is left as it is.
+ *
+ * An ASSIGNED file (a team slot's `stats/<id>.json`) is never blanked by the runner, so
+ * it does not exist yet at launch while its folder does. It gets a window-only record:
+ * no token fields, so a parent's reader (`readTokenStatsAt`) still sees a child that
+ * has not answered, and the tracker's first write replaces it whole.
  */
 export function seedTokenFileWindow(tokenFilePath: string, window: number | null): void {
   if (!window || window <= 0) return;
   try {
+    if (!existsSync(tokenFilePath)) {
+      if (!existsSync(dirname(tokenFilePath))) return;
+      writeFileSync(
+        tokenFilePath,
+        JSON.stringify({
+          context_window: window,
+          context_left_percent: 100,
+          updated_at: Date.now(),
+        }),
+        { encoding: "utf-8", flag: "wx" }
+      );
+      return;
+    }
     const record = JSON.parse(readFileSync(tokenFilePath, "utf-8"));
     if (record.input_tokens !== 0 || record.context_window !== "unknown") return;
     writeFileSync(

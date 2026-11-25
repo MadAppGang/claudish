@@ -59,8 +59,9 @@ const SLOT_STATES = [
   "CANCELLED",
   "TIMEOUT",
   "EMPTY",
+  "SHAPE_MISMATCH",
 ];
-const TERMINAL_STATES = ["COMPLETED", "FAILED", "CANCELLED", "TIMEOUT", "EMPTY"];
+const TERMINAL_STATES = ["COMPLETED", "FAILED", "CANCELLED", "TIMEOUT", "EMPTY", "SHAPE_MISMATCH"];
 const FAILURE_REASONS = [
   "cancelled",
   "timeout",
@@ -209,7 +210,7 @@ function expectSlotRowTyped(row: Json): void {
     expect(row.idle_seconds).toBeNull();
     expect(row.activity).toBeNull();
   }
-  if (["FAILED", "EMPTY", "CANCELLED", "TIMEOUT"].includes(row.state as string)) {
+  if (["FAILED", "EMPTY", "SHAPE_MISMATCH", "CANCELLED", "TIMEOUT"].includes(row.state as string)) {
     expect(row.reason).not.toBeNull();
     expect(isStrOrNull(row.reason_detail)).toBe(true);
   } else {
@@ -364,7 +365,7 @@ describe.skipIf(!MAGMUX_AVAILABLE)(
 
 describe.skipIf(!MAGMUX_AVAILABLE)("require_pattern and min_output_bytes (FR6)", () => {
   test(
-    "require_pattern NEGATIVE control → EMPTY shape_mismatch, POSITIVE control → COMPLETED, mixed → partial",
+    "require_pattern NEGATIVE control → SHAPE_MISMATCH shape_mismatch, POSITIVE control → COMPLETED, mixed → partial",
     async () => {
       // negative: a pattern the fake's answer can never contain
       const neg = join(layout.cwd, "pattern-negative");
@@ -377,7 +378,7 @@ describe.skipIf(!MAGMUX_AVAILABLE)("require_pattern and min_output_bytes (FR6)",
       const negSlot = (negStart.slots as Record<string, string>)["fake-answer"] as string;
       const negDone = await waitSettled(neg);
       const negRow = slotRow(negDone, negSlot);
-      expect(negRow.state).toBe("EMPTY");
+      expect(negRow.state).toBe("SHAPE_MISMATCH");
       expect(negRow.reason).toBe("shape_mismatch");
       expect((negDone.run as Json).outcome).not.toBe("ok");
 
@@ -414,7 +415,7 @@ describe.skipIf(!MAGMUX_AVAILABLE)("require_pattern and min_output_bytes (FR6)",
       expect(good.model).toBe("fake-answer");
       expect(bad.model).toBe("fake-no_shape");
       expect(good.state).toBe("COMPLETED");
-      expect(bad.state).toBe("EMPTY");
+      expect(bad.state).toBe("SHAPE_MISMATCH");
       expect(bad.reason).toBe("shape_mismatch");
       expect((mixDone.run as Json).outcome).toBe("partial");
     },

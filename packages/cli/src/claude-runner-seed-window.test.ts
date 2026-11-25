@@ -1,8 +1,9 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initializeTokenFile, seedTokenFileWindow } from "./claude-runner.js";
+import { readTokenStats, statsDir, tokenFileFor } from "./team-stats.js";
 
 let dir: string;
 
@@ -43,11 +44,26 @@ describe("seedTokenFileWindow", () => {
     expect(read(path).context_window).toBe("unknown");
   });
 
-  test("a missing file stays missing", () => {
-    const path = join(dir, "missing.json");
+  test("a file in a missing folder stays missing", () => {
+    const path = join(dir, "no-such-folder", "missing.json");
 
     seedTokenFileWindow(path, 128_000);
 
     expect(() => readFileSync(path)).toThrow();
+  });
+
+  test("a team slot's assigned file, in the stats folder the team path made, gets the window", () => {
+    // A team slot's CLAUDISH_TOKEN_FILE is assigned, so the runner never blanks it: the
+    // folder exists (startModels makes it before any slot spawns) and the file does not.
+    const session = join(dir, "team-session");
+    mkdirSync(statsDir(session), { recursive: true });
+    const path = tokenFileFor(session, "01");
+
+    seedTokenFileWindow(path, 128_000);
+
+    expect(read(path)).toMatchObject({ context_window: 128_000, context_left_percent: 100 });
+    // No token counts yet: the team's readers still see a slot that has not answered.
+    expect(read(path).input_tokens).toBeUndefined();
+    expect(readTokenStats(session, "01")).toBeNull();
   });
 });

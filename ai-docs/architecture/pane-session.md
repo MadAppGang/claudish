@@ -116,9 +116,10 @@ The follower polls on every frame (debounced 250 ms) and on a 1 s backstop.
 ## The transcript binding: why magmux ≥ 0.17.0
 
 magmux's gate reads the pane's transcript and Claude Code's session registry: for readiness, for
-its `evidence:"transcript"`, and for the `convChange` test that keeps its one automatic retype from
-submitting a second copy. In 0.16.0 it found that transcript by DISCOVERY, and for a claudish pane
-discovery can pick the wrong one (read in source, `controller_claude.go:532-645` at 4c6060c):
+its `evidence:"transcript"`, and (before 0.20.2, which never retypes) for the `convChange` test
+that kept its one automatic retype from submitting a second copy. In 0.16.0 it found that
+transcript by DISCOVERY, and for a claudish pane discovery can pick the wrong one (read in
+source, `controller_claude.go:532-645` at 4c6060c):
 
 - the pane command carries no prompt (`-e ". pane-launch.sh"`), so discovery takes the newest
   `.jsonl` in the cwd's project directory, "fresh" preferred, and "preexisting" marks only the files
@@ -132,7 +133,8 @@ discovery can pick the wrong one (read in source, `controller_claude.go:532-645`
 A pane locked onto another session can report `busy dialog:<kind>` for a dialog that is not on its
 own screen, and can see "a turn started" in the other session and refuse its retype (a false "may
 have been submitted"). So claudish requires the binding magmux 0.17.0 introduced (the floor is
-now 0.18.0, for deep socket paths; see "magmux socket traps"): it takes `--session-id` and
+now 0.20.3, the first gated send that reports a send it stopped partway; see "Prompt delivery"
+and "magmux socket traps"): it takes `--session-id` and
 `--transcript` bound to the `-e` that follows, claims exactly that file (also before it exists),
 never falls back to discovery, and echoes the binding per pane in `list`.
 
@@ -147,6 +149,24 @@ failed`. Until the check passes on a connection, no gate reading from it is read
 made. `transcriptSeen: false` is normal before the first prompt and is not read. Measured on 0.17.0
 (fake child, hermetic env): `bound named`, the claudish uuid and the path under `CLAUDE_CONFIG_DIR`,
 50 ms after launch, before any transcript file existed.
+
+**The one answer that is waited on.** magmux publishes pane 0's `input` view only after its first
+poll of the pane, so a `list` read before that shows `gateBasis: "declared"` with no `input`.
+Measured on 0.20.3: 6 of 62 slots attached that early and, when the first `list` decided, failed
+within about 1 s. So while pane 0 is declared and has no `input`, the attach reads `list` again
+every 100 ms (`GATE_INPUT_RETRY_MS`) for at most 5 s (`GATE_INPUT_WAIT_MS`), or until 250 ms (one
+tick) before the boot or admission deadline when that is sooner, so the pane fails with this
+detail and not the deadline's. At the bound it fails `input_gate_unavailable … declared the input
+gate for pane 0 but has not published its input view yet`, as does a re-read never answered by
+then. Nothing else waits: no gate, gate basis `direct`, an `input` in an unknown form, a failed
+`list`, a binding that names another session or path or is bound by `prompt` or `mtime` (with or
+without an `input`) each decide on the read that shows them, the first or a later one. A dead
+pane 0 in a re-read takes the exit path. The exit event, `pane_closed`, a dropped connection,
+magmux's exit, cancel and the session timeout end the pause at once and clear its timer. The
+connection is not trusted during the wait, so nothing is typed. The wait is in `PaneSession`'s
+attach (`awaitBoundPane`), `checkGateBinding`'s only caller; `checkGateBinding` stays one verdict
+on one reply (`unpublished` marks this one). A redialled connection that drops during its own
+attach is dialled again by the same redial loop.
 
 **What the gate is read from.** magmux publishes no readiness event (`snapshotChanged` does not
 compare `input`), so `PaneSession` polls `list` every 250 ms (`GATE_POLL_MS`; magmux refreshes
@@ -238,9 +258,12 @@ unsubmitted, in normal editor mode as well as vim. Measured 2026-10-16 (Claude C
 0.15.1, magmux owner): with the box stable for 500 ms and `--settings {"editorMode":"normal"}`, 2/2
 team slots failed `prompt_not_accepted`, the retry failed one, and the third try got through. A
 stable box is not proof the child reads its input. claudish used to wait the reset out itself (box
-stable 3 s, `REPL_STABLE_MS`, ≈2.5 s per boot); magmux now does, and if a reset still lands after
-`ready`, its gated send retypes once and says so (`retypeCause: "terminal_reset"`, counted as
-`gate_retyped:terminal_reset`). A rising count is a boot floor too short for some Claude Code.
+stable 3 s, `REPL_STABLE_MS`, ≈2.5 s per boot); magmux now does. A reset that still lands after
+`ready` surfaces as a `text_mismatch` whose box stayed empty (`boxEmpty: true`; magmux ≥ 0.20.2,
+the floor, types no copy of its own), which claudish handles by the
+empty-box rule in "Prompt delivery": no ctrl-u and no further copy until the box shows text, else
+a clean `prompt_not_accepted` at the deadline with one copy sent. A rising count of
+`gate_text_mismatch_box_empty` is a boot floor too short for some Claude Code.
 
 What blocks boot is decided by **the gate not being ready on a screen static for 5 s**
 (`BOOT_STATIC_MS`), and named by the gate's dialog kind first, the screen's words second:
@@ -457,6 +480,34 @@ turn's `turnSource` is `screen`, and it REVERTS (`degraded_reverted`) as soon as
 the witness — a slow UserPromptSubmit hook is the usual cause. A screen-settled turn records
 `screen_answer_may_be_truncated`, and a file-delivered one `read_coverage_unverified`.
 
+**A screen turn still ends at Claude Code's own end record.** Under load the screen heuristic can
+miss an ending the transcript recorded (slots RUNNING 18+ minutes on a transcript ending
+`end_turn`, `stop_hook_summary`, `turn_duration`), and no timer ends a slot. This covers only a
+turn already in screen mode: the transcript off, or absent or empty at entry as above. A witness
+Claude Code wrote garbled on a healthy transcript keeps the turn in transcript mode
+(`witness_missing`), and this fallback does not reach it. Until the witness arrives the follower
+folds every main-chain record past the turn's offset, by the same reducer, into
+`TurnView.unwitnessed`, and a screen turn settles when that view holds a `turn_duration` after
+the last assistant message whose record time parses and is at or after the prompt's acceptance.
+`decideSettle` decides on that view exactly as on a witnessed one: a
+`pendingBackgroundAgentCount` above 0, background agents not balanced, a pending tool or a waking
+record after the last assistant message hold it open, because a background agent finishing wakes
+the parent and a later `turn_duration` follows. Sidechain records and an older `turn_duration`
+never count. The answer is that transcript's assistant text (`captureSource` `transcript`,
+`settledBy` `turn_duration`; `settledBy` `interrupt` when an interrupt marker AND a
+`turn_duration` both follow the last assistant message), else the screen's (`captureSource`
+`screen`, `screen_answer_may_be_truncated`), read only from the live bottom of a connected
+magmux client: after a disconnect the screen is the last frame before the drop, and the turn
+waits. Either way the turn records `unwitnessed_turn_duration`, and its anomalies are counted
+once, when it settles. The turn settles at the shadow's last chat offset, and the re-wake check,
+in IDLE and during the `SETTLING` hold alike, reads the shadow's offset while the turn is still
+unwitnessed, so a background agent or hook that wakes the model after the settle is seen.
+
+Known limit: without the witness only the record time orders the end after the acceptance, so a
+turn Claude Code starts by itself after the acceptance (a background shell's task notification,
+say) can be settled as the prompt's turn, its answer taken for the prompt's.
+`unwitnessed_turn_duration` marks every such settle.
+
 ## The input box is located by the cursor, and what still reads the screen
 
 The screen is now read only for TEXT and for quiet, never for an input decision. Where a reader
@@ -480,7 +531,7 @@ by growing a 160 × 50 pane with magmux's `resize`). All screen test data carrie
 |---|---|---|
 | `aboveBoxChangedAt` (screen model) | the quiet above the box, for S and degraded settle | located; a change while either frame is unlocated counts as above-box |
 | `workingAboveBox` | the working row, for corroboration | located; `null` (no veto) when not |
-| `menuAbove` | the slash menu's highlight, before a command's Enter | located; else `menu_unverified` and no Escape |
+| `menuAbove` | the slash menu's highlight, before a command's Enter | located; else `menu_unverified` and no Escape; an Escape not sent (withheld or failed) is `menu_unverified` and no Enter |
 | `screenAnswer` | the degraded answer | ends at the top rule found by the old `isBoxRule` test, else at the screen's end; a rule row ends a prose block, so the fallback cannot pull the box or status line into the answer |
 | `dialogText` | a dialog's or boot dialog's words | no: the rows below the last `⏺` |
 | `nameBootScreen` | a named first-run marker or choice markers on a static boot screen | no |
@@ -495,8 +546,14 @@ tests; no readiness, acceptance, dialog or corroboration decision calls them.
 
 `pane/prompt-delivery.ts` decides how text reaches the REPL:
 
-- a **plain** single line — at most 512 printable characters, no leading `! # ? @ & \ /`, no
-  trailing `@x` or `/x` token — is typed as is;
+- a **plain** single line — at most 512 printable characters, no whitespace at either end and
+  none inside but the ASCII space, no leading `! # ? @ & \ /`, no trailing `@x` or `/x` token — is
+  typed exactly as given, and the box is compared against that same string (`matchBoxText`,
+  untrimmed). A line with whitespace at its ends, or a no-break space or another Unicode space,
+  goes to the turn file with its exact text: the box drops a row's trailing spaces, so a box
+  showing everything before them looks the same whether they were read or not, and it may draw
+  another space at a row break, so such a line cannot be checked in the box character for
+  character;
 - a **slash command** is typed as its first line; when that line is longer than 512 characters or
   more text follows, the whole text goes to the turn file and the typed line points at it;
 - **everything else** is written to `<turnDir>/turn-<n>.md` (0600, exclusive create) and the child
@@ -511,6 +568,24 @@ open `@` menu SUBMITS the text as typed, a leading `!` is bash mode. A file also
 processing of the CONTENT: `@` mentions, `!`/`#` prefixes and slash commands inside the file are
 not expanded, and a UserPromptSubmit hook sees the template line, not the task. Cost: one or more
 Read calls per non-plain turn, counted in `tool_calls`.
+
+*Without the Read tool* (the caller's flags remove it) there is no file path. A prompt that is
+plain once trimmed, with every no-break or other Unicode space made an ASCII space
+(`normalizedLine`), is typed so, and its witness is that typed string; the anomaly
+`typed_normalized` says so (the interactive driver logs it for a hook injection). This is the one
+case where the typed text differs from the caller's: a padded or non-ASCII-spaced line cannot be
+verified in the box, and with no file to carry the exact text the alternative is refusing a
+prompt, a `send_input` follow-up or a hook injection that an earlier release typed as given.
+Anything still not plain (a tab, a newline, a leading `!`) is refused as before.
+
+A command's witness is bound to its own arguments: a `<command-name>/x</command-name>` record
+matches only when its `<command-args>` equal the arguments of this turn's typed line, and a
+pointer line's arguments name its own turn file. A delayed record of an earlier `/x` with other
+arguments, or of another turn's file, never accepts a later `/x` (`isCommandRecordOf`). A record is a
+command record only in the shape Claude Code writes one: its whole content is `<command-name>`,
+`<command-message>` and `<command-args>` elements, each at most once, separated only by
+whitespace (`commandTags`). A prompt that quotes those markers inside its own text, or a record
+with anything around them, is plain user text and never witnesses a command.
 
 **Read on 2.1.290** (captured): no per-line truncation (a 90,005-character line came back whole),
 no line-count cap (2,601 lines in one call), a 25,000-token cap per call (`truncatedByTokenCap`, or
@@ -545,17 +620,63 @@ gate never touches. `pane/input-gate.ts` translates each reply into a closed `Se
 
 | reply | Enter pressed? | what claudish does |
 |---|---|---|
-| `ok`, `evidence:"history"` (`accept` `confirmed`, `resent_enter`, or `submitted_by_other`) | yes | accepted: RUNNING. `resent_enter`, `submitted_by_other` and `retyped` are counted (`gate_resent_enter`, `gate_submitted_by_other`, `gate_retyped:<retypeCause>`), never failures |
+| `ok`, `evidence:"history"` (`accept` `confirmed`, `resent_enter`, or `submitted_by_other`) | yes | accepted: RUNNING. `resent_enter` and `submitted_by_other` are counted (`gate_resent_enter`, `gate_submitted_by_other`), never failures |
 | `ok`, `evidence:"transcript"` | yes | accepted only if claudish's own witness is present, else treated as `unconfirmed` (`gate_transcript_evidence[_unwitnessed]`) |
 | `busy` `starting`, `terminal_not_ready`, `no_input_box`, `typing_in_progress`, `queue_full`, `in_flight` | no | next attempt after 250 ms |
-| `busy` with `typed:true`, `busy box_not_empty`, `not_accepted text_mismatch` | no | the next send first clears the box (below); after a mismatch it waits 1 s for a late draw |
+| `busy` with `typed:true`, `busy box_not_empty` | no | the next send first clears the box (below) |
+| `not_accepted text_mismatch` (not `maybeSubmitted`), the box read empty (`boxEmpty: true`, else magmux's empty-box phrases) or holding text | no | NO ctrl-u and NO new copy until the box settles: text settled 2 s on the screen: exactly the line → its Enter only; text ending with the start of the line → wait; other text → cleared and typed again; nothing settled by the deadline → `prompt_not_accepted` (below) |
 | `busy vim_mode`, `busy dialog:trust\|bypass\|api_key\|onboarding` | no | stop, never a key: `prompt_not_accepted` (vim) or `first_run_dialog` |
 | `busy dialog:permission\|question\|plan` | no | wait for the dialog to leave, within the deadline; a re-woken turn owns it |
-| `not_accepted empty_box` | no | next attempt; on a command's Enter step, `gate_command_left_box` and no retype (below) |
-| `not_accepted still_in_box` | yes, ignored | witness present → accepted; else once: ctrl-u and one more attempt; twice: wait for the witness |
-| `not_accepted unconfirmed`, `text_mismatch` with `maybeSubmitted`, a lost reply (`client_timeout`, `client_lost`) | maybe | NEVER typed again. Only claudish's own witness can accept, until the deadline |
+| `not_accepted empty_box` | no | next attempt; on an Enter-only step, `gate_command_left_box` (a command) or `gate_line_left_box` (a plain prompt after an empty-box mismatch), `maybe_submitted_by_other`, and no retype (below) |
+| `not_accepted still_in_box` | yes, maybe unread | witness present → accepted; else NO key and NO new copy: only the line's own record accepts, until the record wait ends (below); the copy stays unread after it (below) |
+| `not_accepted unconfirmed` | yes | NEVER typed again. Only claudish's own witness can accept, until the record wait ends (below) |
+| `text_mismatch` with `maybeSubmitted`, a lost reply (`client_timeout`, `client_lost`) | maybe | NEVER typed again. Only claudish's own witness can accept, until the deadline |
 | `bad_request`, `unknown_verb`, `unsupported`, `internal` | — | stop: `send_bad_request` / `send_unexpected:<code>` |
 | `pane_dead`, `no_such_pane` | — | the exit path decides |
+
+**`still_in_box`: Enter pressed, and maybe not read.** magmux 0.20.3 answers `still_in_box`
+after it pressed Enter, pressed it again at about 2 s and 4 s, and the line still sat in the box.
+That is what a Claude Code that has stopped reading stdin produces: measured with a stall test
+that sent SIGSTOP to one slot's Claude Code right after magmux wrote Enter (the Enter byte unread
+at the stop), 4 of 4 paused slots answered `still_in_box`, 0 of 2 control slots did. The Enter is
+then queued behind the line. claudish used to clear the box with ctrl-u and type the line once
+more; those bytes queued behind the Enter, so on resume Claude Code submitted the line, the ctrl-u
+cleared an empty box, and the second copy was submitted too: two user records of the prompt. So
+after `still_in_box` nothing is sent at all, no key and no text (`submittedUnproven:
+"still_in_box"`). Only the line's own transcript record accepts it, never the
+screen (a box that empties under a submitted entry is not acceptance). With no record by the end of
+the record wait (next paragraph) the CREATED prompt fails `prompt_not_accepted`, and a later prompt
+goes back to idle (`send_not_accepted`). Either way the copy is remembered as unread with its
+Enter pending (`unreadCopyEnterPending`): keys are withheld, and the line drawn whole and settled
+in the box proves nothing, since the Enter may still be queued behind it; only the box emptying
+(the Enter read, the line submitted) or the copy's own record ends a later prompt's or `/exit`'s
+wait on it.
+
+**The record wait, past the 30 s deadline.** A live slot at high load answered `still_in_box`, had no
+record 30 s in, and its screen showed the prompt submitted once with `running UserPromptSubmit hook ·
+2s`: Claude Code had taken it and its record came late. So once Enter was pressed with no proof
+(`still_in_box`, or `unconfirmed`), and so nothing more will be typed, the admission keeps waiting for
+the prompt's own record up to `UNPROVEN_RECORD_WAIT_MS` (120 s) from the admission's start
+(`recordWaitEnd`). For the CREATED prompt the wait also ends no later than 120 s after the session
+started (boot 90 s + admission 30 s, and never before its own 30 s deadline): `team` run returns only
+when every slot has left STARTING, and that is its bound. With a 4 s boot that leaves about 116 s; a
+boot of 90 s leaves 30 s. A later prompt (a `send_input`, a queued prompt, a hook injection) has the
+whole 120 s. During the wait past 30 s nothing is sent: no text, no Enter, no panel Escape. Prompts
+queued behind it stay queued. A boot dialog or vim mode the gate reports ends it at once; so do the
+pane's exit, magmux's exit, `pane_lost`, cancel and the session's own timeout. The wait adds no timer:
+the evaluation ticker checks it. With Enter never pressed, with nothing typed, and after a lost reply
+or `maybeSubmitted`, the 30 s deadline is unchanged.
+
+The failure's first line says only what was observed: magmux's answer, then what the last trusted
+frame shows, then the record (`magmux not_accepted still_in_box: Enter pressed, line then still in the
+box; last screen: <shown>; no transcript record of it in N s`, and `magmux not_accepted unconfirmed:
+Enter pressed, no evidence of a submit; last screen: …`). `<shown>` is `line still in the box`, `box
+empty`, `a submitted entry of the line` (an echo of the whole line above an empty box; an earlier
+identical prompt still on screen reads the same), `other text in the box` (the start of the line
+included), or `box not located` (a dialog over it, or no frame of the trusted connection). An
+`unconfirmed` that came from magmux's `ok` on transcript evidence claudish did not find says `magmux ok
+on transcript evidence claudish did not find` instead. The screen is used for this wording only. The
+line fits `reason_detail`'s 160 characters.
 
 **`maybeSubmitted` (magmux 0.17.0).** A `text_mismatch` has two variants that say it is UNKNOWN
 whether the text was submitted: the box showed the text and then emptied without magmux's Enter
@@ -564,24 +685,343 @@ conversation before sending it again". claudish reads the reply's `maybeSubmitte
 phrase as the fallback for a reply without it, sends nothing more for that prompt and waits for its
 own witness; at the deadline the prompt fails with `magmux could not tell whether the prompt was
 submitted (the box emptied without its Enter) and no transcript record of it appeared`. A witness
-that arrives after the deadline re-wakes the idle session as that same turn (`late_witness`): a
-prompt that WAS submitted is reported late, never lost. The cost is accepted: if Claude Code starts
+that arrives after the deadline re-wakes the session as that same turn (`late_witness`) only while
+it is IDLE: a prompt that WAS submitted is reported late, never lost. Once a later prompt is
+admitted the record no longer re-wakes anything; it releases the remembered copy instead (see
+*A copy that may be unread outlives its admission*). The cost is accepted: if Claude Code starts
 a turn by itself while a claudish line is typed and never drawn, magmux answers convMoved although
 nobody submitted it, and the caller sees a loud failure it can resend instead of a possible
 duplicate.
+
+**No retype and no clear onto an empty box.** Under concurrent boot Claude Code 2.1.330 can draw
+its box (the gate reads `ready`) and then not read stdin for about 20 s (traced: box drawn empty
+from 19:08.6 to 19:30.6; the cause of the stall is unknown). Every byte sent meanwhile queues
+unread, and when it resumes it reads the backlog in long reads. Measured on 2.1.330: a ctrl-u
+inside one read of about 64 bytes or more is IGNORED (text of length L + one ctrl-u + `xyz` read
+at once leaves `xyz` for L 20–50, a read ≤ 54 bytes, and `aaa…xyz` for L ≥ 60, a read ≥ 64
+bytes; prompt + ctrl-u + prompt, 67 bytes, leaves two joined copies; three copies with ctrl-u
+keys between them queued during SIGSTOP read back as three joined copies, 2 of 2), and Claude
+Code's early-input capture drops every byte below 0x20 except TAB, LF and CR, ctrl-u included.
+The same keys sent while it reads normally clear the box every time. So "one ctrl-u deletes one
+row" holds only for a ctrl-u read on its own or in a short read: a ctrl-u is no cancel for bytes
+Claude Code has not read. claudish's old answer to an empty-box `text_mismatch` (clear, wait 1 s,
+type a new copy, with no cap but the deadline) ended live with the line five times joined and
+`prompt_not_accepted`. Now (`awaitDraw`), after EVERY `text_mismatch` that may not have been
+submitted, claudish sends no key at all until the box settles, so at most one claudish copy is
+ever outstanding unseen. That covers a box read empty and one holding text alike: magmux types a
+line in 32-rune writes 8 ms apart, and Claude Code can draw the first writes and then stop
+reading, so magmux sees part of the line and answers `boxEmpty: false` (the same reply as for a
+box that settled on text that is not the line). A ctrl-u and a second copy sent then would queue
+behind the unread tail and be read with it in one long read, where the ctrl-u is lost.
+
+*Why a gated send types once (0.20.2).* From 0.20.2 a gated send types its text once and never
+retypes or clears it: a send whose box stays empty types once, presses no Enter, and answers
+`text_mismatch` with `typed: true` and `boxEmpty: true` (the `retyped` / `retypeCause` keys are
+gone). 0.20.1 retyped once inside a send (after a terminal reset, or after 3 s never drawn), so
+its clear and second copy could queue unread behind the first: two copies and a ctrl-u that a
+long read ignores. With 0.20.2 the only bytes that can be queued behind an empty box are the one
+copy claudish sent. 0.20.3 is the floor for the reason below; an older magmux is refused with the usual
+`magmux_unavailable` message.
+
+*Why the floor is magmux 0.20.3: a send stopped partway says so.* 0.20.2 checked readiness
+between its 32-rune writes, and a single not-ready frame between two writes (the box redrawn, a
+frame with no box) stopped the send there: the rest of the line was never written, and the reply
+was the same `text_mismatch` a fully typed send gives. Measured: the full `pane-session.integration` file failed in 3 of
+4 runs at a load of about 7, each time with the box holding the first 64 characters (2 writes) of
+the pointer line; claudish read it as the start of a copy still being drawn (a settled "prefix" is never acted on), and waited
+for the rest to the admission deadline, `prompt_not_accepted`. From 0.20.3 magmux keeps typing
+through a not-ready frame, and every gated reply that wrote anything carries three fields:
+`writes`, the writes that reached the pane (text chunks and named keys; Enter and Escape are not
+counted); `writesTotal`, the writes the send planned; and, only when `writes < writesTotal`,
+`typingStopped`, why it stopped (`dialog`, `terminal_reset`, `box_changed`, `deadline`,
+`cancelled`, `pane_dead`, `not_ready`). An ok reply has `writes == writesTotal` and no
+`typingStopped`; a send that wrote nothing has none of the three. A stopped send never presses
+Enter and never answers ok, `in_box` or `submitted_by_other`; its detail starts "typing stopped
+after W of T writes (reason), so the rest of the text was never written". `failureOf`
+(`magmux-client.ts`) keeps a count only when it is a non-negative integer and a stop reason only
+when it is one of those seven; anything else reads as absent. `MIN_MAGMUX_VERSION` is "0.20.3" and
+`.github/magmux.env` pins v0.20.3.
+
+*A partly written send is cleared and typed again.* A `text_mismatch` whose reply says it stopped
+partway (`stopped` on the outcome, from `stoppedOf` in `input-gate.ts`) records the anomaly
+`typing_stopped:<reason>`, and the admission keeps the written part (`writtenPart`: the text of the
+first `writes` writes, cut by `writtenPrefix` with magmux's own chunking). The draw wait still
+runs, on trusted frames, until the box settles for `DRAW_SETTLE_MS`; a box settled on exactly the
+written part ends it (`partOnly`), anomaly `box_drawn_written_part`, and the admission clears the
+box and types the line again (`clearFirst`). That part was all that was sent, so once it is drawn
+nothing of the copy is unread (`noteReadWhole`): the unread-copy bookkeeping remembers nothing for
+it. The prefix wait (a settled start of the line is never acted on) is kept only for a reply that
+says the whole line was written (`writes == writesTotal`) or carries no counts. A `busy` reply
+that typed carries the same counts and is read the same way. A stop for `dialog` keeps the
+written part too: a boot dialog is a stop row as before, and a runtime dialog (permission,
+question, plan, select) covers the box, which holds the wait, and once the box is located again
+the same rule applies. Each reply resets `writtenPart`, so only the reply that reported the stop
+can end a wait this way. A drawn row loses its trailing whitespace, so a written part that ends in
+k ASCII spaces (a write boundary on a space, about one in six in prose) matches only when the box
+shows the rest of it AND the cursor proves the k spaces were drawn: it sits on the box's last text
+row exactly k cells after that row's text (`cursorGapAfterText`, `writtenPartShown`). Spaces not
+drawn yet, spaces wrapped to another row, or a cursor anywhere else prove nothing, and the box is
+waited on, never cleared: a box showing 32 runes of a written part that goes on with 96 spaces
+holds bytes Claude Code has not drawn, and a ctrl-u then would queue behind them. That holds
+whatever the matcher reads the rows as (`unprovenSpaces`): while the written part ends in spaces
+the cursor does not prove, settled text that is a start of the part with every space and row
+break removed never ends the wait, even when it reads as other text. A space run wrapped over
+several rows draws blank rows; at 80 columns, 10 runes, 200 spaces, 10 runes and 4 more spaces
+(7 of 11 writes) draw "aaaaaaaaaa", a blank row, then 52 spaces and "bbbbbbbbbb", with the cursor
+right after the b's. The matcher once spent the whole space run at the blank row and read the next
+row as other text, and that "other" was cleared with no cursor proof; a blank row now carries the
+run over to the next row with text (`wrappedRowStart`), and the box reads as a prefix.
+The written part goes with the copy when the admission expires before its box settles
+(`unreadCopyPart`, kept by `rememberCopy`): the next admission's inherited wait
+(`leftoverCopy.part`) and a control line's wait (`awaitControlCopy`) apply the same rule, so a
+box settled on exactly that part is cleared and the new line typed once.
+
+*Which replies count as empty.* magmux says so in a field: `boxEmpty`, a boolean beside
+`maybeSubmitted` on a gated send's `text_mismatch` (true: the box was read empty after typing;
+false: it held text). When present it decides, over any prose. Without it claudish matches
+0.20.2's own phrases (`BOX_STAYED_EMPTY` in `input-gate.ts`): the empty-box verdict "the input box
+is empty", "it stayed empty but the terminal showed no stdin reset", and "it stayed empty on every
+read of the whole … verify window (never drawn)". Every "the box holds …" verdict, and bash mode,
+is not empty. A `maybeSubmitted` reply is never this case.
+
+*Act only on settled screen text, from a trusted connection.* Text on the screen does not prove
+the copy was all read: the first part of a long copy can be drawn while the rest is still unread,
+and an Enter or a clear sent then queues behind that rest. So only box text that the SCREEN shows,
+unchanged for `DRAW_SETTLE_MS` = 2 s, decides: more than twice the 300–800 ms at-rest draw lag, so a
+later read of the same copy is drawn inside the window, with most of the 30 s admission left. A gate
+reading of `box_not_empty` ahead of the frame only means the frame is coming; it never counts as
+text.
+
+Only frames of the trusted connection count, and each reconnect starts the settle again, by
+counters rather than by the screen object. `applyFrame` returns the SAME screen object for a frame
+that changes nothing visible, so after a reconnect to an unchanged box no identity test can tell a
+fresh frame from the screen held across the drop, and a slot that could succeed would wait to its
+deadline. Instead each `attach` numbers its connection, `onFrame` stamps every frame received
+(visible or not) with that number, and each time the binding check passes the session records the
+trusted connection's number and moves its trust epoch on. `awaitDraw` notes the epoch when its
+settle starts. Whenever it sees the epoch moved, even when the drop and the reattach both finished
+between two of its 25 ms polls (a zero-delay redial), it forgets what it had read, and box text
+counts again only from a frame of the newly trusted connection, from which the 2 s run. While the
+connection is down, or before the new connection's first frame, nothing settles. A frame that
+arrives on a connection before its `list` reply has passed the binding check (`attach` asks for
+`watch` before `list`, so the reconnect keyframe usually does) counts once that check passes: it
+is that connection's own picture of pane 0.
+
+The box text (`locatedBoxText`) is read against the line by `matchBoxText`, as one of three:
+- *the line*: every row an exact part of the line, character for character, with no collapsing
+  of spaces inside a row. The only difference allowed is at a row boundary, where the spaces the
+  wrap moved to the end of the row above (and `locatedBoxText` stripped) are skipped: the spaces
+  the line has there, less those the next row still shows. A blank row inside a space run (the run
+  wrapped over several rows) shows no count of its own, so the next row with text skips the whole
+  run; a blank row where the line has no space is other text. A "space" there is any character
+  the row strip removes (`\s`, `isRowSpace`), a no-break space included: a wrapped command whose
+  row ends in U+00A0 loses it with the row's end, and a skip of ASCII spaces only read the next
+  row as other text and cleared it. "a  b" in one row is not "a b".
+- *a prefix*: text that ENDS with the start of the line, alone or after other text (a foreign
+  draft, then the first read of our copy), with the rest not drawn yet. Its tail may be the one
+  copy still being read, so it is never acted on, however long it holds: claudish waits, to the
+  deadline if need be, and never clears it (a clear would queue behind the unread rest, and a long
+  read ignores it). Text followed by the WHOLE line is other text: the copy was read to its end.
+  The whole line decides first: for a line whose end is also its start ("explain the issue",
+  "abcab"), "draft abcab" and "abcababcab" each hold a tail that is a proper prefix ("ab"), yet
+  a tail is the whole line, so they read as other text and are cleared.
+- *other text*: anything else, including the line in a box that is not the normal `❯` prompt. A
+  `!` box is bash mode, where Enter would run the text as a shell command, and `locatedBoxText`
+  strips the `!` like the `❯`, so the glyph is checked on the screen row itself.
+
+On settled text: the line in the normal `❯` prompt → the gated Enter alone
+(`box_drawn_after_mismatch`), handled as a plain SUBMIT's Enter: no picker or panel handling, which
+stays a command's; after `still_in_box` nothing more is sent (above). Other text → Claude Code is visibly reading, so the clear and resend below run
+(`box_drawn_other_after_mismatch`). The witness accepts at any point; a boot dialog or vim mode
+takes the stop rows.
+
+Accepted limits, each needing a second writer to the pane, which there is not: since magmux
+0.20.2 claudish is the only one. A draft drawn before Claude Code reads our copy settles as other
+text and is cleared; a box row boundary that is a real newline reads as the wrap of a space; and an
+Enter-only retry after `busy` does not read the box again before its key. Our lines hold no
+newline, and nothing else types into the box.
+
+*The Enter-only send is sized for one key.* `readyTimeoutFor("enter", …)` ports magmux's
+SendBudget for a keys-only send: its fixed part (10 824 ms: two verify attempts of 1 412 ms, three
+2 s accept windows, 2 s budget slack) does not grow with the line. Its readiness floor is
+`ENTER_MIN_READY_TIMEOUT_MS` = 250 ms, not the 1 s of a send that types: the box already holds the
+text, so magmux is ready for the key at once, and a pane that is not answers `busy` with no key
+pressed. With the 2 s client slack the Enter needs 13 074 ms of the admission left when the settle
+ends, so a line whose final draw lands up to 14 926 ms into a 30 s admission (30 000 − 2 000 settle
+− 13 074) still gets its Enter, where typing a 514-character line again would not fit. With the
+1 s floor the bound was 13 824 ms: a line first drawn at 14 177 ms settled with 13 823 ms left and
+was abandoned though its copy was read. magmux 0.20.2 has no field that checks a keys send
+against expected text: an Enter-only send is verified only as "the box was not empty" before the
+key, and its acceptance is the history entry and claudish's own witness. That the box held
+exactly the line rests on the settled screen text above, read by claudish, not by magmux.
+
+*A lost copy fails by design.* If the box is still empty at the deadline, the prompt fails
+`prompt_not_accepted` with `last magmux reply: not_accepted text_mismatch (the input box stayed
+empty: …)` (or "… then showed text ending in the start of the typed text, its rest perhaps
+unread, at the deadline …", or "… then showed text that was still changing at the deadline …"; a
+box that went back to empty says it stayed empty), with one copy sent. No retype is attempted,
+even where the copy looks lost to a terminal reset: a terminal mode change (`tcsetattr` with
+`TCSADRAIN`) does not flush unread input, so a copy that looks lost may still be queued, and a
+retype would stack on it. A loud failure the caller can resend beats a doubled prompt.
+
+*A copy that may be unread outlives its admission.* An admission that ends unwitnessed (its
+deadline, or a stop row) while a copy may still sit unread in Claude Code's input queue leaves
+that copy behind, and the session goes back to IDLE. That is the case while it still waits on
+the box (`awaitingDraw`), and whenever a send of it may have typed its line and no ctrl-u was sent
+since (`uncleared`). `mayHaveTyped` sets `uncleared` for any send that types, except `accepted`,
+the outcomes that prove nothing was written (`bad_request`, `unsent`, an untyped `busy`,
+`not_accepted` or `pane_gone`) and those that prove the whole line was in the box
+(`provesReadWhole`: `in_box`, `still_in_box`, `unconfirmed`, each verified by magmux; for
+`still_in_box` that covers the line, not its Enter, below). A submit
+whose reply was lost is one of those; so is a lost TYPE, and a `busy` that typed. Any proof that
+the whole line was in the box (those replies, a settled draw of the line, the whole line drawn in
+the admission's own wait) clears `uncleared` and sets `readWhole`, so every byte of that copy was
+read and it leaves nothing behind; only a later send that may type sets `uncleared` again. A lost
+TYPE reply and a `busy` that typed enter the same wait as a mismatch (`startDrawWait`): the
+reply's timeout bounds magmux, not Claude Code, so no ctrl-u or second copy goes out until the
+box has settled.
+
+The SESSION remembers that copy's line, its witness and the transcript offset it was typed after
+(`unreadCopy`, `rememberCopy`), so the next prompt (a `send_input` follow-up, a hook injection, or
+`/exit`) is not typed behind it: its admission starts in the same wait, typing nothing, with the
+box read against the EARLIER line (`leftoverOf`), so that line's start is waited out like our own.
+Once that copy has shown and settled it is visibly read: it is cleared through the clear path
+(`clearBox`, sized for whichever line fills more rows), and the new line is typed. If its WHOLE
+line showed in a trusted frame of the current trust epoch and the box then emptied and settled,
+it is gone and the new line is typed: only a whole line proves no byte of that copy is still
+unread, so after only its start an empty box (a redraw, its rest still queued) keeps the wait,
+and a move of the trust epoch forgets what showed before it. A reading with no box located (a
+permission, question or plan dialog over it, a resize redraw) is nothing read, never an empty
+box: it restarts the settle. On "gone", the transcript is read fresh with the copy still watched,
+so a held turn can accept the copy's own record. If the record is not there yet and the copy is a
+copy of this same line, nothing is typed at all: the whole line left a box only claudish writes,
+so it was submitted, and its record can lag far behind the box (12,501 ms with a `sleep 12`
+UserPromptSubmit hook, measured in "The transcript is the turn oracle; magmux's input gate
+decides input" above). The copy stays remembered and watched and the turn held (`awaitCopyRecord`, anomaly
+`unread_copy_gone_unrecorded`) until its record accepts the turn, or releases the copy without
+accepting it (joined copies: the line is then typed by the normal rules), or the deadline expires
+the admission with nothing typed (detail "nothing was typed: an earlier copy of this prompt left
+the input box, and its transcript record did not appear in N s") and the copy still remembered.
+Typing the line there would let the late record accept the new turn while its own gated SUBMIT is
+still with magmux: two submissions. The copy is then marked read whole (`unreadCopyReadWhole`,
+cleared by `rememberCopy` and `forgetCopy`): every byte of it was read, so nothing of it can be
+queued, and only its record is still to come. So keys are not withheld for it (scroll, ctrl-End
+and Escape go again), and an empty settled box ends the inherited wait and the control wait
+(`emptyEnds`). The next prompt of the same text goes back into `awaitCopyRecord`; a prompt of
+other text forgets the copy and is typed; `/exit` forgets it and is typed. Without the mark a
+copy whose record never landed wedged the session: every later prompt expired with nothing typed,
+scroll was refused, Escape withheld, and `/exit` waited forever.
+A copy of another line is forgotten on "gone" and the new line typed. Its record can still land
+after the new admission has sent, when the turn is no longer held; "PEARPEAR" landing then, before
+the new line "PEAR" is submitted, read as two joined copies of "PEAR" and accepted it. So the
+departed copy's witness and offset go to the follower (`refuseDeparted`) before it is
+forgotten: the first record after that offset that is exactly one copy of it (`isOneCopyOf`) is
+that copy's, accepts no turn, and is cleared (`takeDepartedRecord`). It is taken BEFORE the
+copy watch reads the record, and a record it takes is never seen by the watch: the watch matches
+joined copies, so a late "PEARPEAR" would otherwise mark a watched "PEAR" copy seen, release it,
+and let the next line be typed behind an unread PEAR. A later departed copy
+replaces it. The same holds for a copy the control wait sees gone. This is smaller than holding
+the turn until the follower has read past the copy: that copy's record may never land, and the
+hold would then refuse the new line's own record too. If the box
+stays empty to the deadline, the new admission expires too, still typing nothing (detail
+"nothing was typed: the input box may still hold an earlier prompt's copy that Claude Code has
+not read …"), and the copy stays remembered.
+
+A copy that was in fact SUBMITTED leaves its own record. The follower watches for it
+(`watchCopy`: the copy's witness, after its offset, whichever turn is open, or none) from the
+moment the copy is remembered: `rememberCopy` arms the watch itself and `forgetCopy` disarms it,
+so no poll can read the copy's record unwatched. `startAdmission` reads the transcript through
+the same path (`pollFollower(true)`), and a control line is remembered before its request is
+sent and forgotten when it is accepted or typed nothing, so a record of it polled while the
+request is out releases it. A record
+of it releases the copy at any time, idle or while another admission waits on it
+(`syncCopyWatch`, anomaly `unread_copy_recorded`). Without that, a submitted copy whose record
+landed after its admission's deadline would be waited on by every later prompt, each expiring
+with "nothing was typed", and `/exit` would wait forever. A waiting admission's turn is held
+(`holdTurn`) while it has typed nothing: a record accepts it only when it is exactly one copy of
+its own line and that line is the remembered copy's (one submission of that text, answered
+once). A held command accepts its own command record the same way, when the remembered copy is
+the same command line: the record is bound to its arguments, so it is one submission of it. Joined copies, or a record of another line, are the earlier copy's, never this turn's; the
+admission then goes on by the normal rules with no copy remembered, and a box read empty and
+settled ends its wait (`copyReleased`), so it types its own line once. Once it sends, its turn is
+no longer held, and today's rule (a record of k joined copies is the submitted line) applies.
+
+A line that was read whole (its whole line settled in the box, or magmux verified it, `readWhole`)
+and then expires with its Enter unproven (`submittedUnproven`: the Enter reply lost or
+unconfirmed) is remembered as a copy read whole (`unreadCopyReadWhole`). Nothing of it is
+queued, so no key is withheld, but it may have been submitted and its record may still land: a
+retry of the same text goes into `awaitCopyRecord` and is accepted by that record with nothing
+sent, and another line refuses that record (`departCopy`) and is typed once. Remembering
+nothing, as before, let the retry send a second copy, which the first record then accepted.
+
+The copy is forgotten when the clear path's ctrl-u keys were sent (a clear whose keys were not
+sent forgets nothing and keeps `clearFirst`, so the next attempt clears again, still sized for
+the earlier copy), when it is shown whole and gone, when its own record lands (in IDLE that is
+also `late_witness`, which re-wakes the abandoned turn), or when its record accepts a waiting
+prompt of the same text. A late record of an earlier copy accepts a new prompt only as above; a
+later prompt with other text is never accepted by it, and a file or command pointer line names
+its own turn file, so two of them are never identical. A control line waiting on the copy
+(`awaitControlCopy`) ends its wait as soon as the copy is forgotten or released, by its record
+included; under a stop row that never closes it records `control_wait_blocked:<row>` once and
+holds until the session ends.
+
+Tests: `pane-session-empty-box-mismatch.test.ts` (scripted client: settle, a growing draw, a
+prefix held past the settle window, a foreign draft followed by the start of the line, a foreign
+leftover, a second copy drawn 1 s later, a box back to empty, a socket drop and reconnect, a `!`
+box, gate ahead of the frame, the Enter's replies and `gate_line_left_box`, the Enter-only budget
+at its boundary, `matchBoxText` / `boxShowsLine` with lines whose end overlaps their start, the
+`boxEmpty` field and 0.20.2's prose, a mismatch whose box holds part of the line, a copy read
+whole and never recorded (keys go again, a different prompt typed, `/exit` typed, the same text
+waits again), a departed "PEARPEAR" whose record lands while "PEAR" is out, a space run wrapped
+across a blank row at 80 columns, a menu Escape withheld (no Enter), a departed copy's record
+while a same-text copy is watched, a wrapped command with a no-break space at a row end, the
+whole line read and its Enter reply lost (a same-text retry sends nothing; another line types
+once), and a copy
+left unread by an expired admission (the next prompt waits, clears it once shown, or expires
+typing nothing; only the start of it, or a reconnect, before an empty box; a box not located; a
+submit whose reply was lost; a stop row; a ctrl-u not sent; `/quit`; the copy's own record,
+while another prompt waits or while idle; a TYPE verified in the box, or a drawn line, before a
+lost Enter; a lost TYPE reply and a `busy` that typed; a `send_input` follow-up without Read; a
+send stopped after 2 of 7 writes, cleared and typed again with no wait to the deadline, and the
+same box with no counts, still waited on; and, with the real follower, a copy shown whole and
+gone whose record is read at "gone", a held command accepting its own record, a copy released
+while `/exit` waits on it, a record read in the evaluate that starts the queued prompt, a
+written part ending in a space, a `busy` that stopped partway, a stop for a runtime dialog, and a
+stopped send's written part inherited by the next prompt and by `/exit`; and a same-line copy
+gone whose record lands 3 s later, or never, a written part whose trailing spaces the cursor does
+not prove, `writtenPartShown`, a caller scroll refused while a copy may be unread, and no ctrl-End
+before an inherited copy is resolved); `input-gate.test.ts` (the 0.20.3 counts: kept when well
+formed, absent when not, `stopped` only for `writes < writesTotal`, and `writtenPrefix`);
+`transcript-follower.test.ts` (a command bound to its arguments, a held turn and the watched
+copy, a held command, command markers quoted in a prompt); and, through the real `attach` and `onFrame`, an identical keyframe after a
+reconnect that arrives before the `list` reply, and a drop and reattach finished between two
+polls),
+`pane-gated-stdin-stall.integration.test.ts` (also `FAKE_BLANK_FRAME_AFTER_BYTES`: a
+frame with no box while the pointer line is typed) and the newest cases of
+`pane-gated-retype.integration.test.ts` (the fake child's `FAKE_STDIN_STALL_MS`, which holds stdin
+and drops control bytes from a read of 64 bytes or more, with `FAKE_STDIN_STALL_AFTER_BYTES`
+starting the stall after the first typed write instead of at boot, and
+`FAKE_STDIN_STALL_LEFTOVER`, foreign text read ahead of the held bytes).
 
 **Leftover text is cleared BEFORE a send, from the published view.** A typed gated send into a
 non-empty box types nothing and waits its WHOLE `readyTimeoutMs` before answering `busy
 box_not_empty`, as `busy vim_mode` and `busy dialog:<kind>` do. So before every send that types,
 claudish reads the fresh published `input`: `box_not_empty` (or text this admission itself may have
-left) → KEYS ctrl-u, then up to 1 s for a `ready` reading received at least 250 ms after the reply
-that left the text (magmux republishes at 4 Hz, so an earlier reading can predate a late draw);
-`vim_mode` or a boot dialog → stop now; a permission, question or plan dialog → wait for it to
-leave. Because `box_not_empty` is evaluated last by the gate, it already proves no dialog and a
-settled terminal, so that ctrl-u cannot land on a dialog. A lost TYPE reply on a new connection
-waits out the old delivery's own budget first, since a ctrl-u from another connection is not
-ordered behind it. Measured (I10b, magmux 0.17.0): vim mode on before the send stops in 2.2 s wall,
-boot included; a send already in flight when vim turns on still costs its ready wait (≈ 10 s).
+left) → one ordered KEYS send of `clearKeyCount` ctrl-u keys, then up to 1 s for a `ready` reading
+received at least 250 ms after the reply that left the text (magmux republishes at 4 Hz, so an
+earlier reading can predate a late draw); `vim_mode` or a boot dialog → stop now; a permission,
+question or plan dialog → wait for it to leave. One ctrl-u deletes ONE wrapped row, not the whole
+box, and extra ctrl-u keys on an empty box do nothing (both measured on Claude Code 2.1.330), so
+`clearKeyCount` covers two copies of the line per gated send made so far, counted in screen cells
+(a wide character takes two) and wrapped at half the box width, plus one row. A `ready` screen does
+not skip the clear of text this admission may have left: Claude Code reads typed bytes seconds
+before drawing them, so a box drawn empty can still hold them. Because `box_not_empty` is evaluated
+last by the gate, it already proves no dialog and a settled terminal, so those ctrl-u keys cannot
+land on a dialog. A lost TYPE reply first waits for the box to settle like a mismatch, and its
+clear, on a new connection, then waits out the old delivery's own budget, since a ctrl-u from
+another connection is not ordered behind it. Measured (I10b, magmux
+0.17.0): vim mode on before the send stops in 2.2 s wall, boot included; a send already in flight
+when vim turns on still costs its ready wait (≈ 10 s).
 
 **Every attempt fits the 30 s admission.** The client request timeout is magmux's own upper bound
 (`protocol.SendBudget`, ported as `sendBudgetMs` at 4c6060c) plus 2 s, and no attempt is started
@@ -617,15 +1057,27 @@ is never evidence: "a lost prompt looks exactly like a submitted one" (magmux RE
 is issued by the admission loop between two of its own sends, never beside an acceptance decision.
 D-B was a frame read ~150 ms after typing that saw an empty box (Claude Code draws typed text
 300–800 ms late), so claudish typed again and `/model haiku` arrived as `haiku/model haiku`. claudish
-no longer reads the box to decide a retype; its only retype follows `still_in_box` (Enter pressed and
-ignored, the text proven present), once, after ctrl-u, through the gate. The gate types only into an
-empty box and presses Enter only on an exact match; magmux's own single retype needs the box
-COMPLETELY empty and either a terminal reset after the first byte (`terminal_reset`) or no draw for
-the whole 3 s window with no conversation change (`never_drawn`), and never for a paste. claudish
-keeps `typed:true` on every send so no line is ever a paste. Two copies can still be TYPED (a very
-late draw after a retype), but Enter is pressed only on a box holding exactly one, so two copies are
-never SUBMITTED. The DA-* and DB-* tests in `pane-gated-delivery.integration.test.ts` prove both at
-production timings, with no `timings` overrides.
+reads the box only to WITHHOLD a retype (the empty-box rule above); it types again only once the
+box visibly holds other text, always through the gate, and never after `still_in_box`. The gate types only into an
+empty box and presses Enter only on an exact match; from 0.20.2 (the floor) magmux never retypes.
+claudish keeps `typed:true` on every send so no line is ever a paste. Two copies could be TYPED,
+and SUBMITTED, with magmux before 0.20.2: under load Claude Code reads typed bytes into its buffer
+seconds before it draws them, so magmux's own retype landed on an undrawn first copy and its verify
+could press Enter on a stale frame showing one. Measured: 31 user records from 2026-11-03 to
+2026-11-20 (Claude Code 2.1.317–2.1.330) hold the launch line 2 or 4 times, always whole copies
+joined end to end. So the text witness
+accepts a record that is k ≥ 1 whole copies of the line (never empty text, a partial copy or other
+text), and claudish never trusts a `ready` screen to mean an empty buffer: leftover it may have
+left is cleared by key order, in one KEYS send of `clearKeyCount` ctrl-u keys, because one ctrl-u
+deletes one wrapped row (measured on 2.1.330; extra ctrl-u keys on an empty box do nothing). A
+record of k whole copies is accepted as the witness, so a direct text prompt can reach the model k
+times; the file-template launch line only points at the task file, which is read once. A k > 1
+match is recorded as the anomaly `witness_copies:<k>`, once per turn. At
+production timings, with no `timings` overrides, the DA-* tests in
+`pane-gated-delivery.integration.test.ts` prove that a lost prompt fails loudly instead of reading
+as an empty answer and that a late transcript still yields exactly one answer, and the DB-* tests
+prove that an 800 ms render lag with late terminal resets on six loaded panes submits each prompt
+as one copy.
 
 **Slash commands are two sends, because the gate has no menu handling.** A leading `/` opens
 Claude Code's command menu, and Enter on an open menu runs the HIGHLIGHTED item, not the typed one.
@@ -640,15 +1092,21 @@ Enter; once the gate says `no_input_box` or `dialog:select` with `Esc to cancel`
 500 ms it gets one Escape (`panel_dismissed` / `picker_dismissed`, never while the gate names a boot
 dialog), and when the gate is ready again its admission ends without a turn (`panel_command`).
 
-The prompt a session was CREATED with must be accepted within 30 s, else FAILED
+The prompt a session was CREATED with must be accepted within 30 s (later when Enter was pressed with
+no proof, see *The record wait*), else FAILED
 `prompt_not_accepted`, whose `reason_detail` names the gate's answer (`magmux not_accepted
-still_in_box: …`, `magmux not_accepted unconfirmed: …`, `the magmux send reply was lost (<code>)
+still_in_box: Enter pressed, line then still in the box; …`, `magmux not_accepted unconfirmed: …`, `the magmux send reply was lost (<code>)
 …`, `busy vim_mode: vim editing mode is on …`, or `prompt not accepted in N s; last magmux reply:
 busy <reason> (<gate detail>)`); a later `send_input` that is never accepted returns the session to
 idle with the anomaly `send_not_accepted`. `get_diagnostics` carries the fresh `gate` reading and the
-`lastSend` (kind, reason, accept, evidence, retypeCause, attempts). `/exit` and `/quit` are control
+`lastSend` (kind, reason, accept, evidence, attempts). `/exit` and `/quit` are control
 lines, not turns: one gated SUBMIT whose reply is recorded only as an anomaly
-(`control_send:<kind>[:<reason>]`); 2.1.282–2.1.285 still write the command's caveat,
+(`control_send:<kind>[:<reason>]`). While a copy may still be unread (`unreadCopy`) the
+control line types nothing: it waits as an admission does (the same settle, `waitDrawn`) until
+that copy settles in the box (cleared, then the line typed) or shows whole and leaves, with no
+deadline and nothing else admitted meanwhile; when the session ends first (`cancel_session`, the
+session timeout) the pane is closed with no keystroke (`control_send:unread_copy`). A control send
+whose outcome leaves its own copy possibly unread records it the same way; 2.1.282–2.1.285 still write the command's caveat,
 `<command-name>/exit` and `<local-command-stdout>(no content)` records into the SETTLED turn (real
 records in `corpus-redacted/exit-command.jsonl`), 2.1.291 writes none; after a delivered `/exit` an
 IDLE session never re-wakes, so the exit ends COMPLETED via `exit_clean`.
@@ -930,7 +1388,19 @@ capture shows the child scrolled. Measurements:
   not at `LIVE_BOTTOM`, `runAdmission` sends ctrl-End after its trusted-client wait and before the
   prompt, at most once per admission per connection (`Admission.liveBottomClient`); a failed or
   unconfirmed ctrl-End never blocks the prompt. `returnToLiveBottom` sends nothing on an
-  unverified connection and leaves the position unchanged.
+  unverified connection and leaves the position unchanged. Nor while a copy may be unread
+  (`keysWithheld`: `unreadCopy` is set), and the admission does not ask for it while its own copy
+  is being drawn (`awaitingDraw`): bytes sent then queue behind the unread tail and are read with
+  it. The ctrl-End then goes at a later step of the loop, once the copy is resolved, which may be
+  after the prompt is typed; the submit snaps the view to the bottom either way.
+- **No key bytes while a copy may be unread.** With `unreadCopy` set, nothing but the clear of
+  a settled copy (`sendClear`) is written to the pane outside a gated send: `scroll_session` is
+  refused (`scroll_unavailable`, "an earlier prompt's copy may still be unread in the input
+  box"), and an Escape (`key`: the dialog decline in `pump`, `menuCheck`, `panelStep`) is not
+  sent; the decline and the panel retry on a later step, and `menuCheck` records
+  `key_withheld:escape` and `menu_unverified` and sends no Enter (the highlighted item would
+  run), so the admission expires at its deadline. A copy read whole (`unreadCopyReadWhole`)
+  withholds nothing.
 - **A screen-read turn never settles from a scrolled view.** A static scrolled view looks quiet.
   While a ctrl-End is in flight or the view is not at `LIVE_BOTTOM`, `evalScreenTurn` does not
   settle and (re)sends ctrl-End when none is out; the screen-settle quiet counts only from
@@ -1145,18 +1615,20 @@ reserves N panes before a run's spawn loop; each start consumes one, whether it 
   pane's life. `capture` and `capture_session` are memory reads. `aboveBoxChangedAt` moves only when a
   row ABOVE the input box (located by the cursor) changes, so the status line ticking under the box never holds a quiet window
   open. 4 fps (research recommended 2–4) halves boot, witness and settle latency at no idle cost.
-- `assertMagmuxAvailable` requires `magmux --version` ≥ `MIN_MAGMUX_VERSION` (0.19.0, the first
-  release that serves the read-only `--view-sock` socket; 0.18.0 brought the deep socket) and on
+- `assertMagmuxAvailable` requires `magmux --version` ≥ `MIN_MAGMUX_VERSION` (0.20.3, the first
+  release that reports a send it stopped partway, "Prompt delivery"; 0.20.2 the first that never
+  retypes; 0.19.0 brought the read-only
+  `--view-sock` socket, 0.18.0 the deep socket) and on
   the 0.x line; cached per binary. Without an explicit binary it walks every candidate (bundled
   `native/`, `@claudish/magmux-*`, `PATH`) and takes the first that passes ([`view-transport.md`](view-transport.md)).
   It is also above the transcript
   binding, which needs 0.17.0, not the gate alone: 0.16.0 had the gate but bound it by discovery.
   Every connect re-checks `capabilities` (`protocol: 1`, version ≥ `MIN_MAGMUX_VERSION`) and then
   the binding (`list`). No usable magmux is refused with `magmux_unavailable: no usable magmux;
-  panes need a 0.x release >= 0.19.0 (…): <path> reports <v>, …; upgrade: brew upgrade
+  panes need a 0.x release >= 0.20.3 (…): <path> reports <v>, …; upgrade: brew upgrade
   MadAppGang/tap/magmux`; claudish never falls back
   to the box-reading path or to print mode: one validator per fact. The release job bundles the
-  magmux pinned in `.github/magmux.env` (v0.19.0), test.yml runs the pane suites against that pin,
+  magmux pinned in `.github/magmux.env` (v0.20.3), test.yml runs the pane suites against that pin,
   and release.yml checks the pin against `MIN_MAGMUX_VERSION`.
 - **The `--version` probe must settle on its own deadline, never on the child's exit.**
   `assertMagmuxAvailable` shares ONE in-flight probe per binary with every caller, so a probe that
@@ -1174,8 +1646,9 @@ reserves N panes before a run's spawn loop; each start consumes one, whether it 
 ## Bounds (D9, D10)
 
 - **`team(mode:"run")` returns once every slot has left STARTING**: its prompt was accepted
-  (RUNNING) or it failed boot or admission. Bounded by boot 90 s + admission 30 s, and every admission attempt is sized so its
-  client timeout ends by the 30 s deadline ("Delivery mechanics"). With the fake child the gate is
+  (RUNNING) or it failed boot or admission. Bounded by boot 90 s + admission 30 s = 120 s: every admission attempt is sized so its
+  client timeout ends by the 30 s deadline ("Delivery mechanics"), and a longer wait for a record
+  (*The record wait*) ends by the same 120 s from the session's start. With the fake child the gate is
   ready 3.9–4.2 s after spawn (it waits magmux's 3.5 s boot floor; the fake never resets stdin);
   1.2–1.9 s to RUNNING was measured before the gate. The dev plugin's team gate polls until no slot is RUNNING, so
   a slot still STARTING on its first poll would end the gate with zero ballots. Slots of one run spawn
@@ -1194,7 +1667,7 @@ terminals absorb, so a late pane `exit` cannot overturn a CANCELLED or TIMEOUT.
 | phase | wire state | leaves by |
 |---|---|---|
 | BOOTING | STARTING | gate `ready` (IDLE, or ADMITTING with a queued prompt); boot dialog, blocked screen, 90 s → FAILED; binding check failed → FAILED `pane_lost` |
-| ADMITTING | STARTING for the prompt the session was created with, else RUNNING | gate `ok` with history evidence, or the witness → RUNNING; a stop row (vim mode, boot dialog, `bad_request`, an unexpected code), a panel command, or 30 s → FAILED `prompt_not_accepted` / `first_run_dialog` (created prompt) or back to IDLE with `send_not_accepted` (a later send); an unaccepted hook injection in a one-shot session → SETTLING (`hook_admit_abandoned`), which concludes on the chain so far |
+| ADMITTING | STARTING for the prompt the session was created with, else RUNNING | gate `ok` with history evidence, or the witness → RUNNING; a stop row (vim mode, boot dialog, `bad_request`, an unexpected code), a panel command, or 30 s (with Enter pressed and no proof, the end of the record wait) → FAILED `prompt_not_accepted` / `first_run_dialog` (created prompt) or back to IDLE with `send_not_accepted` (a later send); an unaccepted hook injection in a one-shot session → SETTLING (`hook_admit_abandoned`), which concludes on the chain so far |
 | RUNNING | RUNNING | question → QUESTION; permission → PERMISSION; `decide` → IDLE (`continue`) or COMPLETED / EMPTY / FAILED; with a hook binding and idle work, `settle_hold` → SETTLING |
 | SETTLING | RUNNING (activity `hook`) | only with a hook binding: the settled turn is recorded and `sessionIdle` runs. `hold_inject` → IDLE (an injection is admitted next); `hold_rewake` → RUNNING (same turn); `turn_continue` → IDLE; the verdict → COMPLETED / EMPTY / FAILED. See [`hooks.md`](hooks.md) |
 | IDLE | AWAITING_INPUT | queued send → ADMITTING; background re-wake → RUNNING (same turn); clean exit after `/exit` or ≥ 1 settled turn → COMPLETED |
@@ -1214,9 +1687,18 @@ A peer's Claude Code mod polls claudish at about 1 Hz to draw every slot and ses
 types live in **`pane/contract.ts`**, the single source; within version 1 no field changes meaning or
 type and new fields may only be added.
 
-- `SlotState` is a closed set of nine: STARTING, RUNNING, AWAITING_INPUT, AWAITING_PERMISSION
-  (non-terminal), COMPLETED, FAILED, CANCELLED, TIMEOUT, EMPTY (terminal). `FailureReason` is a
-  closed set of fifteen, produced by both owners.
+- `SlotState` is a closed set of ten: STARTING, RUNNING, AWAITING_INPUT, AWAITING_PERMISSION
+  (non-terminal), COMPLETED, FAILED, CANCELLED, TIMEOUT, EMPTY, SHAPE_MISMATCH (terminal).
+  `FailureReason` is a closed set of fifteen, produced by both owners. SHAPE_MISMATCH (a team slot
+  whose answer missed `require_pattern`, reason `shape_mismatch`; a session never reaches it) was
+  added within v1 with no version bump, as `resize` and `allowance` were: the installed mod
+  declines any answer whose `contract_version !== 1` (see the `allowance` capability below), so a
+  v2 would blank every user's run band. `CONTRACT_VERSION` stays 1.
+- **Readers use explicit lists.** Every reader of `state` decides "finished" from its own list
+  of terminal states (claudish's `herdr/app-mod/model.ts` `isFinished`, `runs.ts`,
+  `herdr/state-map.ts`, and the external status mod), so a `state` value a reader does not know
+  reads as NOT finished. A new terminal state therefore ships after the readers know it, reader
+  first: within v1 and with no version bump, as SHAPE_MISMATCH did.
 - A `SlotRow` per team slot is also the base of every `list_sessions` row: state, reason, tokens in
   and out, `cost_usd` (always null for native Claude routes — Claude Code's own cost is API-rate
   pricing, fictional spend for a subscription user; D12), tool calls, turns completed,

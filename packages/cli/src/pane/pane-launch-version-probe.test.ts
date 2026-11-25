@@ -220,11 +220,11 @@ exit 7`);
   test(
     "B9: accepts a newer version",
     async () => {
-      const fake = fakeMagmux("printf '%s\\n' 'magmux 0.19.2'");
+      const fake = fakeMagmux("printf '%s\\n' 'magmux 0.20.3'");
 
       expect(await assertMagmuxAvailable(fake.binary)).toEqual({
         binary: fake.binary,
-        version: "0.19.2",
+        version: "0.20.3",
       });
       expect(fake.runs()).toBe(1);
     },
@@ -237,16 +237,17 @@ describe("magmux selection among candidates", () => {
     expect(isUsableMagmuxVersion("3.4.2")).toBe(false);
     expect(isUsableMagmuxVersion("1.0.0")).toBe(false);
     expect(isUsableMagmuxVersion("0.18.1")).toBe(false);
+    expect(isUsableMagmuxVersion("0.20.2")).toBe(false);
     expect(isUsableMagmuxVersion(MIN_MAGMUX_VERSION)).toBe(true);
-    expect(isUsableMagmuxVersion("0.20.0")).toBe(true);
+    expect(isUsableMagmuxVersion("0.21.0")).toBe(true);
   });
 
   test(
-    "a stale bundled v3.4.2 is skipped for the 0.19.0 behind it, and the walk stops there",
+    "a stale bundled v3.4.2 is skipped for the floor release behind it, and the walk stops there",
     async () => {
       const stale = fakeMagmux("printf '%s\\n' 'magmux v3.4.2'");
       const good = fakeMagmux(`printf '%s\\n' 'magmux ${MIN_MAGMUX_VERSION}'`);
-      const later = fakeMagmux("printf '%s\\n' 'magmux 0.20.0'");
+      const later = fakeMagmux("printf '%s\\n' 'magmux 0.21.0'");
       expect(await selectMagmux([stale.binary, good.binary, later.binary])).toEqual({
         binary: good.binary,
         version: MIN_MAGMUX_VERSION,

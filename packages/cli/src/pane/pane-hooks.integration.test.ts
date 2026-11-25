@@ -182,7 +182,14 @@ async function until(pred: () => boolean, what: string, ms = 20_000): Promise<vo
   }
 }
 
-const TERMINAL: SlotState[] = ["COMPLETED", "FAILED", "CANCELLED", "TIMEOUT", "EMPTY"];
+const TERMINAL: SlotState[] = [
+  "COMPLETED",
+  "FAILED",
+  "CANCELLED",
+  "TIMEOUT",
+  "EMPTY",
+  "SHAPE_MISMATCH",
+];
 
 interface Chan {
   t: PaneTestEnv;
@@ -640,7 +647,7 @@ wait $child
 
     for (const [pattern, state] of [
       ["^VOTE", "COMPLETED"],
-      ["^NOPE", "EMPTY"],
+      ["^NOPE", "SHAPE_MISMATCH"],
     ] as const) {
       test(
         `H-11 require_pattern ${pattern} on a chain: one verdict, response A1\\n\\nA2, ${state}`,
@@ -659,7 +666,7 @@ wait $child
             const status = await x.handle.done;
             expect(x.response()).toBe("thinking about it\n\nVOTE: yes");
             expect(status.models[x.slot]?.state).toBe(state);
-            if (state === "EMPTY")
+            if (state === "SHAPE_MISMATCH")
               expect(status.models[x.slot]?.error?.reason).toBe("shape_mismatch");
           } finally {
             await teamDone(x);
@@ -699,7 +706,10 @@ wait $child
           script: [{ say: "ANS-ONE" }, { noWitness: true }],
           binding: ctl.binding,
           // room for one gated send; magmux answers `unconfirmed`, the bound drops the item
-          timings: { admitTimeoutMs: HOOK_ADMIT_BOUND_MS },
+          timings: {
+            admitTimeoutMs: HOOK_ADMIT_BOUND_MS,
+            unprovenRecordWaitMs: HOOK_ADMIT_BOUND_MS,
+          },
         });
         try {
           await until(() => ctl.calls.length === 1, "settle() 1");
@@ -749,7 +759,10 @@ wait $child
           script: [{ say: "ANS-ONE" }, { noWitness: true }],
           binding: ctl.binding,
           // room for one gated send; magmux answers `unconfirmed`, the bound drops the item
-          timings: { admitTimeoutMs: HOOK_ADMIT_BOUND_MS },
+          timings: {
+            admitTimeoutMs: HOOK_ADMIT_BOUND_MS,
+            unprovenRecordWaitMs: HOOK_ADMIT_BOUND_MS,
+          },
         });
         try {
           await until(() => ctl.calls.length === 1, "settle()");
@@ -778,7 +791,10 @@ wait $child
           binding: ctl.binding,
           prompt: null,
           // room for one gated send; magmux answers `unconfirmed`, the bound drops the item
-          timings: { admitTimeoutMs: HOOK_ADMIT_BOUND_MS },
+          timings: {
+            admitTimeoutMs: HOOK_ADMIT_BOUND_MS,
+            unprovenRecordWaitMs: HOOK_ADMIT_BOUND_MS,
+          },
         });
         try {
           await until(() => c.info().state === "AWAITING_INPUT", "boot");

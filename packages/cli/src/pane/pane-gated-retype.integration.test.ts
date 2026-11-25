@@ -2,7 +2,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { classifySendReply, mismatchBoxStayedEmpty } from "./input-gate.js";
 import {
+  LOSS_RECORD_WAIT_MS,
   PROMPT,
   T,
   assertLoudLoss,
@@ -20,6 +22,22 @@ import {
   submissions,
 } from "./test-helpers/gated-pane.js";
 import { MAGMUX, NO_MAGMUX_MESSAGE } from "./test-helpers/hermetic-env.js";
+import { wrapPrompt } from "./test-helpers/repl-wrap.js";
+
+/** A prompt of about 300 characters, which wraps onto several rows at 80 columns. */
+function longPrompt(): string {
+  let prompt = "Reply with exactly PEAR";
+  for (let i = 0; prompt.length < 300; i++) prompt += ` and word${i}`;
+  return `${prompt}.`;
+}
+
+const isTypedSend = (m: Record<string, unknown>) => typeof m.text === "string" && m.noGate !== true;
+
+const isClearSend = (m: Record<string, unknown>) =>
+  m.noGate === true &&
+  Array.isArray(m.keys) &&
+  (m.keys as string[]).length > 0 &&
+  (m.keys as string[]).every((k) => k === "ctrl-u");
 
 describe.skipIf(!MAGMUX)(
   `gated retypes at production timings (${MAGMUX ? "real magmux" : NO_MAGMUX_MESSAGE})`,
@@ -78,42 +96,46 @@ describe.skipIf(!MAGMUX)(
       T
     );
 
-    for (const [scenario, cause] of [
-      ["late_reset_swallow", "terminal_reset"],
-      ["drop_first_prompt", "never_drawn"],
-    ] as const) {
+    // magmux >= 0.20.2 never retypes, and claudish types no second copy onto a box that
+    // shows nothing: a copy that is truly lost (here swallowed by the child, by a late stdin
+    // reset or a dropped first burst) ends in a loud prompt_not_accepted with one copy sent,
+    // which the caller can resend, never in a copy stacked behind one that may be unread.
+    for (const scenario of ["late_reset_swallow", "drop_first_prompt"] as const) {
       test(
-        `DB-3 / F13: ${scenario} permits only magmux's one ${cause} retype`,
+        `DB-3 / F13: ${scenario} fails prompt_not_accepted with one typed copy and no retype`,
         async () => {
           const r = await startGatePane(scenario, {
             shape: "one-shot",
             initialPrompt: PROMPT,
             env: { FAKE_RENDER_LAG_MS: "800", FAKE_GAP_MS_WITNESS: "5000" },
           });
-          await settled(r);
-          assertOneCopy(r, PROMPT);
-          const retyped = gatedSends(r).filter(
-            ({ reply }) => reply?.ok && reply.result.retyped === true
-          );
-          expect(retyped).toHaveLength(1);
-          expect(retyped[0]?.reply).toMatchObject({ ok: true, result: { retypeCause: cause } });
+          const snapshot = await gateUntil(r, (s) => s.state === "FAILED", 45_000);
+          expect(snapshot.reason).toBe("prompt_not_accepted");
+          expect(snapshot.detail).toContain("the input box stayed empty");
+          expect(gatedSends(r).filter(({ message }) => isTypedSend(message))).toHaveLength(1);
+          expect(r.sends.filter(({ message }) => isClearSend(message))).toHaveLength(0);
           expect(
-            r.s.snapshot().anomalies.filter((anomaly) => anomaly === `gate_retyped:${cause}`)
-          ).toHaveLength(1);
+            gatedSends(r).every(({ reply }) => !reply?.ok || reply.result.retyped !== true)
+          ).toBe(true);
+          expect(submissions(r)).toEqual([]);
         },
         T
       );
     }
 
     test(
-      "I8: ignored Enters yield still_in_box twice, one ctrl-u, no third typed copy",
+      "I8: an ignored Enter yields still_in_box once: no ctrl-u, no second typed copy, a loud loss",
       async () => {
         const r = await startGatePane("enter_ignored_forever", {
+          unprovenRecordWaitMs: LOSS_RECORD_WAIT_MS,
           shape: "one-shot",
           initialPrompt: PROMPT,
         });
         await assertLoudLoss(r, "still_in_box");
-        expect(gatedSends(r)).toHaveLength(2);
+        expect(r.s.snapshot().detail).toContain(
+          "Enter pressed, line then still in the box; last screen: line still in the box; no transcript record of it in"
+        );
+        expect(gatedSends(r)).toHaveLength(1);
         expect(
           gatedSends(r).every(({ reply }) => !reply?.ok && reply?.reason === "still_in_box")
         ).toBe(true);
@@ -121,7 +143,7 @@ describe.skipIf(!MAGMUX)(
           r.sends.filter(({ message }) =>
             (message.keys as string[] | undefined)?.includes("ctrl-u")
           )
-        ).toHaveLength(1);
+        ).toHaveLength(0);
         const count = r.sends.length;
         await Bun.sleep(1000);
         expect(r.sends).toHaveLength(count);
@@ -247,6 +269,95 @@ describe.skipIf(!MAGMUX)(
         expect(snapshot.detail).toContain("Is this a project you created or one you trust");
         expect(r.sends).toEqual([]);
         expect(submissions(r)).toEqual([]);
+      },
+      T
+    );
+
+    // Under load Claude Code draws typed text seconds after reading it, so magmux can answer
+    // text_mismatch with the box still drawn empty while the one copy sits in the buffer.
+    // claudish neither clears nor types again onto a box that shows nothing: once the line
+    // is drawn and has stopped changing, only its Enter is sent, and the prompt lands as one
+    // copy. The 8 s lag outlasts magmux's 3 s verify window, so the reply is the empty-box
+    // mismatch (a lag inside the window lets magmux see the draw itself).
+    test(
+      "a line drawn 8 s late after an empty-box mismatch is submitted with Enter, never cleared or typed again",
+      async () => {
+        const cols = 80;
+        const prompt = longPrompt();
+        const r = await startGatePane("answer", {
+          shape: "one-shot",
+          initialPrompt: prompt,
+          initialSize: { cols, rows: 40 },
+          env: { FAKE_RENDER_LAG_MS: "8000", FAKE_CTRL_U: "row", FAKE_GAP_MS_WITNESS: "3000" },
+        });
+        const snapshot = await gateUntil(
+          r,
+          (s) => s.state === "COMPLETED" || s.state === "FAILED",
+          60_000
+        );
+        expect(snapshot.state).toBe("COMPLETED");
+        expect(submissions(r).map(({ text }) => text)).toEqual([prompt]);
+        expect(r.sends.filter(({ message }) => isTypedSend(message))).toHaveLength(1);
+        expect(r.sends.filter(({ message }) => isClearSend(message))).toHaveLength(0);
+        // the path ran: magmux read the box empty, and claudish's next send was Enter alone
+        const mismatchAt = r.sends.findIndex(
+          ({ reply }) => reply !== undefined && mismatchBoxStayedEmpty(classifySendReply(reply))
+        );
+        expect(mismatchAt).toBeGreaterThanOrEqual(0);
+        expect(r.sends[mismatchAt + 1]?.message).toMatchObject({ keys: ["enter"] });
+        expect(isTypedSend(r.sends[mismatchAt + 1]?.message ?? {})).toBe(false);
+      },
+      T
+    );
+
+    // Claude Code's ctrl-u deletes one wrapped row. When the box, once a stdin stall ends,
+    // shows text other than the line (here text another writer left, read ahead of claudish's
+    // one copy), claudish clears it before typing the line again, with one ctrl-u per row
+    // that leftover can occupy. The prompt then lands as one whole copy and the slot completes
+    // instead of failing prompt_not_accepted on a box that never empties.
+    test(
+      "a wrapped foreign leftover drawn after a stdin stall is cleared row by row before the line is typed again",
+      async () => {
+        const cols = 80;
+        const prompt = longPrompt();
+        let leftover = "draft left by another writer";
+        for (let i = 0; leftover.length < 120; i++) leftover += ` note${i}`;
+        const r = await startGatePane("answer", {
+          shape: "one-shot",
+          initialPrompt: prompt,
+          initialSize: { cols, rows: 40 },
+          env: {
+            FAKE_STDIN_STALL_MS: "12000",
+            FAKE_STDIN_STALL_LEFTOVER: leftover,
+            FAKE_CTRL_U: "row",
+            FAKE_GAP_MS_WITNESS: "3000",
+          },
+        });
+        const snapshot = await gateUntil(
+          r,
+          (s) => s.state === "COMPLETED" || s.state === "FAILED",
+          60_000
+        );
+        expect(snapshot.reason).not.toBe("prompt_not_accepted");
+        expect(snapshot.state).toBe("COMPLETED");
+        expect(snapshot.anomalies).toContain("box_drawn_other_after_mismatch");
+        expect(submissions(r).map(({ text }) => text)).toEqual([prompt]);
+        const rows = wrapPrompt(leftover + prompt, cols).length;
+        const typed = r.sends
+          .map(({ message }, i) => ({ message, i }))
+          .filter(({ message }) => isTypedSend(message));
+        // one copy before the stall ended, one after the clear: never a copy onto an empty box
+        expect(typed).toHaveLength(2);
+        const firstAt = typed[0]?.i ?? 0;
+        const secondAt = typed[1]?.i ?? 0;
+        const clears = r.sends
+          .slice(firstAt + 1, secondAt)
+          .filter(({ message }) => isClearSend(message));
+        expect(clears.length).toBeGreaterThanOrEqual(1);
+        const before = r.sends[secondAt - 1]?.message;
+        expect(before).toMatchObject({ enter: false, noGate: true });
+        const keys = (before?.keys as string[] | undefined) ?? [];
+        expect(keys.filter((k) => k === "ctrl-u").length).toBeGreaterThanOrEqual(rows);
       },
       T
     );

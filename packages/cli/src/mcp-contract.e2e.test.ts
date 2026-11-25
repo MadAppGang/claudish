@@ -130,7 +130,7 @@ function expectSlotRow(
   expect(row.agent_requested).toBeNull();
   expect(row.agent).toBeNull();
   expect(SLOT_STATES).toContain(row.state as never);
-  if (["FAILED", "EMPTY", "CANCELLED", "TIMEOUT"].includes(row.state as string)) {
+  if (["FAILED", "EMPTY", "SHAPE_MISMATCH", "CANCELLED", "TIMEOUT"].includes(row.state as string)) {
     expect(row.reason_detail === null || typeof row.reason_detail === "string").toBe(true);
   } else {
     expect(row.reason_detail).toBeNull();

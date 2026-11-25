@@ -4033,6 +4033,9 @@ export class ComposedHandler implements ModelHandler {
         onStreamComplete,
         (code, message) => {
           streamApiError = { code, message };
+          // The proof a team slot or one-shot session needs to read the marker text block
+          // as an error rather than as the model's own text.
+          this.tokenTracker.recordInBandApiError(code);
         },
         hookScope?.raw.streamTap(),
         responsesTurn,

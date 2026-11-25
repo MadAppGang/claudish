@@ -75,6 +75,7 @@ describe("hcStatus", () => {
     ["AWAITING_INPUT", null, "idle", undefined],
     ["COMPLETED", null, "done", undefined],
     ["EMPTY", null, "done", undefined],
+    ["SHAPE_MISMATCH", null, "done", undefined],
     ["CANCELLED", null, "done", undefined],
     ["FAILED", null, "error", undefined],
     ["TIMEOUT", null, "error", undefined],

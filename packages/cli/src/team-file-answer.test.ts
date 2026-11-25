@@ -92,7 +92,7 @@ describe.skipIf(!MAGMUX)("MTL-229 team file answer", () => {
     const { row } = await run("write_nonmatching");
     const path = join(realpathSync(t.cwd), "file-answer.md");
     expect(readFileSync(path, "utf8")).toBe("## Notes\nNo requested marker here.\n");
-    expect(row.state).toBe("EMPTY");
+    expect(row.state).toBe("SHAPE_MISMATCH");
     expect(row.error?.reason).toBe("shape_mismatch");
     expect(row.error?.detail).toStartWith("No reply text or written file matched /[Bb]lack-box/");
     expect(row.error?.detail).toContain(`${path} (no match)`);
@@ -106,7 +106,7 @@ describe.skipIf(!MAGMUX)("MTL-229 team file answer", () => {
   // REGRESSION: MTL-229 team slot with a file deliverable reported EMPTY shape_mismatch — Fixed in /dev:fix session dev-fix-20261024-232556-1434416719
   it("reports that a nonmatching turn wrote no file", async () => {
     const { row } = await run("no_shape");
-    expect(row.state).toBe("EMPTY");
+    expect(row.state).toBe("SHAPE_MISMATCH");
     expect(row.error?.reason).toBe("shape_mismatch");
     expect(row.error?.detail).toContain("the turn wrote no file");
     expect(row.error?.detail).not.toContain("nothing was lost");
@@ -121,7 +121,7 @@ describe.skipIf(!MAGMUX)("MTL-229 team file answer", () => {
     expect(readFileSync(path, "utf8")).toBe(
       "## Black-box test contracts\n答え 🍐 — byte-exact deliverable.\n"
     );
-    expect(row.state).toBe("EMPTY");
+    expect(row.state).toBe("SHAPE_MISMATCH");
     expect(row.error?.reason).toBe("shape_mismatch");
     expect(row.error?.detail).toContain(`${path} (skipped: outside the working directory)`);
   }, 30_000);
@@ -155,7 +155,7 @@ describe.skipIf(!MAGMUX)("MTL-229 team file answer", () => {
     symlinkSync(target, path);
     const { row } = await run("write_answer");
     expect(readFileSync(target, "utf8")).toContain("Black-box");
-    expect(row.state).toBe("EMPTY");
+    expect(row.state).toBe("SHAPE_MISMATCH");
     expect(row.error?.reason).toBe("shape_mismatch");
     expect(row.error?.detail).toContain(`${path} (skipped: outside the working directory)`);
   }, 30_000);
@@ -167,7 +167,7 @@ describe.skipIf(!MAGMUX)("MTL-229 team file answer", () => {
     const content = readFileSync(path);
     expect(content.byteLength).toBeGreaterThan(1024 * 1024);
     expect(content.toString("utf8")).toContain("Black-box");
-    expect(row.state).toBe("EMPTY");
+    expect(row.state).toBe("SHAPE_MISMATCH");
     expect(row.error?.reason).toBe("shape_mismatch");
     expect(row.error?.detail).toContain(`${path} (skipped: larger than 1 MiB)`);
   }, 30_000);
@@ -181,7 +181,7 @@ describe.skipIf(!MAGMUX)("MTL-229 team file answer", () => {
     const content = readFileSync(path);
     expect(content.includes(0)).toBe(true);
     expect(content.toString("utf8")).toContain("Black-box");
-    expect(row.state).toBe("EMPTY");
+    expect(row.state).toBe("SHAPE_MISMATCH");
     expect(row.error?.reason).toBe("shape_mismatch");
     expect(row.error?.detail).toContain(`${path} (skipped: binary)`);
   }, 30_000);
@@ -191,7 +191,7 @@ describe.skipIf(!MAGMUX)("MTL-229 team file answer", () => {
     const { row } = await run("write_answer", "[Bb]lack-box", { FAKE_WRITE_DELETE: "1" });
     const path = join(realpathSync(t.cwd), "file-answer.md");
     expect(existsSync(path)).toBe(false);
-    expect(row.state).toBe("EMPTY");
+    expect(row.state).toBe("SHAPE_MISMATCH");
     expect(row.error?.reason).toBe("shape_mismatch");
     expect(row.error?.detail).toContain(`${path} (skipped: missing)`);
   }, 30_000);
@@ -209,6 +209,21 @@ describe.skipIf(!MAGMUX)("MTL-229 team file answer", () => {
     expect(row.state).toBe("FAILED");
     expect(row.error?.reason).toBe("api_error");
     expect(row.answerSource).not.toStartWith("file:");
+  }, 30_000);
+
+  it("reads a marker reply the proxy never recorded as the model's text", async () => {
+    const marker = readFileSync(
+      join(import.meta.dir, "test-fixtures/mcp-model-check/credit-balance-exhausted-20261023.txt"),
+      "utf8"
+    ).trim();
+    const { row } = await run("write_answer", "[Bb]lack-box", {
+      FAKE_WRITE_REPLY: marker,
+      FAKE_NO_PROXY_RECORD: "1",
+    });
+    const path = join(realpathSync(t.cwd), "file-answer.md");
+    expect(readFileSync(path, "utf8")).toContain("Black-box");
+    expect(row.state).toBe("COMPLETED");
+    expect(row.error?.reason).not.toBe("api_error");
   }, 30_000);
 
   // REGRESSION: MTL-229 team slot with a file deliverable reported EMPTY shape_mismatch — Fixed in /dev:fix session dev-fix-20261024-232556-1434416719

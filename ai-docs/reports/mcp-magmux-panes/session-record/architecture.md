@@ -1280,8 +1280,9 @@ from `run.slots`), `live_output_bytes_by_slot` (from `PaneSnapshot.liveAnswerByt
 field; L11), `note` (keyed on "any non-terminal slot"), `summary` (once every slot is terminal).
 `formatTeamResult` counts CANCELLED among the failures and lists `blocked` slots with their question.
 
-**`NEXT_STEP` entries.** Added: `boot_timeout` ("the child never reached its prompt and its screen kept
-changing — read the evidence screen; usually a slow catalog fetch or MCP server start"), `boot_blocked` ("a
+**`NEXT_STEP` entries.** Added: `boot_timeout` ("the child never reached its prompt before the boot
+deadline — read the evidence screen: an empty one means Claude Code drew nothing (a stalled machine or a
+hung start); one that kept changing is usually a slow MCP server start"), `boot_blocked` ("a
 screen claudish does not know stopped boot — its text is in `what`; answer it once interactively in that
 directory"), `first_run_dialog` ("run claude (or claudish --model X) once interactively in that directory and
 answer the dialog named in `what`; claudish never accepts it for you"), `agent_rejected` ("fix the agent name;

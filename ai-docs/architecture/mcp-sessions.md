@@ -61,7 +61,11 @@ fails.
 
 **The verdict is the owner's (D8).** A one-shot session's settled turn is classified by
 `classifyRunOutput` with no byte floor and no pattern (`api_error`, `prompt_not_read`, `refused`,
-`empty_output`), and the session is terminal at that verdict, before its pane is reaped. An
+`empty_output`), and the session is terminal at that verdict, before its pane is reaped. The
+rule is the team's own (`oneShotVerdictOf` passes the turn's `lastResponseEnd` and the session
+token file's `in_band_api_error`), so a turn whose last API response ends in a text block that is
+only an in-band API error marker, which the session's proxy recorded during the turn, is
+`api_error` after any progress text; without that record the block is the model's text. An
 interactive session continues after each turn and fails only on an API-error turn (D20); a turn
 whose task file was not fully read records a `prompt_not_read` anomaly in `events.jsonl`. A question or a permission dialog waits for `send_input` (team fails it instead).
 Terminal states are absorbing: a late pane exit can never upgrade or overturn a CANCELLED or
@@ -307,7 +311,7 @@ screen, so that is what is captured.
   `connected`, the redacted `screenTail`, `sockPath`, the head of magmux's own stderr,
   `preambleBytes`, the current turn's `readCoverage`, the child's `claudeCodeVersion`,
   `anomalies`, the input gate's fresh reading `gate: {ready, reason, detail, ageMs} | null` and the
-  last gated send `lastSend: {kind, reason?, accept?, evidence?, retypeCause?, attempts} | null`;
+  last gated send `lastSend: {kind, reason?, accept?, evidence?, attempts} | null`;
   the tail of the event ring; the upstream error bodies; and the paths: the
   transcript, the session directory, `events.jsonl`, `upstream-errors.jsonl`. A session no longer in
   memory answers from its directory, including `screen.txt`.
@@ -480,7 +484,8 @@ toward older content, or `to:"end"`) scrolls the child's own transcript view and
 `{run_id, path, slot, seq}`. A capture has no rows above the visible screen (the child draws on
 the alternate screen), so the scroll goes to the child as SGR wheel events, `|by|` capped at 200
 and a target ± 1 row. Its one error code is `scroll_unavailable` (starting, finished, delivering a
-prompt, a screen-read turn, reconnecting, or magmux did not confirm); nothing is queued.
+prompt, an earlier prompt's copy that may still be unread, a screen-read turn, reconnecting, or
+magmux did not confirm); nothing is queued.
 `capabilities` lists `scroll`. The argument errors come before the run lookup, as for `resize`. It
 is not a nested tool. Mechanism, rows and states: `pane-session.md`, "Scrolling the child's view".
 

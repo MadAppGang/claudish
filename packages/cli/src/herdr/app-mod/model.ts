@@ -143,7 +143,9 @@ export interface ModRow {
 
 function isFinished(item: ViewItem): boolean {
   if (item.kind === "replay") return item.final;
-  return ["COMPLETED", "FAILED", "TIMEOUT", "CANCELLED", "EMPTY"].includes(item.state);
+  return ["COMPLETED", "FAILED", "TIMEOUT", "CANCELLED", "EMPTY", "SHAPE_MISMATCH"].includes(
+    item.state
+  );
 }
 
 function stateWord(item: ViewItem, msg: string): string {

@@ -42,6 +42,7 @@
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { log, logStderr } from "../../logger.js";
+import { boxShowsLine } from "../../pane/box-locate.js";
 import {
   SEND_READY_WAIT_DEFAULT_MS,
   classifySendReply,
@@ -118,6 +119,10 @@ const RETARGET_WAIT_MS = 10_000;
 const SEND_CLIENT_SLACK_MS = 2_000;
 /** How long a lost send reply waits for `reconnect()` before the admission fails. */
 const RECONNECT_WAIT_MS = 10_000;
+/** After a lost send reply, the box text must hold this long unchanged before its Enter. */
+const LOST_REPLY_SETTLE_MS = 1_000;
+/** ...and is read for at most this long. */
+const LOST_REPLY_SETTLE_WAIT_MS = 4_000;
 const DEFAULT_MAX_CONSECUTIVE = 3;
 
 /* ───────────────────────────── the turn phase ───────────────────────────── */
@@ -988,6 +993,10 @@ export class InteractiveDriver {
       this.dropInjection(item, "delivery_unavailable");
       return;
     }
+    if (plan.mode === "typed" && plan.normalized)
+      log(
+        "[hooks] interactive driver: typed_normalized (no Read tool: the injection is typed trimmed)"
+      );
     try {
       writeTurnFile(plan);
     } catch (err) {
@@ -1048,6 +1057,9 @@ export class InteractiveDriver {
   /**
    * After a lost send reply: the line is in the box (its Enter was lost: press it now),
    * or it was submitted (its witness, or its echo above the box). False when neither.
+   * Enter goes only onto a box that shows exactly the whole typed line (`plan.line`, already
+   * trimmed when it was normalized) and has stopped changing (`boxSettledOn`): a box showing
+   * only its start, or its start and other text, gets no key, and only the submit check runs.
    *
    * A lost reply can mean a lost connection, whose client delivers nothing more: the
    * screen is judged, and Enter sent, through the client connected NOW, after a frame
@@ -1062,7 +1074,7 @@ export class InteractiveDriver {
       const client = await this.connectedClient(RECONNECT_WAIT_MS);
       if (!client) return false;
       await this.frameAfter(seen, 1_000);
-      if (!inputBox(this.screen)?.text.startsWith(head)) break;
+      if (!(await this.boxSettledOn(line))) break;
       if (this.admission !== adm) return false;
       log("[hooks] interactive driver: send reply lost; the line is in the box, pressing Enter");
       const r = await client.request({ type: "send", pane, keys: ["enter"], enter: false }, 10_000);
@@ -1072,6 +1084,27 @@ export class InteractiveDriver {
     const landed = this.submitted(head);
     if (landed) log("[hooks] interactive driver: send reply lost; the line was submitted");
     return landed;
+  }
+
+  /**
+   * The input box shows exactly `line` (`boxShowsLine`: its rows read across the wrap) and has
+   * not changed for `LOST_REPLY_SETTLE_MS`. False when it shows anything else once settled, or
+   * has not settled within `LOST_REPLY_SETTLE_WAIT_MS`.
+   */
+  private async boxSettledOn(line: string): Promise<boolean> {
+    const end = Date.now() + LOST_REPLY_SETTLE_WAIT_MS;
+    let text = inputBox(this.screen)?.text ?? null;
+    let since = Date.now();
+    while (Date.now() < end && this.phase !== "STOPPED") {
+      await Bun.sleep(25);
+      const now = inputBox(this.screen)?.text ?? null;
+      if (now !== text) {
+        text = now;
+        since = Date.now();
+      } else if (Date.now() - since >= LOST_REPLY_SETTLE_MS)
+        return text !== null && boxShowsLine(text, line);
+    }
+    return false;
   }
 
   /** The line starting with `head` was submitted: its witness, or its echo above the box. */

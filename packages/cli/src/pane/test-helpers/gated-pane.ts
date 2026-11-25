@@ -1,4 +1,7 @@
-/** Real-magmux test driver. Deliberately has NO timings seam: D-A/D-B use production defaults. */
+/**
+ * Real-magmux test driver. Its one timings seam is `unprovenRecordWaitMs`, so a lost prompt need
+ * not wait out the production bound; every other bound is the production default.
+ */
 import { expect } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -35,6 +38,7 @@ export interface GateRun {
   transitions: Array<{ to: string; at: number }>;
 }
 type Options = Omit<Partial<PaneSessionOptions>, "timings"> & {
+  unprovenRecordWaitMs?: number;
   env?: Record<string, string>;
   prepare?: (t: PaneTestEnv, uuid: string) => Partial<Omit<PaneSessionOptions, "timings">>;
 };
@@ -52,7 +56,7 @@ export async function startGatePane(scenario: string, opts: Options = {}): Promi
   const uuid = newSessionUuid();
   const log = join(t.tmp, "submits.jsonl");
   t.env.FAKE_SUBMIT_LOG = log;
-  const { env: _env, prepare, ...over } = opts;
+  const { env: _env, prepare, unprovenRecordWaitMs, ...over } = opts;
   const prepared = prepare?.(t, uuid) ?? {};
   const transcript = prepared.transcriptPath ?? over.transcriptPath ?? t.transcriptPathFor(uuid);
   const turns: SettledTurn[] = [];
@@ -94,6 +98,7 @@ export async function startGatePane(scenario: string, opts: Options = {}): Promi
       sockRoot: t.sockRoot,
       ...over,
       ...prepared,
+      ...(unprovenRecordWaitMs === undefined ? {} : { timings: { unprovenRecordWaitMs } }),
       decide: (turn) => {
         turns.push(turn);
         if (opts.decide) return opts.decide(turn);

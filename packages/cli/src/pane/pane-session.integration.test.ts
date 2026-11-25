@@ -357,7 +357,7 @@ describe.skipIf(!MAGMUX)(
             decide: (turn) =>
               /^VERDICT:/.test(turn.answer)
                 ? { state: "COMPLETED" }
-                : { state: "EMPTY", reason: "shape_mismatch" },
+                : { state: "SHAPE_MISMATCH", reason: "shape_mismatch" },
           });
           const snap = await finish(r);
           expect(snap.state).toBe("COMPLETED");
@@ -429,7 +429,8 @@ describe.skipIf(!MAGMUX)(
           const snap = await close(r);
           expect(snap.anomalies).not.toContain("gate_busy:box_not_empty");
           expect(sends.map(({ message }) => message)).toMatchObject([
-            { keys: ["ctrl-u"], enter: false, noGate: true },
+            // clearKeyCount(24-cell line, 0, 160): one ctrl-u per wrapped row the leftover can occupy
+            { keys: ["ctrl-u", "ctrl-u"], enter: false, noGate: true },
             { text: "Reply with exactly PEAR.", typed: true, enter: true },
           ]);
           expect(sends).toHaveLength(2);
@@ -983,7 +984,10 @@ describe.skipIf(!MAGMUX)(
             shape: "interactive",
             initialPrompt: undefined,
             decide: () => "continue",
-            timings: { admitTimeoutMs: LATER_ADMIT_BOUND_MS },
+            timings: {
+              admitTimeoutMs: LATER_ADMIT_BOUND_MS,
+              unprovenRecordWaitMs: LATER_ADMIT_BOUND_MS,
+            },
           });
           await r.s.ready;
           const sends = traceInput(r);
@@ -1141,7 +1145,9 @@ describe.skipIf(!MAGMUX)(
           const r = await start("tool_slow", {
             shape: "interactive",
             decide: () => "continue",
-            env: { FAKE_GAP_MS_TOOL: "1500" },
+            // The send must land while turn 1 is still RUNNING; a short tool gap lets
+            // turn 1 settle between two polls of a loaded event loop.
+            env: { FAKE_GAP_MS_TOOL: "4000" },
           });
           await until(r, (s) => s.activity === "Bash");
           expect(r.s.send("queued one")).toEqual({ ok: true, queued: 1 });
@@ -1184,12 +1190,13 @@ describe.skipIf(!MAGMUX)(
           expect(r.s.snapshot().anomalies).toContain("send_reply_lost");
           r.s.cancel();
           await finish(r);
-          expect(sends.filter(({ message }) => message.text === "/model haiku")).toHaveLength(2);
+          // the lost TYPE waits for the box: the line drawn there settles, and only its Enter goes
+          expect(sends.filter(({ message }) => message.text === "/model haiku")).toHaveLength(1);
           expect(
             sends.filter(
               ({ message }) => Array.isArray(message.keys) && message.keys.includes("ctrl-u")
             )
-          ).toHaveLength(1);
+          ).toHaveLength(0);
           expect(r.submits.map(({ text }) => text)).toEqual(["/model haiku"]);
         },
         T

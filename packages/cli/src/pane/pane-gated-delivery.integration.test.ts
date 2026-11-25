@@ -3,6 +3,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
 import { gateBasisOf, parseGateBinding } from "./input-gate.js";
 import {
+  LOSS_RECORD_WAIT_MS,
   PROMPT,
   SKIP_LOADED,
   T,
@@ -19,6 +20,7 @@ import {
   DISPOSE_GATE_PANES_HOOK_MS,
   clientOf,
   disposeGatePanes,
+  gateUntil,
   gatedSends,
   startGatePane,
   submissions,
@@ -95,10 +97,20 @@ describe.skipIf(!MAGMUX)(
                   initialPrompt: c.prompt,
                   env: { FAKE_RENDER_LAG_MS: "800", FAKE_GAP_MS_WITNESS: "5000" },
                 });
-                await settled(r);
-                assertOneCopy(r, c.prompt);
-                if (scenario === "late_reset_swallow")
-                  expect(r.s.snapshot().anomalies).toContain("gate_retyped:terminal_reset");
+                if (scenario === "answer") {
+                  await settled(r);
+                  assertOneCopy(r, c.prompt);
+                  return;
+                }
+                // magmux >= 0.20.2 never retypes a copy the reset swallowed, and claudish
+                // types none onto a box that shows nothing: the loss is loud, one copy sent
+                const snapshot = await gateUntil(r, (s) => s.state === "FAILED", 45_000);
+                expect(snapshot.reason).toBe("prompt_not_accepted");
+                expect(snapshot.detail).toContain("the input box stayed empty");
+                expect(
+                  gatedSends(r).filter(({ message }) => typeof message.text === "string")
+                ).toHaveLength(1);
+                expect(submissions(r)).toEqual([]);
               })
             )
           );
@@ -108,16 +120,20 @@ describe.skipIf(!MAGMUX)(
     );
 
     test(
-      "DA-1: transcript off and Enter ignored fails loudly at 30 s, never as an empty answer",
+      "DA-1: transcript off and Enter ignored fails loudly at the record wait's end, never as an empty answer",
       async () => {
         const r = await startGatePane("never_submit_transcript_off", {
+          unprovenRecordWaitMs: LOSS_RECORD_WAIT_MS,
           shape: "one-shot",
           initialPrompt: PROMPT,
         });
         await assertLoudLoss(r, "still_in_box");
+        expect(gatedSends(r).filter(({ message }) => message.text === PROMPT)).toHaveLength(1);
         expect(
-          gatedSends(r).filter(({ message }) => message.text === PROMPT).length
-        ).toBeLessThanOrEqual(2);
+          r.sends.filter(({ message }) =>
+            (message.keys as string[] | undefined)?.includes("ctrl-u")
+          )
+        ).toHaveLength(0);
       },
       T
     );
@@ -161,6 +177,7 @@ describe.skipIf(!MAGMUX)(
                 shape: "one-shot",
                 initialPrompt: PROMPT,
                 env: { FAKE_GAP_MS_WITNESS: "12000" },
+                ...(loses ? { unprovenRecordWaitMs: LOSS_RECORD_WAIT_MS } : {}),
               });
               if (loses) await assertLoudLoss(r, "still_in_box");
               else {
@@ -206,16 +223,15 @@ describe.skipIf(!MAGMUX)(
             command ? "Set model to `haiku`" : `ANSWER fake-answer ${sha8(prompt)}`
           );
           expect(r.s.snapshot().anomalies).toContain("send_reply_lost");
+          // a lost TYPE reply waits for the box to settle; settled on the whole command line,
+          // it gets Enter alone: one typed copy and no ctrl-u either way
           const typed = gatedSends(r).filter(({ message }) => typeof message.text === "string");
-          expect(typed).toHaveLength(command ? 2 : 1);
+          expect(typed).toHaveLength(1);
           const clears = r.sends.filter(({ message }) =>
             (message.keys as string[] | undefined)?.includes("ctrl-u")
           );
-          expect(clears).toHaveLength(command ? 1 : 0);
-          if (command)
-            expect(clears[0]?.at).toBeGreaterThanOrEqual(
-              typed[0]?.repliedAt ?? Number.POSITIVE_INFINITY
-            );
+          expect(clears).toHaveLength(0);
+          if (command) expect(r.s.snapshot().anomalies).toContain("box_drawn_after_mismatch");
         },
         T
       );

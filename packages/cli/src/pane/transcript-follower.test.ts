@@ -1084,3 +1084,243 @@ describe("MTL-229 written files after the task Read", () => {
     expect(view({ pending: true }).writtenFiles).toEqual([]);
   });
 });
+
+describe("the turn's last API response", () => {
+  const PEAR = "Reply with exactly PEAR and nothing else.";
+  const MARKER =
+    "\n\n[API Error: cyber_policy This content was flagged for possible cybersecurity risk.]";
+
+  /** The captured pear turn, its two records rewritten into responses of the given ids and texts. */
+  function view(responses: Array<{ id: string; texts: string[]; after?: Rec[] }>) {
+    const records = transcriptRecords("pear-hookless");
+    const state = initialFollowerState((p) => p);
+    openTurnState(state, { index: 1, offset: 0, witness: text(PEAR) });
+    let offset = 1;
+    const feed = (r: Rec) => applyRecord(state, r, offset++);
+    feed(records[witnessIndex("pear-hookless", PEAR)]!);
+    for (const [n, resp] of responses.entries()) {
+      // Claude Code writes one record per content block, all under the response's message.id.
+      const thinking = structuredClone(records[18]!);
+      thinking.uuid = `thinking-${n}`;
+      thinking.message.id = resp.id;
+      feed(thinking);
+      for (const [k, t] of resp.texts.entries()) {
+        const rec = structuredClone(records[19]!);
+        rec.uuid = `text-${n}-${k}`;
+        rec.message.id = resp.id;
+        rec.message.content = [{ type: "text", text: t }];
+        feed(rec);
+      }
+      for (const [k, block] of (resp.after ?? []).entries()) {
+        const rec = structuredClone(records[19]!);
+        rec.uuid = `after-${n}-${k}`;
+        rec.message.id = resp.id;
+        rec.message.content = [block];
+        feed(rec);
+      }
+    }
+    return turnView(state.turns[0]!);
+  }
+
+  test("holds only the text blocks of the last message.id, after the turn's earlier progress", () => {
+    const v = view([
+      { id: "msg_progress", texts: ["Reading the module first."] },
+      { id: "msg_final", texts: [MARKER] },
+    ]);
+    expect(v.assistantText).toEqual(["Reading the module first.", MARKER]);
+    expect(v.lastResponseEnd).toEqual({ blockType: "text", text: MARKER });
+  });
+
+  test("ends on the last text block of a response written as several records", () => {
+    const v = view([{ id: "msg_final", texts: ["one", MARKER] }]);
+    expect(v.lastResponseEnd).toEqual({ blockType: "text", text: MARKER });
+  });
+
+  test("ends on a later non-text block of the same response, not the marker before it", () => {
+    const v = view([
+      {
+        id: "msg_final",
+        texts: [MARKER],
+        after: [{ type: "tool_use", id: "toolu_after", name: "Bash", input: { command: "ls" } }],
+      },
+    ]);
+    expect(v.lastResponseEnd).toEqual({ blockType: "tool_use", text: null });
+  });
+});
+
+/** A follower on an empty file, and a writer of main-chain user records into it. */
+function liveFollower() {
+  const dir = mkdtempSync(join(tmpdir(), "pane-follow-"));
+  cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "t.jsonl");
+  writeFileSync(path, "");
+  const f = new TranscriptFollower(path, join(dir, "none"));
+  const write = (content: string) =>
+    appendFileSync(
+      path,
+      `${JSON.stringify({
+        type: "user",
+        isSidechain: false,
+        isMeta: false,
+        message: { role: "user", content },
+        uuid: crypto.randomUUID(),
+        timestamp: new Date().toISOString(),
+      })}\n`
+    );
+  return { f, write };
+}
+
+const commandRecord = (name: string, args: string) =>
+  `<command-message>${name}</command-message>\n<command-name>/${name}</command-name>\n<command-args>${args}</command-args>`;
+
+describe("a command witness is bound to its own arguments", () => {
+  test("an earlier /cmd with other arguments does not accept the later /cmd", () => {
+    const { f, write } = liveFollower();
+    f.poll();
+    f.openTurn({
+      index: 1,
+      offset: f.size(),
+      witness: { kind: "command", name: "model", line: "/model sonnet" },
+    });
+    write(commandRecord("model", "haiku"));
+    f.poll();
+    expect(cur(f.view()).acceptedAt).toBeNull();
+    write(commandRecord("model", "sonnet"));
+    f.poll();
+    expect(cur(f.view()).acceptedAt).not.toBeNull();
+  });
+
+  test("a pointer line's record of another turn file does not accept this turn", () => {
+    const { f, write } = liveFollower();
+    const pointer = (n: number) =>
+      `/review — the full arguments are in the file \`/tmp/launch-Ab3dE9/turn-${n}.md\`; read all of it first.`;
+    f.poll();
+    f.openTurn({
+      index: 2,
+      offset: f.size(),
+      witness: { kind: "command", name: "review", line: pointer(2) },
+    });
+    write(commandRecord("review", pointer(1).slice("/review ".length)));
+    f.poll();
+    expect(cur(f.view()).acceptedAt).toBeNull();
+    write(commandRecord("review", pointer(2).slice("/review ".length)));
+    f.poll();
+    expect(cur(f.view()).acceptedAt).not.toBeNull();
+  });
+});
+
+describe("a turn held while an earlier copy may be unread", () => {
+  test("held: two joined copies are the earlier copy's record, never this turn's; the copy is seen", () => {
+    const { f, write } = liveFollower();
+    f.poll();
+    f.watchCopy(text("PEAR"), 0);
+    f.openTurn({ index: 2, offset: f.size(), witness: text("PEAR") });
+    f.holdTurn(true);
+    write("PEARPEAR");
+    f.poll();
+    expect(cur(f.view()).acceptedAt).toBeNull();
+    expect(f.copySeen()).toBe(true);
+  });
+
+  test("held: one copy of the same line accepts this turn (one submission of that text)", () => {
+    const { f, write } = liveFollower();
+    f.poll();
+    f.watchCopy(text("PEAR"), 0);
+    f.openTurn({ index: 2, offset: f.size(), witness: text("PEAR") });
+    f.holdTurn(true);
+    write("PEAR");
+    f.poll();
+    expect(cur(f.view()).acceptedAt).not.toBeNull();
+    expect(f.copySeen()).toBe(true);
+  });
+
+  test("held: a record of this line while the remembered copy is another line does not accept", () => {
+    const { f, write } = liveFollower();
+    f.poll();
+    f.watchCopy(text("PLUM"), 0);
+    f.openTurn({ index: 2, offset: f.size(), witness: text("PEAR") });
+    f.holdTurn(true);
+    write("PEAR");
+    f.poll();
+    expect(cur(f.view()).acceptedAt).toBeNull();
+    expect(f.copySeen()).toBe(false);
+  });
+
+  test("not held: today's rule, k joined copies accept", () => {
+    const { f, write } = liveFollower();
+    f.poll();
+    f.openTurn({ index: 1, offset: f.size(), witness: text("PEAR") });
+    write("PEARPEAR");
+    f.poll();
+    expect(cur(f.view()).acceptedAt).not.toBeNull();
+  });
+
+  test("the remembered copy's record is seen with no turn open, only after the offset it was typed at", () => {
+    const { f, write } = liveFollower();
+    write("PEAR");
+    f.poll();
+    f.watchCopy(text("PEAR"), f.size());
+    f.poll();
+    expect(f.copySeen()).toBe(false);
+    write("PEARPEAR");
+    f.poll();
+    expect(f.copySeen()).toBe(true);
+    f.watchCopy(null, 0);
+    expect(f.copySeen()).toBe(false);
+  });
+});
+
+describe("a held command and command records quoted in prose", () => {
+  const cmd = { kind: "command" as const, name: "pear", line: "/pear now" };
+
+  test("held: one record of the remembered command, with its own arguments, accepts this turn", () => {
+    const { f, write } = liveFollower();
+    f.poll();
+    f.watchCopy(cmd, 0);
+    f.openTurn({ index: 2, offset: f.size(), witness: cmd });
+    f.holdTurn(true);
+    write(commandRecord("pear", "now"));
+    f.poll();
+    expect(cur(f.view()).acceptedAt).not.toBeNull();
+    expect(f.copySeen()).toBe(true);
+  });
+
+  test("held: a record of the same command with other arguments does not accept", () => {
+    const { f, write } = liveFollower();
+    f.poll();
+    f.watchCopy(cmd, 0);
+    f.openTurn({ index: 2, offset: f.size(), witness: cmd });
+    f.holdTurn(true);
+    write(commandRecord("pear", "later"));
+    f.poll();
+    expect(cur(f.view()).acceptedAt).toBeNull();
+  });
+
+  test("a plain prompt that quotes command markers is not a command record", () => {
+    const { f, write } = liveFollower();
+    f.poll();
+    f.openTurn({ index: 1, offset: f.size(), witness: cmd });
+    write(
+      "Explain this record: <command-name>/pear</command-name> <command-args>now</command-args>"
+    );
+    f.poll();
+    expect(cur(f.view()).acceptedAt).toBeNull();
+    write(`${commandRecord("pear", "now")}\nand then some prose`);
+    f.poll();
+    expect(cur(f.view()).acceptedAt).toBeNull();
+    write(commandRecord("pear", "now"));
+    f.poll();
+    expect(cur(f.view()).acceptedAt).not.toBeNull();
+  });
+
+  test("a quoted command record never marks a watched command copy as seen", () => {
+    const { f, write } = liveFollower();
+    f.poll();
+    f.watchCopy(cmd, 0);
+    write(
+      "see <command-message>pear</command-message><command-name>/pear</command-name><command-args>now</command-args> above"
+    );
+    f.poll();
+    expect(f.copySeen()).toBe(false);
+  });
+});

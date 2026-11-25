@@ -55,7 +55,8 @@ AGENTS are awaited, with no bound.
 `TeamRunOptions.timeout`, `graceExtension`, `maxGraceSeconds` and `stallSeconds`
 are gone, along with the watcher, `timeoutModel`, and the token-file progress
 read. The only bounds left are the pane's boot (90 s) and the admission of the
-prompt (30 s), before any work exists (D10).
+prompt (30 s, or up to boot and admission together, 120 s, once Enter was pressed with no
+proof: `pane-session.md`, "The record wait") (D10).
 
 **Silence is reported, not judged.** A slot's `last_activity_at` is its last
 screen change or transcript append, and `idle_seconds` counts from it — a signal
@@ -170,8 +171,11 @@ than working around it.
 
 **It does block through boot and admission, and only through them.** The bound
 is boot 90 s + admission 30 s = 120 s, before any work exists, so nothing can be
-lost to it. The 30 s is strict: every gated send of an admission is sized so its
-client timeout ends by the deadline (`pane-session.md`, "Delivery mechanics"). With
+lost to it. The 30 s is strict for sending: every gated send of an admission is
+sized so its client timeout ends by the deadline (`pane-session.md`, "Delivery mechanics"). Once
+Enter was pressed with no proof, a prompt's own record is waited for longer (`pane-session.md`,
+"The record wait"), and that wait is capped by the same 120 s from the session's start, so a fast
+boot's unused part of the 120 s is spent there and `run` returns no later. With
 the fake child the gate is ready 3.9–4.2 s after spawn (magmux's 3.5 s boot floor). Returning any
 earlier breaks a real consumer: the dev plugin's team gate polls until no slot is
 RUNNING, so a slot still STARTING on its first poll would end the gate with zero
@@ -262,8 +266,8 @@ every slot is terminal, not every pane reaped: `done` awaits each slot's
 
 `summarise` counts `COMPLETED` as ok, a terminal slot whose `error.reason` is
 `cancelled` as cancelled (every CANCELLED row carries it), and every other state —
-the non-terminal STARTING, RUNNING, AWAITING_INPUT and AWAITING_PERMISSION
-included — as failed; the verdict is `completed` when any slot is ok (the channel
+EMPTY and SHAPE_MISMATCH, and the non-terminal STARTING, RUNNING, AWAITING_INPUT and
+AWAITING_PERMISSION included — as failed; the verdict is `completed` when any slot is ok (the channel
 frame's rule), `cancelled` when all were cancelled. Only `run` writes a record:
 `run-and-judge` returns its verdict in the call, and `judge`/`status`/`list`/
 `capture`/`cancel`/`resize` start no work. `loadDiskRecord` returns null for a

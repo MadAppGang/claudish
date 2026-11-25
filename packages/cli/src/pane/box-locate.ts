@@ -127,6 +127,25 @@ export function rowsAboveBox(s: ScreenState, box: LocatedBox): string[] {
   return s.lines.slice(0, box.top);
 }
 
+/**
+ * Blank cells drawn after the text on the box's last row that holds text, as the cursor
+ * proves them: the cursor's column less the width of that row's text, when the cursor sits on
+ * that row at or after it. `locatedBoxText` drops a row's trailing whitespace, so this is the
+ * only screen evidence that typed trailing spaces were drawn. null when the cursor is on any
+ * other row (or before the text): nothing is proved.
+ */
+export function cursorGapAfterText(s: ScreenState, box: LocatedBox): number | null {
+  for (let i = box.bottom - 1; i > box.top; i--) {
+    const raw = visibleText(s.lines[i] ?? "", s.spans[i]);
+    const body = i === box.top + 1 ? raw.replace(/^[❯!]\s?/, "") : raw.replace(/^ {2}/, "");
+    if (body.trim() === "") continue;
+    if (s.cursor.y !== i) return null;
+    const end = Bun.stringWidth(raw.replace(/\s+$/, ""));
+    return s.cursor.x >= end ? s.cursor.x - end : null;
+  }
+  return null;
+}
+
 /** Characters of `line` whose cell is NOT faint. Columns are code-point indexes. */
 function visibleText(line: string, spans: readonly SpanRun[] | undefined): string {
   if (!spans?.length) return line;
@@ -151,4 +170,82 @@ export function locatedBoxText(s: ScreenState, box: LocatedBox): string {
     parts.push(body.replace(/\s+$/, ""));
   }
   return parts.join("\n").trim();
+}
+
+/** How the box text reads against the line being delivered. */
+export type BoxMatch = "line" | "prefix" | "other";
+
+/**
+ * The box text (`locatedBoxText`) against `line`: exactly the line; text that ENDS with the
+ * start of the line (alone, or after other text), whose rest may not be read yet; or other
+ * text. `locatedBoxText` joins the box's rows with `\n`, strips the prompt glyph and one
+ * following space from the first row, the two-space indent from every other row, each row's
+ * trailing whitespace, and the whole result's ends. So every row must be an exact part of
+ * the line, character for character; the only difference allowed is at a row boundary, where
+ * the spaces the wrap moved to the end of the row above (and the strip removed) are skipped:
+ * the spaces the line has there, less those the next row still shows (a blank row between
+ * them, a space run wrapped over several rows, is skipped with that run). Text followed by the
+ * WHOLE line is other text, even when an earlier tail is also a proper prefix: the copy was
+ * read to its end, so a clear queues behind nothing.
+ * That rule assumes the line is not periodic: for "abab" or "aaaa", the line followed by its
+ * own start ("ababab") also holds a tail that is the whole line, so it reads as other text
+ * and is cleared although its tail may be unread. Prompts are not built that way.
+ */
+export function matchBoxText(shown: string, line: string): BoxMatch {
+  const whole = matchFrom(shown, line);
+  if (whole === "line") return "line";
+  // Every tail, the whole text first. A tail that is the whole line decides before any
+  // prefix: a line whose end is also its start ("abcab") leaves a tail that is a proper
+  // prefix ("ab") in "draft abcab" and "abcababcab", yet the copy there was read to its end.
+  let prefix = whole === "prefix";
+  for (let k = 1; k < shown.length; k++) {
+    if (shown[k] === "\n") continue;
+    const tail = matchFrom(shown.slice(k), line);
+    if (tail === "line") return "other";
+    if (tail === "prefix") prefix = true;
+  }
+  return prefix ? "prefix" : "other";
+}
+
+/**
+ * Where wrapped row `row` starts in `want`, the rows above having matched up to `at`: past the
+ * spaces the wrap moved to the end of the row above (the line's spaces there, less those `row`
+ * still shows). A blank row is part of a space run wrapped over several rows and shows no count
+ * of its own: it stays at `at`, and the next row with text skips the whole run. A "space" is
+ * any character the row strip removes (`isRowSpace`). -1: no start.
+ */
+function wrappedRowStart(want: string, at: number, row: string): number {
+  if (row === "") return isRowSpace(want[at]) ? at : -1;
+  let spaces = 0;
+  while (isRowSpace(want[at + spaces])) spaces++;
+  let lead = 0;
+  while (isRowSpace(row[lead])) lead++;
+  return spaces < lead ? -1 : at + spaces - lead;
+}
+
+/**
+ * A character `locatedBoxText` strips from a row's end (`\s`, so a no-break space too), other
+ * than the row break: the wrap skip must agree with that strip, or a row ending in a no-break
+ * space reads as other text.
+ */
+function isRowSpace(c: string | undefined): boolean {
+  return c !== undefined && c !== "\n" && /\s/.test(c);
+}
+
+/** `matchBoxText` for text that must start where the line starts. */
+function matchFrom(shown: string, line: string): BoxMatch {
+  // untrimmed: spaces at the line's end that the box does not show are not read yet
+  const want = line;
+  let at = 0;
+  for (const [i, row] of shown.split("\n").entries()) {
+    if (i > 0) at = wrappedRowStart(want, at, row);
+    if (at < 0 || !want.startsWith(row, at)) return "other";
+    at += row.length;
+  }
+  return at === want.length ? "line" : "prefix";
+}
+
+/** The located box shows exactly `line` (`matchBoxText`). */
+export function boxShowsLine(shown: string, line: string): boolean {
+  return matchBoxText(shown, line) === "line";
 }

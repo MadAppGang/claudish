@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
+import { formatInBandApiError, inBandErrorCodeKey } from "./in-band-api-error.js";
 import type { SettledTurn } from "./pane/index.js";
 import {
   DEFAULT_MIN_OUTPUT_BYTES,
@@ -12,7 +13,8 @@ import {
  * assistant text read from the transcript — for a file-delivered prompt, only the text
  * after the task file was read), the transcript's API-error entry, the stop_reason and
  * the read coverage of the task file. Precedence: api_error (FAILED) → prompt_not_read
- * (FAILED) → refused (EMPTY) → empty_output → min_output_bytes → shape_mismatch LAST.
+ * (FAILED) → refused (EMPTY) → empty_output → min_output_bytes → shape_mismatch
+ * (SHAPE_MISMATCH) LAST.
  */
 
 const CLEAN_LARGE_OUTPUT = "A".repeat(4000);
@@ -264,7 +266,7 @@ describe("classifyRunOutput — in-band API errors", () => {
     };
     expect(classifyRunOutput(input)).toBeNull();
     expect(classifyRunOutput({ ...input, requirePattern: "VERDICT:" })).toEqual({
-      state: "EMPTY",
+      state: "SHAPE_MISMATCH",
       reason: "shape_mismatch",
       detail: expect.stringContaining("VERDICT:"),
     });
@@ -300,6 +302,211 @@ describe("classifyRunOutput — in-band API errors", () => {
   );
 });
 
+describe("classifyRunOutput — in-band API error as the turn's last API response", () => {
+  // The real shape: a slot narrated its progress in earlier responses, then the final
+  // response held thinking blocks and ONE text block that is exactly the marker,
+  // stop_reason end_turn, no isApiErrorMessage. The proxy that wrote the marker also
+  // recorded it in the slot's token file (`in_band_api_error`), and only that record
+  // tells claudish's marker from the model quoting one.
+  const marker =
+    "\n\n[API Error: cyber_policy This content was flagged for possible cybersecurity risk. If this seems wrong, try rephrasing your request.]";
+  const progress =
+    "Reading the module first.\n\nThe handler parses three fields; checking the tests next.";
+  const endsWith = (text: string) => ({ blockType: "text", text });
+  const turnStartedAt = "2026-11-21T10:00:00.000Z";
+  const proof = (code = "cyber_policy", at = "2026-11-21T10:00:05.000Z") => ({
+    proxyInBandError: { code, at },
+    turnStartedAt,
+  });
+
+  it("reports a final response that is only the marker as FAILED api_error after progress text", () => {
+    const result = classifyRunOutput({
+      answer: `${progress}\n\n${marker}`,
+      lastResponseEnd: endsWith(marker),
+      ...proof(),
+      apiError: null,
+      stopReason: "end_turn",
+      promptRead: delivery({ complete: true }),
+      requirePattern: "VERDICT:",
+    });
+    expect(result?.state).toBe("FAILED");
+    expect(result?.reason).toBe("api_error");
+    expect(result?.detail).toContain("cyber_policy");
+    expect(result?.detail).toContain("content policy");
+    expect(result?.detail).not.toMatch(/relax|re-prompt/i);
+  });
+
+  it("reports it whatever the read coverage says", () => {
+    const result = classifyRunOutput({
+      answer: `${progress}\n\n${marker}`,
+      lastResponseEnd: endsWith(marker),
+      ...proof(),
+      apiError: null,
+      promptRead: delivery({ linesRead: 10, complete: false }),
+    });
+    expect(result?.reason).toBe("api_error");
+  });
+
+  it("accepts a proxy record written in the same millisecond the turn started", () => {
+    const result = classifyRunOutput({
+      answer: marker,
+      lastResponseEnd: endsWith(marker),
+      ...proof("cyber_policy", turnStartedAt),
+      apiError: null,
+      promptRead: delivery({ complete: true }),
+    });
+    expect(result?.reason).toBe("api_error");
+  });
+
+  it("reads a marker block with no proxy record as the model's text", () => {
+    const result = classifyRunOutput({
+      answer: `${progress}\n\n${marker}`,
+      lastResponseEnd: endsWith(marker),
+      turnStartedAt,
+      apiError: null,
+      stopReason: "end_turn",
+      promptRead: delivery({ complete: true }),
+      requirePattern: "VERDICT:",
+    });
+    expect(result?.reason).not.toBe("api_error");
+    expect(result?.reason).toBe("shape_mismatch");
+  });
+
+  it("reads a quoted marker the greedy pattern would match as the model's text without a record", () => {
+    // One text block that starts with a marker and ends in `]`: the writer's format
+    // `[API Error: <code> <message>]` cannot be told apart from it by text alone.
+    const quoted = "[API Error: overloaded] is what you see; retry later [see docs]";
+    const result = classifyRunOutput({
+      answer: quoted,
+      lastResponseEnd: endsWith(quoted),
+      turnStartedAt,
+      proxyInBandError: null,
+      apiError: null,
+      promptRead: delivery({ complete: true }),
+    });
+    expect(result).toBeNull();
+  });
+
+  it("reports a marker whose code held whitespace as api_error against the record's key", () => {
+    const spaced = formatInBandApiError("bad code", "refused");
+    const result = classifyRunOutput({
+      answer: spaced,
+      lastResponseEnd: endsWith(spaced),
+      ...proof(inBandErrorCodeKey("bad code")),
+      apiError: null,
+      promptRead: delivery({ complete: true }),
+    });
+    expect(result?.reason).toBe("api_error");
+  });
+
+  it("reads a marker as the model's text when the proxy recorded a different code", () => {
+    const result = classifyRunOutput({
+      answer: marker,
+      lastResponseEnd: endsWith(marker),
+      ...proof("server_is_overloaded"),
+      apiError: null,
+      promptRead: delivery({ complete: true }),
+    });
+    expect(result).toBeNull();
+  });
+
+  it("reads a marker as the model's text when the proxy record is older than the turn", () => {
+    const result = classifyRunOutput({
+      answer: marker,
+      lastResponseEnd: endsWith(marker),
+      ...proof("cyber_policy", "2026-11-21T09:59:59.999Z"),
+      apiError: null,
+      promptRead: delivery({ complete: true }),
+    });
+    expect(result).toBeNull();
+  });
+
+  it("reads a marker as the model's text when the turn's start is unknown", () => {
+    const result = classifyRunOutput({
+      answer: marker,
+      lastResponseEnd: endsWith(marker),
+      proxyInBandError: { code: "cyber_policy", at: "2026-11-21T10:00:05.000Z" },
+      turnStartedAt: null,
+      apiError: null,
+      promptRead: delivery({ complete: true }),
+    });
+    expect(result).toBeNull();
+  });
+
+  it("keeps a marker quoted inside a longer final text block as the model's text", () => {
+    const quoted = `The provider sometimes answers with ${marker.trim()} — that is not what happened here.\n\nVERDICT: PASS`;
+    const result = classifyRunOutput({
+      answer: `${progress}\n\n${quoted}`,
+      lastResponseEnd: endsWith(quoted),
+      ...proof(),
+      apiError: null,
+      stopReason: "end_turn",
+      promptRead: delivery({ complete: true }),
+      requirePattern: "VERDICT:",
+    });
+    expect(result).toBeNull();
+  });
+
+  it("reports a marker block appended after streamed prose in the same response as api_error", () => {
+    // The proxy's endWithText adds the marker as an extra text block of the response
+    // whose prose had already streamed: [prose block, marker block].
+    const result = classifyRunOutput({
+      answer: `${progress}\n\nSee below.\n\n${marker}`,
+      lastResponseEnd: endsWith(marker),
+      ...proof(),
+      apiError: null,
+      promptRead: delivery({ complete: true }),
+      requirePattern: "VERDICT:",
+    });
+    expect(result?.state).toBe("FAILED");
+    expect(result?.reason).toBe("api_error");
+  });
+
+  it("keeps one final block of prose ending in a marker as the model's text, even unread", () => {
+    const block = "The provider returned:\n\n[API Error: cyber_policy refused]";
+    const result = classifyRunOutput({
+      answer: block,
+      lastResponseEnd: endsWith(block),
+      ...proof(),
+      apiError: null,
+      promptRead: delivery({ linesRead: 0, complete: false }),
+    });
+    expect(result?.reason).not.toBe("api_error");
+    expect(result?.reason).toBe("prompt_not_read");
+  });
+
+  it("does not read a marker followed by a later content block of that response as an error", () => {
+    const result = classifyRunOutput({
+      answer: `${progress}\n\n${marker}`,
+      lastResponseEnd: { blockType: "tool_use", text: null },
+      ...proof(),
+      apiError: null,
+      promptRead: delivery({ complete: true }),
+    });
+    expect(result).toBeNull();
+  });
+
+  it("uses no joined-answer rule once the last response is known", () => {
+    const result = classifyRunOutput({
+      answer: marker,
+      lastResponseEnd: { blockType: "thinking", text: null },
+      ...proof(),
+      apiError: null,
+      promptRead: delivery({ complete: true }),
+    });
+    expect(result).toBeNull();
+  });
+
+  it("applies the joined-answer rules when no last-response data exists", () => {
+    const result = classifyRunOutput({
+      answer: `I'll read the file.\n\n[API Error: cyber_policy refused]`,
+      apiError: null,
+      promptRead: delivery({ linesRead: 0, complete: false }),
+    });
+    expect(result?.reason).toBe("api_error");
+  });
+});
+
 describe("classifyRunOutput — requirePattern", () => {
   const requirePattern = "```vote";
 
@@ -330,7 +537,7 @@ describe("classifyRunOutput — requirePattern", () => {
   it.each(dropoutFixtures)("classifies $name as a shape mismatch", ({ text }) => {
     const result = classifyRunOutput({ answer: text, apiError: null, requirePattern });
 
-    expect(result?.state).toBe("EMPTY");
+    expect(result?.state).toBe("SHAPE_MISMATCH");
     expect(result?.reason).toBe("shape_mismatch");
     expect(result?.detail).toContain(requirePattern);
     expect(result?.detail).toContain(`${Buffer.byteLength(text)} B`);

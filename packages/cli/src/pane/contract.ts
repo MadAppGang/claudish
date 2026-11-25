@@ -63,7 +63,12 @@ export interface ViewHolder {
   claim_id: string;
 }
 
-/** Closed set. The mod colours by it. */
+/**
+ * Closed set of ten; SHAPE_MISMATCH is terminal. The mod colours by it. Readers decide
+ * "finished" from explicit lists of terminal states, so a value a reader does not know reads
+ * as not finished: a new terminal state ships after the readers know it (reader first),
+ * within v1 and with no `CONTRACT_VERSION` bump.
+ */
 export type SlotState =
   /** Pane spawned; Claude Code booting, or the prompt the session was CREATED with delivered but not yet
    * accepted. A promptless session's first send_input goes AWAITING_INPUT → RUNNING, never back to
@@ -90,9 +95,11 @@ export type SlotState =
   | "CANCELLED"
   /** create_session timeout_seconds elapsed (team slots never time out). Terminal. */
   | "TIMEOUT"
-  /** Turn settled but the answer is unusable: empty, refused, below min_output_bytes, or
-   * shape_mismatch. Terminal. */
-  | "EMPTY";
+  /** Turn settled but the answer is unusable: empty, refused, or below min_output_bytes. Terminal. */
+  | "EMPTY"
+  /** Turn settled with an answer that does not match the caller's require_pattern (team only;
+   * reason shape_mismatch). The answer is kept in response-<slot>.md. Terminal. */
+  | "SHAPE_MISMATCH";
 
 export const SLOT_STATES: readonly SlotState[] = [
   "STARTING",
@@ -104,6 +111,7 @@ export const SLOT_STATES: readonly SlotState[] = [
   "CANCELLED",
   "TIMEOUT",
   "EMPTY",
+  "SHAPE_MISMATCH",
 ];
 
 export const TERMINAL_STATES: readonly SlotState[] = [
@@ -112,6 +120,7 @@ export const TERMINAL_STATES: readonly SlotState[] = [
   "CANCELLED",
   "TIMEOUT",
   "EMPTY",
+  "SHAPE_MISMATCH",
 ];
 
 export function isTerminalState(s: SlotState): boolean {

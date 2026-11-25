@@ -193,7 +193,7 @@ interactive Claude Code session in its own headless magmux pane (see "Requiremen
 - `judges` - Model IDs to use as judges (default: same as runners)
 - `input_file` - Path to a file holding the task prompt (preferred for anything longer than a sentence)
 - `input` - Task prompt as inline text. If neither is given, an `input.md` already in the session directory is used
-- `require_pattern` - Regex (no flags) each slot's answer must match, or the slot is EMPTY `shape_mismatch`. Recommended whenever your prompt mandates an output shape, e.g. ```` ```vote ````
+- `require_pattern` - Regex (no flags) each slot's answer must match, or the slot ends `SHAPE_MISMATCH` (reason `shape_mismatch`); its answer stays in `response-<slot>.md`. A slot with no answer at all is `EMPTY`. Recommended whenever your prompt mandates an output shape, e.g. ```` ```vote ````
 - `min_output_bytes` - Report a slot EMPTY when its answer is shorter than this (default 0 = off)
 - `agent` - Claude Code subagent every slot runs as (e.g. `dev:reviewer`); an unknown agent fails the slot `agent_rejected`
 - `claude_flags` - Other Claude Code flags and their values, space-separated, never positional text (write `--allowedTools Read,Bash`; a value after a Claude Code switch, as in `--brief now`, would be the session's first prompt and is refused). Flags that would break the interactive pane (`-p`, `--output-format`, `--resume`, …) and print-mode-only flags (`--max-turns`, `--max-budget-usd`, …) are refused
@@ -207,7 +207,7 @@ interactive Claude Code session in its own headless magmux pane (see "Requiremen
 **Modes:**
 | Mode | What it does |
 |------|-------------|
-| `run` | Start the models and return once every slot has taken its prompt (at most about two minutes, usually seconds) — it does not wait for answers. Outputs are written anonymized to the session directory. The result carries `run_id` and `monitor_record`, the run's record under `~/.claudish/sessions/` (see "Session records on disk") |
+| `run` | Start the models and return once every slot has taken its prompt (at most about two minutes, usually seconds) — it does not wait for answers. Outputs are written anonymized to the session directory. The result carries `run_id` and `monitor_record`, the run's record under `~/.claudish/sessions/` (see "Session records on disk"), and `slots`, model → slot id; a model listed more than once keeps its bare id for its first slot and takes `<model>#2`, `<model>#3` for the later ones, skipping a number whose key is already a literal model id of the run (models `a`, `a`, `a#2` give `a`, `a#3`, `a#2`) |
 | `status` | Progress of a run: per-slot rows under `run.slots` (state, reason, reason_detail, tokens, idle seconds, activity), plus `contract_version` and `capabilities` |
 | `list` | Every run this server holds: `{contract_version, capabilities, runs}`. Finished runs stay listed for 30 minutes |
 | `capture` | One slot's current terminal screen (same shape as `capture_session`) |
@@ -460,7 +460,7 @@ session's final screen, the upstream error bodies, the recent state records, ano
 resolved model chain, accounting, and the paths to the full records (the transcript included).
 For a prompt that was not accepted, `gate` is magmux's current input-gate reading (`ready`,
 `reason`, `detail`) and `lastSend` is magmux's answer to claudish's last gated send (`kind`,
-`reason`, `accept`, `evidence`, `retypeCause`, `attempts`).
+`reason`, `accept`, `evidence`, `attempts`).
 
 **Parameters:**
 - `session_id` (required) - Session ID from `create_session`
@@ -533,8 +533,9 @@ prompt, it returns the view to the live bottom.
 changed screen within 1 s, else the current one (at the top or the bottom nothing changes). Errors
 are JSON `{error: {code, message}}` with `unknown_session`, `invalid_args` (neither or both of `by`
 and `to`, `by: 0`, a non-integer `by`, or a `to` other than `"end"`), or `scroll_unavailable`: the
-session is still starting, finished, delivering a prompt, reading its turn from the screen or
-reconnecting, or magmux did not confirm the send (the scroll may still land). Nothing is queued.
+session is still starting, finished, delivering a prompt, waiting for an earlier prompt's copy that may
+still be unread in its input box, reading its turn from the screen or reconnecting, or magmux did
+not confirm the send (the scroll may still land). Nothing is queued.
 `list_sessions` and `team` list `scroll` in `capabilities`.
 `team(mode:"scroll", path, slot, run_id?, by | to)` does the same for a team slot and answers
 `{run_id, path, slot, seq}`.

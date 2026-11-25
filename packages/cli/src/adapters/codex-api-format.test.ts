@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { CodexAPIFormat } from "./codex-api-format.js";
+import { CodexAPIFormat, normalizeCodexModel } from "./codex-api-format.js";
 
 const capture: {
   model: string;
@@ -58,4 +58,19 @@ describe("T5 Codex instructions carry the system text unchanged", () => {
     expect(payload.instructions).toBe(parts.join("\n\n"));
     expect(payload.instructions).not.toContain("[object Object]");
   });
+});
+
+describe("normalizeCodexModel", () => {
+  test("strips a provider shortcut and a vendor path", () => {
+    expect(normalizeCodexModel("cx@some-model")).toBe("some-model");
+    expect(normalizeCodexModel("vendor/some-model")).toBe("some-model");
+  });
+
+  test.each(["", "  ", "cx@", "vendor/"])(
+    "an id with no model (%p) is an error, never a model the caller did not name",
+    (id) => {
+      expect(() => normalizeCodexModel(id)).toThrow("no model id");
+      expect(() => new CodexAPIFormat(id).buildPayload({}, [], [])).toThrow("no model id");
+    }
+  );
 });
