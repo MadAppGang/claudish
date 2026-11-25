@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { locateBox } from "./box-locate.js";
 import {
   type MagmuxFrame,
   applyCapture,
@@ -219,6 +220,57 @@ describe("boxChangedAt", () => {
     // a frame with no box located is no evidence about the box
     const gone = delta(moved, [{ y: top, t: "" }], 600);
     expect(gone.boxChangedAt).toBe(600);
+  });
+
+  /** A keyframe at `now` of a screen whose box (rules `cols` wide) holds `box`, styled `r`. */
+  const boxKeyframe = (
+    cols: number,
+    box: string,
+    now: number,
+    s = emptyScreen(cols, 24),
+    r: Array<[number, number, number, number, number]> = []
+  ) => {
+    const rule = "─".repeat(cols);
+    const rows: NonNullable<MagmuxFrame["lines"]> = Array.from({ length: 24 }, (_, y) => ({
+      y,
+      t: "",
+    }));
+    rows[14] = { y: 14, t: rule };
+    rows[15] = { y: 15, t: box ? `❯\u00a0${box}` : "❯", r };
+    rows[16] = { y: 16, t: rule };
+    rows[17] = { y: 17, t: "  ? for shortcuts" };
+    return applyFrame(
+      s,
+      { rows: 24, cols, key: true, cur: { x: 2 + box.length, y: 15 }, lines: rows },
+      now
+    );
+  };
+
+  test("a change of the box row's cell attributes alone moves it", () => {
+    const s = boxKeyframe(80, "hello", 100);
+    expect(s.boxChangedAt).toBe(100);
+    expect(locateBox(s)).not.toBeNull();
+    const faint = boxKeyframe(80, "hello", 200, s, [[2, 5, -1, -1, 2]]);
+    expect(faint.lines).toEqual(s.lines);
+    expect(faint.seq).toBe(s.seq + 1);
+    expect(faint.boxChangedAt).toBe(200);
+  });
+
+  test("a change of width moves it, the box redrawn at the new width", () => {
+    const s = boxKeyframe(80, "hello", 100);
+    const wider = boxKeyframe(100, "hello", 200, s);
+    expect(wider.cols).toBe(100);
+    // located on both sides: the width itself, not a lost box, moves it
+    expect(locateBox(s)).not.toBeNull();
+    expect(locateBox(wider)).not.toBeNull();
+    expect(wider.boxChangedAt).toBe(200);
+  });
+
+  test("a keyframe identical to the screen keeps it", () => {
+    const s = boxKeyframe(80, "hello", 100);
+    const again = boxKeyframe(80, "hello", 200, s);
+    expect(again).toBe(s);
+    expect(again.boxChangedAt).toBe(100);
   });
 });
 
