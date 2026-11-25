@@ -33,6 +33,7 @@ import {
   type PsRow,
   type PsSpawn,
   readProcessTable,
+  readProcessTableAsync,
   setPsSpawnForTest,
 } from "../process-identity.js";
 
@@ -152,6 +153,17 @@ export interface OrphanReport {
  */
 export function requireProcessTable(): PsRow[] {
   const table = readProcessTable();
+  if (!table) throw new Error("process table unavailable: ps could not run");
+  return table;
+}
+
+/**
+ * `requireProcessTable` without blocking the event loop: `ps` runs as a child while the
+ * loop keeps serving timers and I/O. A test that reads the table while the code under test
+ * is still working uses this one, so the read does not stall that work.
+ */
+export async function requireProcessTableAsync(): Promise<PsRow[]> {
+  const table = await readProcessTableAsync();
   if (!table) throw new Error("process table unavailable: ps could not run");
   return table;
 }
