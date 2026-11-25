@@ -63,6 +63,18 @@ export interface RawFixtureOptions {
 }
 
 /**
+ * The reset a dead endpoint uses when a test asserts the WORDING of its failure.
+ *
+ * "onOpen" resets a socket the instant it is accepted. With the client in the
+ * same process, Bun's fetch sometimes handles that reset before its own connect
+ * completion and reports `ConnectionRefused` instead of `ECONNRESET` (measured
+ * 119 in 10 000 back-to-back fetches on Bun 1.4.0), which turns "Cannot reach" into
+ * "Cannot connect" on a loopback endpoint. "afterBody" resets only once the
+ * request has arrived, so the client has always finished connecting.
+ */
+export const DEAD_ENDPOINT_RESET: NonNullable<RawFixtureOptions["resetWhen"]> = "afterBody";
+
+/**
  * An OpenAI-shaped streaming answer. The proxy always talks `stream:true`
  * upstream (measured against a live fixture), so a non-stream JSON body comes
  * back with empty content — this is the shape a fixture must produce.
