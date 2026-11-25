@@ -2,6 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { findMagmuxCandidates } from "../launcher/magmux-binary.js";
 import {
   MIN_MAGMUX_VERSION,
   MagmuxUnavailableError,
@@ -276,6 +277,36 @@ describe("magmux selection among candidates", () => {
   test("no candidate at all is magmux not found", async () => {
     await expect(selectMagmux([])).rejects.toThrow("magmux not found");
   });
+
+  test("an empty PATH is magmux not found, with the install hint", async () => {
+    const found = findMagmuxCandidates({ PATH: "" });
+    // only the PATH lookup is under test: a bundled or npm-package copy is left out
+    const refusal = selectMagmux([], found.lookupError);
+    await expect(refusal).rejects.toBeInstanceOf(MagmuxUnavailableError);
+    await expect(refusal).rejects.toThrow(
+      "magmux_unavailable: magmux not found (bundled package or PATH); install it: brew install MadAppGang/tap/magmux"
+    );
+  });
+
+  test("a failed PATH lookup is refused as a lookup failure naming its cause", async () => {
+    const refusal = selectMagmux([], "EIO on /broken/magmux");
+    await expect(refusal).rejects.toBeInstanceOf(MagmuxUnavailableError);
+    await expect(refusal).rejects.toThrow(
+      "magmux_unavailable: magmux lookup failed: EIO on /broken/magmux"
+    );
+    await expect(selectMagmux([], "EIO on /broken/magmux")).rejects.not.toThrow("not found");
+  });
+
+  test(
+    "a failed PATH lookup is named when no other candidate is usable",
+    async () => {
+      const old = fakeMagmux("printf '%s\\n' 'magmux 0.18.1'");
+      const refusal = selectMagmux([old.binary], "EIO on /broken/magmux");
+      await expect(refusal).rejects.toThrow(`${old.binary} reports 0.18.1`);
+      await expect(refusal).rejects.toThrow("magmux lookup failed: EIO on /broken/magmux");
+    },
+    testTimeout
+  );
 
   test(
     "an explicit binary is the only candidate: off the 0.x line it is refused",
