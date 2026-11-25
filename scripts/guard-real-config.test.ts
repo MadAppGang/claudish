@@ -547,16 +547,43 @@ describe("guard-real-config", () => {
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
     for (const damage of [true, false]) {
       test(`forwards ${signal}, finishes once, and rejects child exit 0 (${damage ? "damaged" : "intact"})`, async () => {
-        const home = mkdtempSync(join(tmpdir(), "claudish-guard-signal-"));
-        const claudishDir = join(home, ".claudish");
-        mkdirSync(claudishDir);
-        const fixture = { home, claudishDir, configPath: join(claudishDir, "config.json") };
-        const path = seedSecret(fixture);
-        const ready = join(home, "ready");
-        const received = join(home, "received");
-        const childPid = join(home, "child-pid");
-        const guardDirs = join(home, "guard-dirs");
-        const source = `
+        await expectSignalForwarded(signal, damage);
+      }, 10_000);
+    }
+  }
+
+  // The guard is held for 1.5 s right after the spawn, so the signal reaches it while
+  // the child is already running and before the guard's main code has gone further.
+  // The guard must already own the signal there: by default action it would die
+  // without restoring anything and leave its child holding the stderr pipe.
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+    test(`forwards ${signal} that arrives right after the spawn, and finishes once`, async () => {
+      await expectSignalForwarded(signal, true, (fixture) =>
+        patchedGuard(
+          fixture,
+          "  env: childEnv,\n});\n",
+          "  env: childEnv,\n});\nBun.sleepSync(1500);\n"
+        )
+      );
+    }, 10_000);
+  }
+
+  async function expectSignalForwarded(
+    signal: "SIGINT" | "SIGTERM" | "SIGHUP",
+    damage: boolean,
+    guardScript: (fixture: ScratchHome) => string = () => GUARD_SCRIPT
+  ): Promise<void> {
+    const home = mkdtempSync(join(tmpdir(), "claudish-guard-signal-"));
+    const claudishDir = join(home, ".claudish");
+    mkdirSync(claudishDir);
+    const fixture = { home, claudishDir, configPath: join(claudishDir, "config.json") };
+    const script = guardScript(fixture);
+    const path = seedSecret(fixture);
+    const ready = join(home, "ready");
+    const received = join(home, "received");
+    const childPid = join(home, "child-pid");
+    const guardDirs = join(home, "guard-dirs");
+    const source = `
           import { unlinkSync, writeFileSync } from "node:fs";
           import { dirname } from "node:path";
           writeFileSync(${JSON.stringify(guardDirs)}, JSON.stringify([
@@ -572,53 +599,69 @@ describe("guard-real-config", () => {
           writeFileSync(${JSON.stringify(ready)}, "ready");
           setInterval(() => {}, 1000);
         `;
-        const guard = Bun.spawn(
-          [process.execPath, "run", GUARD_SCRIPT, "--", process.execPath, "-e", source],
-          { env: { ...process.env, HOME: home }, stdout: "pipe", stderr: "pipe" }
-        );
-        const output = new Response(guard.stderr).text();
-        try {
-          const deadline = Date.now() + 5000;
-          while (!existsSync(ready)) {
-            if (Date.now() > deadline) throw new Error("signal child never became ready");
-            await Bun.sleep(5);
-          }
-          guard.kill(signal);
-          // the guard finishes only after its child has exited, so the child's report is on
-          // disk by the time the guard exits; no separate deadline races a starved scheduler
-          const exitCode = await guard.exited;
-          const stderr = await output;
-          expect(exitCode).toBe(1);
-          expect(existsSync(received)).toBe(true);
-          expect(readFileSync(received, "utf8")).toBe(signal);
-          expect(readFileSync(path, "utf8")).toBe(originalSecret);
-          expect(statSync(path).mode & 0o777).toBe(0o600);
-          expect(stderr.match(/MUTATED/g) ?? []).toHaveLength(damage ? 1 : 0);
-          expect(stderr.match(/Restored it from the pre-run snapshot\./g) ?? []).toHaveLength(
-            damage ? 1 : 0
-          );
-          if (!damage) expect(stderr).toContain(`command terminated by ${signal}`);
-          expectNoSecretCopies(path);
-          // The run home and the sentinel directory are removed on every signal path.
-          const [runHome, sentinelDir] = JSON.parse(readFileSync(guardDirs, "utf8")) as string[];
-          expect(runHome).toStartWith(join(tmpdir(), "claudish-guard-home-"));
-          expect(sentinelDir).toStartWith(join(tmpdir(), "claudish-guard-sentinel-"));
-          expect(existsSync(runHome as string)).toBe(false);
-          expect(existsSync(sentinelDir as string)).toBe(false);
-        } finally {
-          guard.kill("SIGKILL");
-          if (existsSync(childPid)) {
-            try {
-              process.kill(Number(readFileSync(childPid, "utf8")), "SIGKILL");
-            } catch {
-              /* already exited */
+    const guard = Bun.spawn(
+      [process.execPath, "run", script, "--", process.execPath, "-e", source],
+      { env: { ...process.env, HOME: home }, stdout: "pipe", stderr: "pipe" }
+    );
+    const output = new Response(guard.stderr).text();
+    try {
+      const deadline = Date.now() + 5000;
+      while (!existsSync(ready)) {
+        if (Date.now() > deadline) throw new Error("signal child never became ready");
+        await Bun.sleep(5);
+      }
+      guard.kill(signal);
+      // the guard finishes only after its child has exited, so the child's report is on
+      // disk by the time the guard exits; no separate deadline races a starved scheduler
+      const exitCode = await guard.exited;
+      if (guard.signalCode) {
+        // Killed by the signal itself: `finish` never ran and the child, orphaned,
+        // still holds the stderr pipe, so reading stderr would never return.
+        killRecordedChild(childPid);
+        if (existsSync(guardDirs)) {
+          for (const dir of JSON.parse(readFileSync(guardDirs, "utf8")) as string[]) {
+            if (dir.startsWith(join(tmpdir(), "claudish-guard-"))) {
+              rmSync(dir, { recursive: true, force: true });
             }
           }
-          await guard.exited;
-          await output;
-          rmSync(home, { recursive: true, force: true });
         }
-      }, 10_000);
+        throw new Error(
+          `the guard was killed by ${guard.signalCode} instead of forwarding it to its child`
+        );
+      }
+      const stderr = await output;
+      expect(exitCode).toBe(1);
+      expect(existsSync(received)).toBe(true);
+      expect(readFileSync(received, "utf8")).toBe(signal);
+      expect(readFileSync(path, "utf8")).toBe(originalSecret);
+      expect(statSync(path).mode & 0o777).toBe(0o600);
+      expect(stderr.match(/MUTATED/g) ?? []).toHaveLength(damage ? 1 : 0);
+      expect(stderr.match(/Restored it from the pre-run snapshot\./g) ?? []).toHaveLength(
+        damage ? 1 : 0
+      );
+      if (!damage) expect(stderr).toContain(`command terminated by ${signal}`);
+      expectNoSecretCopies(path);
+      // The run home and the sentinel directory are removed on every signal path.
+      const [runHome, sentinelDir] = JSON.parse(readFileSync(guardDirs, "utf8")) as string[];
+      expect(runHome).toStartWith(join(tmpdir(), "claudish-guard-home-"));
+      expect(sentinelDir).toStartWith(join(tmpdir(), "claudish-guard-sentinel-"));
+      expect(existsSync(runHome as string)).toBe(false);
+      expect(existsSync(sentinelDir as string)).toBe(false);
+    } finally {
+      guard.kill("SIGKILL");
+      killRecordedChild(childPid);
+      await guard.exited;
+      await output;
+      rmSync(home, { recursive: true, force: true });
+    }
+  }
+
+  function killRecordedChild(childPid: string): void {
+    if (!existsSync(childPid)) return;
+    try {
+      process.kill(Number(readFileSync(childPid, "utf8")), "SIGKILL");
+    } catch {
+      /* already exited */
     }
   }
 
