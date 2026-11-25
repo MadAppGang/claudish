@@ -2,6 +2,131 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.29.0] - 2026-11-25
+
+### ⚠ BREAKING CHANGES
+
+- a slot that misses require_pattern now ends in state SHAPE_MISMATCH instead of EMPTY. A caller that decides a slot is finished from its own list of states must add SHAPE_MISMATCH, or read run.state (SETTLED) instead. *(team)* ([`6720232`](https://github.com/MadAppGang/claudish/commit/6720232e93d235cdf717f65a151765364af00a6a))
+
+### Bug Fixes
+
+- reject a request with no model id instead of sending gpt-5.2 *(codex)* ([`a6d1b69`](https://github.com/MadAppGang/claudish/commit/a6d1b69c599cd9fe018d5ed91dfc31f07651eeae))
+- wait up to 120 s for a record after an unproven Enter *(team)* ([`94aaab2`](https://github.com/MadAppGang/claudish/commit/94aaab281d426ebfead532be4d70ac9c94e164fa))
+- send no ctrl-u and no second copy after still_in_box *(team)* ([`fef7a70`](https://github.com/MadAppGang/claudish/commit/fef7a70939d592dcdbece9a19f4391f370be4c7f))
+- wait up to 5 s for magmux's input view before pane_lost *(team)* ([`1e39b99`](https://github.com/MadAppGang/claudish/commit/1e39b9913751037ab8fc19f8978048f0b9ca2b91))
+- send no key onto prompt bytes Claude Code has not read *(team)* ([`0a26ca2`](https://github.com/MadAppGang/claudish/commit/0a26ca292862a1820efd9847fc87eed7da16a555))
+- require magmux 0.20.3, which reports a send it stopped partway *(team)* ([`174ef99`](https://github.com/MadAppGang/claudish/commit/174ef999b53a1b8094fe8c63ee614baa92a812bc))
+- pin magmux v0.20.1, which stops Enter on a stale frame *(team)* ([`f130c86`](https://github.com/MadAppGang/claudish/commit/f130c866b8ad9ff3eec2922ac5a3a27a907f239b))
+- say Claude Code drew nothing in a boot_timeout detail *(team)* ([`72dc9b2`](https://github.com/MadAppGang/claudish/commit/72dc9b2f3ae55a74b4e9b171e3e62ed8c0951666))
+- report a require_pattern miss as slot state SHAPE_MISMATCH *(team)* ([`6720232`](https://github.com/MadAppGang/claudish/commit/6720232e93d235cdf717f65a151765364af00a6a))
+- settle a screen-mode turn at its transcript turn_duration *(team)* ([`3816762`](https://github.com/MadAppGang/claudish/commit/381676247c9b425baf4f66025e413afd1baee169))
+- stop prompt_not_accepted when Claude Code draws typed text late *(team)* ([`5914ed3`](https://github.com/MadAppGang/claudish/commit/5914ed3d35a83668761708c51c8068475a7d2100))
+- run claudish workflows on GitHub runners, not Blacksmith *(ci)* ([`232f70f`](https://github.com/MadAppGang/claudish/commit/232f70f53c233abd74aee89b530e90f54eb86f00))
+- measure the live heap with heapStats in the conversation heap test *(test)* ([`314f712`](https://github.com/MadAppGang/claudish/commit/314f712f97162099b2e80aeaa853127300a0b0ea))
+- remove the macOS jobs from test.yml *(ci)* ([`4ed97c6`](https://github.com/MadAppGang/claudish/commit/4ed97c6e2c76b5486d4c283280d23298d31365ed))
+- pass --no-optional-locks to every act:local git call *(release)* ([`392885f`](https://github.com/MadAppGang/claudish/commit/392885fd33e74d944b8e7e02b6a5a4d4e9a3c8e6))
+- pass --literal-pathspecs to every act:local git call *(release)* ([`5712edd`](https://github.com/MadAppGang/claudish/commit/5712edda298152ed4ab1c26a4a572cbfa02bbb54))
+- refuse an act:local --change path the commit does not track *(release)* ([`ffaa830`](https://github.com/MadAppGang/claudish/commit/ffaa830be3c858d5235744c7c71dcb8535d66533))
+- refuse a symlink as the act:local --change path *(release)* ([`2e3ef19`](https://github.com/MadAppGang/claudish/commit/2e3ef19a88a72e8f1d044e6281d5947056299321))
+- send forwarded signals to act's whole process group *(release)* ([`54d151c`](https://github.com/MadAppGang/claudish/commit/54d151ca151b12da16732342d4899c2cc78b5529))
+- probe the Keychain file the caller's env names *(auth)* ([`6c8983e`](https://github.com/MadAppGang/claudish/commit/6c8983e6b45fd2e537c3721b429d8fca14ef005b))
+- build act:local's repo from HEAD and its merged v* tags *(release)* ([`005ea7d`](https://github.com/MadAppGang/claudish/commit/005ea7d76d40675cd881919c0c7dc1be82666063))
+- forward SIGHUP to act:local's act child *(release)* ([`6665392`](https://github.com/MadAppGang/claudish/commit/666539297c560dffc059db3a7baeebbd3c36e47e))
+- keep the caller's Docker and git settings out of act:local *(release)* ([`0c08259`](https://github.com/MadAppGang/claudish/commit/0c082596b0d1278c18f97b232dd86b2a757f1b0b))
+- write the npm latest canary output inside its run dir *(release)* ([`c5bd3c5`](https://github.com/MadAppGang/claudish/commit/c5bd3c54a044ecf77ec89faa484982721943c05b))
+- flag scripts/boot-canary-latest.ts in a workflow *(ci)* ([`6c07f6e`](https://github.com/MadAppGang/claudish/commit/6c07f6ec9a12d873d649cf998dfdf47b3d245dff))
+- probe the Keychain review:routing's claude child reads *(release)* ([`aa84869`](https://github.com/MadAppGang/claudish/commit/aa848694e0dadf498df4da790fcff9e308abc5d8))
+- give each test:macos run its own boot canary output dir *(release)* ([`5b64da7`](https://github.com/MadAppGang/claudish/commit/5b64da7ea3293014c5a5051aad8873c452d8b191))
+- keep every Linux job of test.yml and weekly-tests.yml under 50 s *(ci)* ([`8f4359c`](https://github.com/MadAppGang/claudish/commit/8f4359c3aa962e1c4a618baaba72b149f3598551))
+- clear the latest canary's old screens before npm view runs *(release)* ([`73643f5`](https://github.com/MadAppGang/claudish/commit/73643f5a133397c44b6064263c95e062ac70eb55))
+- read a # inside quotes as text, not a shell comment *(ci)* ([`b0be20f`](https://github.com/MadAppGang/claudish/commit/b0be20f5593dd65601aef8c66184fb5822bfef85))
+- flag the claude.ai/install.sh installer in workflows *(ci)* ([`a55232a`](https://github.com/MadAppGang/claudish/commit/a55232a1eb3e008bb404f4de794d41b082755a24))
+- treat /bin/bash, /usr/bin/env and env -i as command wrappers *(ci)* ([`ed5bd59`](https://github.com/MadAppGang/claudish/commit/ed5bd593bdc3d2ba21a94e8ce8bf8a4ef0e07c06))
+- pin CLAUDE_CONFIG_DIR to one absolute path for the review *(release)* ([`f2c3672`](https://github.com/MadAppGang/claudish/commit/f2c36729709041e818486eea03f04d959facf31e))
+- refuse review:routing whenever an API-key route exists *(release)* ([`66764e2`](https://github.com/MadAppGang/claudish/commit/66764e2939d75a3883288ef50e99a93e7d9b5086))
+- match secrets['ANTHROPIC_API_KEY'] in any case in workflows *(ci)* ([`d35cf32`](https://github.com/MadAppGang/claudish/commit/d35cf32b6ec00eadb506b067b3eee80266f415f2))
+- flag test:macos and claude inside sh -c or eval in workflows *(ci)* ([`c13ee37`](https://github.com/MadAppGang/claudish/commit/c13ee37105556bebc80033888280e803b3b0c3df))
+- remove the review temp directory when the export fails *(release)* ([`e382ed6`](https://github.com/MadAppGang/claudish/commit/e382ed6031bd08732a73257273284aae93dd8dd8))
+- refuse review:routing without a claude.ai login *(release)* ([`6321d12`](https://github.com/MadAppGang/claudish/commit/6321d122303d0d507f65bf49d4f63027601126bb))
+- remove the earlier canary output before a pin is read *(test-macos)* ([`073c54b`](https://github.com/MadAppGang/claudish/commit/073c54b338bd0d40fdeacb49fc326aaafffa55da))
+- remove only the files a canary run names *(test-macos)* ([`ce6422d`](https://github.com/MadAppGang/claudish/commit/ce6422d77434dbf97de9cb7d1c2af6a7266cb839))
+- keep files the canary did not write in its output dir *(test-macos)* ([`d93122c`](https://github.com/MadAppGang/claudish/commit/d93122cd99e4c92171b02736ba7b16a366c62ae3))
+- remove the earlier canary output before a fetch *(test-macos)* ([`7245128`](https://github.com/MadAppGang/claudish/commit/7245128254bc79fefbab3ed4ad33dcfb8c38ceea))
+- read --bin before removing an earlier run's files *(canary)* ([`a83da81`](https://github.com/MadAppGang/claudish/commit/a83da81919a94558f40d44a6da04bd050637c9c0))
+- remove an earlier run's screen files before a boot run *(canary)* ([`0f93534`](https://github.com/MadAppGang/claudish/commit/0f935348b7ba6b6478e5185bd8edc148146c6384))
+- remove an earlier run's results.json before a boot run *(canary)* ([`4112849`](https://github.com/MadAppGang/claudish/commit/4112849285793b120d4fc0cf9bb9e1f173abca6b))
+- reject a prerelease of the pinned Claude Code in test:macos *(release)* ([`a4f5bc6`](https://github.com/MadAppGang/claudish/commit/a4f5bc6a9b40288a121a3b4a8e68e4231a530e73))
+- validate boot-canary.ts flags before the binary runs *(canary)* ([`cf75934`](https://github.com/MadAppGang/claudish/commit/cf75934036447fe74869ea9cf8c20fd3e48feb4b))
+- give the second Claude Code install in Issue Triage 30 s *(ci)* ([`c7d1ed0`](https://github.com/MadAppGang/claudish/commit/c7d1ed051aeee00060e067ae750734cdd62c2b3b))
+- force-stop a hung Claude Code install in the rulebook review *(ci)* ([`aab00ac`](https://github.com/MadAppGang/claudish/commit/aab00accbf82ddf1b5ce93c2d47c4bea390184c3))
+- stop a hung Claude Code install in Issue Triage after 15 s *(ci)* ([`985a0b7`](https://github.com/MadAppGang/claudish/commit/985a0b7bcc167f02f4b819df85b72aeaddb74b42))
+- fail the npm publish step when a package does not publish *(release)* ([`95b9d65`](https://github.com/MadAppGang/claudish/commit/95b9d65957f257a48d44b306d960ca5325f3be31))
+
+### Documentation
+
+- remove the detection claim from the weekly-tests.yml header *(ci)* ([`87f6109`](https://github.com/MadAppGang/claudish/commit/87f61091fe446c09359ba2d16cd173b1827c4adb))
+- limit the weekly-tests.yml within-a-week claim to its own files *(ci)* ([`d68bb66`](https://github.com/MadAppGang/claudish/commit/d68bb667cb0e609121f1ff9aa423ed8327f8b9b0))
+- say weekly-tests.yml adds weekly files of idle and rest only *(ci)* ([`5fff68f`](https://github.com/MadAppGang/claudish/commit/5fff68f97adb67981b0652f1f688300bc46d1e8c))
+- say which magmux asset the pane suites test in release.md *(release)* ([`e4676c4`](https://github.com/MadAppGang/claudish/commit/e4676c4668a8c47c2e018257fde82eb5490cf13d))
+- remove the one-minute job bound from the test workflow notes *(ci)* ([`e2fa185`](https://github.com/MadAppGang/claudish/commit/e2fa185623f52492da2dca541157a1d30b5ead4e))
+- say which magmux asset the pane suites test before a tag *(release)* ([`e182b68`](https://github.com/MadAppGang/claudish/commit/e182b689a31c82d68e97247ba8482b8bb4769792))
+- say the pre-tag test:macos runs only the essential tier *(release)* ([`6673bff`](https://github.com/MadAppGang/claudish/commit/6673bff53756f96f56b51f1bc11f28f22c6e300f))
+- drop the one-minute guarantee from the github tier note *(release)* ([`abd13c1`](https://github.com/MadAppGang/claudish/commit/abd13c1d6bc0c23d5728f4ccd077e342debdf2ba))
+- say weekly-tests.yml runs only idle and rest groups *(release)* ([`074bef9`](https://github.com/MadAppGang/claudish/commit/074bef93b91e78a338818e818653188a391b0f40))
+- say which github-tier files the workflows run *(release)* ([`d84afad`](https://github.com/MadAppGang/claudish/commit/d84afadc00b74c2d4384654c71ae6cc4d4cea94f))
+- drop the essential-file claim from the github tier note *(release)* ([`819131e`](https://github.com/MadAppGang/claudish/commit/819131ec7efc2f382d406bfb3f03fe5708fcad2c))
+- name which test files run only on the Mac *(release)* ([`c6e7b70`](https://github.com/MadAppGang/claudish/commit/c6e7b70209da7f54b1dfb63d3a7b565a5b0d976a))
+- state the 50 s github-tier job time as a target *(release)* ([`e25bebf`](https://github.com/MadAppGang/claudish/commit/e25bebf0b640b6e6b3b25516a39bae6a6e2e5cc2))
+- remove references to the deleted macOS CI jobs *(release)* ([`ddccd1f`](https://github.com/MadAppGang/claudish/commit/ddccd1fbc9addb4852564b3f0811c74058d99341))
+- state the eden-collection heap report as possible, not observed *(test)* ([`a478e48`](https://github.com/MadAppGang/claudish/commit/a478e481688113768ecaffb807b5d158598ee970))
+- state the job time budget as a target the slice guard cannot see *(ci)* ([`085f20d`](https://github.com/MadAppGang/claudish/commit/085f20df3a9d65105572d2d08fb70fe8a50ad8b0))
+- describe the npm latest boot canary in nightly part 1 *(release)* ([`5ca1d29`](https://github.com/MadAppGang/claudish/commit/5ca1d29eb2541a7d52bce2de349d25401f714942))
+- scope the 50 s budget text to the Linux jobs of test.yml *(ci)* ([`e6e13ae`](https://github.com/MadAppGang/claudish/commit/e6e13aea0200792af09c5b8828a768fac57badf3))
+- add review:routing to the CLAUDE.md release gate *(release)* ([`b99d704`](https://github.com/MadAppGang/claudish/commit/b99d70443d49cfa76feb2bca8db10610111f7b41))
+- name test:macos as the only Claude Code boot check *(pane)* ([`5d94010`](https://github.com/MadAppGang/claudish/commit/5d9401066981b2da8686e7f5cef18643efe0f865))
+- read the rulebook from the reviewed commit, not a label *(routing)* ([`e698723`](https://github.com/MadAppGang/claudish/commit/e698723363e0a8e1a6ca366aad2e46a4b7625694))
+- add review:routing to the release gate *(release)* ([`d7007e0`](https://github.com/MadAppGang/claudish/commit/d7007e058de15ceb09ae7336e07bb19b61475197))
+- tell a failed canary boot from a changed boot screen *(release)* ([`b3b315f`](https://github.com/MadAppGang/claudish/commit/b3b315f7c886986ea09b947d1f931dfd9a7209ef))
+- state which red pinned canary cell tested the boot reader *(release)* ([`34dc4d3`](https://github.com/MadAppGang/claudish/commit/34dc4d3edf1c107a35c8889cd212b1c3a0aa6997))
+- state that the boot deadline bounds the screen wait only *(canary)* ([`6c20117`](https://github.com/MadAppGang/claudish/commit/6c20117dfb86ccb28fafe79ff730e0cb4a1d081b))
+- state the measured effect of the 2 s weekly threshold *(testing)* ([`347e5e7`](https://github.com/MadAppGang/claudish/commit/347e5e7015fa77ccc6a1e4fdcfc90ae73bddf370))
+- name the six rest slices and the three accounts files *(testing)* ([`2f76804`](https://github.com/MadAppGang/claudish/commit/2f76804413ddc82ccdd68abb1bd1f429c2326bd1))
+- update CHANGELOG.md for v14.28.3([`4d97e99`](https://github.com/MadAppGang/claudish/commit/4d97e99bbbb493d1ea61487baaf3fc1e8a15c15c))
+
+### New Features
+
+- add act:local to run a release.yml job locally with act *(release)* ([`4ab55ba`](https://github.com/MadAppGang/claudish/commit/4ab55ba78a2e0189db6d1588a19a810826ffc039))
+- add the github tier to ci-tests.ts, capped by githubMaxSeconds *(ci)* ([`1391b49`](https://github.com/MadAppGang/claudish/commit/1391b49c5a5d8871f8da91918f8b279cd4384c34))
+- boot npm latest Claude Code in nightly part 1, advisory *(release)* ([`b60f135`](https://github.com/MadAppGang/claudish/commit/b60f1353f3e995076bdec85263d25bbabc921e51))
+
+### Other Changes
+
+- keep Claude Code's review output in claude-output.json *(release)* ([`b04f76f`](https://github.com/MadAppGang/claudish/commit/b04f76fd249ea9aa399bc75842dca3e5c1b81e95))
+- remove the routing-files.yml filter and its test *(routing)* ([`7c1a77f`](https://github.com/MadAppGang/claudish/commit/7c1a77f5ad9cd6a10ed5e59d7c11f74e564fce64))
+- remove the routing-fork-guard.yml workflow *(routing)* ([`f1150a4`](https://github.com/MadAppGang/claudish/commit/f1150a42d255d3b33ee99ee6550a042860e34a6b))
+- remove issue-triage.yml and its prompt files([`1caf8ba`](https://github.com/MadAppGang/claudish/commit/1caf8ba573d24b242534caf736f853fe43f02fc5))
+- remove the claude-code.yml mention workflow([`f7da5a5`](https://github.com/MadAppGang/claudish/commit/f7da5a5aaaef9f857cd2ad1c43e5e22bfa7bcf68))
+- remove the boot-canary.yml Linux workflow *(test)* ([`26d136c`](https://github.com/MadAppGang/claudish/commit/26d136c9676c5cbb519b7ce9e3eb9a66127ac1f9))
+- remove the routing-rulebook.yml pull request review *(routing)* ([`f771bf6`](https://github.com/MadAppGang/claudish/commit/f771bf62ced022988653d755b24e5d073bc0624b))
+- replace the routing-review job with a bundled list check *(release)* ([`4532e48`](https://github.com/MadAppGang/claudish/commit/4532e48b21959559cf1c7b64f3c732d314d9ed42))
+- add scripts/routing-review.ts for a local rulebook review *(release)* ([`96804af`](https://github.com/MadAppGang/claudish/commit/96804af2290121c2bb1c05bd3f0e530e9165fb72))
+- limit a boot canary job to 1 minute *(ci)* ([`994a5ac`](https://github.com/MadAppGang/claudish/commit/994a5acb1b13cfc823573a1f19e53a358ddc42a8))
+- run the boot canary workflow on Linux runners only *(ci)* ([`5f17ab4`](https://github.com/MadAppGang/claudish/commit/5f17ab404db98f1878b9f61e0410bf12d079a19e))
+
+### Performance
+
+- cap review:routing reads at 120 lines around a Grep hit *(release)* ([`d1db29e`](https://github.com/MadAppGang/claudish/commit/d1db29e23a9374c133d767746418426d03ce4c5d))
+- boot every spawn shape at once in boot-canary.ts *(canary)* ([`77cd290`](https://github.com/MadAppGang/claudish/commit/77cd290a77216a902b525b84cd56ab0db1fba20d))
+- boot the spawn shapes 5 at a time in boot-canary.ts *(canary)* ([`b77f6b4`](https://github.com/MadAppGang/claudish/commit/b77f6b4f5af28755da732c976b77cc69b766413c))
+- install pinned Claude Code from npm for the rulebook review *(ci)* ([`25112b3`](https://github.com/MadAppGang/claudish/commit/25112b391097ac88127c5861ed50ffdaf38c02e3))
+
+### Refactoring
+
+- stop reading Bun pins from test.yml's macOS jobs *(release)* ([`16d5c6b`](https://github.com/MadAppGang/claudish/commit/16d5c6bcc882e2f96fbcb06b720b9680dc897da8))
+- inject the export and spawn into routing-review.ts *(release)* ([`94cb3f2`](https://github.com/MadAppGang/claudish/commit/94cb3f2aec0e63d8c68b9ae25aea1486cc5ec840))
+- replace findLast in structuredOutputOf with an ES2022 find *(release)* ([`a0b1be8`](https://github.com/MadAppGang/claudish/commit/a0b1be84c87cd97e00edf1db1085108bc5634339))
+- move the worker pool into scripts/run-pool.ts *(canary)* ([`ad30c62`](https://github.com/MadAppGang/claudish/commit/ad30c62400d219802694a42ed2f64ae46801d11a))
+
 ## [14.28.3] - 2026-11-19
 
 ### Bug Fixes
