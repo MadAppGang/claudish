@@ -183,6 +183,13 @@ afterEach(() => {
   for (const d of tmpDirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
+/**
+ * How long a test waits for two 50 ms pings. Far beyond the interval, so a loaded machine
+ * still delivers them, and inside Bun's 5 s test timeout, so a seam that stops pinging fails
+ * on the test's own assertion.
+ */
+const TWO_PINGS_BOUND_MS = 3_000;
+
 async function until(cond: () => boolean, ms = 2_000): Promise<void> {
   const deadline = Date.now() + ms;
   while (!cond()) {
@@ -563,21 +570,47 @@ describe("buffer mode", () => {
   });
 
   it("emits its own ping each interval while awaiting responseRewrite after upstream close", async () => {
+    // The hook stays pending until the client has read two pings, so the count does not
+    // depend on how many interval ticks fire in a fixed time: interval ticks that fall due
+    // while the process is off the CPU collapse into one. The bound is checked here, not in
+    // the hook: the seam swallows a hook's rejection and the stream would just end.
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let twoPingsRead!: () => void;
+    const twoPings = new Promise<void>((resolve) => {
+      twoPingsRead = resolve;
+    });
     const { engine } = engineWith([
       rewriteHook("slow", async () => {
-        await Bun.sleep(260);
+        await released;
         return [];
       }),
     ]);
-    const out = await readAll(
-      await applyResponseSeam(
-        sse([messageStart(), ...textBlock(0, "x"), messageDelta(), messageStop()]),
-        await scopeOf(engine),
-        { pingIntervalMs: 50 }
-      )
+    const res = await applyResponseSeam(
+      sse([messageStart(), ...textBlock(0, "x"), messageDelta(), messageStop()]),
+      await scopeOf(engine),
+      { pingIntervalMs: 50 }
     );
-    const pings = out.split(PING_FRAME).length - 1;
-    expect(pings).toBeGreaterThanOrEqual(2);
+    const reading = (async () => {
+      const reader = (res.body as ReadableStream<Uint8Array>).getReader();
+      const decoder = new TextDecoder();
+      let seen = "";
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) return seen;
+        seen += decoder.decode(value, { stream: true });
+        if (seen.split(PING_FRAME).length - 1 >= 2) twoPingsRead();
+      }
+    })();
+    const gotTwoPings = await Promise.race([
+      twoPings.then(() => true),
+      Bun.sleep(TWO_PINGS_BOUND_MS).then(() => false),
+    ]);
+    release();
+    const out = await reading;
+    expect(gotTwoPings).toBe(true);
     expect(out.indexOf(PING_FRAME)).toBeLessThan(out.indexOf("content_block_start"));
   });
 
