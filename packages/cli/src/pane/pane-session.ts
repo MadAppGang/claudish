@@ -236,6 +236,22 @@ export const REPL_STABLE_MS = 3_000;
  * that timeout ends by the admission deadline (architecture-v2 R1.4).
  */
 const SEND_CLIENT_SLACK_MS = 2_000;
+/**
+ * Replies that say the answer was lost, not that magmux answered: the client's own timer
+ * (`client_timeout`), the connection closing after the request was written (`client_lost`), or
+ * magmux ending the caller's wait while the write still runs (`timeout`). The write may still be
+ * made.
+ */
+const LOST_REPLY_CODES: ReadonlySet<string> = new Set(["client_timeout", "client_lost", "timeout"]);
+/**
+ * Replies that carry no answer from the pane's queue: nothing was written (`client_closed`,
+ * `no_client`), or the request was refused before it was queued (`bad_request`).
+ */
+const UNANSWERED_CODES: ReadonlySet<string> = new Set([
+  "client_closed",
+  "no_client",
+  "bad_request",
+]);
 /** No attempt is started with less readiness wait than this (R1.4). */
 const MIN_READY_TIMEOUT_MS = 1_000;
 /**
@@ -811,6 +827,17 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   private lastInputAt = 0;
   /** writes to the pane's input still waiting for their reply: magmux may be writing them now */
   private inputsInFlight = 0;
+  /** numbers the writes to the pane's input in the order they are sent */
+  private inputSeq = 0;
+  /**
+   * Per connection, the latest write whose reply was lost (`LOST_REPLY_CODES`): magmux may
+   * still hold it and write it later. A connection's writes run in order on its own queue, so a
+   * real answer to a later write on the SAME connection proves it finished. A replaced
+   * connection proves nothing: magmux keeps running what that connection queued after it closed.
+   */
+  private lostInputs = new Map<MagmuxClient, number>();
+  /** per connection, the latest write magmux answered (`noteInputReply`) */
+  private answeredInputs = new WeakMap<MagmuxClient, number>();
   private gateInFlight = false;
   private gateTimer: ReturnType<typeof setInterval> | null = null;
   /** when `list` first showed pane 0 dead with no `exit` event yet; 0 = not dead */
@@ -2483,11 +2510,14 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     let epochSeenAt = 0;
     // undefined: nothing trustworthy read since the settle last started
     let last: DrawnBox | undefined;
-    let changedAt = Date.now();
+    const waitStartedAt = Date.now();
+    let changedAt = waitStartedAt;
     // the WHOLE earlier line was read from a trusted frame in this epoch: only then can an
     // empty box mean that copy is gone (`drawOutcome`)
     let wholeShown = false;
     let ended: "settled" | "gone" | null = null;
+    // a write whose reply was lost may still land: the window starts no earlier than this wait
+    const floor = (): number => (this.inputReplyLost() ? waitStartedAt : 0);
     const settle = (): boolean => {
       const at = Date.now();
       if (this.trustEpoch !== epoch) {
@@ -2501,10 +2531,15 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
         last = now;
         // the box may have looked like this for a while already: the window counts from when it
         // last changed, or was last written to, not from this reading
-        changedAt = now === undefined ? at : Math.max(this.boxUnchangedSince(at), epochSeenAt);
+        changedAt =
+          now === undefined ? at : Math.max(this.boxUnchangedSince(at), epochSeenAt, floor());
         if (now !== undefined) o.onRead?.(now);
         if (now?.match === "line") wholeShown = true;
       }
+      // a write out at an earlier reading may have been answered since: the window never
+      // starts before the latest of them
+      if (now !== undefined)
+        changedAt = Math.max(changedAt, this.boxUnchangedSince(at), epochSeenAt, floor());
       ended = drawEnded(
         now,
         (wholeShown && o.earlier) || o.emptyEnds?.() === true,
@@ -3002,13 +3037,40 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     msg: Record<string, unknown>,
     ms: number
   ): Promise<MagmuxReply> {
+    const seq = ++this.inputSeq;
     this.inputsInFlight++;
+    let reply: MagmuxReply | undefined;
     try {
-      return await c.request(msg, ms);
+      reply = await c.request(msg, ms);
+      return reply;
     } finally {
       this.inputsInFlight--;
       this.lastInputAt = Date.now();
+      if (reply) this.noteInputReply(c, seq, reply);
     }
+  }
+
+  /**
+   * Records what the reply to write `seq` on `c` proves: a lost reply keeps that write counted
+   * as possibly still out (`lostInputs`) until magmux answers a later write on the same
+   * connection; a real answer clears every earlier lost write of that connection.
+   */
+  private noteInputReply(c: MagmuxClient, seq: number, r: MagmuxReply): void {
+    if (!r.ok && LOST_REPLY_CODES.has(r.code)) {
+      // a later write on this connection already answered: this one finished before it
+      if ((this.answeredInputs.get(c) ?? 0) > seq) return;
+      this.lostInputs.set(c, Math.max(this.lostInputs.get(c) ?? 0, seq));
+      return;
+    }
+    if (!r.ok && UNANSWERED_CODES.has(r.code)) return;
+    this.answeredInputs.set(c, Math.max(this.answeredInputs.get(c) ?? 0, seq));
+    const lost = this.lostInputs.get(c);
+    if (lost !== undefined && lost < seq) this.lostInputs.delete(c);
+  }
+
+  /** A write whose reply was lost may still be written (`lostInputs`). */
+  private inputReplyLost(): boolean {
+    return this.lostInputs.size > 0;
   }
 
   /**
@@ -3016,7 +3078,9 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
    * have stayed exactly as it is with nothing written to the pane: the latest of its last
    * observed change (`boxChangedAt`), the first frame that counts on the trusted connection
    * (`trustedFramesFrom`) and the reply to the last write (`lastInputAt`). `at` while a write is
-   * still out or no frame of the trusted connection has come: nothing is known before now.
+   * still out or no frame of the trusted connection has come: nothing is known before now. A
+   * write whose reply was lost is not counted here: `waitDrawn` floors its window at its own
+   * start while one is outstanding (`inputReplyLost`).
    */
   private boxUnchangedSince(at: number): number {
     if (this.inputsInFlight > 0 || this.trustedFramesFrom === null) return at;

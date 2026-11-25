@@ -16,6 +16,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { locateBox } from "./box-locate.js";
 import { classifySendReply, mismatchBoxStayedEmpty, writtenPrefix } from "./input-gate.js";
 import type { MagmuxReply } from "./magmux-client.js";
 import { MIN_MAGMUX_VERSION } from "./pane-launch.js";
@@ -110,9 +111,32 @@ function screenWith(text: string, glyph = "❯", menu: readonly string[] = []): 
     alt: true,
     changedAt: Date.now(),
     aboveBoxChangedAt: 0,
-    // a screen built fresh on every refresh: its box counts as drawn just now
+    // a screen built fresh: its box counts as drawn just now, unless the refresh keeps the
+    // held screen's box unchanged (`keepBoxChangedAt`)
     boxChangedAt: Date.now(),
   };
+}
+
+/**
+ * `next`, keeping the held screen's `boxChangedAt` when its box reads the same (place, rows,
+ * cursor, width), as the screen model keeps it for a frame that leaves the box alone.
+ */
+function keepBoxChangedAt(prev: ScreenState | undefined, next: ScreenState): ScreenState {
+  const key = (s: ScreenState | undefined): string | null => {
+    const box = s ? locateBox(s) : null;
+    if (!s || !box) return null;
+    return JSON.stringify([
+      s.cols,
+      box.top,
+      box.bottom,
+      s.cursor,
+      s.lines.slice(box.top, box.bottom + 1),
+    ]);
+  };
+  const k = key(next);
+  return k !== null && prev && k === key(prev)
+    ? { ...next, boxChangedAt: prev.boxChangedAt }
+    : next;
 }
 
 /** A permission dialog drawn where the input box was: no rules, so no box is located. */
@@ -195,7 +219,10 @@ function wire(
   };
   any.client = client;
   any.gateTrusted = true;
+  // a reconnect: the box is known only from the first screen after it, as for a new connection
+  let reconnected = false;
   const refresh = () => {
+    if (!sc.connected) reconnected = any.gateTrusted === true || reconnected;
     any.gateTrusted = sc.connected;
     if (!sc.connected) return;
     if (!sc.located) {
@@ -209,7 +236,9 @@ function wire(
       };
       return;
     }
-    any.screen = screenWith(sc.box, sc.glyph, sc.menu);
+    const fresh = screenWith(sc.box, sc.glyph, sc.menu);
+    any.screen = reconnected ? fresh : keepBoxChangedAt(any.screen, fresh);
+    reconnected = false;
     const gateBox = sc.gateBox ?? sc.box;
     any.gate =
       gateBox === ""

@@ -803,7 +803,24 @@ The window starts at the latest of `boxChangedAt`, the reply to the last write t
 input (`lastInputAt`: every gated send, ctrl-u, ctrl-End and scroll goes through `writeInput`),
 and the first frame that counts on the trusted connection (`trustedFramesFrom`); while a write
 is still out, or before that first frame, it starts at the reading itself. The rule itself is
-unchanged: only a box seen unchanged, with nothing written, for `DRAW_SETTLE_MS` decides. Counting
+unchanged: only a box seen unchanged, with nothing written, for `DRAW_SETTLE_MS` decides.
+
+The start is worked out again at EVERY reading, not only when the box changes, and it only ever
+moves later. A write that was still out at the wait's first reading and is answered a moment later
+moves the start to its reply, so the box must then stay unchanged for the whole window after that
+reply.
+
+A write whose reply was lost is different. `client_timeout` (claudish's own timer), `client_lost`
+(the connection closed after the request was written) and magmux's `timeout` say only that the
+answer did not arrive; magmux may still hold the write and make it later (`lostInputs`). While
+such a write is outstanding, the window starts no earlier than the draw wait's own start: the box
+must stay unchanged for `DRAW_SETTLE_MS` from then, as it did before the window counted from the
+box's last change, so the box seen before the wait proves nothing. The wait never stalls on it.
+The write stops counting once magmux really answers a later write on the SAME connection: one
+connection's writes run in order on its own queue in magmux, so that answer proves the lost one
+finished, and the window counts from the box's last change again. A new connection proves nothing:
+magmux keeps running what a closed connection had queued, and a new connection's writes go on a
+different queue, so a write lost on a closed connection keeps the floor for the session. Counting
 from the admission's start instead spent 2 s of an inherited admission on a box already settled,
 and a later admission with a 16 s bound was then left with less than the submit's 13 846 ms
 (`readyTimeoutFor`), so it sent nothing and expired.
@@ -1066,9 +1083,11 @@ let an in-flight reply run past the deadline. Drift in magmux's constants is saf
 under-estimate becomes a lost reply (no resend, a slower failure), never a duplicate. A bump of the
 pin re-reads `protocol/sendbudget.go`.
 
-When no attempt fits, the loop ends with nothing sent and the admission sits in ADMITTING until its
-deadline expires it. That idle stretch records the anomaly `send_no_room:<step>` (`submit`, `type`
-or `enter`), so `get_diagnostics` says why nothing was sent instead of showing an admission that
+When no attempt fits, the step's own send is not made, the loop ends, and the admission sits in
+ADMITTING until its deadline expires it. For `submit` and `type` that means nothing of the line
+was sent; for `enter` the TYPE before it was already sent, and only the Enter is missing. That idle
+stretch records the anomaly `send_no_room:<step>` (`submit`, `type` or `enter`), so
+`get_diagnostics` says why the step's send was not made instead of showing an admission that
 simply stopped.
 
 **Why neither a lost prompt nor a doubled one can happen (D-A, D-B), by construction.** D-A was two

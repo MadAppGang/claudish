@@ -105,6 +105,8 @@ interface Scripted {
   /** the box text the screen shows */
   box: string;
   accepted: boolean;
+  /** the reply to a send that is not a typed one, when set and it answers; else ok */
+  untyped?: (message: Record<string, unknown>) => Promise<MagmuxReply> | MagmuxReply | undefined;
 }
 
 /**
@@ -126,7 +128,7 @@ function wire(s: PaneSessionImpl, typed: MagmuxReply[]): Scripted {
       const reply =
         typeof message.text === "string" && message.noGate !== true
           ? (typed[Math.min(typedCount++, typed.length - 1)] as MagmuxReply)
-          : ({ ok: true, result: {} } as MagmuxReply);
+          : ((await sc.untyped?.(message)) ?? ({ ok: true, result: {} } as MagmuxReply));
       sc.sends.push({ message: { ...message }, at, doneAt: Date.now() });
       return reply;
     },
@@ -280,6 +282,67 @@ describe("an inherited copy: the settle window starts at the box's last change",
     await Bun.sleep(500);
     const typedAt = await typeSecond(s, sc);
     expect(typedAt - trustedAt).toBeGreaterThanOrEqual(SETTLE_MS);
+  }, 30_000);
+});
+
+const CLIENT_TIMEOUT: MagmuxReply = {
+  ok: false,
+  code: "client_timeout",
+  error: "no reply in 10000 ms",
+};
+
+const isCtrlE = (m: Record<string, unknown>) =>
+  Array.isArray(m.keys) && (m.keys as unknown[]).includes("ctrl-e");
+
+describe("a write whose reply was lost: it may still be written", () => {
+  test("long before the wait, then an empty box unchanged: not ruled out before the full window from the wait's start", async () => {
+    const s = session();
+    const sc = wire(s, [UNCONFIRMED, ACCEPTED]);
+    await expireUnconfirmed(s, sc);
+    sc.untyped = (m) => (isCtrlE(m) ? CLIENT_TIMEOUT : undefined);
+    expect(await (s as any).keys(["ctrl-e"])).toBe(false);
+    sc.untyped = undefined;
+    await Bun.sleep(SETTLE_MS + 500);
+    const startedAt = Date.now();
+    const typedAt = await typeSecond(s, sc);
+    expect(typedAt - startedAt).toBeGreaterThanOrEqual(SETTLE_MS);
+  }, 30_000);
+
+  test("a later write on the same connection answered: the window counts from the box's last change again", async () => {
+    const s = session();
+    const sc = wire(s, [UNCONFIRMED, ACCEPTED]);
+    await expireUnconfirmed(s, sc);
+    sc.untyped = (m) => (isCtrlE(m) ? CLIENT_TIMEOUT : undefined);
+    expect(await (s as any).keys(["ctrl-e"])).toBe(false);
+    sc.untyped = undefined;
+    // magmux runs one connection's writes in order: this answer proves the lost one finished
+    expect(await (s as any).keys(["ctrl-a"])).toBe(true);
+    await Bun.sleep(SETTLE_MS + 500);
+    const startedAt = Date.now();
+    const typedAt = await typeSecond(s, sc);
+    expect(typedAt - startedAt).toBeLessThan(500);
+  }, 30_000);
+});
+
+describe("a write still out when a draw wait starts", () => {
+  test("its reply, answered after the wait's first reading, starts the window again", async () => {
+    const s = session();
+    const sc = wire(s, [UNCONFIRMED, ACCEPTED]);
+    await expireUnconfirmed(s, sc);
+    await Bun.sleep(SETTLE_MS + 500);
+    let answeredAt = 0;
+    sc.untyped = (m) =>
+      isCtrlE(m)
+        ? Bun.sleep(1_900).then(() => {
+            answeredAt = Date.now();
+            return { ok: true, result: {} } as MagmuxReply;
+          })
+        : undefined;
+    const write = (s as any).keys(["ctrl-e"]) as Promise<boolean>;
+    const typedAt = await typeSecond(s, sc);
+    expect(await write).toBe(true);
+    expect(answeredAt).toBeGreaterThan(0);
+    expect(typedAt - answeredAt).toBeGreaterThanOrEqual(SETTLE_MS);
   }, 30_000);
 });
 
