@@ -623,7 +623,8 @@ gate never touches. `pane/input-gate.ts` translates each reply into a closed `Se
 | `ok`, `evidence:"history"` (`accept` `confirmed`, `resent_enter`, or `submitted_by_other`) | yes | accepted: RUNNING. `resent_enter` and `submitted_by_other` are counted (`gate_resent_enter`, `gate_submitted_by_other`), never failures |
 | `ok`, `evidence:"transcript"` | yes | accepted only if claudish's own witness is present, else treated as `unconfirmed` (`gate_transcript_evidence[_unwitnessed]`) |
 | `busy` `starting`, `terminal_not_ready`, `no_input_box`, `typing_in_progress`, `queue_full`, `in_flight` | no | next attempt after 250 ms |
-| `busy` with `typed:true`, `busy box_not_empty` | no | the next send first clears the box (below) |
+| `busy` with `typed:true` (a dialog named or not) | no | NO ctrl-u and NO new copy until the box settles, as after an empty-box `text_mismatch` (`startDrawWait`, below) |
+| `busy box_not_empty` | no | the next send first clears the box (below) |
 | `not_accepted text_mismatch` (not `maybeSubmitted`), the box read empty (`boxEmpty: true`, else magmux's empty-box phrases) or holding text | no | NO ctrl-u and NO new copy until the box settles: text settled 2 s on the screen: exactly the line → its Enter only; text ending with the start of the line → wait; other text → cleared and typed again; nothing settled by the deadline → `prompt_not_accepted` (below) |
 | `busy vim_mode`, `busy dialog:trust\|bypass\|api_key\|onboarding` | no | stop, never a key: `prompt_not_accepted` (vim) or `first_run_dialog` |
 | `busy dialog:permission\|question\|plan` | no | wait for the dialog to leave, within the deadline; a re-woken turn owns it |
