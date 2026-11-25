@@ -38,6 +38,7 @@ import {
 import { transcriptRecords } from "../pane/test-helpers/transcript-fixtures.js";
 import { projectsDir, transcriptPathFor } from "../session/session-discovery.js";
 import { readWaitLines } from "../test-helpers/contract-records.js";
+import { FINISH_PANE_TEST_HOOK_MS, FINISH_PANE_TEST_MS } from "../test-helpers/team-pane.js";
 import {
   SessionManager,
   normaliseTimeoutSeconds,
@@ -638,11 +639,11 @@ describe.skipIf(!MAGMUX)(
 
     afterEach(async () => {
       for (const m of managers) await m.shutdownAll();
-      const report = await waitNoOrphans({ sockRoot: t.sockRoot }, 10_000);
+      const report = await waitNoOrphans({ sockRoot: t.sockRoot }, FINISH_PANE_TEST_MS);
       killLeftovers({ sockRoot: t.sockRoot });
       t.cleanup();
       expect(report).toEqual({ processes: [], files: [] });
-    });
+    }, FINISH_PANE_TEST_HOOK_MS);
 
     function makeManager(opts: SessionManagerOptions = {}): SessionManager {
       const manager = new SessionManager({

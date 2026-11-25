@@ -22,6 +22,7 @@ import {
   makePaneTestEnv,
   waitNoOrphans,
 } from "../pane/test-helpers/hermetic-env.js";
+import { FINISH_PANE_TEST_HOOK_MS, FINISH_PANE_TEST_MS } from "../test-helpers/team-pane.js";
 import { SessionManager } from "./session-manager.js";
 
 const T_PANE = 30_000;
@@ -55,11 +56,11 @@ describe.skipIf(!MAGMUX)(
 
     afterEach(async () => {
       for (const m of managers) await m.shutdownAll();
-      const report = await waitNoOrphans({ sockRoot: t.sockRoot }, 10_000);
+      const report = await waitNoOrphans({ sockRoot: t.sockRoot }, FINISH_PANE_TEST_MS);
       killLeftovers({ sockRoot: t.sockRoot });
       t.cleanup();
       expect(report).toEqual({ processes: [], files: [] });
-    });
+    }, FINISH_PANE_TEST_HOOK_MS);
 
     function makeManager(): SessionManager {
       const manager = new SessionManager({
