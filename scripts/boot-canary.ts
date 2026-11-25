@@ -49,19 +49,26 @@ import {
 } from "../packages/cli/src/pane/screen-model.js";
 import { SessionRegistry } from "../packages/cli/src/pane/session-registry.js";
 import { SCENARIOS, type Scenario, removeCanaryOutput } from "./boot-canary.output.js";
+import {
+  BOOT_CLOCK_START,
+  type BootClock,
+  MAX_MS,
+  bootLabel,
+  bootSettled,
+  noteFrame,
+} from "./boot-canary.quiet.js";
 import { runPool } from "./run-pool.js";
 
-/** What one boot read as. `boot` is `repl`, `booting`, `dialog:<name>`, `choice` or `exited`. */
+/**
+ * What one boot read as. `boot` is `repl`, `booting`, `dialog:<name>`, `choice`, `exited`, or
+ * `no-paint` when the pane drew nothing before MAX_MS.
+ */
 interface Reading {
   boot: string;
   agentRejected: boolean;
   /** the registry record's status, `absent` when no live record matched the session id */
   registry: string;
 }
-
-const MAX_MS = 25_000;
-/** A boot is read once the screen has been static this long (the logo animates for ~10 s). */
-const QUIET_MS = 4_000;
 
 function usage(msg: string): never {
   console.error(`boot-canary: ${msg}`);
@@ -218,6 +225,7 @@ async function runScenario(
   let exited = false;
   let registryStatus = "absent";
   let scrollback = "";
+  let clock: BootClock = BOOT_CLOCK_START;
   const t0 = Date.now();
   try {
     mm = spawn(
@@ -231,11 +239,10 @@ async function runScenario(
       }
     );
     client = await MagmuxClient.connect(join(sockDir, `magmux-${id}.sock`), { timeoutMs: 10_000 });
-    let lastChange = 0;
     client.on("frame", (f) => {
       const prev = screen.seq;
       screen = applyFrame(screen, f);
-      if (screen.seq !== prev) lastChange = Date.now();
+      clock = noteFrame(clock, { changed: screen.seq !== prev, lines: screen.lines }, Date.now());
     });
     client.on("exit", () => {
       exited = true;
@@ -246,7 +253,7 @@ async function runScenario(
       const rec = registry.read();
       if (rec) registryStatus = rec.status ?? "no-status";
       if (exited) break;
-      if (lastChange && Date.now() - lastChange >= QUIET_MS) break;
+      if (bootSettled(clock, Date.now())) break;
     }
     // a child that exits in ~0.3 s (a rejected --agent) is gone before its first frame;
     // its last words are in the dead pane's scrollback
@@ -274,8 +281,7 @@ async function runScenario(
   const text = `${screenText(screen)}\n${scrollback}`;
   const b = readBoot(screen);
   const reading: Reading = {
-    boot:
-      exited && b.kind === "booting" ? "exited" : b.kind === "dialog" ? `dialog:${b.name}` : b.kind,
+    boot: bootLabel(b, exited, clock),
     agentRejected: agentRejectedLine(text) !== null,
     registry: registryStatus,
   };
