@@ -2,6 +2,20 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.29.1] - 2026-11-25
+
+### Bug Fixes
+
+- keep the settle window open for lost and late input replies *(team)* ([`e03df22`](https://github.com/MadAppGang/claudish/commit/e03df22e26044ad9999da0f5969f5a9ebba2e118))
+- count the inherited-copy settle from the box's last change *(team)* ([`3de4397`](https://github.com/MadAppGang/claudish/commit/3de439740ea1c28bdbc0a4d97a89f58d4d8234f6))
+- report a failed magmux PATH lookup instead of "magmux not found" *(team)* ([`37576a9`](https://github.com/MadAppGang/claudish/commit/37576a90d01697ac7aa5b089b64edd9f99234e04))
+- start the boot canary's 4 s quiet clock at the first painted frame *(test)* ([`e1fafac`](https://github.com/MadAppGang/claudish/commit/e1fafac11935115d85dafebdfaa7ca5520c7b7f1))
+- install guard-real-config signal handlers before the child spawns *(test)* ([`2c79945`](https://github.com/MadAppGang/claudish/commit/2c799454d53a03e3d4c6e752f01edb5c564b82ae))
+
+### Documentation
+
+- update CHANGELOG.md for v14.29.0([`957711f`](https://github.com/MadAppGang/claudish/commit/957711f777ebcefea0d3dab7ceba97605eea455b))
+
 ## [14.29.0] - 2026-11-25
 
 ### ⚠ BREAKING CHANGES
