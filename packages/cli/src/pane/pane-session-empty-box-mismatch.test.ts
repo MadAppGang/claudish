@@ -1697,6 +1697,8 @@ describe("the copy watch is set whenever a copy is remembered", () => {
     const s = session();
     const sc = wire(s, [LOST, ACCEPTED]);
     const any = s as any;
+    // the queued prompt is typed as is, as the test reads it: no Read tool
+    any.o.readAvailable = false;
     const first = admit(s, 15_000);
     first.initial = false;
     await any.runAdmission(first);

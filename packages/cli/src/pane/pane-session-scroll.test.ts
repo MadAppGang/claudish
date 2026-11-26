@@ -316,8 +316,10 @@ describe.skipIf(!MAGMUX)("review amendments on controlled connections", () => {
       // budget so the controlled frame below is the only possible finished answer.
       // empty_transcript omits the early transcript-off warning: first accept the
       // prompt and scroll while RUNNING, then announce screen fallback explicitly.
+      // the screen-read answer of a prompt typed as is: no Read tool, no turn file
       const r = await startGatePane("empty_transcript", {
         env: { FAKE_GAP_MS_SCREEN: "120000" },
+        readAvailable: false,
       });
       await r.s.ready;
       await gateUntil(r, (s) => s.state === "AWAITING_INPUT");

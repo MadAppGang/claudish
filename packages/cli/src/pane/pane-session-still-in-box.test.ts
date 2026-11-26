@@ -96,7 +96,9 @@ function session(extra: Partial<PaneSessionOptions> = {}): {
       transcriptPath: join(root, "transcript.jsonl"),
       slotEnv: {},
       shape: "interactive",
-      readAvailable: true,
+      // the subject is how a typed line is sent and waited on: without the Read tool a plain
+      // prompt is typed as is, as these tests read it
+      readAvailable: false,
       parentEnv: { HOME: root, CLAUDE_CONFIG_DIR: configDir },
       decide: () => "continue",
       onBlocked: () => "wait",
