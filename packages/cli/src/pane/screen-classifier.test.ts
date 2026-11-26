@@ -5,6 +5,7 @@ import {
   hasChoiceDialog,
   inputBox,
   isWorking,
+  lineSubmittedOnScreen,
   readBoot,
   screenAnswer,
   screenErrorRows,
@@ -311,5 +312,60 @@ describe("transcriptSavingOff", () => {
   test("is false on every captured screen (F4 strips its cause)", () => {
     for (const n of [...REPL_SCREENS, ...DIALOG_SCREENS])
       expect(transcriptSavingOff(loadScreen(n))).toBe(false);
+  });
+});
+
+describe("lineSubmittedOnScreen", () => {
+  const dir = "/tmp/cpt-860e1a20/launch-TNjRC3";
+  const file = (n: number) => `${dir}/turn-${n}.md`;
+  const pointer = (n: number) =>
+    `Your task is in the file \`${file(n)}\`. Read all of it with the Read tool (in parts if it is long), then do exactly what it says, treating its content as the user's message.`;
+  /** The history echo as Claude Code draws it: markdown-rendered, wrapped at 160 columns. */
+  const echoRows = (line: string, keepMarks = false): string[] => {
+    const shown = keepMarks ? line : line.replace(/[`*~]/g, "");
+    return [`❯ ${shown.slice(0, 150)}`, `  ${shown.slice(150)}`];
+  };
+  const box = ["─".repeat(160), "❯\u00a0", "─".repeat(160)];
+
+  test("a pointer's own echo, drawn without its backticks, is submitted", () => {
+    const lines = [...echoRows(pointer(2)), "⏺ ANSWER", ...box];
+    expect(lineSubmittedOnScreen(lines, pointer(2), file(2))).toBe(true);
+  });
+
+  test("an earlier pointer's echo is not this pointer's submission", () => {
+    const lines = [...echoRows(pointer(1)), "⏺ ANSWER", ...box];
+    expect(lineSubmittedOnScreen(lines, pointer(2), file(2))).toBe(false);
+  });
+
+  test("an earlier pointer's echo drawn with its backticks is not this pointer's submission", () => {
+    const lines = [...echoRows(pointer(1), true), "⏺ ANSWER", ...box];
+    expect(lineSubmittedOnScreen(lines, pointer(2), file(2))).toBe(false);
+  });
+
+  test("turn-1's echo is not turn-11's, nor turn-11's turn-1's", () => {
+    expect(lineSubmittedOnScreen([...echoRows(pointer(1)), ...box], pointer(11), file(11))).toBe(
+      false
+    );
+    expect(lineSubmittedOnScreen([...echoRows(pointer(11)), ...box], pointer(1), file(1))).toBe(
+      false
+    );
+  });
+
+  test("a pointer whose path wraps onto the echo's next row is submitted", () => {
+    const shown = pointer(2).replace(/`/g, "");
+    const cut = shown.indexOf("launch-") + 3;
+    const lines = [`❯ ${shown.slice(0, cut)}`, `  ${shown.slice(cut)}`, ...box];
+    expect(lineSubmittedOnScreen(lines, pointer(2), file(2))).toBe(true);
+  });
+
+  test("the box holding the pointer is not its echo", () => {
+    const lines = ["─".repeat(160), `❯\u00a0${pointer(2).slice(0, 150)}`, "─".repeat(160)];
+    expect(lineSubmittedOnScreen(lines, pointer(2), file(2))).toBe(false);
+  });
+
+  test("a typed line: its echo is submitted, another line's is not", () => {
+    const lines = ["❯ Reply with exactly PEAR.", "⏺ PEAR", ...box];
+    expect(lineSubmittedOnScreen(lines, "Reply with exactly PEAR.", null)).toBe(true);
+    expect(lineSubmittedOnScreen(lines, "Reply with exactly PLUM.", null)).toBe(false);
   });
 });

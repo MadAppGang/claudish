@@ -174,6 +174,41 @@ export function hasEcho(lines: readonly string[], head: string): boolean {
   return false;
 }
 
+/** The echo starting at row `i` (`❯ ` and its two-space continuation rows), squashed; else null. */
+function squashedEchoAt(lines: readonly string[], i: number): string | null {
+  const first = lines[i] ?? "";
+  if (!first.startsWith("❯ ")) return null;
+  let got = squashEcho(first.slice(2));
+  for (let j = i + 1; j < lines.length; j++) {
+    const row = lines[j] ?? "";
+    if (!/^ {2}\S/.test(row)) break;
+    got += squashEcho(row);
+  }
+  return got;
+}
+
+/**
+ * The screen shows `line` as submitted: an echo row above the box. A pointer line (its
+ * `turnFile` given) is known by its turn file's path, read across the echo's wrapped rows with
+ * the markdown marks the history drops removed: every pointer starts with the same words and
+ * the same turn directory, so its first characters name no turn. A typed line is known by its
+ * first 40 characters on the echo row.
+ */
+export function lineSubmittedOnScreen(
+  lines: readonly string[],
+  line: string,
+  turnFile: string | null
+): boolean {
+  if (turnFile === null) {
+    const head = line.slice(0, 40);
+    return lines.some((l) => l.startsWith(`❯ ${head}`));
+  }
+  // the path and the `.` after its closing backtick: `turn-1.md` never matches inside `turn-11.md`
+  const want = `${squashEcho(turnFile)}.`;
+  for (let i = 0; i < lines.length; i++) if (squashedEchoAt(lines, i)?.includes(want)) return true;
+  return false;
+}
+
 const MENU_ROW = /^\s{2}❯ \/\S|^\s{4}\/\S|^\s{4}[*+] \S/;
 
 /**

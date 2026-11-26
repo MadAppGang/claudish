@@ -63,6 +63,7 @@ import {
   hasChoiceDialog,
   inputBox,
   isWorking,
+  lineSubmittedOnScreen,
   readBoot,
 } from "../../pane/screen-classifier.js";
 import {
@@ -1024,6 +1025,7 @@ export class InteractiveDriver {
     }
     this.transition("deliver");
     const adm = this.admission;
+    const turnFile = plan.mode === "file" ? plan.file : null;
     // On a pane magmux gates (its command names Claude Code, as the `-w` wrap's does) the send waits for
     // the box and answers only with evidence, so the client timeout is the gated budget:
     // a shorter one reads a slow gated answer as a lost reply.
@@ -1043,7 +1045,7 @@ export class InteractiveDriver {
         // and entered; the screen and the transcript decide, as in a pane.
         // Once it landed, the text witness accepts it within `acceptMs` as usual.
         if (out.kind === "reply_lost" && out.code !== "timeout") {
-          if (await this.landedAfterLostReply(adm, pane, plan.line)) return;
+          if (await this.landedAfterLostReply(adm, pane, plan.line, turnFile)) return;
         } else if (out.kind === "not_accepted" && enterMayHaveBeenPressed(out)) {
           // the gate pressed Enter (or another writer may have): never pressed again;
           // the text witness accepts it, or `acceptMs` drops it
@@ -1069,8 +1071,12 @@ export class InteractiveDriver {
    * it delivered. Enter goes only while `adm` is still the pending admission, and only
    * its own reply, or the transcript and screen after it, says the line landed.
    */
-  private async landedAfterLostReply(adm: Admission, pane: number, line: string): Promise<boolean> {
-    const head = line.slice(0, 40);
+  private async landedAfterLostReply(
+    adm: Admission,
+    pane: number,
+    line: string,
+    turnFile: string | null
+  ): Promise<boolean> {
     // Twice: the Enter itself can meet a connection that is closing.
     for (let attempt = 0; attempt < 2; attempt++) {
       const seen = this.screen.seq;
@@ -1084,7 +1090,7 @@ export class InteractiveDriver {
       if (r.ok) return true;
       log(`[hooks] interactive driver: Enter after a lost reply: ${r.code} ${r.error}`);
     }
-    const landed = this.submitted(head);
+    const landed = this.submitted(line, turnFile);
     if (landed) log("[hooks] interactive driver: send reply lost; the line was submitted");
     return landed;
   }
@@ -1110,11 +1116,11 @@ export class InteractiveDriver {
     return false;
   }
 
-  /** The line starting with `head` was submitted: its witness, or its echo above the box. */
-  private submitted(head: string): boolean {
+  /** `line` was submitted: its witness, or its echo above the box (`lineSubmittedOnScreen`). */
+  private submitted(line: string, turnFile: string | null): boolean {
     const t = this.pollFollower(true)?.current;
     return (
-      (t?.acceptedAt ?? null) !== null || this.screen.lines.some((l) => l.startsWith(`❯ ${head}`))
+      (t?.acceptedAt ?? null) !== null || lineSubmittedOnScreen(this.screen.lines, line, turnFile)
     );
   }
 
