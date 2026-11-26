@@ -58,14 +58,14 @@ export class SlotLimiter {
     }
     const holdMs = this.holdMs(ownMs);
     let held = true;
-    let overrun: ReturnType<typeof setTimeout> | undefined;
+    // `giveBack` reads `overrun` only once called: after the timer below exists
     const giveBack = () => {
       if (!held) return;
       held = false;
       clearTimeout(overrun);
       this.release();
     };
-    overrun = setTimeout(() => {
+    const overrun = setTimeout(() => {
       if (!held) return;
       this.warn(
         `[slot-limiter] a test body still running ${holdMs} ms after it started (budget ${ownMs} ms + overrun ${this.overrunMs} ms): its slot is given back, and its panes may still be live`
