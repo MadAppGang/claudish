@@ -359,6 +359,28 @@ describe("lineSubmittedOnScreen", () => {
     expect(lineSubmittedOnScreen(lines, pointer(2), file(2))).toBe(true);
   });
 
+  test("an echo that only quotes the pointer's path is not its submission", () => {
+    expect(
+      lineSubmittedOnScreen([`❯ Please explain ${file(2)}.`, ...box], pointer(2), file(2))
+    ).toBe(false);
+    expect(lineSubmittedOnScreen([`❯ Compare ${file(2)}.bak`, ...box], pointer(2), file(2))).toBe(
+      false
+    );
+    expect(
+      screenAnswer(
+        {
+          lines: [`❯ Please explain ${file(2)}.`, "⏺ EXPLAINED", ...box],
+          cols: 160,
+          rows: 7,
+          cursor: { x: 2, y: 5 },
+          spans: [[], [], [], [], []],
+        } as unknown as Parameters<typeof screenAnswer>[0],
+        pointer(2),
+        file(2)
+      )
+    ).toBe("");
+  });
+
   test("the box holding the pointer is not its echo", () => {
     const lines = ["─".repeat(160), `❯\u00a0${pointer(2).slice(0, 150)}`, "─".repeat(160)];
     expect(lineSubmittedOnScreen(lines, pointer(2), file(2))).toBe(false);

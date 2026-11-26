@@ -100,15 +100,6 @@ function squash(s: string): string {
 }
 
 /**
- * `squash` without the markdown marks Claude Code drops when it draws a submitted line in
- * the history: the echo is markdown-rendered, so `` `a.md` `` shows as `a.md`, while the
- * line itself (and the input box) keeps the raw characters.
- */
-function squashEcho(s: string): string {
-  return squash(s).replace(/[`*~]/g, "");
-}
-
-/**
  * `line` as the history draws it: Claude Code renders a submitted line as markdown, so a PAIRED
  * inline mark (a code span, `**strong**`, `*emphasis*`, `~~strike~~`, `~strike~`) shows only
  * its content. An unpaired mark is drawn as typed: `*42` stays `*42`, `***` stays `***`.
@@ -211,29 +202,30 @@ export function hasEcho(
 function squashedEchoAt(lines: readonly string[], i: number): string | null {
   const first = lines[i] ?? "";
   if (!first.startsWith("❯ ")) return null;
-  let got = squashEcho(first.slice(2));
+  let got = squash(first.slice(2));
   for (let j = i + 1; j < lines.length; j++) {
     const row = lines[j] ?? "";
     if (!/^ {2}\S/.test(row)) break;
-    got += squashEcho(row);
+    got += squash(row);
   }
   return got;
 }
 
 /**
- * Row `i` is the echo of the pointer line naming `turnFile`: its turn file's path, read across
- * the echo's wrapped rows with the markdown marks the history drops removed. Every pointer
- * starts with the same words and the same turn directory, so its first characters name no turn.
+ * Row `i` is the echo of the pointer `line`: the WHOLE line as the history draws it (its
+ * backticks rendered away, `renderedInline`), read across the echo's wrapped rows. Every
+ * pointer starts with the same words and the same turn directory, so only the whole line, with
+ * its own `turn-<n>.md` and the words after it, names the turn: an echo that quotes the path
+ * (`Please explain …/turn-2.md.`, `…/turn-2.md.bak`) is another line.
  */
-function pointerEchoAt(lines: readonly string[], i: number, turnFile: string): boolean {
-  // the path and the `.` after its closing backtick: `turn-1.md` never matches inside `turn-11.md`
-  return squashedEchoAt(lines, i)?.includes(`${squashEcho(turnFile)}.`) ?? false;
+function pointerEchoAt(lines: readonly string[], i: number, line: string): boolean {
+  return squashedEchoAt(lines, i)?.startsWith(squash(renderedInline(line))) ?? false;
 }
 
 /**
- * The LAST echo row above `end` of `line`, or -1: for a pointer line (its `turnFile` given)
- * the echo naming that turn file (`pointerEchoAt`), for a typed line the echo of its first
- * `headLength` characters (`echoAt`).
+ * The LAST echo row above `end` of `line`, or -1: for a pointer line (a file delivery, its
+ * `turnFile` given) the echo of the whole line (`pointerEchoAt`), for a typed line the echo of
+ * its first `headLength` characters (`echoAt`).
  */
 function echoRowOf(
   lines: readonly string[],
@@ -244,14 +236,14 @@ function echoRowOf(
 ): number {
   const above = lines.slice(0, end);
   for (let i = end - 1; i >= 0; i--)
-    if (turnFile === null ? echoAt(above, i, line, headLength) : pointerEchoAt(above, i, turnFile))
+    if (turnFile === null ? echoAt(above, i, line, headLength) : pointerEchoAt(above, i, line))
       return i;
   return -1;
 }
 
 /**
  * The screen shows `line` as submitted: an echo row above the box. A pointer line (its
- * `turnFile` given) is known by its turn file (`echoRowOf`). A typed line is known by its first
+ * `turnFile` given) is known by its whole rendered line (`echoRowOf`). A typed line is known by its first
  * 40 characters on the echo row.
  */
 export function lineSubmittedOnScreen(
@@ -419,7 +411,7 @@ const NON_ANSWER_ROW =
  * Degraded-mode answer (C4): the `⏺` prose rows after the LAST echo of `echo` and
  * their indented continuations, minus tool rows, sub-result rows (`  ⎿ …`), collapsed
  * tool summaries (`  Ran 1 shell command`), working/finished rows and error rows (L14).
- * A file delivery's echo (`turnFile` given) is found by its turn file (`echoRowOf`), never by
+ * A file delivery's echo (`turnFile` given) is found by its whole pointer line (`echoRowOf`), never by
  * the first characters every pointer of a session shares.
  */
 export function screenAnswer(s: ScreenState, echo: string, turnFile: string | null = null): string {
