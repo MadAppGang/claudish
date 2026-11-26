@@ -8,7 +8,7 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { type ChildProcess, spawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { findMagmuxBinaryOrNull } from "../launcher/magmux-binary.js";
@@ -28,6 +28,11 @@ import { type TempLayout, makeTempLayout, waitFor } from "../test-helpers/contra
 type Json = Record<string, unknown>;
 const T = 120_000;
 const PROMPT = "VIEWCHECK 視界 alpha";
+/**
+ * The fake child's answer names the hash of the prompt it read. The prompt reaches the child
+ * as a pointer to its turn file, so the screen shows the pointer, never the prompt's text.
+ */
+const PROMPT_SHA = createHash("sha1").update(PROMPT).digest("hex").slice(0, 8);
 
 let layout: TempLayout | undefined;
 let server: McpServer | undefined;
@@ -113,7 +118,7 @@ describe.skipIf(!MAGMUX_AVAILABLE)(
           const shown = await waitFor(
             async () => {
               const text = await screenOf(control);
-              return text.includes("ANSWER") && text.includes("VIEWCHECK") ? text : undefined;
+              return /ANSWER \S+ /.test(text) && text.includes(PROMPT_SHA) ? text : undefined;
             },
             {
               what: "the session's screen in the viewer's pane",
