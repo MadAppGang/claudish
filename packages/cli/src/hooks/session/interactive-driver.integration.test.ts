@@ -673,6 +673,38 @@ describe.skipIf(!MAGMUX)(
       );
     }
     test(
+      "with Read, an earlier pointer on screen, the next pointer typed and its Enter lost: Enter goes to it, and it is the hook's turn",
+      async () => {
+        const dbl = controlled();
+        const r = await rig([{ say: "A1" }, { say: "A2" }, { say: "A3" }], {
+          binding: dbl.binding,
+        });
+        try {
+          const d = r.driver as InteractiveDriver;
+          await until(() => d.snapshot().booted, "boot");
+          await r.type("go");
+          await until(() => dbl.calls.length === 1, "settle 1");
+          dbl.calls[0]?.resolve(inject("HOOK-ONE"));
+          await until(() => dbl.calls.length === 2, "settle 2", 25_000);
+          // the first injection's pointer stays in the history above the box
+          const restore = loseReplyOf(pointerIn(r, 2), false);
+          try {
+            dbl.calls[1]?.resolve(inject("HOOK-TWO"));
+            await until(() => dbl.calls.length === 3, "settle 3", 25_000);
+          } finally {
+            restore();
+          }
+          expect(dbl.dropped).toEqual([]);
+          expect(dbl.calls[2]?.turn).toMatchObject({ index: 3, answer: "A3", hookCaused: true });
+          expect(r.keylog()).toEqual(["go", pointerIn(r, 1), pointerIn(r, 2)]);
+        } finally {
+          await finish(r);
+        }
+      },
+      T
+    );
+
+    test(
       "the box shows the line's first 40 characters and then other text after a lost reply: no Enter is sent",
       async () => {
         const line = "HOOK-LONG reply with exactly the word PEAR, and nothing else at all";

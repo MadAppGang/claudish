@@ -120,26 +120,32 @@ describe("a turn_file witness: a prompt record carrying the turn file's token", 
     expect(state.copy?.seen).toBe(true);
   });
 
-  test("a departed pointer copy is never taken as one copy of itself", () => {
+  test("a departed copy whose text is the pointer line takes the pointer's record: a pointer copy must never be departed", () => {
+    // pane-session's departCopy keeps a pointer copy out of `departed`; this is what it prevents
     const { state, view } = fold(witnessOf(2), [userRecord(pointer(2))], (s) => {
-      s.departed = { witness: witnessOf(2), after: 0 };
+      s.departed = { witness: { kind: "text", text: pointer(2) }, after: 0 };
     });
-    expect(view.acceptedAt).toBe(TS);
-    expect(state.departed).not.toBeNull();
+    expect(view.acceptedAt).toBeNull();
+    expect(state.departed).toBeNull();
   });
 });
 
 describe("records that carry the token but are not a submission of the line", () => {
   const refused: Array<[string, Record<string, unknown>]> = [
     [
-      "a task notification quoting the path",
-      userRecord(`<task-notification>I read ${pointer(2)}</task-notification>`, {
-        origin: { kind: "task-notification" },
-      }),
+      "a record whose origin is a task notification, with no notification tag",
+      userRecord(`I read ${pointer(2)}`, { origin: { kind: "task-notification" } }),
     ],
     [
-      "a Read tool_result holding the path",
-      userRecord([{ type: "tool_result", tool_use_id: "t1", content: pointer(2) }]),
+      "a task notification tag quoting the path, with a human origin",
+      userRecord(`<task-notification>I read ${pointer(2)}</task-notification>`),
+    ],
+    [
+      "a record holding the pointer as text beside a tool_result",
+      userRecord([
+        { type: "text", text: pointer(2) },
+        { type: "tool_result", tool_use_id: "t1", content: "1\tdone" },
+      ]),
     ],
     ["an isMeta record", userRecord(pointer(2), { isMeta: true })],
     ["a sidechain record", userRecord(pointer(2), { isSidechain: true })],

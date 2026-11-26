@@ -2209,6 +2209,13 @@ describe("a late record, unproven spaces, and keys while a copy may be unread", 
     any.admitExpired(first);
     expect(any.unreadCopy).toBeNull();
     expect(any.keysWithheld()).toBe(false);
+    // a second admission opens; the first line's late record is not its witness, its own is
+    any.phase = "ADMITTING";
+    const next = admitPlanned(s, 30_000, "line one\nline two", 2);
+    writeRecord(s, first.line);
+    expect(any.witnessNow()).toBe(false);
+    writeRecord(s, next.line);
+    expect(any.witnessNow()).toBe(true);
   }, 30_000);
 
   test("a pointer copy that departs is forgotten without a departed rule: its own record is no one copy of anything", () => {
