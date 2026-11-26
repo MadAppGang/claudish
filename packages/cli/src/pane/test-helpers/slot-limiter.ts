@@ -6,8 +6,21 @@ export class SlotLimiter {
   private free: number;
   private readonly waiters: Array<() => void> = [];
 
-  constructor(readonly slots: number) {
+  /**
+   * `overrunMs` is how long a body may keep its slot past its own budget, for the cleanup it
+   * runs after failing (a pane reap); past it the slot is taken back and `warn` says so.
+   */
+  constructor(
+    readonly slots: number,
+    readonly overrunMs: number,
+    private readonly warn: (message: string) => void = (m) => console.error(m)
+  ) {
     this.free = slots;
+  }
+
+  /** The longest a body with budget `ownMs` keeps its slot. */
+  holdMs(ownMs: number): number {
+    return ownMs + this.overrunMs;
   }
 
   /** How many slots are held now. */
@@ -31,9 +44,11 @@ export class SlotLimiter {
 
   /**
    * Runs `fn` once it holds a slot, failing when it has not settled `ownMs` after taking it.
-   * The slot is given back only once `fn` has settled, its cleanup included, even after that
-   * failure: a body that timed out still holds its panes. `deadlineAt` is when the runner gives
-   * up on the test; a test that gets its slot after it never runs its body.
+   * The slot is given back once `fn` has settled, its cleanup included, even after that
+   * failure: a body that timed out still holds its panes. A body still running `holdMs(ownMs)`
+   * after it started gives its slot back anyway, with a warning, so one stuck body cannot hold
+   * a slot for the rest of the file. `deadlineAt` is when the runner gives up on the test; a
+   * test that gets its slot after it never runs its body.
    */
   async run(fn: () => Promise<void> | void, ownMs: number, deadlineAt: number): Promise<void> {
     await this.take();
@@ -41,11 +56,24 @@ export class SlotLimiter {
       this.release();
       throw new Error("no slot before its deadline: the body was not run");
     }
+    const holdMs = this.holdMs(ownMs);
+    let held = true;
+    let overrun: ReturnType<typeof setTimeout> | undefined;
+    const giveBack = () => {
+      if (!held) return;
+      held = false;
+      clearTimeout(overrun);
+      this.release();
+    };
+    overrun = setTimeout(() => {
+      if (!held) return;
+      this.warn(
+        `[slot-limiter] a test body still running ${holdMs} ms after it started (budget ${ownMs} ms + overrun ${this.overrunMs} ms): its slot is given back, and its panes may still be live`
+      );
+      giveBack();
+    }, holdMs);
     const body = Promise.resolve().then(fn);
-    void body.then(
-      () => this.release(),
-      () => this.release()
-    );
+    void body.then(giveBack, giveBack);
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([
@@ -65,7 +93,8 @@ export class SlotLimiter {
 
 /**
  * The runner's timeout for a test with its own budget `ownMs`: that budget plus the wait for a
- * slot behind `ahead` tests registered before it, `slots` at a time, each up to `longestMs`.
+ * slot behind `ahead` tests registered before it, `slots` at a time, each holding its slot up
+ * to `longestMs` (the longest `SlotLimiter.holdMs` registered before it).
  * Counted over the whole file, not one block: bun runs the tests of adjacent
  * `describe.concurrent` blocks at the same time, up to `--max-concurrency`, so a test can
  * queue behind any test registered before it.

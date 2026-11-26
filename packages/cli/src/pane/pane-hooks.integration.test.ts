@@ -60,9 +60,10 @@ const T = 120_000;
  * At most this many of the file's concurrent tests run at once, whatever `--max-concurrency`
  * the runner passes: each test drives one or more real panes, and a pane child redraws its box
  * on every typed key, so many panes typing at once starve each other of CPU and turns miss
- * their bounds. The weekly runner passes `--max-concurrency=12`.
+ * their bounds. The weekly runner passes `--max-concurrency=12`. A body that fails its budget may
+ * spend a pane reap (`REAP_DEADLINE_MS`) on cleanup before its slot is given back.
  */
-const slots = new SlotLimiter(3);
+const slots = new SlotLimiter(3, REAP_DEADLINE_MS);
 /** Tests registered so far, and the longest own budget among them: a test queues behind them. */
 let registered = 0;
 let longestBudget = 0;
@@ -73,7 +74,8 @@ let longestBudget = 0;
  * (`outerTimeout`).
  */
 function slotTest(name: string, fn: () => Promise<void> | void, timeout = T): void {
-  const outer = outerTimeout(timeout, registered, slots.slots, Math.max(longestBudget, timeout));
+  const longestHold = slots.holdMs(Math.max(longestBudget, timeout));
+  const outer = outerTimeout(timeout, registered, slots.slots, longestHold);
   registered++;
   longestBudget = Math.max(longestBudget, timeout);
   test(name, () => slots.run(fn, timeout, Date.now() + outer), outer);
