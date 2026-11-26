@@ -15,6 +15,7 @@ import {
 } from "../test-helpers/contract-mcp.js";
 import { type TempLayout, makeTempLayout, waitFor } from "../test-helpers/contract-records.js";
 import type { CaptureResult, ContractError } from "./contract.js";
+import { fileTemplate } from "./prompt-delivery.js";
 import {
   DISPOSE_GATE_PANES_HOOK_MS,
   type GateRun,
@@ -95,6 +96,21 @@ describe.skipIf(!MAGMUX_AVAILABLE)("pane scroll through MCP", () => {
   }
   function keys(): string {
     return existsSync(keyLog) ? readFileSync(keyLog, "utf8") : "";
+  }
+  /**
+   * How many submitted lines are turn-file pointers. A plain prompt reaches the child as a
+   * pointer to its turn file, never as its own text, so a new pointer line is the witness
+   * that the child took the prompt.
+   */
+  function pointersSubmitted(): number {
+    const head = fileTemplate("", null).split("``")[0] ?? "";
+    return keys()
+      .split("\n")
+      .filter((line) => line.startsWith(head)).length;
+  }
+  /** Where the session reads its current turn from: `transcript` or `screen`. */
+  async function turnSource(id: string): Promise<unknown> {
+    return (await call("get_diagnostics", { session_id: id })).turnSource;
   }
   async function row(id: string): Promise<Json | undefined> {
     const list = await call("list_sessions", { include_completed: true });
@@ -324,14 +340,18 @@ describe.skipIf(!MAGMUX_AVAILABLE)("pane scroll through MCP", () => {
     async () => {
       const id = await create("fake-no_transcript");
       const prompt = "screen-only answer";
+      const pointers = pointersSubmitted();
       await call("send_input", { session_id: id, text: prompt });
-      // RUNNING can precede PTY consumption. Witness the child's accepted prompt and
-      // screen-only working frame before taking the no-new-input baseline.
+      // RUNNING can precede PTY consumption, and the turn is read from the screen only from
+      // the evaluation after the transcript-off notice is drawn. Witness the child's accepted
+      // prompt, its screen-only working frame and the screen-read turn before taking the
+      // no-new-input baseline.
       await waitFor(
         async () =>
-          keys().split("\n").includes(prompt) &&
+          pointersSubmitted() > pointers &&
           (await row(id))?.state === "RUNNING" &&
-          (await capture(id)).lines.some((line) => line.includes("Simmering")),
+          (await capture(id)).lines.some((line) => line.includes("Simmering")) &&
+          (await turnSource(id)) === "screen",
         {
           what: "screen-only prompt consumed and working frame drawn",
           timeoutMs: 20_000,
@@ -358,12 +378,14 @@ describe.skipIf(!MAGMUX_AVAILABLE)("pane scroll through MCP", () => {
     const id = await create("fake-no_transcript");
     const prompt = "screen-only answer before returning to idle";
     const offset = input().length;
+    const pointers = pointersSubmitted();
     await call("send_input", { session_id: id, text: prompt });
     await waitFor(
       async () =>
-        keys().split("\n").includes(prompt) &&
+        pointersSubmitted() > pointers &&
         (await row(id))?.state === "RUNNING" &&
-        (await capture(id)).lines.some((line) => line.includes("Simmering")),
+        (await capture(id)).lines.some((line) => line.includes("Simmering")) &&
+        (await turnSource(id)) === "screen",
       { what: "active screen-read turn", timeoutMs: 20_000, intervalMs: 50 }
     );
     const beforeRefusal = input();
