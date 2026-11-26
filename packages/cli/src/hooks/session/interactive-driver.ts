@@ -14,10 +14,12 @@
  *     opens at offset 0 with the HUMAN witness, so a prompt given on the command line,
  *     which Claude Code may write before the REPL is drawn, is witnessed. After each
  *     settle the next turn opens at the current offset with the same witness; an
- *     injected turn uses the `text` witness of the line it typed. The human witness is
- *     matched by provenance (`isHumanPrompt`): a task notification never matches it,
- *     so a background re-wake (D23) stays the turn it woke — it never makes a pending
- *     injection stale and never resets the cap.
+ *     injected turn uses the witness of the line it typed (`turn_file` for a pointer to its
+ *     turn file, `text` for a line typed as is). The human witness is matched by
+ *     provenance (`isHumanPrompt`): a task notification never matches it, so a background
+ *     re-wake (D23) stays the turn it woke — it never makes a pending injection stale and
+ *     never resets the cap; nor does a record carrying a pointer into the turn directory
+ *     (`notTurnDir`), which is an injection's, however late it lands.
  *   - **Settle.** `decideSettle`, with the same screen facts as a pane. The phase is the
  *     latch: one `binding.settle()` per settled turn, `SETTLING` while it runs, and a
  *     re-wake or a human prompt during the hold ends it (`rewake`, `caller`).
@@ -645,7 +647,8 @@ export class InteractiveDriver {
     const turn: OpenTurn = {
       index: this.lastAcceptedIndex + 1,
       offset,
-      witness: { kind: "human" },
+      // a record carrying a pointer into the turn directory is an injection's, never the human's
+      witness: { kind: "human", notTurnDir: this.o.turnDir },
       delivery: null,
       hookCaused: false,
     };

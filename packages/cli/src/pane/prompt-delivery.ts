@@ -254,7 +254,7 @@ export function planDelivery(
     file,
     fileContent: tf.content,
     lines: tf.lines,
-    witness: { kind: "text", text: line },
+    witness: { kind: "turn_file", file, line },
   };
 }
 

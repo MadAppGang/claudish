@@ -14,6 +14,7 @@ import {
   joinSplitLines,
   planDelivery,
   renderTurnFile,
+  turnFileToken,
   writeTurnFile,
 } from "./prompt-delivery.js";
 import { transcriptRecords } from "./test-helpers/transcript-fixtures.js";
@@ -166,7 +167,7 @@ describe("slash commands", () => {
 });
 
 describe("everything else is a turn file", () => {
-  test("the typed line is exactly the template, and it is the witness", () => {
+  test("the typed line is exactly the template, and the witness is the turn file it names", () => {
     const text = "line one\nline two";
     const d = planDelivery(text, TURN_DIR, 2, true);
     expect(d.mode).toBe("file");
@@ -175,7 +176,8 @@ describe("everything else is a turn file", () => {
     expect(d.line).toBe(
       `Your task is in the file \`${TURN_DIR}/turn-2.md\`. Read all of it with the Read tool (in parts if it is long), then do exactly what it says, treating its content as the user's message.`
     );
-    expect(d.witness).toEqual({ kind: "text", text: d.line });
+    expect(d.witness).toEqual({ kind: "turn_file", file: d.file, line: d.line });
+    expect(d.line).toContain(turnFileToken(d.file));
     expect(d.fileContent).toBe(text);
     expect(d.lines).toBe(2);
   });
