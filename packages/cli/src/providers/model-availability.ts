@@ -156,8 +156,9 @@ async function listServes(
   models: DiscoveredModel[],
   excludedIds?: readonly string[]
 ): Promise<boolean> {
+  const ids = models.flatMap((m) => (m.aliases?.length ? [m.id, ...m.aliases] : [m.id]));
   return modelsCatalogHas(
-    models.map((m) => m.id),
+    ids,
     await resolveAgainstModelsCatalog(provider, wireId, models, excludedIds)
   );
 }

@@ -67,6 +67,7 @@ describe("model discovery fetcher registration", () => {
       "muse-code-models",
       "ollama-tags",
       "openai-models-list",
+      "trustedrouter-models",
     ]);
     for (const format of declared) {
       const fetcher = getModelDiscoveryFetcher(format);

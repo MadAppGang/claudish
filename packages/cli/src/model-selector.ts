@@ -563,6 +563,7 @@ function formatModelChoice(model: ModelInfo, showSource = false): string {
     const sourceTagMap: Record<string, string> = {
       Zen: "Zen",
       OpenRouter: "OR",
+      TrustedRouter: "TR",
       xAI: "xAI",
       Gemini: "Gem",
       OpenAI: "OAI",
@@ -1037,6 +1038,7 @@ const PICKER_COPY: Record<string, { name?: string; description?: string }> = {
   "native-anthropic": { name: "Claude subscription", description: "Claude Code's own login" },
   anthropic: { name: "Claude API", description: "Metered on your Anthropic API key" },
   openrouter: { description: "580+ models via unified API" },
+  trustedrouter: { description: "Confidential gateway with live model catalog" },
   "opencode-zen": { name: "OpenCode Zen", description: "OpenCode-hosted models" },
   google: { name: "Google Gemini", description: "Direct API" },
   openai: { description: "Direct API" },
@@ -1104,6 +1106,7 @@ const PICKER_ORDER = [
   "z-ai",
   "ollamacloud",
   "poe",
+  "trustedrouter",
   "vertex",
   "litellm",
   "ollama",
@@ -1905,13 +1908,20 @@ function buildRowsFromDiscovered(
     const promo = describeOffer(c.offer);
     if (promo) parts.push(promo);
 
+    const discoveredPricing =
+      !flatRate && source?.pricing ? formatAveragePricing(source.pricing) : undefined;
+    const isFreeDiscovered =
+      source?.pricing !== undefined && source.pricing.input === 0 && source.pricing.output === 0;
+
     return {
       id: c.id, // listed wire id or connection base; buildExplicitModelSpec adds the provider prefix
       name: c.displayName,
       description: parts.join(" · "),
       provider: displayName,
       releaseDate: source ? resolveDiscoveredReleaseDate(source) : undefined,
-      pricing: subscription ? SUBSCRIPTION_PRICING : pricingById.get(c.id.toLowerCase()),
+      pricing: subscription
+        ? SUBSCRIPTION_PRICING
+        : (discoveredPricing ?? pricingById.get(c.id.toLowerCase())),
       context: formatContextLength(contextLength),
       contextLength,
       maxContextLength: source?.maxContextWindow,
@@ -1923,7 +1933,7 @@ function buildRowsFromDiscovered(
       // else the catalog answers and `true` remains the safer miss than hiding
       // a capable model.
       supportsTools: lookupModelCapabilities(c.id)?.supportsTools ?? source?.supportsTools ?? true,
-      isFree: flatRate, // subscription or local — no per-token charge either way
+      isFree: flatRate || isFreeDiscovered, // subscription, local, or zero-priced discovered model
       source: displayName,
     };
   });

@@ -580,6 +580,29 @@ export const BUILTIN_PROVIDERS: TieredProviderDefinition[] = [
     description: "580+ models, default backend (or@)",
   },
 
+  // ── TrustedRouter (OpenAI-compatible confidential gateway) ──────────
+  {
+    createHandler: openaiHandler,
+    tier: "gateway",
+    name: "trustedrouter",
+    displayName: "TrustedRouter",
+    transport: "openai",
+    tokenStrategy: "delta-aware",
+    baseUrl: "https://api.trustedrouter.com/v1",
+    baseUrlEnvVars: ["TRUSTEDROUTER_BASE_URL"],
+    apiPath: "/chat/completions",
+    modelDiscovery: { path: "/models", format: "trustedrouter-models" },
+    apiKeyEnvVar: "TRUSTEDROUTER_API_KEY",
+    apiKeyDescription: "TrustedRouter API Key",
+    apiKeyUrl: "https://trustedrouter.com",
+    authScheme: "bearer",
+    shortcuts: ["trustedrouter", "tr", "nyte"],
+    shortestPrefix: "tr",
+    legacyPrefixes: [],
+    isDirectApi: true,
+    description: "Confidential AI gateway with live model catalog (tr@, trustedrouter@, nyte@)",
+  },
+
   // ── xAI / Grok (OpenAI-compatible) ──────────────────────────────────
   {
     createHandler: openaiHandler,

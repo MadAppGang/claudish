@@ -278,3 +278,9 @@ registerModelDiscoveryFetcher("muse-code-models", async () => {
   const { fetchMuseCodeModelsCatalog } = await import("./meta-muse/muse-models.js");
   return fetchMuseCodeModelsCatalog();
 });
+registerModelDiscoveryFetcher("trustedrouter-models", async () => {
+  const { fetchTrustedRouterModelsCatalog } = await import(
+    "./trustedrouter/trustedrouter-models.js"
+  );
+  return fetchTrustedRouterModelsCatalog();
+});
