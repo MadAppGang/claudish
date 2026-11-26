@@ -193,6 +193,30 @@ describe("a human witness that excludes claudish's own pointer lines", () => {
     expect(fold(human(TURN_DIR), [userRecord(text)]).view.acceptedAt).toBe(TS);
   });
 
+  test("with notTurnDir, the model's answer after a pointer of that directory is no re-wake of the turn before", () => {
+    const answer = {
+      type: "assistant",
+      isSidechain: false,
+      uuid: "00000000-0000-4000-8000-000000000004",
+      timestamp: TS,
+      message: { id: "msg_late", role: "assistant", content: [{ type: "text", text: "A2-LATE" }] },
+    };
+    const { view } = fold(human(TURN_DIR), [userRecord(pointer(5)), answer]);
+    expect(view.acceptedAt).toBeNull();
+    expect(view.unwitnessedChatOffset).toBeNull();
+  });
+
+  test("with notTurnDir, the model's answer with no prompt before it is still a re-wake", () => {
+    const answer = {
+      type: "assistant",
+      isSidechain: false,
+      uuid: "00000000-0000-4000-8000-000000000004",
+      timestamp: TS,
+      message: { id: "msg_wake", role: "assistant", content: [{ type: "text", text: "woke" }] },
+    };
+    expect(fold(human(TURN_DIR), [answer]).view.unwitnessedChatOffset).toBe(100);
+  });
+
   test("without notTurnDir, a pointer record is a human prompt (unchanged)", () => {
     expect(fold(human(), [userRecord(pointer(5))]).view.acceptedAt).toBe(TS);
   });

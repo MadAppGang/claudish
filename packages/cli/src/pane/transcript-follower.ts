@@ -204,6 +204,12 @@ interface TurnState {
   /** at most RECENT_STEP_LIMIT, oldest dropped first */
   steps: SlotStep[];
   unwitnessedChat: number | null;
+  /**
+   * A human turn (`notTurnDir`) saw a pointer into the turn directory before its witness: an
+   * injection the driver gave up on landed late. What the model does after it answers that
+   * injection, never a re-wake of the turn before.
+   */
+  foreignPointerAt: number | null;
   witnessCopies: number | null;
   /** the records past the offset folded as if accepted, until the witness arrives */
   shadow: TurnState | null;
@@ -866,7 +872,7 @@ export function applyRecord(
       t.shadow = null;
       return state;
     }
-    if (t.unwitnessedChat === null && wakesModel(r)) t.unwitnessedChat = offset;
+    noteUnwitnessed(t, r, offset);
     if (t.shadow) foldTurnRecord(state, t.shadow, r, offset);
     return state;
   }
@@ -887,6 +893,23 @@ function foldTurnRecord(state: FollowerState, t: TurnState, r: Rec, offset: numb
 }
 
 /** A main-chain record that shows the model working with no prompt: its reply, or a notification. */
+/**
+ * Before its witness: the first record that shows the model working (`unwitnessedChat`),
+ * unless an excluded injection's pointer came first (`foreignPointerAt`).
+ */
+function noteUnwitnessed(t: TurnState, r: Rec, offset: number): void {
+  if (t.foreignPointerAt === null && isForeignPointer(r, t.witness)) t.foreignPointerAt = offset;
+  if (t.unwitnessedChat === null && t.foreignPointerAt === null && wakesModel(r))
+    t.unwitnessedChat = offset;
+}
+
+/** A prompt record of an injection's pointer, under a human witness that excludes them. */
+function isForeignPointer(r: Rec, w: Witness): boolean {
+  return (
+    w.kind === "human" && !!w.notTurnDir && isPromptRecord(r) && carriesPointerInto(r, w.notTurnDir)
+  );
+}
+
 function wakesModel(r: Rec): boolean {
   if (r.type === "assistant") return true;
   return isMainUser(r) && !hasToolResult(r) && isTaskNotification(r);
@@ -982,6 +1005,7 @@ function newTurnState(t: {
     localOutput: null,
     steps: [],
     unwitnessedChat: null,
+    foreignPointerAt: null,
     witnessCopies: null,
     shadow: null,
   };

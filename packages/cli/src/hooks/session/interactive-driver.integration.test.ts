@@ -537,6 +537,38 @@ describe.skipIf(!MAGMUX)(`interactive driver: delivery ${MAGMUX ? "" : NO_MAGMUX
   );
 
   test(
+    "acceptance: an injection whose record lands after acceptMs is dropped, and its late answer never re-opens the turn before it",
+    async () => {
+      const dbl = controlled();
+      const r = await rig([{ say: "A1" }, { say: "A2-LATE" }], {
+        binding: dbl.binding,
+        // every prompt's record (and echo) lands 3 s after it is submitted
+        extraEnv: { FAKE_GAP_MS_WITNESS: "3000" },
+        driver: { timings: { acceptMs: 1_000 } },
+      });
+      try {
+        const d = r.driver as InteractiveDriver;
+        await until(() => d.snapshot().booted, "boot");
+        await r.type("go");
+        await until(() => dbl.calls.length === 1, "settle 1");
+        dbl.calls[0]?.resolve(inject("HOOK-LATE-RECORD"));
+        await until(() => dbl.dropped.length === 1, "the acceptance timeout", 10_000);
+        expect(dbl.dropped).toEqual([{ text: "HOOK-LATE-RECORD", reason: "send_not_accepted" }]);
+        await until(
+          () => existsSync(r.transcript) && readFileSync(r.transcript, "utf8").includes("A2-LATE"),
+          "the injection's late answer",
+          20_000
+        );
+        await Bun.sleep(3_000);
+        expect(dbl.calls.map((c) => c.turn.index)).toEqual([1]);
+      } finally {
+        await finish(r);
+      }
+    },
+    T
+  );
+
+  test(
     "acceptance: an injected line whose witness never appears is dropped send_not_accepted",
     async () => {
       const dbl = controlled();
