@@ -2086,13 +2086,17 @@ describe("a late record, unproven spaces, and keys while a copy may be unread", 
   });
 
   /** The whole line drawn after a mismatch, its Enter reply lost, then expiry. */
-  async function enterLostAfterWholeLine(s: PaneSessionImpl, sc: Scripted): Promise<void> {
-    const first = admit(s, 30_000);
+  async function enterLostAfterWholeLine(
+    s: PaneSessionImpl,
+    sc: Scripted,
+    line = LINE
+  ): Promise<void> {
+    const first = admit(s, 30_000, line);
     first.initial = false;
     openTurnFor(s, first);
     const done = (s as any).runAdmission(first) as Promise<void>;
     await Bun.sleep(500);
-    sc.box = LINE;
+    sc.box = line;
     await done;
     expect(messagesOf(sc).filter(isEnterOnly)).toHaveLength(1);
     // Enter went: the box empties
@@ -2120,20 +2124,40 @@ describe("a late record, unproven spaces, and keys while a copy may be unread", 
     expect(sc.accepted).toBe(true);
   }, 60_000);
 
-  test("the whole line drawn, its Enter reply lost, expiry, then a different line: typed once", async () => {
+  test("the whole line PEARPEAR drawn, its Enter reply lost, expiry; then PEAR, whose SUBMIT is answered unconfirmed: PEARPEAR's late record does not accept PEAR; PEAR's own record does", async () => {
+    const OLD = "PEARPEAR";
+    const NEW = "PEAR";
+    const unconfirmed: MagmuxReply = {
+      ok: false,
+      code: "not_accepted",
+      reason: "unconfirmed",
+      typed: true,
+      error: "pane 0: Enter was pressed with no evidence",
+    };
     const s = session();
-    const sc = wire(s, [mismatchEmpty, ACCEPTED], [LOST, ACCEPTED]);
-    await enterLostAfterWholeLine(s, sc);
+    const sc = wire(s, [mismatchEmpty, unconfirmed], [LOST]);
+    const any = s as any;
+    await enterLostAfterWholeLine(s, sc, OLD);
     const nextAt = Date.now();
-    const next = admit(s, 30_000, NEXT_LINE);
+    const next = admit(s, 30_000, NEW);
     next.initial = false;
     next.index = 2;
     openTurnFor(s, next);
-    await (s as any).runAdmission(next);
+    const request = any.client.request as (m: Record<string, unknown>) => Promise<MagmuxReply>;
+    any.client.request = async (m: Record<string, unknown>) => {
+      // the earlier line's late record, written while this line's SUBMIT is out
+      if (m.text === NEW) writeRecord(s, OLD);
+      return request(m);
+    };
+    await any.runAdmission(next);
     expect(messagesOf(sc, nextAt).filter(isTyped)).toEqual([
-      expect.objectContaining({ text: NEXT_LINE }),
+      expect.objectContaining({ text: NEW }),
     ]);
-    expect(sc.accepted).toBe(true);
+    expect(next.submittedUnproven).toBe("unconfirmed");
+    expect(any.witnessNow()).toBe(false);
+    expect(sc.accepted).toBe(false);
+    writeRecord(s, NEW);
+    expect(any.witnessNow()).toBe(true);
   }, 60_000);
 
   test("a command whose menu highlights another item while keys are withheld: no Escape, and no Enter", async () => {
