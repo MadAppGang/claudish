@@ -152,6 +152,27 @@ rerouted to `claude-sonnet-5` on `api.anthropic.com`.
 - Only the classifier request is rerouted; every other request follows your normal role
   mapping.
 
+### Server-side classifier review (Claude Code 2.1.278+)
+
+Newer Claude Code versions do not send a separate classifier request by default. They ask
+the API to review the action inside the main-loop request instead: a `safeguards` field goes
+out, and `safeguard_results` come back. With passthrough on, that request goes to your
+foreign provider, which returns no verdict. Under `-p`, Claude Code then refuses every
+checked action ("auto mode could not check some actions Claude tried").
+
+So with classifier passthrough on, claudish launches Claude Code with
+[`CLAUDE_CODE_AUTO_MODE_SERVER=0`](https://code.claude.com/docs/en/permission-modes#server-side-classifier-review).
+Claude Code then sends its own classifier request again, and passthrough reroutes it. A value
+you have already exported is left as it is. `--monitor` sessions are not changed, because
+their main loop already reaches Anthropic.
+
+> **Version limit:** this works on Claude Code 2.1.278 through at least 2.1.322. Claude Code
+> 2.1.326 and later (seen through 2.1.330) have no local classifier left, so
+> `CLAUDE_CODE_AUTO_MODE_SERVER=0` no longer brings the separate classifier request back.
+> Auto mode instead reports "Claude Code no longer has a check of its own to use instead"
+> and asks for approval, or refuses under `-p`. Classifier passthrough does not work on
+> those versions yet. Versions 2.1.323 to 2.1.325 are untested.
+
 > **Consent model:** Claude Code's classifier treats a command you *explicitly name* in your
 > prompt (e.g. literally asking it to run `curl … | bash`) as informed consent and allows it.
 > Visible blocks are for dangerous actions the agent formulates on its own, or for

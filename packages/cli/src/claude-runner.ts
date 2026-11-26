@@ -2512,6 +2512,55 @@ export function resolveAdvisorToolEnv(
 }
 
 /**
+ * Claude Code's switch for the server-side auto-mode classifier. Documented at
+ * https://code.claude.com/docs/en/permission-modes#server-side-classifier-review
+ * and https://code.claude.com/docs/en/auto-mode-classifier-billing; Anthropic
+ * calls it temporary.
+ */
+export const AUTO_MODE_SERVER_ENV_VAR = "CLAUDE_CODE_AUTO_MODE_SERVER";
+
+/**
+ * Turn Claude Code's server-side auto-mode classifier off under classifier
+ * passthrough, so auto mode keeps sending the separate classifier request that
+ * passthrough exists to reroute.
+ *
+ * Since Claude Code 2.1.278, auto mode by default asks the API to review
+ * actions inside the MAIN-LOOP request: it sends the `dangerous-tool-use-*`
+ * beta and a `safeguards` body field, and reads `safeguard_results` back. It
+ * then sends no classifier request at all. Under passthrough the main loop
+ * goes to a foreign provider, which never returns `safeguard_results`. Claude
+ * Code 2.1.322 under `-p` then refuses every checked action. Its debug log
+ * says "the server-side classifier does not run for this session
+ * (server_no_result) and no local one judges in its place", and the session
+ * ends with "auto mode could not check some actions Claude tried". The proxy
+ * never sees a classifier request, so it reports "classifier passthrough was
+ * enabled but NO classifier request was seen this session".
+ *
+ * With the variable at `0`, Claude Code up to at least 2.1.322 sends its own
+ * classifier request again, and `isAutoModeClassifierRequest` routes it to
+ * native Anthropic. Claude Code 2.1.326 and later (seen through 2.1.330) have
+ * no local classifier left: at `0`, auto mode reports "Claude Code no longer
+ * has a check of its own to use instead" and asks for approval, or refuses
+ * under `-p`. On those versions passthrough still fails. Setting the variable
+ * does no harm there, since the server path fails the same way without it.
+ * The real fix for them is to forward the `safeguards` review to Anthropic,
+ * which this function does not do. 2.1.323 to 2.1.325 are untested.
+ *
+ * Monitor mode is excluded because everything there is already native, so the
+ * server-side review works. A value the user exported is never clobbered;
+ * leaving it out of `vars` forwards theirs, the same rule as
+ * {@link resolveAdvisorToolEnv}.
+ */
+export function resolveAutoModeServerEnv(
+  config: ClaudishConfig,
+  processEnv: NodeJS.ProcessEnv = process.env
+): Record<string, string> {
+  if (config.monitor || !classifierPassthroughEnabled(config, processEnv)) return {};
+  if (processEnv[AUTO_MODE_SERVER_ENV_VAR] !== undefined) return {};
+  return { [AUTO_MODE_SERVER_ENV_VAR]: "0" };
+}
+
+/**
  * The advisor model claudish names for the SPAWNED Claude Code.
  *
  * It exists for one reason: to get past Claude Code's own gate. The function that
@@ -3022,6 +3071,9 @@ export async function runClaudeWithProxy(
     // empty when the parent environment already carries one — the `...process.env`
     // above then forwards the user's value untouched.
     ...advisorToolEnv.vars,
+    // Keep auto mode's classifier a separate request that passthrough can
+    // reroute (see resolveAutoModeServerEnv).
+    ...resolveAutoModeServerEnv(config),
   };
   scrubChildEnv(env, { interactive: Boolean(config.interactive) });
   // A launch from inside a gateway session inherits that session's X-Target-URL,
