@@ -3,6 +3,7 @@ import {
   agentRejectedLine,
   choiceDialog,
   hasChoiceDialog,
+  hasEcho,
   inputBox,
   isWorking,
   lineSubmittedOnScreen,
@@ -403,5 +404,39 @@ describe("screenAnswer for a pointer line (file delivery)", () => {
       ...box,
     ]);
     expect(screenAnswer(s, pointer(2), file(2))).toBe("SECOND ANSWER");
+  });
+});
+
+describe("a typed line's echo and its markdown marks", () => {
+  const box = ["─".repeat(160), "❯\u00a0", "─".repeat(160), "  cwd • fake"];
+  const earlier = ["❯ an unrelated earlier prompt", "⏺ OLD-ANSWER"];
+  const screenOf = (lines: string[]) =>
+    ({
+      lines,
+      cols: 160,
+      rows: lines.length,
+      cursor: { x: 2, y: lines.length - 3 },
+      spans: lines.map(() => []),
+    }) as unknown as Parameters<typeof screenAnswer>[0];
+
+  for (const marks of ["*", "***", "~~~", "`"]) {
+    test(`a prompt of marks only (${marks}) is not the echo of another line`, () => {
+      expect(hasEcho([...earlier, ...box], marks)).toBe(false);
+      expect(screenAnswer(screenOf([...earlier, ...box]), marks)).toBe("");
+    });
+  }
+
+  test("a prompt of marks only is found by its own echo", () => {
+    expect(hasEcho(["❯ ***", "⏺ STARS", ...box], "***")).toBe(true);
+  });
+
+  test("two prompts that differ only by a mark are not each other's echo", () => {
+    expect(hasEcho(["❯ Use value 42", ...box], "Use value *42")).toBe(false);
+    expect(hasEcho(["❯ Use value *42", ...box], "Use value 42")).toBe(false);
+    expect(hasEcho(["❯ Use value *42", ...box], "Use value *42")).toBe(true);
+  });
+
+  test("paired marks the history renders are still matched", () => {
+    expect(hasEcho(["❯ Read a.md and b now", ...box], "Read `a.md` and **b** now")).toBe(true);
   });
 });

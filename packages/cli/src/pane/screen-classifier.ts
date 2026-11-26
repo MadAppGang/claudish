@@ -109,6 +109,24 @@ function squashEcho(s: string): string {
 }
 
 /**
+ * `line` as the history draws it: Claude Code renders a submitted line as markdown, so a PAIRED
+ * inline mark (a code span, `**strong**`, `*emphasis*`, `~~strike~~`, `~strike~`) shows only
+ * its content. An unpaired mark is drawn as typed: `*42` stays `*42`, `***` stays `***`.
+ */
+export function renderedInline(line: string): string {
+  return line
+    .replace(/(`+)(?!`)([\s\S]*?[^`])\1(?!`)/g, "$2")
+    .replace(/\*\*(?=\S)([\s\S]*?\S)\*\*/g, "$1")
+    .replace(/\*(?=[^\s*])([^*]*?[^\s*])?\*/g, (m, inner: string | undefined) =>
+      inner === undefined ? m : inner
+    )
+    .replace(/~~(?=\S)([\s\S]*?\S)~~/g, "$1")
+    .replace(/~(?=[^\s~])([^~]*?[^\s~])?~/g, (m, inner: string | undefined) =>
+      inner === undefined ? m : inner
+    );
+}
+
+/**
  * How many leading characters of a typed line identify it on screen: `min(40, cols − 4)`,
  * compared with whitespace removed and across wrapped rows (`echoAt`, `boxStartsWith`).
  */
@@ -148,29 +166,44 @@ export function boxStartsWith(box: InputBox, head: string): boolean {
 }
 
 /**
- * Row `i` is the echo of a submitted line starting with `head`: `❯ ` with an ASCII space
- * (the box prompt is `❯` + NO-BREAK SPACE, so the box itself never matches), followed by
- * its two-space continuation rows when the echo wraps, compared with whitespace and the
- * markdown marks the history drops removed (`squashEcho`).
+ * Row `i` is the echo of the submitted `line` (its first `headLength` characters): `❯ ` with an
+ * ASCII space (the box prompt is `❯` + NO-BREAK SPACE, so the box itself never matches),
+ * followed by its two-space continuation rows when the echo wraps, compared with whitespace
+ * removed. The echo is drawn markdown-rendered, so the line is compared as typed and as
+ * rendered (`renderedInline`), never with a lone mark dropped: `Use value *42` and
+ * `Use value 42` are two lines. A head with nothing left to compare never matches.
  * At 120 columns a prompt whose third word is a long path echoes as `❯ Use the Write tool
  * to create the file` alone, the path on the next row (`size-120x40-permission-…`).
  */
-export function echoAt(lines: readonly string[], i: number, head: string): boolean {
+export function echoAt(
+  lines: readonly string[],
+  i: number,
+  line: string,
+  headLength = Number.POSITIVE_INFINITY
+): boolean {
   const first = lines[i] ?? "";
   if (!first.startsWith("❯ ")) return false;
-  const want = squashEcho(head);
-  let got = squashEcho(first.slice(2));
-  for (let j = i + 1; got.length < want.length && j < lines.length; j++) {
+  const wants = [line, renderedInline(line)]
+    .map((l) => squash(l.slice(0, headLength)))
+    .filter((w) => w.length > 0);
+  if (wants.length === 0) return false;
+  const longest = Math.max(...wants.map((w) => w.length));
+  let got = squash(first.slice(2));
+  for (let j = i + 1; got.length < longest && j < lines.length; j++) {
     const row = lines[j] ?? "";
     if (!/^ {2}\S/.test(row)) break;
-    got += squashEcho(row);
+    got += squash(row);
   }
-  return got.startsWith(want);
+  return wants.some((w) => got.startsWith(w));
 }
 
-/** Some row is the echo of a submitted line starting with `head`. */
-export function hasEcho(lines: readonly string[], head: string): boolean {
-  for (let i = 0; i < lines.length; i++) if (echoAt(lines, i, head)) return true;
+/** Some row is the echo of the submitted `line` (its first `headLength` characters). */
+export function hasEcho(
+  lines: readonly string[],
+  line: string,
+  headLength = Number.POSITIVE_INFINITY
+): boolean {
+  for (let i = 0; i < lines.length; i++) if (echoAt(lines, i, line, headLength)) return true;
   return false;
 }
 
@@ -199,18 +232,20 @@ function pointerEchoAt(lines: readonly string[], i: number, turnFile: string): b
 
 /**
  * The LAST echo row above `end` of `line`, or -1: for a pointer line (its `turnFile` given)
- * the echo naming that turn file (`pointerEchoAt`), for a typed line the echo starting with
- * `head`, its first characters (`echoAt`).
+ * the echo naming that turn file (`pointerEchoAt`), for a typed line the echo of its first
+ * `headLength` characters (`echoAt`).
  */
 function echoRowOf(
   lines: readonly string[],
   end: number,
-  head: string,
-  turnFile: string | null
+  line: string,
+  turnFile: string | null,
+  headLength = Number.POSITIVE_INFINITY
 ): number {
   const above = lines.slice(0, end);
   for (let i = end - 1; i >= 0; i--)
-    if (turnFile === null ? echoAt(above, i, head) : pointerEchoAt(above, i, turnFile)) return i;
+    if (turnFile === null ? echoAt(above, i, line, headLength) : pointerEchoAt(above, i, turnFile))
+      return i;
   return -1;
 }
 
@@ -391,7 +426,7 @@ export function screenAnswer(s: ScreenState, echo: string, turnFile: string | nu
   const lines = s.lines;
   const top = boxTopRow(lines, s.cols);
   const end = top >= 0 ? top : lines.length;
-  const start = echoRowOf(lines, end, echoHead(echo, s.cols), turnFile) + 1;
+  const start = echoRowOf(lines, end, echo, turnFile, echoHeadLength(s.cols)) + 1;
   if (start <= 0) return "";
   const out: string[] = [];
   let inProse = false;
