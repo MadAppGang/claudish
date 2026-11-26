@@ -105,7 +105,7 @@ function rig(acceptedAt: number, ro: RigOptions = {}): Rig {
     a.currentDelivery = { mode: "command", text: LINE, file: ro.delivery.file, lines: 1 };
   a.turnAcceptedAt = acceptedAt;
   a.turnSource = "screen";
-  a.screenTurn = { echo: LINE, acceptedAt, errorLogSize: 0 };
+  a.screenTurn = { echo: LINE, turnFile: null, acceptedAt, errorLogSize: 0 };
   a.client = {};
   a.gateTrusted = true;
   const evaluate = () => {

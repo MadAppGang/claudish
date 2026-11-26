@@ -658,6 +658,8 @@ interface ListResult {
 
 interface ScreenTurn {
   echo: string;
+  /** The turn file a file delivery's echo names: its echo is found by it (`screenAnswer`). */
+  turnFile: string | null;
   acceptedAt: number;
   errorLogSize: number;
 }
@@ -3471,6 +3473,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       void this.returnToLiveBottom(SCROLL_REPLY_MS);
       this.screenTurn = {
         echo: d && d.mode !== "refused" ? d.line : "",
+        turnFile: d && d.mode === "file" ? d.file : null,
         acceptedAt: at,
         errorLogSize: this.turnErrorLogSize,
       };
@@ -4086,7 +4089,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     if (!st) return;
     if (this.settleUnwitnessedEnd(view, st)) return;
     if (!this.client) return;
-    const answer = screenAnswer(this.screen, st.echo);
+    const answer = screenAnswer(this.screen, st.echo, st.turnFile);
     const apiError = this.screenApiError(st, answer);
     this.activity = "thinking";
     if (!this.screenViewLive() || !this.screenSettleReady(view, answer, apiError)) return;
@@ -4154,7 +4157,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     if (!core.answer && !core.apiError) {
       // the screen and the scroll position are the last frame before a dropped client
       if (!this.client || !this.screenViewLive()) return false;
-      const answer = screenAnswer(this.screen, st.echo);
+      const answer = screenAnswer(this.screen, st.echo, st.turnFile);
       core = {
         ...core,
         answer,

@@ -369,3 +369,39 @@ describe("lineSubmittedOnScreen", () => {
     expect(lineSubmittedOnScreen(lines, "Reply with exactly PLUM.", null)).toBe(false);
   });
 });
+
+describe("screenAnswer for a pointer line (file delivery)", () => {
+  const dir = "/tmp/cpt-860e1a20/launch-TNjRC3";
+  const file = (n: number) => `${dir}/turn-${n}.md`;
+  const pointer = (n: number) =>
+    `Your task is in the file \`${file(n)}\`. Read all of it with the Read tool (in parts if it is long), then do exactly what it says, treating its content as the user's message.`;
+  const echoRows = (line: string): string[] => {
+    const shown = line.replace(/[`*~]/g, "");
+    return [`❯ ${shown.slice(0, 150)}`, `  ${shown.slice(150)}`];
+  };
+  const screenOf = (lines: string[]) =>
+    ({
+      lines,
+      cols: 160,
+      rows: lines.length,
+      cursor: { x: 2, y: lines.length - 3 },
+      spans: lines.map(() => []),
+    }) as unknown as Parameters<typeof screenAnswer>[0];
+  const box = ["─".repeat(160), "❯\u00a0", "─".repeat(160), "  cwd • fake"];
+
+  test("only the earlier pointer's echo and answer on screen: the current turn has no answer", () => {
+    const s = screenOf([...echoRows(pointer(1)), "⏺ FIRST ANSWER", ...box]);
+    expect(screenAnswer(s, pointer(2), file(2))).toBe("");
+  });
+
+  test("the current pointer's echo below the earlier one: its own answer", () => {
+    const s = screenOf([
+      ...echoRows(pointer(1)),
+      "⏺ FIRST ANSWER",
+      ...echoRows(pointer(2)),
+      "⏺ SECOND ANSWER",
+      ...box,
+    ]);
+    expect(screenAnswer(s, pointer(2), file(2))).toBe("SECOND ANSWER");
+  });
+});

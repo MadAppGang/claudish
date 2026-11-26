@@ -188,11 +188,36 @@ function squashedEchoAt(lines: readonly string[], i: number): string | null {
 }
 
 /**
+ * Row `i` is the echo of the pointer line naming `turnFile`: its turn file's path, read across
+ * the echo's wrapped rows with the markdown marks the history drops removed. Every pointer
+ * starts with the same words and the same turn directory, so its first characters name no turn.
+ */
+function pointerEchoAt(lines: readonly string[], i: number, turnFile: string): boolean {
+  // the path and the `.` after its closing backtick: `turn-1.md` never matches inside `turn-11.md`
+  return squashedEchoAt(lines, i)?.includes(`${squashEcho(turnFile)}.`) ?? false;
+}
+
+/**
+ * The LAST echo row above `end` of `line`, or -1: for a pointer line (its `turnFile` given)
+ * the echo naming that turn file (`pointerEchoAt`), for a typed line the echo starting with
+ * `head`, its first characters (`echoAt`).
+ */
+function echoRowOf(
+  lines: readonly string[],
+  end: number,
+  head: string,
+  turnFile: string | null
+): number {
+  const above = lines.slice(0, end);
+  for (let i = end - 1; i >= 0; i--)
+    if (turnFile === null ? echoAt(above, i, head) : pointerEchoAt(above, i, turnFile)) return i;
+  return -1;
+}
+
+/**
  * The screen shows `line` as submitted: an echo row above the box. A pointer line (its
- * `turnFile` given) is known by its turn file's path, read across the echo's wrapped rows with
- * the markdown marks the history drops removed: every pointer starts with the same words and
- * the same turn directory, so its first characters name no turn. A typed line is known by its
- * first 40 characters on the echo row.
+ * `turnFile` given) is known by its turn file (`echoRowOf`). A typed line is known by its first
+ * 40 characters on the echo row.
  */
 export function lineSubmittedOnScreen(
   lines: readonly string[],
@@ -203,10 +228,7 @@ export function lineSubmittedOnScreen(
     const head = line.slice(0, 40);
     return lines.some((l) => l.startsWith(`❯ ${head}`));
   }
-  // the path and the `.` after its closing backtick: `turn-1.md` never matches inside `turn-11.md`
-  const want = `${squashEcho(turnFile)}.`;
-  for (let i = 0; i < lines.length; i++) if (squashedEchoAt(lines, i)?.includes(want)) return true;
-  return false;
+  return echoRowOf(lines, lines.length, line, turnFile) >= 0;
 }
 
 const MENU_ROW = /^\s{2}❯ \/\S|^\s{4}\/\S|^\s{4}[*+] \S/;
@@ -362,12 +384,14 @@ const NON_ANSWER_ROW =
  * Degraded-mode answer (C4): the `⏺` prose rows after the LAST echo of `echo` and
  * their indented continuations, minus tool rows, sub-result rows (`  ⎿ …`), collapsed
  * tool summaries (`  Ran 1 shell command`), working/finished rows and error rows (L14).
+ * A file delivery's echo (`turnFile` given) is found by its turn file (`echoRowOf`), never by
+ * the first characters every pointer of a session shares.
  */
-export function screenAnswer(s: ScreenState, echo: string): string {
+export function screenAnswer(s: ScreenState, echo: string, turnFile: string | null = null): string {
   const lines = s.lines;
   const top = boxTopRow(lines, s.cols);
   const end = top >= 0 ? top : lines.length;
-  const start = echoRow(lines, end, echoHead(echo, s.cols)) + 1;
+  const start = echoRowOf(lines, end, echoHead(echo, s.cols), turnFile) + 1;
   if (start <= 0) return "";
   const out: string[] = [];
   let inProse = false;
@@ -377,13 +401,6 @@ export function screenAnswer(s: ScreenState, echo: string): string {
     if (row.text !== null) out.push(row.text);
   }
   return out.join("\n").trim();
-}
-
-/** The LAST echo row above `end` of a line starting with `head`, or -1. */
-function echoRow(lines: readonly string[], end: number, head: string): number {
-  const above = lines.slice(0, end);
-  for (let i = end - 1; i >= 0; i--) if (echoAt(above, i, head)) return i;
-  return -1;
 }
 
 /** One row of the degraded answer: its text (or null) and whether a prose block continues. */
