@@ -10,6 +10,7 @@ import { decideModelListings } from "../../launcher/claude-launch.js";
 import { buildModelLineup } from "../../launcher/model-lineup.js";
 import {
   buildExplicitModelSpec,
+  buildProviderChoices,
   outcomeFromModelsCatalog,
   resolveProviderDisplayPrice,
 } from "../../model-selector.js";
@@ -328,6 +329,12 @@ describe("TrustedRouter provider wiring, prefix resolution, and key isolation", 
       displayName: "TrustedRouter",
       kind: "gateway",
     });
+
+    const pickerOrder = buildProviderChoices().map((c) => c.value);
+    const poeIdx = pickerOrder.indexOf("poe");
+    const trIdx = pickerOrder.indexOf("trustedrouter");
+    expect(poeIdx).toBeGreaterThan(-1);
+    expect(trIdx).toBe(poeIdx + 1);
   });
 
   test("resolves trustedrouter@, tr@, and nyte@ prefixes and listing scopes", () => {
@@ -578,7 +585,7 @@ describe("TrustedRouter provider wiring, prefix resolution, and key isolation", 
     expect(await transport?.getHeaders()).toEqual({ Authorization: "Bearer tr-live-key" });
   });
 
-  test("lists all live public chat models with pricing and context via --model trustedrouter@ and nyte@", async () => {
+  test("lists all live public chat models with pricing and context via --model trustedrouter@* and nyte@*, and follows gateway R7 on x@", async () => {
     globalThis.fetch = mock(async () =>
       Response.json(SAMPLE_CATALOG_RESPONSE)
     ) as unknown as typeof fetch;
@@ -607,14 +614,45 @@ describe("TrustedRouter provider wiring, prefix resolution, and key isolation", 
     ).toBe("$6.33/1M");
     expect(byId.get("trustedrouter/auto")!.context).toBe("1M");
 
-    // `/model` lineup for `--model trustedrouter@` and `--model nyte@` lists all tool-capable models
-    for (const listingTyped of ["trustedrouter@", "nyte@"] as const) {
+    // R7: gateway `x@` with no cloud-catalog recommendations points users to `x@*`
+    const recLineup = await buildModelLineup(
+      [
+        {
+          provider: "trustedrouter",
+          typed: "tr@",
+          scope: "recommended",
+          pinnedSpecs: [],
+        },
+      ],
+      {
+        deps: {
+          ensureCatalog: async () => {},
+          catalogRows: () => [],
+          recommended: async () => ({
+            version: "1",
+            lastUpdated: "2026-01-01T00:00:00Z",
+            models: [],
+          }),
+        },
+      }
+    );
+    expect(recLineup.rows).toEqual([]);
+    expect(recLineup.outcomes).toEqual([
+      {
+        kind: "not-listed",
+        provider: "trustedrouter",
+        reason: "it serves none of the recommended models; 'tr@*' lists every model it serves",
+      },
+    ]);
+
+    // R7: `/model` lineup for `--model 'trustedrouter@*'` and `--model 'nyte@*'` lists all tool-capable models
+    for (const listingTyped of ["trustedrouter@*", "nyte@*"] as const) {
       const lineup = await buildModelLineup(
         [
           {
             provider: "trustedrouter",
             typed: listingTyped,
-            scope: "recommended",
+            scope: "all",
             pinnedSpecs: [],
           },
         ],

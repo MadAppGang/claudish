@@ -311,12 +311,8 @@ export function lineupRowsForProvider(input: {
   const source = candidateSource(input);
   let { candidates, emptyReason } = source;
 
-  // A discovery-backed gateway with no cloud-catalog rows (e.g. TrustedRouter)
-  // has no externalId mapping to intersect against the recommended list, so
-  // `<provider>@` lists its full live catalog rather than dropping every row.
-  const hasCatalogMapping = input.discovered?.kind !== "rows" || input.catalogRows.length > 0;
   const isGatewayRecommended =
-    tier === "gateway" && listing.scope === "recommended" && declared === null && hasCatalogMapping;
+    tier === "gateway" && listing.scope === "recommended" && declared === null;
   // With no recommended list a gateway `x@` lists its pinned rows only, and
   // says so even when the provider offered no rows at all.
   if (isGatewayRecommended && (candidates.length > 0 || input.recommendedIds === null)) {
@@ -659,12 +655,7 @@ export async function buildModelLineup(
       if (source === "catalog" && declared === null && deps.catalogIsBundled()) source = "bundled";
 
       let recommendedIds: string[] | null = null;
-      const needsGatewayRecommendation =
-        tier === "gateway" &&
-        listing.scope === "recommended" &&
-        declared === null &&
-        (discovered?.kind !== "rows" || catalogRows.length > 0);
-      if (needsGatewayRecommendation) {
+      if (tier === "gateway" && listing.scope === "recommended" && declared === null) {
         stages.set(provider, "recommended");
         const doc = recommendedPromise ? await within(recommendedPromise, remaining(), null) : null;
         recommendedIds = doc ? recommendedIdsOf(doc) : null;
@@ -683,11 +674,12 @@ export async function buildModelLineup(
         notListed(built.emptyReason ?? "it lists no chat models");
         return;
       }
-      const servedTotal = needsGatewayRecommendation
-        ? discovered?.kind === "rows"
-          ? discovered.rows.length
-          : catalogRows.length
-        : undefined;
+      const servedTotal =
+        tier === "gateway" && listing.scope === "recommended" && declared === null
+          ? discovered?.kind === "rows"
+            ? discovered.rows.length
+            : catalogRows.length
+          : undefined;
       settled.set(provider, {
         rows: built.rows,
         outcome: {

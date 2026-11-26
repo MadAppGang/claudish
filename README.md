@@ -19,7 +19,7 @@
 **Claudish** (Claude-ish) is a CLI tool that allows you to run Claude Code with any AI model by proxying requests through a local Anthropic API-compatible server.
 
 **Supported Providers:**
-- **Cloud:** OpenRouter (580+ models), TrustedRouter (confidential AI gateway with live model catalog), Google Gemini, OpenAI, MiniMax, Kimi, GLM, Z.AI, Sakana Fugu, OllamaCloud, OpenCode Zen
+- **Cloud:** OpenRouter (580+ models), Google Gemini, OpenAI, MiniMax, Kimi, GLM, Z.AI, Sakana Fugu, OllamaCloud, OpenCode Zen, TrustedRouter (confidential AI gateway with live model catalog)
 - **Local:** Ollama, LM Studio, vLLM, MLX
 - **Enterprise:** Vertex AI (Google Cloud)
 
