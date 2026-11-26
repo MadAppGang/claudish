@@ -340,8 +340,12 @@ Every session context carries `ctx.session`:
   ready if there is no prompt. In the interactive launcher it fires at the first empty input box. An
   injection it returns is delivered at the first idle after the initial turn.
 - **`sessionIdle`** receives `ctx.turn`: `index` (1-based; a turn that a background task wakes again
-  keeps its index, and fires `sessionIdle` again when it settles), `answer`, `stopReason`,
-  `apiError`, `hookCaused`, and `annotations`. It also receives `ctx.consecutiveHookTurns` and
+  keeps its index, and fires `sessionIdle` again when it settles), `answer`, `answerWithheld`,
+  `stopReason`, `apiError`, `hookCaused`, and `annotations`. `answerWithheld` is `true` when the
+  turn's prompt went as a task file and the model's Read tool calls did not return all of it:
+  `answer` is then `""` whatever the model wrote, so an empty answer with `answerWithheld: false`
+  means the model wrote nothing. Only the Read tool in the main conversation counts; a file read
+  with a shell `cat` or by a subagent is not read. It also receives `ctx.consecutiveHookTurns` and
   `ctx.callerInputPending`: when that is `true`, the caller's input goes next, and an injection
   returned now is dropped as stale.
 - **`sessionBlocked`** receives `ctx.block`: `{ kind: "question" | "permission", text }`. A hook

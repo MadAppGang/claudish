@@ -236,8 +236,14 @@ export interface SessionIdleContext extends BaseContext {
   readonly turn: {
     /** 1-based within the session; a re-woken turn keeps its index */
     index: number;
-    /** this turn's assistant text */
+    /** this turn's assistant text; "" when `answerWithheld` */
     answer: string;
+    /**
+     * the turn's prompt went as a task file, and the model's Read tool calls in the main
+     * conversation did not return all of it: `answer` is "" whatever the model wrote. Reading
+     * it another way (a shell `cat`, a subagent) does not count as reading it.
+     */
+    answerWithheld: boolean;
     stopReason: string | null;
     apiError: boolean;
     /** this turn was started by an injection */

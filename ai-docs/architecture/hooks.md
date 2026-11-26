@@ -537,7 +537,10 @@ The verdict is taken once, at the end, on the joined chain answer, with the **ch
 prompt-read result (`SettledTurn.chainDelivery`), since each admission replaces the current delivery.
 `require_pattern` passes when it matches the joined answer or any single turn's, so a `^`-anchored
 pattern still matches a turn that starts with it. An unread hook-turn file records
-`hook_injection_not_read`, never the caller-facing `prompt_not_read`. `timeout_seconds` spans the
+`hook_injection_not_read`, never the caller-facing `prompt_not_read`. A turn whose task file was
+not read in full has no answer (`answerOf`, `pane-session.md`), so `sessionIdle` gets `answer: ""`
+with `ctx.turn.answerWithheld: true`. The flag is what tells a hook that the model was not silent:
+without it, a rule such as "the model produced nothing, inject a nudge" fires on every unread turn. `timeout_seconds` spans the
 chain. The cost, stated plainly: an injecting hook changes what a slot's answer is. That is opt-in by
 loading such a hook, and capped.
 

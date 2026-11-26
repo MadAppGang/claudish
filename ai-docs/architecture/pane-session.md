@@ -596,7 +596,11 @@ Until its Reads have returned every line, such a turn has no answer (`answerOf`,
 file or a settle hook, and the running turn's `turnAnswer`, `chainText` and `liveAnswerBytes`
 read empty as well. Text written without the whole task read cannot answer it. That text stays in
 the transcript, and the coverage numbers stay in `get_diagnostics`' `readCoverage`. A command turn
-with zero Reads keeps its text, since its coverage is unknown, not failed.
+with zero Reads keeps its text, since its coverage is unknown, not failed. Coverage counts only the
+main conversation's Read results whose returned lines match the file: a file read with `Bash cat`,
+`Grep`, or by a `Task` subagent (its Read is on the sidechain) counts 0 lines, and its turn's answer
+is withheld too. That is the price of a coverage that can be proven. The settle hooks are told
+(`ctx.turn.answerWithheld`), so an empty answer there is never mistaken for a silent model.
 The template line is about 200 characters (the turn file's absolute path included), against the
 20 to 40 of a typical short prompt, and the child redraws its box on every typed key: measured on
 the fake child, one hook test with two turns took 9.1 to 10.0 s against 7.6 s typed, and

@@ -3806,6 +3806,8 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
           {
             index: turn.index,
             answer: turn.answer,
+            // `complete` is false exactly when `answerOf` withheld the answer (null: unknown)
+            answerWithheld: turn.delivery.complete === false,
             stopReason: turn.stopReason,
             apiError: turn.apiError !== null,
             hookCaused: turn.hookCaused,

@@ -226,6 +226,23 @@ describe("settle()", () => {
     ]);
   });
 
+  test("answerWithheld reaches ctx.turn: true when the pane withheld the answer, false when absent", async () => {
+    const seen: SessionIdleContext[] = [];
+    const { engine } = engineOf(
+      user("idle", {
+        on: {
+          sessionIdle: (ctx) => {
+            seen.push(ctx);
+          },
+        },
+      })
+    );
+    const b = createSessionHookBinding(engine, SESSION, inbox([]), { inboxBoundMs: 50 });
+    await b.settle({ ...TURN, answer: "", answerWithheld: true }, new AbortController().signal);
+    await b.settle({ ...TURN, index: 2 }, new AbortController().signal);
+    expect(seen.map((c) => c.turn.answerWithheld)).toEqual([true, false]);
+  });
+
   test("H-36: a request's lines past the recorded length resolve this settle at ~150 ms; another request's line is the next settle's", async () => {
     const { engine } = engineOf();
     const p = inbox([stopR1]);

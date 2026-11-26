@@ -26,9 +26,16 @@ export function answerOf(
   t: Pick<TurnView, "assistantText" | "delivery" | "readCoverage">,
   mode: Delivery["mode"] | null
 ): string {
-  const text = t.assistantText.join("\n\n");
-  if (!t.delivery || t.readCoverage.complete) return text;
-  return mode === "command" && t.readCoverage.reads === 0 ? text : "";
+  return answerWithheld(t, mode) ? "" : t.assistantText.join("\n\n");
+}
+
+/** `answerOf` withholds this turn's text: its turn file is known not to be read in full. */
+export function answerWithheld(
+  t: Pick<TurnView, "delivery" | "readCoverage">,
+  mode: Delivery["mode"] | null
+): boolean {
+  if (!t.delivery || t.readCoverage.complete) return false;
+  return !(mode === "command" && t.readCoverage.reads === 0);
 }
 
 /**

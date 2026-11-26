@@ -350,6 +350,30 @@ describe("a file turn not read in full, settled at its unwitnessed end", () => {
     expect(r.anomalies().get("screen_answer_may_be_truncated")).toBeUndefined();
   });
 
+  test("the settle hooks are told the answer was withheld", () => {
+    const start = Date.now() - 60_000;
+    const held: Array<{ answer: string; answerWithheld?: boolean }> = [];
+    const hooks: SessionHookBinding = {
+      ...pendingHold(),
+      settle: (info) => {
+        held.push(info);
+        return new Promise(() => {});
+      },
+    };
+    const r = rig(start, {
+      delivery: { file: "/nonexistent/turn-1.md", text: "line one\nline two\n" },
+      mode: "file",
+      hooks,
+    });
+    r.append(
+      garbledPrompt(start + 1000),
+      answer("m1", "TRANSCRIPT-ANSWER", start + 2000),
+      turnDuration(start + 3000)
+    );
+    r.evaluate();
+    expect(held).toEqual([expect.objectContaining({ answer: "", answerWithheld: true })]);
+  });
+
   test("control: with coverage unknown (a command, no Read) the screen still answers", () => {
     const start = Date.now() - 60_000;
     const r = rig(start, { delivery: { file: "/nonexistent/turn-1.md", text: "line one\n" } });

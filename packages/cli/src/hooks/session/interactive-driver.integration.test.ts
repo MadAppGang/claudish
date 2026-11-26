@@ -394,7 +394,12 @@ describe.skipIf(!MAGMUX)(`interactive driver: delivery ${MAGMUX ? "" : NO_MAGMUX
         await until(() => dbl.calls.length === 1, "settle 1");
         dbl.calls[0]?.resolve(inject("HOOK-PING"));
         await until(() => dbl.calls.length === 2, "settle 2");
-        expect(dbl.calls[1]?.turn).toMatchObject({ index: 2, answer: "", hookCaused: true });
+        expect(dbl.calls[1]?.turn).toMatchObject({
+          index: 2,
+          answer: "",
+          answerWithheld: true,
+          hookCaused: true,
+        });
         dbl.calls[1]?.resolve(nothing);
       } finally {
         await finish(r);

@@ -79,7 +79,7 @@ import {
   SECONDARY_QUIET_MS,
   decideSettle,
 } from "../../pane/settle-rule.js";
-import { answerOf } from "../../pane/settled-turn.js";
+import { answerOf, answerWithheld } from "../../pane/settled-turn.js";
 import {
   TranscriptFollower,
   type TranscriptView,
@@ -792,6 +792,7 @@ export class InteractiveDriver {
       index: cur.index,
       // an injection goes typed or as a file, never as a command carrying one
       answer: localCommand ? (t.localCommandOutput ?? "") : answerOf(t, null),
+      answerWithheld: !localCommand && answerWithheld(t, null),
       stopReason,
       apiError: t.apiError !== null,
       hookCaused: cur.hookCaused,
