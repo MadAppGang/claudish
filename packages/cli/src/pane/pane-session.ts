@@ -2010,20 +2010,16 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     this.abandonedIndex = null;
     if (plan.mode === "refused" || plan.mode === "control") {
       this.anomaly(`delivery_refused:${plan.mode === "refused" ? plan.reason : "control"}`);
-      this.admission = null;
-      if (item.kind === "hook") {
-        this.hookAdmissionFailed(item);
-        return;
-      }
-      this.fire(initial ? "admit_deadline" : "admit_abandoned", {
-        detail: plan.mode === "refused" ? plan.reason : undefined,
-      });
+      this.failAdmissionUntyped(item, initial, plan.mode === "refused" ? plan.reason : undefined);
       return;
     }
     try {
       writeTurnFile(plan);
     } catch (e) {
+      // a pointer to a file that is not there would be typed for nothing: fail, as the driver does
       this.anomaly(`turn_file_failed:${e instanceof Error ? e.message : String(e)}`);
+      this.failAdmissionUntyped(item, initial, "turn_file_failed");
+      return;
     }
     const delivery =
       (plan.mode === "file" || plan.mode === "command") &&
@@ -2043,6 +2039,16 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     });
     this.admission = adm;
     void this.runAdmission(adm);
+  }
+
+  /** An admission that typed nothing ends here: a hook item is dropped, a caller's fails. */
+  private failAdmissionUntyped(item: QueueItem, initial: boolean, detail: string | undefined): void {
+    this.admission = null;
+    if (item.kind === "hook") {
+      this.hookAdmissionFailed(item);
+      return;
+    }
+    this.fire(initial ? "admit_deadline" : "admit_abandoned", { detail });
   }
 
   /** This admission is still the live one: nothing accepted, expired or ended it meanwhile. */
