@@ -1272,7 +1272,16 @@ async function screenOnlyTurn(line: string): Promise<void> {
       "⏺ Please run /login · API Error: 401 OAuth access token is invalid.",
       finishedRow()
     );
-  else showHistory(`⏺ ${answerFor(line)}`, finishedRow());
+  else showHistory(`⏺ ${answerFor(screenTurnContent(line))}`, finishedRow());
+}
+
+/**
+ * What a screen-only turn answers about: the turn file's content for a file-delivered prompt,
+ * read without a Read record (there is no transcript), else the typed line.
+ */
+function screenTurnContent(line: string): string {
+  const m = line.match(TEMPLATE_RE);
+  return m ? readFileSync(m[1] as string, "utf8") : line;
 }
 
 /** Local commands the fake runs the way 2.1.291 does: their own records, no model turn. */
