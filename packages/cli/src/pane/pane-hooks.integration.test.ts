@@ -55,6 +55,61 @@ import type { PaneSnapshot, SettledTurn } from "./types.js";
 /** A test's own work plus a full REAP_DEADLINE_MS, so a real leak fails with its list. */
 const T = 120_000;
 
+/**
+ * At most this many of the file's concurrent tests run at once, whatever `--max-concurrency`
+ * the runner passes: each test drives one or more real panes, and a pane child redraws its box
+ * on every typed key, so many panes typing at once starve each other of CPU and turns miss
+ * their bounds. The weekly runner passes `--max-concurrency=12` and the largest block has 8.
+ */
+const SESSION_SLOTS = 3;
+/** The most tests one `describe.concurrent` block holds: the most a test can queue behind. */
+const LARGEST_BLOCK = 8;
+let freeSlots = SESSION_SLOTS;
+const slotWaiters: Array<() => void> = [];
+
+async function takeSlot(): Promise<void> {
+  if (freeSlots > 0) {
+    freeSlots--;
+    return;
+  }
+  await new Promise<void>((resolve) => slotWaiters.push(resolve));
+}
+
+function releaseSlot(): void {
+  const next = slotWaiters.shift();
+  if (next) next();
+  else freeSlots++;
+}
+
+/**
+ * `test`, run inside a slot. The test's own budget (`timeout`) starts once it holds a slot;
+ * bun's timeout also covers the wait behind the rest of its block.
+ */
+function slotTest(name: string, fn: () => Promise<void> | void, timeout = T): void {
+  test(
+    name,
+    async () => {
+      await takeSlot();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          Promise.resolve().then(fn),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(
+              () => reject(new Error(`timed out after ${timeout} ms holding a slot`)),
+              timeout
+            );
+          }),
+        ]);
+      } finally {
+        clearTimeout(timer);
+        releaseSlot();
+      }
+    },
+    timeout * Math.ceil(LARGEST_BLOCK / SESSION_SLOTS)
+  );
+}
+
 /* ───────────────────────────── the test double binding ───────────────────────────── */
 
 interface SettleCall {
@@ -342,7 +397,7 @@ async function teamDone(x: Team): Promise<void> {
 
 describe.skipIf(!MAGMUX)(`the settle hold (§11.5) ${MAGMUX ? "" : NO_MAGMUX_MESSAGE}`, () => {
   describe.concurrent("the latch and the terminal paths of a hold (channel, one-shot)", () => {
-    test(
+    slotTest(
       "H-1 latch: settle() once over ≥ 4 ticks; A1 already in get_output; RUNNING, activity hook, phase SETTLING",
       async () => {
         const ctl = controlled();
@@ -374,16 +429,14 @@ describe.skipIf(!MAGMUX)(`the settle hold (§11.5) ${MAGMUX ? "" : NO_MAGMUX_MES
       T
     );
 
-    test(
+    slotTest(
       "H-2 timeout during the hold: TIMEOUT, A1 once; a late injection changes nothing",
       async () => {
         const ctl = controlled();
         const c = await channel({
           script: [{ say: "ANS-ONE" }, { say: "ANS-NEVER" }],
           binding: ctl.binding,
-          // the session budget covers turn 1 (a pointer line typed, then its turn file read) and
-          // ends during the hold or the chain turn the test is about
-          timeoutSeconds: 7,
+          timeoutSeconds: 5,
         });
         try {
           await until(() => ctl.calls.length === 1, "settle()");
@@ -403,7 +456,7 @@ describe.skipIf(!MAGMUX)(`the settle hold (§11.5) ${MAGMUX ? "" : NO_MAGMUX_MES
       T
     );
 
-    test(
+    slotTest(
       "H-3 cancel during the hold: CANCELLED, A1 once; a late resolution is ignored",
       async () => {
         const ctl = controlled();
@@ -424,7 +477,7 @@ describe.skipIf(!MAGMUX)(`the settle hold (§11.5) ${MAGMUX ? "" : NO_MAGMUX_MES
       T
     );
 
-    test(
+    slotTest(
       "H-4 the child exits 0 during the hold (one-shot): COMPLETED on A1 with the exit note, never child_exited",
       async () => {
         const ctl = controlled();
@@ -448,7 +501,7 @@ describe.skipIf(!MAGMUX)(`the settle hold (§11.5) ${MAGMUX ? "" : NO_MAGMUX_MES
       T
     );
 
-    test(
+    slotTest(
       "H-6 a fatal magmux stderr line during the hold: FAILED pane_lost; A1 once (published at record)",
       async () => {
         const ctl = controlled();
@@ -493,16 +546,14 @@ wait $child
       T
     );
 
-    test(
+    slotTest(
       "H-7 timeout while a chain turn runs: TIMEOUT; get_output holds A1 then A2-part, each once",
       async () => {
         const ctl = controlled();
         const c = await channel({
           script: [{ say: "ANS-ONE" }, { partial: "ANS-TWO-PART" }],
           binding: ctl.binding,
-          // the session budget covers turn 1 (a pointer line typed, then its turn file read) and
-          // ends during the hold or the chain turn the test is about
-          timeoutSeconds: 8,
+          timeoutSeconds: 6,
         });
         try {
           await until(() => ctl.calls.length === 1, "settle()");
@@ -521,16 +572,14 @@ wait $child
       T
     );
 
-    test(
+    slotTest(
       "H-8 timeout in the second hold: TIMEOUT; A1 and A2 each once, in order",
       async () => {
         const ctl = controlled();
         const c = await channel({
           script: [{ say: "ANS-ONE" }, { say: "ANS-TWO" }],
           binding: ctl.binding,
-          // the session budget covers two turns (each a pointer line typed, then its turn file
-          // read) and ends during the second hold
-          timeoutSeconds: 10,
+          timeoutSeconds: 6,
         });
         try {
           await until(() => ctl.calls.length === 1, "settle() 1");
@@ -553,7 +602,7 @@ wait $child
 
   describe.concurrent("team slots: chains, verdicts, terminal paths", () => {
     // REGRESSION: MTL-229 team slot with a file deliverable reported EMPTY shape_mismatch — Fixed in /dev:fix session dev-fix-20261024-232556-1434416719
-    test(
+    slotTest(
       "MTL-229 team uses the head's written answer after a narration-only hook turn",
       async () => {
         const ctl = controlled();
@@ -594,7 +643,7 @@ wait $child
       T
     );
 
-    test(
+    slotTest(
       "H-9 team cancelled while chain turn 3 runs: response is A1\\n\\nA2\\n\\nA3-part, outputSize its byte length",
       async () => {
         const ctl = controlled();
@@ -628,7 +677,7 @@ wait $child
       T
     );
 
-    test(
+    slotTest(
       "H-10 team cancelled in the second hold: response is A1\\n\\nA2",
       async () => {
         const ctl = controlled();
@@ -656,7 +705,7 @@ wait $child
       ["^VOTE", "COMPLETED"],
       ["^NOPE", "SHAPE_MISMATCH"],
     ] as const) {
-      test(
+      slotTest(
         `H-11 require_pattern ${pattern} on a chain: one verdict, response A1\\n\\nA2, ${state}`,
         async () => {
           const ctl = controlled();
@@ -683,7 +732,7 @@ wait $child
       );
     }
 
-    test(
+    slotTest(
       "H-12 team blocked mid-chain: FAILED blocked; response is A1\\n\\nB2",
       async () => {
         const ctl = controlled();
@@ -705,7 +754,7 @@ wait $child
       T
     );
 
-    test(
+    slotTest(
       "H-14 team: an injected turn never accepted → slot COMPLETED, response A1, nothing left RUNNING",
       async () => {
         const ctl = controlled();
@@ -735,7 +784,7 @@ wait $child
       T
     );
 
-    test(
+    slotTest(
       "H-32 team variant: the child exits 0 during an injected admission → slot COMPLETED, response A1",
       async () => {
         const ctl = controlled();
@@ -758,7 +807,7 @@ wait $child
   });
 
   describe.concurrent("injected turns never accepted, and caller input during a hold", () => {
-    test(
+    slotTest(
       "H-13 one-shot: no witness → hook_injection_dropped:send_not_accepted, COMPLETED on A1, never AWAITING_INPUT",
       async () => {
         const ctl = controlled();
@@ -789,7 +838,7 @@ wait $child
       T
     );
 
-    test(
+    slotTest(
       "H-15 interactive: no witness → AWAITING_INPUT (today's admit_abandoned), the anomaly, A1 once",
       async () => {
         const ctl = controlled();
@@ -822,7 +871,7 @@ wait $child
       T
     );
 
-    test(
+    slotTest(
       "H-16 send_input during a hold: the hold ends in that step (caller), CALLER runs, a late HOOK never",
       async () => {
         const ctl = controlled();
@@ -856,7 +905,7 @@ wait $child
       T
     );
 
-    test(
+    slotTest(
       "H-17 a hold that never resolves (bound 30 s) does not delay the caller: CALLER admitted at once, no watchdog",
       async () => {
         const ctl = controlled({ bound: 30_000 });
@@ -883,7 +932,7 @@ wait $child
   describe.concurrent("the chain head's prompt-read result", () => {
     const filePrompt = "Line one of the task.\nLine two of the task.";
 
-    test(
+    slotTest(
       "H-18 head delivered as a file and not read: FAILED prompt_not_read; get_output holds A1 and A2",
       async () => {
         const ctl = controlled();
@@ -909,7 +958,7 @@ wait $child
       T
     );
 
-    test(
+    slotTest(
       "H-19 head read in full: COMPLETED",
       async () => {
         const ctl = controlled();
@@ -936,7 +985,7 @@ wait $child
       T
     );
 
-    test(
+    slotTest(
       "H-20 a hook turn delivered as a file and not read: COMPLETED; anomaly hook_injection_not_read",
       async () => {
         const ctl = controlled();
@@ -962,7 +1011,7 @@ wait $child
   });
 
   describe.concurrent("sessionStart and the hold bound (real binding)", () => {
-    test(
+    slotTest(
       "H-21 a sessionStart injection still running at the first settle holds it: turn 2 runs LATE; one verdict",
       async () => {
         const { engine } = engineOf({
@@ -984,7 +1033,7 @@ wait $child
       T
     );
 
-    test(
+    slotTest(
       "H-21 control: the hook returns after its timeout → COMPLETED after turn 1, journal timeout, no turn 2",
       async () => {
         const { engine, journal } = engineOf({
@@ -1012,7 +1061,7 @@ wait $child
       [2_500, true],
       [4_500, false],
     ] as const) {
-      test(
+      slotTest(
         `H-21b sessionStart (timeout 4 s) returns at ${delay} ms, inbox bound 200 ms: no watchdog; ${late ? "turn 2 runs LATE" : "COMPLETED after turn 1"}`,
         async () => {
           const { engine, journal } = engineOf({
@@ -1050,7 +1099,7 @@ wait $child
       );
     }
 
-    test(
+    slotTest(
       "a sessionStart injection that returns before turn 1 settles is delivered after turn 1 (callerSeq survives)",
       async () => {
         const { engine } = engineOf({
@@ -1074,7 +1123,7 @@ wait $child
       T
     );
 
-    test(
+    slotTest(
       "cap: an idle hook that always injects gets 3 hook-caused turns, then dropped capped; one verdict",
       async () => {
         let n = 0;
@@ -1110,7 +1159,7 @@ wait $child
       T
     );
 
-    test(
+    slotTest(
       "a hook item queued during a QUESTION waits, and no Esc is ever sent for it",
       async () => {
         const { engine } = engineOf({
@@ -1138,7 +1187,7 @@ wait $child
   });
 
   describe.concurrent("errors, the watchdog, re-wake", () => {
-    test(
+    slotTest(
       "H-22 settle() rejects: concluded with no injection; hook_hold_error; COMPLETED; A1 once",
       async () => {
         const ctl = controlled();
@@ -1157,7 +1206,7 @@ wait $child
       T
     );
 
-    test(
+    slotTest(
       "H-23 settle() hangs, bound 300 ms: concluded at ~300 ms; hook_hold_watchdog; a later resolve changes nothing",
       async () => {
         const ctl = controlled({ bound: 300 });
@@ -1187,7 +1236,7 @@ wait $child
       T
     );
 
-    test(
+    slotTest(
       "H-24 re-wake during a hold (real binding): S dropped, the drained proxy P is delivered next; A1 and A1b once",
       async () => {
         let idleCalls = 0;
@@ -1256,7 +1305,7 @@ wait $child
 
   describe.concurrent("the exit paths of a hold (M-1)", () => {
     for (const code of [0, 1]) {
-      test(
+      slotTest(
         `H-5 interactive, the child exits ${code} during the hold: ${code === 0 ? "COMPLETED through exit_clean" : "FAILED child_exited"}; A1 once`,
         async () => {
           const ctl = controlled();
@@ -1285,7 +1334,7 @@ wait $child
       );
     }
 
-    test(
+    slotTest(
       "H-29 magmux killed during the hold (one-shot): COMPLETED on A1, detail 'magmux exited', signal reason exit",
       async () => {
         const ctl = controlled();
@@ -1305,7 +1354,7 @@ wait $child
       T
     );
 
-    test(
+    slotTest(
       "H-30 magmux killed during the hold (interactive): FAILED pane_lost with today's 'magmux exited' detail; A1 once",
       async () => {
         const ctl = controlled();
@@ -1331,7 +1380,7 @@ wait $child
       T
     );
 
-    test(
+    slotTest(
       "H-31 the hold ends inside the exit-capture window: dropped pane_exited, nothing typed, COMPLETED with the exit note",
       async () => {
         const ctl = controlled();
@@ -1359,7 +1408,7 @@ wait $child
       T
     );
 
-    test(
+    slotTest(
       "H-32 one-shot: the child exits 0 during an injected admission → send_not_accepted; COMPLETED on A1 with the exit note",
       async () => {
         const ctl = controlled();
@@ -1383,7 +1432,7 @@ wait $child
     );
 
     for (const code of [0, 1]) {
-      test(
+      slotTest(
         `H-33 interactive: the child exits ${code} during an injected admission → the anomaly; ${code === 0 ? "COMPLETED (exit_clean)" : "FAILED child_exited"}`,
         async () => {
           const ctl = controlled();
@@ -1413,7 +1462,7 @@ wait $child
       );
     }
 
-    test(
+    slotTest(
       "H-34 interactive: an unread hook-turn file is hook_injection_not_read, never prompt_not_read",
       async () => {
         const ctl = controlled();
@@ -1446,7 +1495,7 @@ wait $child
       T
     );
 
-    test(
+    slotTest(
       "H-34 control: a caller send_input delivered as a file and not read → prompt_not_read as today",
       async () => {
         const c = await channel({
@@ -1548,7 +1597,7 @@ wait $child
       }
 
       // REGRESSION: MTL-229 team slot with a file deliverable reported EMPTY shape_mismatch — Fixed in /dev:fix session dev-fix-20261024-232556-1434416719
-      test(
+      slotTest(
         "MTL-229 settled chain retains the head's Write after a narration-only hook turn",
         async () => {
           const ctl = controlled();
@@ -1588,7 +1637,7 @@ wait $child
       );
 
       // REGRESSION: MTL-229 team slot with a file deliverable reported EMPTY shape_mismatch — Fixed in /dev:fix session dev-fix-20261024-232556-1434416719
-      test(
+      slotTest(
         "MTL-229 settled chain de-duplicates Writes in head-first first-write order",
         async () => {
           const ctl = controlled();
@@ -1643,7 +1692,7 @@ wait $child
         T
       );
 
-      test(
+      slotTest(
         "H-25 snapshot during a hold: state RUNNING, activity hook, phase SETTLING, turnEndRecordMissing false",
         async () => {
           const ctl = controlled();
@@ -1667,7 +1716,7 @@ wait $child
         T
       );
 
-      test(
+      slotTest(
         "H-26 hasIdleWork false: SETTLING never entered, settle() never called, the verdict in the settling step",
         async () => {
           const ctl = controlled({ idle: false });
@@ -1691,7 +1740,7 @@ wait $child
         T
       );
 
-      test(
+      slotTest(
         "H-27 end record and exit in the same tick: no hold, settle() never called, COMPLETED with the exit note",
         async () => {
           const ctl = controlled();
@@ -1712,7 +1761,7 @@ wait $child
         T
       );
 
-      test(
+      slotTest(
         "H-27b the end record settles inside the exit-capture window: the exit note keeps its code",
         async () => {
           // The interleaving H-27 hits under load, made deterministic: the exit event is
@@ -1746,7 +1795,7 @@ wait $child
         T
       );
 
-      test(
+      slotTest(
         "H-28 binding absent: today's events — no record callback, no SETTLING, chain fields at their no-hook values",
         async () => {
           const d = await direct({ script: [{ say: "ANS-ONE" }] });
@@ -1779,7 +1828,7 @@ wait $child
     /** The fake starts its re-wake when this file exists: after the test saw the hold. */
     const gateFile = () => join(tmpdir(), `claudish-rewake-gate-${randomUUID()}`);
 
-    test(
+    slotTest(
       "a re-wake whose working row shows before its records: the injection is never typed; its result is abandoned rewake",
       async () => {
         const ctl = controlled();
@@ -1822,7 +1871,7 @@ wait $child
       T
     );
 
-    test(
+    slotTest(
       "a re-wake already in the transcript, with no frame since: the result arrives, the injection is never typed",
       async () => {
         const ctl = controlled();
@@ -1869,7 +1918,7 @@ wait $child
       T
     );
 
-    test(
+    slotTest(
       "a result that waited for a working row: a re-wake written as the row clears ends the hold; the injection is never typed",
       async () => {
         const ctl = controlled();
@@ -1921,7 +1970,7 @@ wait $child
   });
 
   describe.concurrent("hook text never reaches the command path", () => {
-    test(
+    slotTest(
       "an injection that starts with a slash is dropped delivery_unavailable and never typed",
       async () => {
         const ctl = controlled();
@@ -1952,7 +2001,7 @@ wait $child
   });
 
   describe.concurrent("an interactive turn a hook follows gets its own verdict", () => {
-    test(
+    slotTest(
       "turn 1 ends in an API error: FAILED api_error before any injection; the injection is dropped session_ended",
       async () => {
         const ctl = controlled();
@@ -1982,7 +2031,7 @@ wait $child
       T
     );
 
-    test(
+    slotTest(
       "turn 1's task file was not read: prompt_not_read is recorded, then the injection is the next turn",
       async () => {
         const ctl = controlled();

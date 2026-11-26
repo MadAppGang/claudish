@@ -595,7 +595,10 @@ The template line is about 200 characters (the turn file's absolute path include
 20 to 40 of a typical short prompt, and the child redraws its box on every typed key: measured on
 the fake child, one hook test with two turns took 9.1 to 10.0 s against 7.6 s typed, and
 `pane-hooks.integration.test.ts` at bun's default concurrency of 20 ran 214 s against 80 s on a
-loaded Mac (load average 36 to 68). In degraded mode the echo is found with Claude Code's
+loaded Mac (load average 36 to 68), and failed 1 to 16 tests per run. That file now runs at most
+`SESSION_SLOTS` (3) of its concurrent tests at once, each test's own budget starting when it
+holds a slot: at the weekly runner's `--max-concurrency=12` it passed three runs in a row, 112 to
+131 s each (load average 17 to 40). In degraded mode the echo is found with Claude Code's
 markdown rendering in mind: the history draws the template's path without its backticks
 (`echoAt` drops `` ` ``, `*` and `~` on both sides).
 
