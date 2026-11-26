@@ -184,7 +184,7 @@ import {
   agentCountMismatch,
   decideSettle,
 } from "./settle-rule.js";
-import { type TurnCore, settledTurnCoreOf } from "./settled-turn.js";
+import { type TurnCore, answerOf, settledTurnCoreOf } from "./settled-turn.js";
 import {
   type Phase,
   type PhaseEvent,
@@ -4328,7 +4328,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       tokensIn: hasTranscript ? view.usage.tokensIn : null,
       tokensOut: hasTranscript ? view.usage.tokensOut : null,
       toolCalls: view.toolCalls,
-      liveAnswerBytes: cur ? Buffer.byteLength(cur.assistantText.join("\n\n")) : 0,
+      liveAnswerBytes: cur ? Buffer.byteLength(this.liveAnswerOf(cur)) : 0,
       exitCode: this.exitCode,
       captureSource: this.lastCaptureSource,
       turnSource: this.turnSource,
@@ -4684,7 +4684,12 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     const done = this.answers.get(index);
     if (done !== undefined) return done;
     const cur = this.follower.view().current;
-    return cur && cur.index === index ? cur.assistantText.join("\n\n") : "";
+    return cur && cur.index === index ? this.liveAnswerOf(cur) : "";
+  }
+
+  /** The running turn's answer so far, under the same read-coverage rule as a settled one. */
+  private liveAnswerOf(cur: TurnView): string {
+    return answerOf(cur, this.currentDelivery?.mode ?? null);
   }
 
   chainText(): string {
@@ -4692,7 +4697,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     const lastIndex = this.chain[this.chain.length - 1]?.index ?? 0;
     const cur = this.follower.view().current;
     // the running chain turn: one above the last recorded index, not yet recorded
-    if (cur && cur.index > lastIndex) parts.push(cur.assistantText.join("\n\n"));
+    if (cur && cur.index > lastIndex) parts.push(this.liveAnswerOf(cur));
     return parts.filter((a) => a !== "").join("\n\n");
   }
 

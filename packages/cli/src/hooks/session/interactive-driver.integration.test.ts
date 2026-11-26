@@ -144,6 +144,8 @@ interface TurnScript {
   say?: string;
   ask?: string;
   noWitness?: boolean;
+  /** a file-delivered prompt is not read at all */
+  noRead?: boolean;
   delayMs?: number;
   rewake?: {
     delayMs: number;
@@ -378,6 +380,29 @@ describe.skipIf(!MAGMUX)(`interactive driver: turns ${MAGMUX ? "" : NO_MAGMUX_ME
 /* ───────────────────────────── delivery ───────────────────────────── */
 
 describe.skipIf(!MAGMUX)(`interactive driver: delivery ${MAGMUX ? "" : NO_MAGMUX_MESSAGE}`, () => {
+  test(
+    "an injection delivered as a file and never read settles with no answer",
+    async () => {
+      const dbl = controlled();
+      const r = await rig([{ say: "A1" }, { noRead: true, say: "A2-UNREAD" }], {
+        binding: dbl.binding,
+      });
+      try {
+        const d = r.driver as InteractiveDriver;
+        await until(() => d.snapshot().booted, "boot");
+        await r.type("go");
+        await until(() => dbl.calls.length === 1, "settle 1");
+        dbl.calls[0]?.resolve(inject("HOOK-PING"));
+        await until(() => dbl.calls.length === 2, "settle 2");
+        expect(dbl.calls[1]?.turn).toMatchObject({ index: 2, answer: "", hookCaused: true });
+        dbl.calls[1]?.resolve(nothing);
+      } finally {
+        await finish(r);
+      }
+    },
+    T
+  );
+
   test(
     "an injection returned at settle is typed as the next turn, which settles hook-caused",
     async () => {

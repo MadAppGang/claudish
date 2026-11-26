@@ -902,7 +902,7 @@ wait $child
     const filePrompt = "Line one of the task.\nLine two of the task.";
 
     slotTest(
-      "H-18 head delivered as a file and not read: FAILED prompt_not_read; get_output holds A1 and A2",
+      "H-18 head delivered as a file and not read: FAILED prompt_not_read; get_output holds A2, never the unread head's A1",
       async () => {
         const ctl = controlled();
         const c = await channel({
@@ -918,7 +918,7 @@ wait $child
           const end = await c.terminal();
           expect(end.state).toBe("FAILED");
           expect(end.reason).toBe("prompt_not_read");
-          expect(lineCount(c.output(), "ANS-ONE")).toBe(1);
+          expect(lineCount(c.output(), "ANS-ONE")).toBe(0);
           expect(lineCount(c.output(), "ANS-TWO")).toBe(1);
         } finally {
           await done(c);

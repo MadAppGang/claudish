@@ -79,6 +79,7 @@ import {
   SECONDARY_QUIET_MS,
   decideSettle,
 } from "../../pane/settle-rule.js";
+import { answerOf } from "../../pane/settled-turn.js";
 import {
   TranscriptFollower,
   type TranscriptView,
@@ -789,7 +790,8 @@ export class InteractiveDriver {
     this.settledTurn = cur;
     const info = {
       index: cur.index,
-      answer: localCommand ? (t.localCommandOutput ?? "") : t.assistantText.join("\n\n"),
+      // an injection goes typed or as a file, never as a command carrying one
+      answer: localCommand ? (t.localCommandOutput ?? "") : answerOf(t, null),
       stopReason,
       apiError: t.apiError !== null,
       hookCaused: cur.hookCaused,
