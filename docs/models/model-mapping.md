@@ -166,6 +166,13 @@ Claude Code then sends its own classifier request again, and passthrough reroute
 you have already exported is left as it is. `--monitor` sessions are not changed, because
 their main loop already reaches Anthropic.
 
+> **Version limit:** this works on Claude Code 2.1.278 through at least 2.1.322. Claude Code
+> 2.1.326 and later (seen through 2.1.330) have no local classifier left, so
+> `CLAUDE_CODE_AUTO_MODE_SERVER=0` no longer brings the separate classifier request back.
+> Auto mode instead reports "Claude Code no longer has a check of its own to use instead"
+> and asks for approval, or refuses under `-p`. Classifier passthrough does not work on
+> those versions yet. Versions 2.1.323 to 2.1.325 are untested.
+
 > **Consent model:** Claude Code's classifier treats a command you *explicitly name* in your
 > prompt (e.g. literally asking it to run `curl … | bash`) as informed consent and allows it.
 > Visible blocks are for dangerous actions the agent formulates on its own, or for

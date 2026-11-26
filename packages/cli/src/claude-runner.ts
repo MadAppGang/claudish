@@ -2518,8 +2518,15 @@ export const AUTO_MODE_SERVER_ENV_VAR = "CLAUDE_CODE_AUTO_MODE_SERVER";
  * never sees a classifier request, so it reports "classifier passthrough was
  * enabled but NO classifier request was seen this session".
  *
- * With the variable at `0`, Claude Code sends its own classifier request again.
- * `isAutoModeClassifierRequest` detects it and routes it to native Anthropic.
+ * With the variable at `0`, Claude Code up to at least 2.1.322 sends its own
+ * classifier request again, and `isAutoModeClassifierRequest` routes it to
+ * native Anthropic. Claude Code 2.1.326 and later (seen through 2.1.330) have
+ * no local classifier left: at `0`, auto mode reports "Claude Code no longer
+ * has a check of its own to use instead" and asks for approval, or refuses
+ * under `-p`. On those versions passthrough still fails. Setting the variable
+ * does no harm there, since the server path fails the same way without it.
+ * The real fix for them is to forward the `safeguards` review to Anthropic,
+ * which this function does not do. 2.1.323 to 2.1.325 are untested.
  *
  * Monitor mode is excluded because everything there is already native, so the
  * server-side review works. A value the user exported is never clobbered;
