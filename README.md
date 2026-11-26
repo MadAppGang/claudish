@@ -19,7 +19,7 @@
 **Claudish** (Claude-ish) is a CLI tool that allows you to run Claude Code with any AI model by proxying requests through a local Anthropic API-compatible server.
 
 **Supported Providers:**
-- **Cloud:** OpenRouter (580+ models), Google Gemini, OpenAI, MiniMax, Kimi, GLM, Z.AI, Sakana Fugu, OllamaCloud, OpenCode Zen
+- **Cloud:** OpenRouter (580+ models), TrustedRouter (confidential AI gateway with live model catalog), Google Gemini, OpenAI, MiniMax, Kimi, GLM, Z.AI, Sakana Fugu, OllamaCloud, OpenCode Zen
 - **Local:** Ollama, LM Studio, vLLM, MLX
 - **Enterprise:** Vertex AI (Google Cloud)
 
@@ -350,6 +350,7 @@ Claudish loads provider API keys and model settings (`CLAUDISH_MODEL`, `CLAUDISH
 | Variable | Provider | Aliases |
 |----------|----------|---------|
 | `OPENROUTER_API_KEY` | OpenRouter (default backend, 580+ models) | |
+| `TRUSTEDROUTER_API_KEY` | TrustedRouter (`tr@`, `trustedrouter@`, `nyte@`) — confidential gateway with live model catalog | |
 | `GEMINI_API_KEY` | Google Gemini (`g@`, `google@`) | |
 | `OPENAI_API_KEY` | OpenAI (`oai@`) | |
 | `MINIMAX_API_KEY` | MiniMax (`mm@`, `mmax@`) | |
@@ -634,6 +635,7 @@ claudish --model ollama@llama3.2:3 "code review"  # 3 concurrent requests
 | `g@`, `google@` | Google Gemini | `GEMINI_API_KEY` | `g@gemini-2.0-flash` |
 | `oai@` | OpenAI Direct | `OPENAI_API_KEY` | `oai@gpt-4o` |
 | `or@`, `openrouter@` | OpenRouter | `OPENROUTER_API_KEY` | `or@deepseek/deepseek-r1` |
+| `tr@`, `trustedrouter@`, `nyte@` | TrustedRouter | `TRUSTEDROUTER_API_KEY` | `tr@trustedrouter/auto`, `nyte@nyte/zdr` |
 | `mm@`, `mmax@` | MiniMax Direct | `MINIMAX_API_KEY` | `mm@MiniMax-M2.1` |
 | `kimi@`, `moon@` | Kimi Direct | `MOONSHOT_API_KEY` | `kimi@kimi-k2` |
 | `glm@`, `zhipu@` | GLM Direct | `ZHIPU_API_KEY` | `glm@glm-4` |

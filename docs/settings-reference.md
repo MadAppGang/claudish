@@ -225,6 +225,7 @@ No OpenRouter hop is added on the bundled list unless you set one up: `--default
 | Variable | Provider | Aliases | Where to Get |
 |----------|----------|---------|-------------|
 | `OPENROUTER_API_KEY` | OpenRouter (default backend / universal fallback) | | https://openrouter.ai/keys |
+| `TRUSTEDROUTER_API_KEY` | TrustedRouter (`tr@`, `trustedrouter@`, `nyte@`) — confidential gateway with live model catalog | | https://trustedrouter.com |
 | `GEMINI_API_KEY` | Google Gemini direct API (`g@`, `google@`) | | https://aistudio.google.com/app/apikey |
 | `OPENAI_API_KEY` | OpenAI direct API (`oai@`) | | https://platform.openai.com/api-keys |
 | `MINIMAX_API_KEY` | MiniMax (`mm@`, `mmax@`) | | https://platform.minimax.io/user-center/basic-information/interface-key (China platform: https://www.minimaxi.com/, and set `MINIMAX_BASE_URL`) |
@@ -303,6 +304,7 @@ If none of them answers, the error says so and names both remedies (`VERTEX_PROJ
 | `META_BASE_URL` | Meta Model API (`meta@`) | `https://api.meta.ai` |
 | `OLLAMACLOUD_BASE_URL` | OllamaCloud hosted API | `https://ollama.com` |
 | `OPENCODE_BASE_URL` | OpenCode Zen API (base; `/v1/chat/completions` appended) | `https://opencode.ai/zen` |
+| `TRUSTEDROUTER_BASE_URL` | TrustedRouter API (base; `/chat/completions` and `/models` appended) | `https://api.trustedrouter.com/v1` |
 | `LITELLM_BASE_URL` | LiteLLM proxy server URL (**required** to enable LiteLLM routing) | none |
 
 **Note on `OPENCODE_BASE_URL`**: For the Zen Go plan endpoint, Claudish replaces `/zen` with `/zen/go` automatically. Setting `OPENCODE_BASE_URL=https://opencode.ai/zen` is equivalent to the default.
@@ -559,6 +561,7 @@ allowance or bill at a higher rate. `CLAUDE_CODE_DISABLE_FAST_MODE=1` turns `/fa
 | `g`, `gemini` | `google` | Direct Google Gemini API (`GEMINI_API_KEY`) |
 | `oai` | `openai` | Direct OpenAI API (`OPENAI_API_KEY`) |
 | `or`, `openrouter` | `openrouter` | OpenRouter (`OPENROUTER_API_KEY`) |
+| `tr`, `trustedrouter`, `nyte` | `trustedrouter` | TrustedRouter confidential gateway (`TRUSTEDROUTER_API_KEY`), live `/v1/models` discovery |
 | `mm`, `mmax` | `minimax` | MiniMax direct API (`MINIMAX_API_KEY`) |
 | `mmc` | `minimax-coding` | MiniMax Coding Plan (`MINIMAX_CODING_API_KEY`) |
 | `kimi`, `moon`, `moonshot` | `kimi` | Kimi/Moonshot API (`MOONSHOT_API_KEY` or `KIMI_API_KEY`) |

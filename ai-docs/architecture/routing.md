@@ -28,6 +28,7 @@ claudish --model ollama@<model>:3 "task"   # 3 concurrent requests
 - `oai@` → OpenAI Direct
 - `cx@`, `codex@` → OpenAI Codex (Responses API)
 - `or@`, `openrouter@` → OpenRouter
+- `tr@`, `trustedrouter@`, `nyte@` → TrustedRouter (confidential gateway, `TRUSTEDROUTER_API_KEY`, live `/v1/models` catalog discovery)
 - `mm@`, `mmax@` → MiniMax
 - `mmc@` → MiniMax Coding Plan
 - `kimi@`, `moon@` → Kimi

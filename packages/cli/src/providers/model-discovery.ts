@@ -147,6 +147,10 @@ export interface DiscoveredModel {
    * yes, since every hosted dynamic models catalog in claudish is tool-capable.
    */
   supportsTools?: boolean;
+  /** Live per-token pricing in USD per 1M tokens, when reported by the endpoint. */
+  pricing?: { input: number; output: number };
+  /** Alternate callable route ids for this model (e.g. `nyte/*` aliases), when reported. */
+  aliases?: string[];
 }
 
 /** A discovered model in the shape the model-resolver seam consumes. */
@@ -189,6 +193,10 @@ export interface ModelDiscoveryDescriptor {
    *   minted from the Muse Code login, whose rows carry `metadata["muse-code"]`
    *   (name, hidden flag, window, modalities). Owned by
    *   `providers/meta-muse/muse-models.ts`.
+   * - `trustedrouter-models`: TrustedRouter's live `GET /v1/models` catalog,
+   *   whose rows carry `pricing`, `context_length`, and `trustedrouter`
+   *   visibility/chat/alias metadata. Owned by
+   *   `providers/trustedrouter/trustedrouter-models.ts`.
    */
   format:
     | "openai-models-list"
@@ -196,7 +204,8 @@ export interface ModelDiscoveryDescriptor {
     | "devin-connect"
     | "ollama-tags"
     | "antigravity"
-    | "muse-code-models";
+    | "muse-code-models"
+    | "trustedrouter-models";
 }
 
 /**
@@ -1148,7 +1157,9 @@ export async function discoverProviderModels(providerName: string): Promise<Disc
  */
 function windowOf(models: DiscoveredModel[], modelId: string, upTo?: number): number | undefined {
   const needle = modelId.toLowerCase();
-  const exact = models.find((m) => m.id.toLowerCase() === needle);
+  const exact =
+    models.find((m) => m.id.toLowerCase() === needle) ??
+    models.find((m) => m.aliases?.some((alias) => alias.toLowerCase() === needle));
   if (exact) return rowWindow(exact, upTo);
   const windows = models
     .filter((m) => m.machine?.modelId.toLowerCase() === needle)

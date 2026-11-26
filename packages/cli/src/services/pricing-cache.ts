@@ -36,6 +36,7 @@ import type { SlimModelEntry } from "../providers/all-models-cache.js";
 import { getCatalogEntries } from "../providers/catalog-client.js";
 import { catalogRouteMatchesProvider } from "../providers/catalog-route-bindings.js";
 import { connectionRequestRates } from "../providers/connection-price.js";
+import { peekDiscoveredModels } from "../providers/model-discovery.js";
 
 // In-memory pricing map: OpenRouter model ID → pricing
 const pricingMap = new Map<string, ModelPricing>();
@@ -113,6 +114,25 @@ export function getDynamicPricingSync(
 ): ModelPricing | undefined {
   if (provider === "openrouter") {
     return pricingMap.get(modelName) ?? prefixMatch(modelName);
+  }
+
+  // Prefer live pricing discovered from the provider's own `/models` endpoint
+  // (matching either canonical wire id or any declared route alias).
+  const discovered = peekDiscoveredModels(provider);
+  if (discovered) {
+    const needle = modelName.toLowerCase();
+    const match = discovered.find(
+      (m) =>
+        m.id.toLowerCase() === needle ||
+        (m.aliases?.some((alias) => alias.toLowerCase() === needle) ?? false)
+    );
+    if (match?.pricing) {
+      return {
+        inputCostPer1M: match.pricing.input,
+        outputCostPer1M: match.pricing.output,
+        isFree: match.pricing.input === 0 && match.pricing.output === 0,
+      };
+    }
   }
 
   const entry = catalogEntryForRequest(provider, modelName);

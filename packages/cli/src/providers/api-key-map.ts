@@ -5,6 +5,7 @@
 export const API_KEY_MAP: Record<string, { envVar: string; aliases?: string[] }> = {
   litellm: { envVar: "LITELLM_API_KEY" },
   openrouter: { envVar: "OPENROUTER_API_KEY" },
+  trustedrouter: { envVar: "TRUSTEDROUTER_API_KEY" },
   google: { envVar: "GEMINI_API_KEY" },
   openai: { envVar: "OPENAI_API_KEY" },
   // The Claude API. No alias: ANTHROPIC_AUTH_TOKEN is the Claude subscription's token.

@@ -160,6 +160,8 @@ export function validateRemoteProviderApiKey(provider: RemoteProvider): string |
         "export OLLAMA_API_KEY='your-key' (get from https://ollama.com/settings/keys)",
       OPENCODE_API_KEY:
         "export OPENCODE_API_KEY='your-key' (create one at https://opencode.ai/console > Settings > Service accounts)",
+      TRUSTEDROUTER_API_KEY:
+        "export TRUSTEDROUTER_API_KEY='your-key' (get from https://trustedrouter.com)",
     };
 
     const example = examples[provider.apiKeyEnvVar] || `export ${provider.apiKeyEnvVar}='your-key'`;

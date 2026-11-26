@@ -2441,7 +2441,7 @@ function printHelp(): void {
 
   console.log(`
 ${bold("claudish")} ${dim("·")} Run Claude Code with any AI model
-${dim("OpenRouter · Gemini · OpenAI · xAI · MiniMax · Kimi · GLM · Z.AI · Sakana · Poe · LiteLLM · Local")}
+${dim("OpenRouter · TrustedRouter · Gemini · OpenAI · xAI · MiniMax · Kimi · GLM · Z.AI · Sakana · Poe · LiteLLM · Local")}
 
 ${h("USAGE")}
   ${green("claudish")}                                ${dim("# Interactive mode (default, model selector)")}
@@ -2656,6 +2656,7 @@ ${h("ENVIRONMENT VARIABLES")}
 
   ${bold("API keys")} ${dim("(at least one required for cloud models):")}
   ${blue("OPENROUTER_API_KEY")}              OpenRouter (default backend)
+  ${blue("TRUSTEDROUTER_API_KEY")}           TrustedRouter ${dim("(tr@, trustedrouter@, nyte@)")}
   ${blue("GEMINI_API_KEY")}                  Google Gemini ${dim("(g@, gemini@; alias GOOGLE_API_KEY)")}
   ${blue("OPENAI_API_KEY")}                  OpenAI ${dim("(oai@)")}
   ${blue("OPENAI_CODEX_API_KEY")}            OpenAI Codex / Responses API ${dim("(cx@, codex@)")}
@@ -2690,6 +2691,7 @@ ${h("ENVIRONMENT VARIABLES")}
   ${blue("LITELLM_BASE_URL")}                LiteLLM gateway base URL ${dim("(required for ll@)")}
   ${blue("OLLAMACLOUD_BASE_URL")}            OllamaCloud ${dim("(default: https://ollama.com)")}
   ${blue("OPENCODE_BASE_URL")}               OpenCode Zen ${dim("(default: https://opencode.ai/zen)")}
+  ${blue("TRUSTEDROUTER_BASE_URL")}          TrustedRouter ${dim("(default: https://api.trustedrouter.com/v1)")}
 
   ${bold("Local providers:")}
   ${blue("OLLAMA_BASE_URL")}                 Ollama server ${dim("(default: http://localhost:11434; alias OLLAMA_HOST)")}
