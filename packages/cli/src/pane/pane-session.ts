@@ -4138,8 +4138,8 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
    * as a witnessed turn decides, so a background agent still pending, a pending tool or a
    * waking record holds the turn open exactly as it does there. The answer is that
    * transcript's assistant text; with none, the screen's, read from the live bottom of a
-   * connected client. The turn settles at the shadow's last chat offset, so a re-wake past
-   * it is seen while held or idle.
+   * connected client, unless the turn file is known not to be read in full. The turn settles
+   * at the shadow's last chat offset, so a re-wake past it is seen while held or idle.
    */
   private settleUnwitnessedEnd(view: TranscriptView, st: ScreenTurn): boolean {
     const u = view.current?.index === this.turnIndex ? view.current.unwitnessed : null;
@@ -4164,7 +4164,9 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     // counted only once the turn really settles: the screen branch below may still wait
     const notes: string[] = [];
     let core = this.settledTurnOf(turn, decision, (key) => notes.push(key));
-    if (!core.answer && !core.apiError) {
+    // a turn file known not to be read in full has no answer (`answerOf`): the screen would
+    // only show the text that rule withheld. Unknown coverage still falls back to the screen.
+    if (!core.answer && !core.apiError && core.delivery.complete !== false) {
       // the screen and the scroll position are the last frame before a dropped client
       if (!this.client || !this.screenViewLive()) return false;
       const answer = screenAnswer(this.screen, st.echo, st.turnFile);
