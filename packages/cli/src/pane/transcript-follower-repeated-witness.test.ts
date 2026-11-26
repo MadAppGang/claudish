@@ -110,22 +110,6 @@ describe("a text witness and a submitted record holding the line more than once"
     ];
     expect(acceptedAtFor(record)).toBeNull();
   });
-
-  test("one copy of a line with surrounding spaces is accepted trimmed", () => {
-    expect(acceptedAtFor(userRecord("ping"), " ping ")).toBe("2026-11-19T15:23:21.574Z");
-  });
-
-  test("two exact copies of a line with surrounding spaces, joined end to end, are accepted", () => {
-    const line = " ping ";
-    expect(acceptedAtFor(userRecord(line + line), line)).toBe("2026-11-19T15:23:21.574Z");
-    expect(acceptedAtFor(userRecord((line + line).trim()), line)).toBe("2026-11-19T15:23:21.574Z");
-  });
-
-  test("one copy of a line with surrounding spaces plus foreign text is refused", () => {
-    const line = " ping ";
-    expect(acceptedAtFor(userRecord(`${line}pong `), line)).toBeNull();
-    expect(acceptedAtFor(userRecord(`${line} ping x`), line)).toBeNull();
-  });
 });
 
 /** Open one turn witnessed by `line`, fold `record` after it, and return the turn's copy count. */
@@ -149,11 +133,5 @@ describe("the number of whole copies a text witness matched", () => {
   test("is k for k whole copies", () => {
     expect(copiesFor(userRecord(LINE + LINE))).toBe(2);
     expect(copiesFor(userRecord(LINE.repeat(4)))).toBe(4);
-  });
-
-  test("counts exact copies of a line with surrounding spaces", () => {
-    const line = " ping ";
-    expect(copiesFor(userRecord("ping"), line)).toBe(1);
-    expect(copiesFor(userRecord(line + line), line)).toBe(2);
   });
 });

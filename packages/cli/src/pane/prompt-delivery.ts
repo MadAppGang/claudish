@@ -1,12 +1,15 @@
 /**
  * How a prompt's text reaches the REPL (architecture §2.13, D13).
  *
- *   - a PLAIN single line (≤ 512 printable chars, no leading `! # ? @ & \ /`, no trailing
- *     `@x`/`/x` token) is typed as is;
  *   - a SLASH command is typed as its first line; when that line is too long or more
  *     follows, the whole text goes to the turn file and the typed line points at it;
- *   - EVERYTHING ELSE is written to `<turnDir>/turn-<n>.md` (0600) and the child is told,
- *     in one typed fixed-template line, to Read it. No paste path exists.
+ *   - `/exit` and `/quit` are typed: control lines, never a turn;
+ *   - EVERY OTHER prompt, when the Read tool is available and the session has a turn
+ *     directory, is written to `<turnDir>/turn-<n>.md` (0600) and the child is told, in one
+ *     typed fixed-template line (the pointer line), to Read it. Its witness is bound to that
+ *     file's path (`turn_file`), so two turns of the same text are never confused;
+ *   - otherwise a PLAIN single line (≤ 512 printable chars, no leading `! # ? @ & \ /`, no
+ *     trailing `@x`/`/x` token) is typed as is. No paste path exists.
  *
  * Read's limits, measured on Claude Code 2.1.290 (phase2-captures.md §4.4): no per-line
  * truncation (a 90,005-char line came back whole), no line-count cap (2,601 lines in one
@@ -166,9 +169,18 @@ export function turnFilePath(turnDir: string, turnIndex: number): string {
   return join(turnDir, `turn-${turnIndex}.md`);
 }
 
+/**
+ * The turn file's path in backticks, exactly as the typed pointer line carries it: the token a
+ * prompt record must hold to witness that turn (`turn_file`). The backticks keep `turn-1.md`
+ * from matching inside `turn-11.md`.
+ */
+export function turnFileToken(file: string): string {
+  return `\`${file}\``;
+}
+
 /** The fixed instruction typed for a file-delivered turn. */
 export function fileTemplate(file: string, marker: string | null): string {
-  const base = `Your task is in the file \`${file}\`. Read all of it with the Read tool (in parts if it is long), then do exactly what it says, treating its content as the user's message.`;
+  const base = `Your task is in the file ${turnFileToken(file)}. Read all of it with the Read tool (in parts if it is long), then do exactly what it says, treating its content as the user's message.`;
   return marker
     ? `${base} Lines ending in ${marker} were split for reading: join each with the next line, dropping the ${marker}.`
     : base;
@@ -176,6 +188,23 @@ export function fileTemplate(file: string, marker: string | null): string {
 
 function commandPointer(name: string, file: string): string {
   return `/${name} — the full arguments are in the file \`${file}\`; read all of it first.`;
+}
+
+/**
+ * No file path (no Read tool, or no turn directory): a plain line is typed as is, and a line
+ * that is plain once normalized is typed so, and says so. Anything else is refused.
+ */
+function typedPlan(text: string, readAvailable: boolean): Delivery {
+  if (isPlainLine(text)) return { mode: "typed", line: text, witness: { kind: "text", text } };
+  const line = normalizedLine(text);
+  if (isPlainLine(line))
+    return { mode: "typed", line, witness: { kind: "text", text: line }, normalized: true };
+  return {
+    mode: "refused",
+    reason: readAvailable
+      ? "the prompt is not a plain single line and the session has no turn directory, so it cannot be delivered as a file"
+      : "the prompt is not a plain single line and the Read tool is unavailable, so it cannot be delivered as a file",
+  };
 }
 
 /**
@@ -223,19 +252,7 @@ export function planDelivery(
     };
   }
 
-  if (isPlainLine(text)) return { mode: "typed", line: text, witness: { kind: "text", text } };
-
-  if (!readAvailable) {
-    // no file path: a line that is plain once normalized is typed so, and says so
-    const line = normalizedLine(text);
-    if (isPlainLine(line))
-      return { mode: "typed", line, witness: { kind: "text", text: line }, normalized: true };
-    return {
-      mode: "refused",
-      reason:
-        "the prompt is not a plain single line and the Read tool is unavailable, so it cannot be delivered as a file",
-    };
-  }
+  if (!readAvailable || turnDir === "") return typedPlan(text, readAvailable);
   const file = turnFilePath(turnDir, turnIndex);
   const tf = renderTurnFile(text);
   const line = fileTemplate(file, tf.marker);
@@ -245,7 +262,7 @@ export function planDelivery(
     file,
     fileContent: tf.content,
     lines: tf.lines,
-    witness: { kind: "text", text: line },
+    witness: { kind: "turn_file", file, line },
   };
 }
 

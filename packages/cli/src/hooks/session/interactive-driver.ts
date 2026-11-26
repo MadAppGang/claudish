@@ -14,10 +14,12 @@
  *     opens at offset 0 with the HUMAN witness, so a prompt given on the command line,
  *     which Claude Code may write before the REPL is drawn, is witnessed. After each
  *     settle the next turn opens at the current offset with the same witness; an
- *     injected turn uses the `text` witness of the line it typed. The human witness is
- *     matched by provenance (`isHumanPrompt`): a task notification never matches it,
- *     so a background re-wake (D23) stays the turn it woke — it never makes a pending
- *     injection stale and never resets the cap.
+ *     injected turn uses the witness of the line it typed (`turn_file` for a pointer to its
+ *     turn file, `text` for a line typed as is). The human witness is matched by
+ *     provenance (`isHumanPrompt`): a task notification never matches it, so a background
+ *     re-wake (D23) stays the turn it woke — it never makes a pending injection stale and
+ *     never resets the cap; nor does a record carrying a pointer into the turn directory
+ *     (`notTurnDir`), which is an injection's, however late it lands.
  *   - **Settle.** `decideSettle`, with the same screen facts as a pane. The phase is the
  *     latch: one `binding.settle()` per settled turn, `SETTLING` while it runs, and a
  *     re-wake or a human prompt during the hold ends it (`rewake`, `caller`).
@@ -45,6 +47,7 @@ import { log, logStderr } from "../../logger.js";
 import { boxShowsLine } from "../../pane/box-locate.js";
 import {
   SEND_READY_WAIT_DEFAULT_MS,
+  type SendOutcome,
   classifySendReply,
   sendBudgetMs,
 } from "../../pane/input-gate.js";
@@ -61,6 +64,7 @@ import {
   hasChoiceDialog,
   inputBox,
   isWorking,
+  lineSubmittedOnScreen,
   readBoot,
 } from "../../pane/screen-classifier.js";
 import {
@@ -75,6 +79,7 @@ import {
   SECONDARY_QUIET_MS,
   decideSettle,
 } from "../../pane/settle-rule.js";
+import { answerOf, answerWithheld } from "../../pane/settled-turn.js";
 import {
   TranscriptFollower,
   type TranscriptView,
@@ -645,7 +650,8 @@ export class InteractiveDriver {
     const turn: OpenTurn = {
       index: this.lastAcceptedIndex + 1,
       offset,
-      witness: { kind: "human" },
+      // a record carrying a pointer into the turn directory is an injection's, never the human's
+      witness: { kind: "human", notTurnDir: this.o.turnDir },
       delivery: null,
       hookCaused: false,
     };
@@ -784,7 +790,9 @@ export class InteractiveDriver {
     this.settledTurn = cur;
     const info = {
       index: cur.index,
-      answer: localCommand ? (t.localCommandOutput ?? "") : t.assistantText.join("\n\n"),
+      // an injection goes typed or as a file, never as a command carrying one
+      answer: localCommand ? (t.localCommandOutput ?? "") : answerOf(t, null),
+      answerWithheld: !localCommand && answerWithheld(t, null),
       stopReason,
       apiError: t.apiError !== null,
       hookCaused: cur.hookCaused,
@@ -1021,6 +1029,7 @@ export class InteractiveDriver {
     }
     this.transition("deliver");
     const adm = this.admission;
+    const turnFile = plan.mode === "file" ? plan.file : null;
     // On a pane magmux gates (its command names Claude Code, as the `-w` wrap's does) the send waits for
     // the box and answers only with evidence, so the client timeout is the gated budget:
     // a shorter one reads a slow gated answer as a lost reply.
@@ -1040,7 +1049,7 @@ export class InteractiveDriver {
         // and entered; the screen and the transcript decide, as in a pane.
         // Once it landed, the text witness accepts it within `acceptMs` as usual.
         if (out.kind === "reply_lost" && out.code !== "timeout") {
-          if (await this.landedAfterLostReply(adm, pane, plan.line)) return;
+          if (await this.landedAfterLostReply(adm, pane, plan.line, turnFile)) return;
         } else if (out.kind === "not_accepted" && enterMayHaveBeenPressed(out)) {
           // the gate pressed Enter (or another writer may have): never pressed again;
           // the text witness accepts it, or `acceptMs` drops it
@@ -1066,9 +1075,15 @@ export class InteractiveDriver {
    * it delivered. Enter goes only while `adm` is still the pending admission, and only
    * its own reply, or the transcript and screen after it, says the line landed.
    */
-  private async landedAfterLostReply(adm: Admission, pane: number, line: string): Promise<boolean> {
-    const head = line.slice(0, 40);
-    // Twice: the Enter itself can meet a connection that is closing.
+  private async landedAfterLostReply(
+    adm: Admission,
+    pane: number,
+    line: string,
+    turnFile: string | null
+  ): Promise<boolean> {
+    // Twice, and only when the Enter's reply proves no key was written (a closing
+    // connection, a busy pane). A reply that says Enter was or may have been pressed, or
+    // that was lost too, ends here: the witness accepts the line, or `acceptMs` drops it.
     for (let attempt = 0; attempt < 2; attempt++) {
       const seen = this.screen.seq;
       const client = await this.connectedClient(RECONNECT_WAIT_MS);
@@ -1080,8 +1095,9 @@ export class InteractiveDriver {
       const r = await client.request({ type: "send", pane, keys: ["enter"], enter: false }, 10_000);
       if (r.ok) return true;
       log(`[hooks] interactive driver: Enter after a lost reply: ${r.code} ${r.error}`);
+      if (enterMayHaveLanded(classifySendReply(r))) return true;
     }
-    const landed = this.submitted(head);
+    const landed = this.submitted(line, turnFile);
     if (landed) log("[hooks] interactive driver: send reply lost; the line was submitted");
     return landed;
   }
@@ -1107,11 +1123,11 @@ export class InteractiveDriver {
     return false;
   }
 
-  /** The line starting with `head` was submitted: its witness, or its echo above the box. */
-  private submitted(head: string): boolean {
+  /** `line` was submitted: its witness, or its echo above the box (`lineSubmittedOnScreen`). */
+  private submitted(line: string, turnFile: string | null): boolean {
     const t = this.pollFollower(true)?.current;
     return (
-      (t?.acceptedAt ?? null) !== null || this.screen.lines.some((l) => l.startsWith(`❯ ${head}`))
+      (t?.acceptedAt ?? null) !== null || lineSubmittedOnScreen(this.screen.lines, line, turnFile)
     );
   }
 
@@ -1161,6 +1177,12 @@ function screenNotIdleReason(screen: ScreenState): string | null {
   const box = inputBox(screen);
   if (!box) return "no_input_box";
   return box.text === "" ? null : "box_not_empty";
+}
+
+/** An Enter's reply after which the key was, or may have been, written. */
+function enterMayHaveLanded(o: SendOutcome): boolean {
+  if (o.kind === "reply_lost") return true;
+  return o.kind === "not_accepted" && enterMayHaveBeenPressed(o);
 }
 
 /** A gated `not_accepted` after which Enter was, or may have been, pressed. */

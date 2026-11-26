@@ -14,6 +14,7 @@ import {
   joinSplitLines,
   planDelivery,
   renderTurnFile,
+  turnFileToken,
   writeTurnFile,
 } from "./prompt-delivery.js";
 import { transcriptRecords } from "./test-helpers/transcript-fixtures.js";
@@ -24,27 +25,42 @@ afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
-describe("plain lines are typed", () => {
-  test("conversational replies", () => {
+describe("plain lines: a pointer with the Read tool, typed without it", () => {
+  test("with Read: a plain line goes to the turn file, bound by its path", () => {
     for (const t of [
       "yes",
       "continue with option 2",
       "Reply with exactly PEAR and nothing else.",
+      "look at @src/index.ts first",
     ]) {
-      expect(planDelivery(t, TURN_DIR, 1, true)).toEqual({
-        mode: "typed",
-        line: t,
-        witness: { kind: "text", text: t },
+      const d = planDelivery(t, TURN_DIR, 4, true);
+      expect(d).toEqual({
+        mode: "file",
+        line: fileTemplate(`${TURN_DIR}/turn-4.md`, null),
+        file: `${TURN_DIR}/turn-4.md`,
+        fileContent: t,
+        lines: 1,
+        witness: {
+          kind: "turn_file",
+          file: `${TURN_DIR}/turn-4.md`,
+          line: fileTemplate(`${TURN_DIR}/turn-4.md`, null),
+        },
       });
     }
+  });
+
+  test("with Read: two turns of the same text get two different pointer lines", () => {
+    const a = planDelivery("Reply with exactly PEAR.", TURN_DIR, 1, true);
+    const b = planDelivery("Reply with exactly PEAR.", TURN_DIR, 2, true);
+    expect(a.mode === "file" && b.mode === "file" && a.line !== b.line).toBe(true);
   });
 
   test("with Read: whitespace at either end, or any whitespace but the ASCII space, goes to the file with the exact text", () => {
     for (const t of [
       "  Reply with exactly PEAR.  ",
       "Reply with exactly PEAR. ",
-      "Reply with exactly PEAR.",
-      "Reply with PEAR.",
+      "Reply with exactly\u00a0PEAR.",
+      "Reply with\u2003PEAR.",
     ]) {
       const plan = planDelivery(t, TURN_DIR, 1, true);
       expect(plan.mode).toBe("file");
@@ -53,12 +69,23 @@ describe("plain lines are typed", () => {
     }
   });
 
-  test("with Read: a line with only ASCII spaces inside is typed unchanged", () => {
-    expect(planDelivery("Reply with exactly PEAR.", TURN_DIR, 1, true)).toEqual({
+  test("without Read: a plain line is typed unchanged, witnessed by its text", () => {
+    for (const t of ["yes", "Reply with exactly PEAR."]) {
+      expect(planDelivery(t, TURN_DIR, 1, false)).toEqual({
+        mode: "typed",
+        line: t,
+        witness: { kind: "text", text: t },
+      });
+    }
+  });
+
+  test("with Read but no turn directory: a plain line is typed unchanged", () => {
+    expect(planDelivery("Reply with exactly PEAR.", "", 1, true)).toEqual({
       mode: "typed",
       line: "Reply with exactly PEAR.",
       witness: { kind: "text", text: "Reply with exactly PEAR." },
     });
+    expect(planDelivery("line one\nline two", "", 1, true).mode).toBe("refused");
   });
 
   test("without Read: the line is typed trimmed, other whitespace made ASCII spaces, and says so", () => {
@@ -166,7 +193,7 @@ describe("slash commands", () => {
 });
 
 describe("everything else is a turn file", () => {
-  test("the typed line is exactly the template, and it is the witness", () => {
+  test("the typed line is exactly the template, and the witness is the turn file it names", () => {
     const text = "line one\nline two";
     const d = planDelivery(text, TURN_DIR, 2, true);
     expect(d.mode).toBe("file");
@@ -175,7 +202,8 @@ describe("everything else is a turn file", () => {
     expect(d.line).toBe(
       `Your task is in the file \`${TURN_DIR}/turn-2.md\`. Read all of it with the Read tool (in parts if it is long), then do exactly what it says, treating its content as the user's message.`
     );
-    expect(d.witness).toEqual({ kind: "text", text: d.line });
+    expect(d.witness).toEqual({ kind: "turn_file", file: d.file, line: d.line });
+    expect(d.line).toContain(turnFileToken(d.file));
     expect(d.fileContent).toBe(text);
     expect(d.lines).toBe(2);
   });

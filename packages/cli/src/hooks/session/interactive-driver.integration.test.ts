@@ -24,11 +24,13 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MagmuxClient } from "../../pane/magmux-client.js";
+import { fileTemplate, turnFilePath } from "../../pane/prompt-delivery.js";
 import {
   FAKE_CHILD,
   MAGMUX,
@@ -143,6 +145,8 @@ interface TurnScript {
   say?: string;
   ask?: string;
   noWitness?: boolean;
+  /** a file-delivered prompt is not read at all */
+  noRead?: boolean;
   delayMs?: number;
   rewake?: {
     delayMs: number;
@@ -279,6 +283,11 @@ async function rig(
   return r;
 }
 
+/** The pointer line the driver types for its `n`th injection (its turn file `turn-<n>.md`). */
+function pointerIn(r: Rig, n = 1): string {
+  return fileTemplate(turnFilePath(r.turnDir, n), null);
+}
+
 async function until(pred: () => boolean, what: string, ms = 20_000): Promise<void> {
   const end = Date.now() + ms;
   while (!pred()) {
@@ -373,6 +382,34 @@ describe.skipIf(!MAGMUX)(`interactive driver: turns ${MAGMUX ? "" : NO_MAGMUX_ME
 
 describe.skipIf(!MAGMUX)(`interactive driver: delivery ${MAGMUX ? "" : NO_MAGMUX_MESSAGE}`, () => {
   test(
+    "an injection delivered as a file and never read settles with no answer",
+    async () => {
+      const dbl = controlled();
+      const r = await rig([{ say: "A1" }, { noRead: true, say: "A2-UNREAD" }], {
+        binding: dbl.binding,
+      });
+      try {
+        const d = r.driver as InteractiveDriver;
+        await until(() => d.snapshot().booted, "boot");
+        await r.type("go");
+        await until(() => dbl.calls.length === 1, "settle 1");
+        dbl.calls[0]?.resolve(inject("HOOK-PING"));
+        await until(() => dbl.calls.length === 2, "settle 2");
+        expect(dbl.calls[1]?.turn).toMatchObject({
+          index: 2,
+          answer: "",
+          answerWithheld: true,
+          hookCaused: true,
+        });
+        dbl.calls[1]?.resolve(nothing);
+      } finally {
+        await finish(r);
+      }
+    },
+    T
+  );
+
+  test(
     "an injection returned at settle is typed as the next turn, which settles hook-caused",
     async () => {
       const dbl = controlled();
@@ -383,7 +420,7 @@ describe.skipIf(!MAGMUX)(`interactive driver: delivery ${MAGMUX ? "" : NO_MAGMUX
         await r.type("go");
         await until(() => dbl.calls.length === 1, "settle 1");
         dbl.calls[0]?.resolve(inject("HOOK-PING"));
-        await until(() => r.keylog().includes("HOOK-PING"), "the injected line");
+        await until(() => r.keylog().includes(pointerIn(r)), "the injected line");
         await until(() => dbl.calls.length === 2, "settle 2");
         expect(dbl.calls[1]?.turn).toMatchObject({ index: 2, answer: "A2", hookCaused: true });
         expect(dbl.calls[1]?.turn.consecutiveHookTurns).toBe(1);
@@ -454,7 +491,7 @@ describe.skipIf(!MAGMUX)(`interactive driver: delivery ${MAGMUX ? "" : NO_MAGMUX
         const waited = (dbl.delivered[0]?.at as number) - cleared;
         expect(waited).toBeGreaterThanOrEqual(1_400);
         expect(waited).toBeLessThan(4_000);
-        await until(() => r.keylog().includes("HOOK"), "the injected line");
+        await until(() => r.keylog().includes(pointerIn(r)), "the injected line");
         expect(r.keylog()).not.toContain("half-typed");
       } finally {
         await finish(r);
@@ -531,6 +568,49 @@ describe.skipIf(!MAGMUX)(`interactive driver: delivery ${MAGMUX ? "" : NO_MAGMUX
   );
 
   test(
+    "acceptance: an injection whose record lands after acceptMs is dropped, and its late answer never re-opens the turn before it",
+    async () => {
+      const dbl = controlled();
+      // corroboration can delay a transcript-proven end by at most this much chat quiet
+      // (`corroborationGraceMs`, which the driver takes from `secondaryQuietMs`)
+      const graceMs = 2_000;
+      const r = await rig([{ say: "A1" }, { say: "A2-LATE" }], {
+        binding: dbl.binding,
+        // every prompt's record (and echo) lands 3 s after it is submitted
+        extraEnv: { FAKE_GAP_MS_WITNESS: "3000" },
+        driver: { timings: { acceptMs: 1_000, secondaryQuietMs: graceMs } },
+      });
+      try {
+        const d = r.driver as InteractiveDriver;
+        await until(() => d.snapshot().booted, "boot");
+        await r.type("go");
+        await until(() => dbl.calls.length === 1, "settle 1");
+        dbl.calls[0]?.resolve(inject("HOOK-LATE-RECORD"));
+        await until(() => dbl.dropped.length === 1, "the acceptance timeout", 10_000);
+        expect(dbl.dropped).toEqual([{ text: "HOOK-LATE-RECORD", reason: "send_not_accepted" }]);
+        const turnEnds = () =>
+          existsSync(r.transcript)
+            ? readFileSync(r.transcript, "utf8").split('"turn_duration"').length - 1
+            : 0;
+        // the injection's own end record, after turn 1's
+        await until(() => turnEnds() >= 2, "the injection's turn_duration", 20_000);
+        // a settle of that ending, right or wrong, comes once the chat has been quiet for the
+        // grace, at the latest, plus the corroboration window and a tick or two to see it
+        const windowMs = graceMs + 200 + 2 * 100;
+        await until(
+          () => Date.now() - statSync(r.transcript).mtimeMs >= windowMs,
+          "the settle window after the injection's end",
+          20_000
+        );
+        expect(dbl.calls.map((c) => c.turn.index)).toEqual([1]);
+      } finally {
+        await finish(r);
+      }
+    },
+    T
+  );
+
+  test(
     "acceptance: an injected line whose witness never appears is dropped send_not_accepted",
     async () => {
       const dbl = controlled();
@@ -544,7 +624,7 @@ describe.skipIf(!MAGMUX)(`interactive driver: delivery ${MAGMUX ? "" : NO_MAGMUX
         await r.type("go");
         await until(() => dbl.calls.length === 1, "settle 1");
         dbl.calls[0]?.resolve(inject("HOOK"));
-        await until(() => r.keylog().includes("HOOK"), "the typed line");
+        await until(() => r.keylog().includes(pointerIn(r)), "the typed line");
         expect(d.snapshot().phase).toBe("ADMITTING");
         await until(() => dbl.dropped.length === 1, "the acceptance timeout", 5_000);
         expect(dbl.dropped).toEqual([{ text: "HOOK", reason: "send_not_accepted" }]);
@@ -612,7 +692,11 @@ describe.skipIf(!MAGMUX)(
       "the connection closed after the line was typed, its Enter lost: Enter goes through the new connection",
       async () => {
         const dbl = controlled();
-        const r = await rig([{ say: "A1" }, { say: "A2" }], { binding: dbl.binding });
+        // the subject is a typed line whose reply is lost: no Read tool, so it is typed as is
+        const r = await rig([{ say: "A1" }, { say: "A2" }], {
+          binding: dbl.binding,
+          driver: { readAvailable: false },
+        });
         const restore = dropConnectionAfter("HOOK-LOST");
         try {
           const d = r.driver as InteractiveDriver;
@@ -637,7 +721,11 @@ describe.skipIf(!MAGMUX)(
         `the line was typed${enter ? " and entered" : ", its Enter lost"}: the injection is accepted as the hook's turn`,
         async () => {
           const dbl = controlled();
-          const r = await rig([{ say: "A1" }, { say: "A2" }], { binding: dbl.binding });
+          // the subject is a typed line whose reply is lost: no Read tool, so it is typed as is
+          const r = await rig([{ say: "A1" }, { say: "A2" }], {
+            binding: dbl.binding,
+            driver: { readAvailable: false },
+          });
           const restore = loseReplyOf("HOOK-LOST", enter);
           try {
             const d = r.driver as InteractiveDriver;
@@ -658,6 +746,92 @@ describe.skipIf(!MAGMUX)(
         T
       );
     }
+    test(
+      "the line in the box after a lost reply, its recovery Enter answered still_in_box: Enter is never pressed a second time",
+      async () => {
+        const dbl = controlled();
+        const r = await rig([{ say: "A1" }, { say: "A2" }], {
+          binding: dbl.binding,
+          driver: { timings: { acceptMs: 5_000 } },
+        });
+        const proto = MagmuxClient.prototype as unknown as {
+          request(msg: Record<string, unknown>, ms?: number): Promise<unknown>;
+        };
+        const original = proto.request;
+        const enters: Array<Record<string, unknown>> = [];
+        try {
+          const d = r.driver as InteractiveDriver;
+          await until(() => d.snapshot().booted, "boot");
+          await r.type("go");
+          await until(() => dbl.calls.length === 1, "settle 1");
+          const line = pointerIn(r, 1);
+          proto.request = async function (
+            this: unknown,
+            msg: Record<string, unknown>,
+            ms?: number
+          ) {
+            if (msg.type === "send" && Array.isArray(msg.keys) && msg.keys.includes("enter")) {
+              enters.push(msg);
+              // Enter may have been written; the line still shows in the box
+              return {
+                ok: false,
+                code: "not_accepted",
+                reason: "still_in_box",
+                typed: false,
+                error: "pane 0: the line is still in the box (test)",
+              };
+            }
+            if (msg.type !== "send" || msg.text !== line) return original.call(this, msg, ms);
+            await original.call(this, { ...msg, enter: false }, ms);
+            return { ok: false, code: "client_timeout", error: "no reply (test)" };
+          };
+          dbl.calls[0]?.resolve(inject("HOOK-STUCK"));
+          await until(
+            () => dbl.dropped.length === 1 || enters.length > 1,
+            "the drop, or a second Enter",
+            30_000
+          );
+          expect(enters).toHaveLength(1);
+        } finally {
+          proto.request = original;
+          await finish(r);
+        }
+      },
+      T
+    );
+
+    test(
+      "with Read, an earlier pointer on screen, the next pointer typed and its Enter lost: Enter goes to it, and it is the hook's turn",
+      async () => {
+        const dbl = controlled();
+        const r = await rig([{ say: "A1" }, { say: "A2" }, { say: "A3" }], {
+          binding: dbl.binding,
+        });
+        try {
+          const d = r.driver as InteractiveDriver;
+          await until(() => d.snapshot().booted, "boot");
+          await r.type("go");
+          await until(() => dbl.calls.length === 1, "settle 1");
+          dbl.calls[0]?.resolve(inject("HOOK-ONE"));
+          await until(() => dbl.calls.length === 2, "settle 2", 25_000);
+          // the first injection's pointer stays in the history above the box
+          const restore = loseReplyOf(pointerIn(r, 2), false);
+          try {
+            dbl.calls[1]?.resolve(inject("HOOK-TWO"));
+            await until(() => dbl.calls.length === 3, "settle 3", 25_000);
+          } finally {
+            restore();
+          }
+          expect(dbl.dropped).toEqual([]);
+          expect(dbl.calls[2]?.turn).toMatchObject({ index: 3, answer: "A3", hookCaused: true });
+          expect(r.keylog()).toEqual(["go", pointerIn(r, 1), pointerIn(r, 2)]);
+        } finally {
+          await finish(r);
+        }
+      },
+      T
+    );
+
     test(
       "the box shows the line's first 40 characters and then other text after a lost reply: no Enter is sent",
       async () => {
@@ -683,7 +857,11 @@ describe.skipIf(!MAGMUX)(
           };
         };
         const dbl = controlled();
-        const r = await rig([{ say: "A1" }, { say: "A2" }], { binding: dbl.binding });
+        // the subject is a typed line's box after a lost reply: no Read tool, typed as is
+        const r = await rig([{ say: "A1" }, { say: "A2" }], {
+          binding: dbl.binding,
+          driver: { readAvailable: false },
+        });
         try {
           const d = r.driver as InteractiveDriver;
           await until(() => d.snapshot().booted, "boot");
@@ -733,7 +911,7 @@ describe.skipIf(!MAGMUX)(`interactive driver: re-wake ${MAGMUX ? "" : NO_MAGMUX_
         expect(dbl.dropped).toEqual([]);
         dbl.calls[1]?.resolve(nothing);
         // the injection survived and is delivered once the gate opens
-        await until(() => r.keylog().includes("HOOK"), "the injection", 10_000);
+        await until(() => r.keylog().includes(pointerIn(r)), "the injection", 10_000);
         await until(() => dbl.calls.length === 3, "the hook turn's settle");
         expect(dbl.calls[2]?.turn).toMatchObject({ index: 2, hookCaused: true, answer: "A2" });
         expect(dbl.dropped).toEqual([]);
@@ -827,7 +1005,7 @@ describe.skipIf(!MAGMUX)(`interactive driver: re-wake ${MAGMUX ? "" : NO_MAGMUX_
         }
         dbl.calls[0]?.resolve(inject("HOOK-LATE"));
         await until(
-          () => dbl.calls.length === 2 || r.keylog().includes("HOOK-LATE"),
+          () => dbl.calls.length === 2 || r.keylog().includes(pointerIn(r)),
           "the re-woken turn's settle, or the injection typed over it"
         );
         expect(r.keylog()).toEqual(["go"]);
@@ -943,7 +1121,7 @@ describe.skipIf(!MAGMUX)(
         const r = await rig([{ say: "S1" }], { startDriver: false });
         try {
           const d = await r.startDriver({ engine });
-          await until(() => r.keylog().includes("START-PING"), "the sessionStart injection");
+          await until(() => r.keylog().includes(pointerIn(r)), "the sessionStart injection");
           await until(() => d.snapshot().settles === 1, "its turn's settle");
           expect(d.snapshot()).toMatchObject({ consecutiveHookTurns: 1, callerAdmitted: 0 });
           expect(
@@ -1130,6 +1308,8 @@ describe.skipIf(!MAGMUX)(`end to end: claudish -i ${MAGMUX ? "" : NO_MAGMUX_MESS
       expect(sid).toMatch(/^[0-9a-f-]{36}$/);
       expect(argv[2]).toBe("--add-dir");
       expect(argv[4]).toBe("--settings");
+      // the injection goes as a pointer to the first turn file in that turn directory
+      const pointer = fileTemplate(turnFilePath(argv[3] as string, 1), null);
       // wait for the REPL, then type as the human
       await Bun.sleep(1_500);
       const sent = await human.request({
@@ -1140,7 +1320,7 @@ describe.skipIf(!MAGMUX)(`end to end: claudish -i ${MAGMUX ? "" : NO_MAGMUX_MESS
         enter: true,
       });
       expect(sent.ok).toBe(true);
-      await until(() => keylog().includes("HOOK-PING"), "the injected turn", 40_000);
+      await until(() => keylog().includes(pointer), "the injected turn", 40_000);
       const transcript = t.transcriptPathFor(sid);
       await until(
         () => existsSync(transcript) && readFileSync(transcript, "utf8").includes("STUB-TWO"),
@@ -1151,22 +1331,34 @@ describe.skipIf(!MAGMUX)(`end to end: claudish -i ${MAGMUX ? "" : NO_MAGMUX_MESS
         .split("\n")
         .filter(Boolean)
         .map((l) => JSON.parse(l));
+      type Block = { type?: string; text?: string; name?: string };
+      const userText = (c: unknown): string =>
+        typeof c === "string"
+          ? c
+          : Array.isArray(c) && c.some((b: Block) => b?.type === "tool_result")
+            ? "tool_result"
+            : "";
       const texts = records.map((r) =>
         r.type === "user"
-          ? `user:${typeof r.message?.content === "string" ? r.message.content : ""}`
+          ? `user:${userText(r.message?.content)}`
           : r.type === "assistant"
-            ? `assistant:${(r.message?.content ?? []).map((b: { text?: string }) => b.text ?? "").join("")}`
+            ? `assistant:${(r.message?.content ?? [])
+                .map((b: Block) => (b.type === "tool_use" ? `tool_use:${b.name}` : (b.text ?? "")))
+                .join("")}`
             : null
       );
       const order = texts.filter((x): x is string => x !== null);
       expect(order).toEqual([
         "user:Reply first.",
         "assistant:STUB-ONE",
-        "user:HOOK-PING",
+        `user:${pointer}`,
+        // the injected turn reads its turn file before it answers
+        "assistant:tool_use:Read",
+        "user:tool_result",
         "assistant:STUB-TWO",
       ]);
       expect(stub.requests.length).toBe(2);
-      expect(keylog()).toEqual(["Reply first.", "HOOK-PING"]);
+      expect(keylog()).toEqual(["Reply first.", pointer]);
       // the human quits: sessionEnd runs before claudish exits
       await human.request({ type: "send", pane: 0, text: "/exit", typed: true, enter: true });
       await until(() => existsSync(endMarker), "sessionEnd", 15_000);

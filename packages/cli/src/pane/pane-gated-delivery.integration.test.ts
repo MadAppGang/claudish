@@ -22,6 +22,7 @@ import {
   disposeGatePanes,
   gateUntil,
   gatedSends,
+  pointerOf,
   startGatePane,
   submissions,
 } from "./test-helpers/gated-pane.js";
@@ -128,7 +129,9 @@ describe.skipIf(!MAGMUX)(
           initialPrompt: PROMPT,
         });
         await assertLoudLoss(r, "still_in_box");
-        expect(gatedSends(r).filter(({ message }) => message.text === PROMPT)).toHaveLength(1);
+        expect(gatedSends(r).filter(({ message }) => message.text === pointerOf(r))).toHaveLength(
+          1
+        );
         expect(
           r.sends.filter(({ message }) =>
             (message.keys as string[] | undefined)?.includes("ctrl-u")
@@ -218,7 +221,7 @@ describe.skipIf(!MAGMUX)(
           };
           await settled(r);
           expect(lost).toBe(true);
-          expect(submissions(r).map(({ text }) => text)).toEqual([prompt]);
+          expect(submissions(r).map(({ text }) => text)).toEqual([command ? prompt : pointerOf(r)]);
           expect(r.turns[0]?.answer).toBe(
             command ? "Set model to `haiku`" : `ANSWER fake-answer ${sha8(prompt)}`
           );

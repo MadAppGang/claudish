@@ -34,6 +34,8 @@ interface Rig {
 interface RigOptions {
   hooks?: SessionHookBinding;
   delivery?: { file: string; text: string };
+  /** the delivery plan's mode (default `command`, whose zero Reads leave coverage unknown) */
+  mode?: "command" | "file";
 }
 
 /** A hook binding whose hold never returns: the session stays SETTLING until a re-wake. */
@@ -102,10 +104,15 @@ function rig(acceptedAt: number, ro: RigOptions = {}): Rig {
     ...(ro.delivery ? { delivery: ro.delivery } : {}),
   });
   if (ro.delivery)
-    a.currentDelivery = { mode: "command", text: LINE, file: ro.delivery.file, lines: 1 };
+    a.currentDelivery = {
+      mode: ro.mode ?? "command",
+      text: LINE,
+      file: ro.delivery.file,
+      lines: 1,
+    };
   a.turnAcceptedAt = acceptedAt;
   a.turnSource = "screen";
-  a.screenTurn = { echo: LINE, acceptedAt, errorLogSize: 0 };
+  a.screenTurn = { echo: LINE, turnFile: null, acceptedAt, errorLogSize: 0 };
   a.client = {};
   a.gateTrusted = true;
   const evaluate = () => {
@@ -317,6 +324,66 @@ describe("a screen turn whose witness never arrives", () => {
     r.evaluate();
     expect(r.settled).toHaveLength(1);
     expect(r.anomalies().get("read_coverage_unverified")).toBe(1);
+  });
+});
+
+describe("a file turn not read in full, settled at its unwitnessed end", () => {
+  test("the screen never supplies the answer its read coverage withheld", () => {
+    const start = Date.now() - 60_000;
+    const r = rig(start, {
+      delivery: { file: "/nonexistent/turn-1.md", text: "line one\nline two\n" },
+      mode: "file",
+    });
+    const a = r.s as any;
+    a.screen = { ...a.screen, cols: 80, lines: [`❯ ${LINE}`, "", "⏺ SCREEN-ANSWER", ""] };
+    r.append(
+      garbledPrompt(start + 1000),
+      answer("m1", "TRANSCRIPT-ANSWER", start + 2000),
+      turnDuration(start + 3000)
+    );
+    r.evaluate();
+    expect(r.settled).toHaveLength(1);
+    const t = r.settled[0]!;
+    expect(t.answer).toBe("");
+    expect(t.delivery).toMatchObject({ mode: "file", complete: false });
+    expect(t.captureSource).toBe("transcript");
+    expect(r.anomalies().get("screen_answer_may_be_truncated")).toBeUndefined();
+  });
+
+  test("the settle hooks are told the answer was withheld", () => {
+    const start = Date.now() - 60_000;
+    const held: Array<{ answer: string; answerWithheld?: boolean }> = [];
+    const hooks: SessionHookBinding = {
+      ...pendingHold(),
+      settle: (info) => {
+        held.push(info);
+        return new Promise(() => {});
+      },
+    };
+    const r = rig(start, {
+      delivery: { file: "/nonexistent/turn-1.md", text: "line one\nline two\n" },
+      mode: "file",
+      hooks,
+    });
+    r.append(
+      garbledPrompt(start + 1000),
+      answer("m1", "TRANSCRIPT-ANSWER", start + 2000),
+      turnDuration(start + 3000)
+    );
+    r.evaluate();
+    expect(held).toEqual([expect.objectContaining({ answer: "", answerWithheld: true })]);
+  });
+
+  test("control: with coverage unknown (a command, no Read) the screen still answers", () => {
+    const start = Date.now() - 60_000;
+    const r = rig(start, { delivery: { file: "/nonexistent/turn-1.md", text: "line one\n" } });
+    const a = r.s as any;
+    a.screen = { ...a.screen, cols: 80, lines: [`❯ ${LINE}`, "", "⏺ SCREEN-ANSWER", ""] };
+    r.append(garbledPrompt(start + 1000), emptyAnswer(start + 2000), turnDuration(start + 3000));
+    r.evaluate();
+    expect(r.settled).toHaveLength(1);
+    expect(r.settled[0]!.answer).toBe("SCREEN-ANSWER");
+    expect(r.settled[0]!.captureSource).toBe("screen");
   });
 });
 

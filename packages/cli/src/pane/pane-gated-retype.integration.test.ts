@@ -18,6 +18,7 @@ import {
   disposeGatePanes,
   gateUntil,
   gatedSends,
+  pointerOf,
   startGatePane,
   submissions,
 } from "./test-helpers/gated-pane.js";
@@ -296,7 +297,7 @@ describe.skipIf(!MAGMUX)(
           60_000
         );
         expect(snapshot.state).toBe("COMPLETED");
-        expect(submissions(r).map(({ text }) => text)).toEqual([prompt]);
+        expect(submissions(r).map(({ text }) => text)).toEqual([pointerOf(r)]);
         expect(r.sends.filter(({ message }) => isTypedSend(message))).toHaveLength(1);
         expect(r.sends.filter(({ message }) => isClearSend(message))).toHaveLength(0);
         // the path ran: magmux read the box empty, and claudish's next send was Enter alone
@@ -341,7 +342,7 @@ describe.skipIf(!MAGMUX)(
         expect(snapshot.reason).not.toBe("prompt_not_accepted");
         expect(snapshot.state).toBe("COMPLETED");
         expect(snapshot.anomalies).toContain("box_drawn_other_after_mismatch");
-        expect(submissions(r).map(({ text }) => text)).toEqual([prompt]);
+        expect(submissions(r).map(({ text }) => text)).toEqual([pointerOf(r)]);
         const rows = wrapPrompt(leftover + prompt, cols).length;
         const typed = r.sends
           .map(({ message }, i) => ({ message, i }))

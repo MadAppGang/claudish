@@ -10,6 +10,7 @@ import { describe, expect, test } from "bun:test";
 
 import { formatInBandApiError } from "../in-band-api-error.js";
 import { classifyRunOutput } from "../team-orchestrator.js";
+import type { Delivery } from "./prompt-delivery.js";
 import type { SettleDecision } from "./settle-rule.js";
 import { settledTurnCoreOf } from "./settled-turn.js";
 import { type Rec, transcriptRecords, witnessIndex } from "./test-helpers/transcript-fixtures.js";
@@ -99,5 +100,79 @@ describe("transcript records → settled turn → verdict", () => {
   test("the same records without the proxy's record are the model's text", () => {
     const v = verdictOf(settled(followedTurn()), null);
     expect(v?.reason).toBe("shape_mismatch");
+  });
+});
+
+describe("a file-delivered turn's answer waits for complete read coverage", () => {
+  const FILE = "/turns/turn-1.md";
+  const LINE = `Your task is in the file \`${FILE}\`.`;
+  const fileDelivery: Delivery = {
+    mode: "file",
+    line: LINE,
+    file: FILE,
+    fileContent: "one\ntwo\nthree\n",
+    lines: 3,
+    witness: { kind: "turn_file", file: FILE, line: LINE },
+  };
+  const commandDelivery: Delivery = {
+    mode: "command",
+    line: "/review",
+    witness: { kind: "command", name: "review" },
+    file: FILE,
+    fileContent: "one\ntwo\nthree\n",
+    lines: 3,
+  };
+
+  /** The pear turn's records, as a turn delivered by `FILE` whose Reads returned `returned` lines. */
+  function readTurn(returned: number, reads: number): TurnView {
+    return {
+      ...followedTurn(),
+      delivery: { file: FILE, lines: 3 },
+      readCoverage: {
+        linesReturned: returned,
+        complete: returned === 3,
+        reads,
+        completedAtOffset: null,
+      },
+    };
+  }
+
+  function turnOf(view: TurnView, delivery: Delivery): SettledTurn {
+    const { core } = settledTurnCoreOf(view, DECISION, { delivery, shape: "one-shot" });
+    return {
+      ...core,
+      chainAnswers: [],
+      chainDelivery: core.delivery,
+      hookTurns: 0,
+      hookCaused: false,
+    };
+  }
+
+  test("no Read at all: the answer is empty; the verdict is still prompt_not_read", () => {
+    const turn = turnOf(readTurn(0, 0), fileDelivery);
+    expect(turn.answer).toBe("");
+    expect(turn.delivery).toMatchObject({ complete: false, linesRead: 0, linesTotal: 3 });
+    const v = verdictOf(turn, null);
+    expect(v).toMatchObject({ state: "FAILED", reason: "prompt_not_read" });
+    expect(v?.detail).toBe("the task file was never read, so the answer cannot be about the task");
+  });
+
+  test("a partial Read: the answer is empty; the verdict is still prompt_not_read", () => {
+    const turn = turnOf(readTurn(2, 1), fileDelivery);
+    expect(turn.answer).toBe("");
+    expect(turn.delivery).toMatchObject({ complete: false, linesRead: 2 });
+    const v = verdictOf(turn, null);
+    expect(v).toMatchObject({ state: "FAILED", reason: "prompt_not_read" });
+    expect(v?.detail).toBe("the child's Read calls returned 2 of 3 lines of the task file");
+  });
+
+  test("every line read: the answer is the turn's text", () => {
+    const text = followedTurn().assistantText.join("\n\n");
+    expect(turnOf(readTurn(3, 1), fileDelivery).answer).toBe(text);
+  });
+
+  test("a command turn with zero Reads keeps its text (its coverage is unknown)", () => {
+    const text = followedTurn().assistantText.join("\n\n");
+    expect(turnOf(readTurn(0, 0), commandDelivery).answer).toBe(text);
   });
 });

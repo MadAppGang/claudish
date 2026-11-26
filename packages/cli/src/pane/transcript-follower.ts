@@ -41,19 +41,27 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import type { SlotStep } from "./contract.js";
+import { turnFileToken } from "./prompt-delivery.js";
 import { RECENT_STEP_LIMIT, stepOf } from "./slot-steps.js";
 import { type MetaFile, SubagentLedger } from "./subagent-ledger.js";
 import type { SubagentRow } from "./view-contract.js";
 
 export type Witness =
-  | { kind: "text"; text: string } // typed plain line or the file-reference instruction (exact)
+  /** a typed line, exact (whole copies, `wholeCopies`): a Read-less session's prompt */
+  | { kind: "text"; text: string }
+  /**
+   * A pointer line naming the turn's own file: any prompt record that carries the file's token
+   * (`turnFileToken`, `isPromptRecord`). `line` is the typed pointer, for diagnostics only.
+   */
+  | { kind: "turn_file"; file: string; line: string }
   /** slash command: its `<command-name>` record, or the plain user record of the typed `line` */
   | { kind: "command"; name: string; line?: string }
   /**
    * A prompt a HUMAN typed (the interactive driver, hook-system §7.5): matched by
-   * provenance, never by text. See `isHumanPrompt`.
+   * provenance, never by text. See `isHumanPrompt`. With `notTurnDir`, a record carrying a
+   * pointer into that turn directory is claudish's own injection, never the human's prompt.
    */
-  | { kind: "human" };
+  | { kind: "human"; notTurnDir?: string };
 
 export interface TurnDelivery {
   /** absolute path of the turn file the child must Read */
@@ -117,8 +125,8 @@ export interface TurnView {
    */
   unwitnessedChatOffset: number | null;
   /**
-   * Whole copies of the typed line the witness record held: 1 for every witness but a text
-   * witness of a doubled submit (k > 1); null until accepted.
+   * Copies of the typed line the witness record held: whole copies for a text witness, the
+   * turn file's tokens for a pointer (k > 1: a doubled submit), 1 otherwise; null until accepted.
    */
   witnessCopies: number | null;
   /**
@@ -196,6 +204,14 @@ interface TurnState {
   /** at most RECENT_STEP_LIMIT, oldest dropped first */
   steps: SlotStep[];
   unwitnessedChat: number | null;
+  /**
+   * A human turn (`notTurnDir`) saw a pointer into the turn directory before its witness: an
+   * injection the driver gave up on landed late. What the model does after it answers that
+   * injection, never a re-wake of the turn before, until the injection's own main-chain
+   * `turn_duration` (null again then). A `stop_hook_summary` does not end it: a Stop hook can
+   * continue the same turn.
+   */
+  foreignPointerAt: number | null;
   witnessCopies: number | null;
   /** the records past the offset folded as if accepted, until the witness arrives */
   shadow: TurnState | null;
@@ -220,16 +236,18 @@ export interface FollowerState {
    */
   copy: { witness: Witness; after: number; seen: boolean } | null;
   /**
-   * The open turn's admission has typed nothing yet (it waits on `copy`): a record accepts it
-   * only when it is exactly one copy of its own line and that line is the copy's
-   * (`heldMayAccept`). Any other matching record is the earlier copy's.
+   * The open turn's admission has typed nothing yet (it waits on `copy`). For a residual
+   * (typed) witness a record accepts it only when it is exactly one copy of its own line and
+   * that line is the copy's (`heldMayAccept`); any other matching record is the earlier
+   * copy's. A pointer turn's own token is in no earlier record, so holding changes nothing.
    */
   held: boolean;
   /**
-   * A copy of another line that left the input box and was forgotten before its record landed
-   * (`refuseDeparted`): its witness, and the offset it was typed after. The first record that
-   * is exactly one copy of it (`isOneCopyOf`) is that copy's, and accepts no turn; it is then
-   * cleared. Without it, "PEARPEAR" landing late reads as two joined copies of "PEAR".
+   * A typed copy of another line that left the input box and was forgotten before its record
+   * landed (`refuseDeparted`): its witness, and the offset it was typed after. The first record
+   * that is exactly one copy of it (`isOneCopyOf`) is that copy's, and accepts no turn; it is
+   * then cleared. Without it, "PEARPEAR" landing late reads as two joined copies of "PEAR". Never
+   * set for a pointer copy, whose record carries its own token.
    */
   departed: { witness: Witness; after: number } | null;
   /** the session's subagents; lives across turns and survives `rewindTo` */
@@ -357,25 +375,63 @@ export function isHumanPrompt(record: Record<string, unknown>): boolean {
  * is not the line at all. Under load Claude
  * Code can read a typed line into its buffer before drawing it, so a second copy is typed onto
  * the first and Enter submits both; that record is still the submitted line. Both sides are
- * compared trimmed: k copies of the trimmed line match, and so do k exact copies of the line
- * as typed, trimmed once as a whole (the spaces between copies kept). Empty text, a partial
- * copy and any other text are refused (0).
+ * compared trimmed; a typed line never has whitespace at its ends (`isPlainLine`,
+ * `normalizedLine`), and neither does the file template. Empty text, a partial copy and any
+ * other text are refused (0).
  */
 function wholeCopies(text: string, line: string): number {
   const got = text.trim();
   const core = line.trim();
   if (!core) return got === core ? 1 : 0;
-  const copies = (unit: string, padding: number): number => {
-    const total = got.length + padding;
-    if (total % unit.length !== 0) return 0;
-    const k = total / unit.length;
-    return k >= 1 && got === unit.repeat(k).trim() ? k : 0;
-  };
-  return copies(core, 0) || copies(line, line.length - core.length);
+  if (got.length % core.length !== 0) return 0;
+  const k = got.length / core.length;
+  return k >= 1 && got === core.repeat(k) ? k : 0;
+}
+
+/**
+ * A prompt a user record submitted, whatever its text: a main-chain user record that is not
+ * `isMeta`, carries no `tool_result`, is no compact summary and no task notification, and whose
+ * `origin`, when present, is human. That is `isHumanPrompt` without its interrupt-marker
+ * exclusion: a send made while a question dialog is open presses Escape, and Claude Code can
+ * write the next prompt into the record that holds the interrupt marker.
+ */
+function isPromptRecord(r: Rec): boolean {
+  if (!isMainUser(r) || r.isMeta || hasToolResult(r) || r.isCompactSummary) return false;
+  if (isTaskNotification(r)) return false;
+  const origin = r.origin;
+  return origin === undefined || origin === null || origin?.kind === "human";
+}
+
+/** Non-overlapping occurrences of `token` in `text`. */
+function countOccurrences(text: string, token: string): number {
+  if (!token) return 0;
+  let n = 0;
+  for (let at = text.indexOf(token); at >= 0; at = text.indexOf(token, at + token.length)) n++;
+  return n;
+}
+
+/** How many times a prompt record carries the turn file's token: 0 for any other record. */
+function turnFileCopies(r: Rec, w: Extract<Witness, { kind: "turn_file" }>): number {
+  return isPromptRecord(r) ? countOccurrences(userText(r), turnFileToken(w.file)) : 0;
+}
+
+/**
+ * A pointer into `turnDir`, as the typed pointer line spells one: an exact turn-file token,
+ * `` `<turnDir>/turn-<digits>.md` ``. Another file of that directory (`turn-notes.md`), or a
+ * turn file named without its backticks, is a human's text.
+ */
+function carriesPointerInto(r: Rec, turnDir: string): boolean {
+  const open = turnFileToken(join(turnDir, "turn-")).slice(0, -1);
+  const text = userText(r);
+  for (let at = text.indexOf(open); at !== -1; at = text.indexOf(open, at + 1))
+    if (/^\d+\.md`/.test(text.slice(at + open.length))) return true;
+  return false;
 }
 
 function matchesWitness(r: Rec, w: Witness): boolean {
-  if (w.kind === "human") return isHumanPrompt(r);
+  if (w.kind === "human")
+    return isHumanPrompt(r) && !(w.notTurnDir && carriesPointerInto(r, w.notTurnDir));
+  if (w.kind === "turn_file") return turnFileCopies(r, w) > 0;
   // Some local commands are written as system records, not user records (captured:
   // 2.1.291 `/color yellow` → two `system/local_command` records).
   if (w.kind === "command" && isLocalCommandSystem(r))
@@ -719,8 +775,12 @@ function takeDepartedRecord(state: FollowerState, r: Rec, offset: number): boole
   return true;
 }
 
-/** A main-chain record of exactly one submission of the line `w` stands for. */
+/**
+ * A main-chain record of exactly one submission of the line `w` stands for. Never a pointer's:
+ * its record carries its own token, so no departed rule is needed for it.
+ */
 function isOneCopyOf(r: Rec, w: Witness): boolean {
+  if (w.kind === "turn_file") return false;
   if (w.kind === "text")
     return isMainUser(r) && !r.isMeta && !hasToolResult(r) && userText(r).trim() === w.text.trim();
   return w.kind === "command" && matchesWitness(r, w);
@@ -750,6 +810,8 @@ function acceptUnlessHeld(
  */
 function heldMayAccept(state: FollowerState, t: TurnState, r: Rec): boolean {
   const w = t.witness;
+  // a pointer turn's own token is in no record before its own send: holding changes nothing
+  if (w.kind === "turn_file") return matchesWitness(r, w);
   const c = state.copy?.witness;
   if (w.kind === "command")
     return c?.kind === "command" && c.name === w.name && c.line === w.line && matchesWitness(r, w);
@@ -761,8 +823,15 @@ function acceptIfWitness(t: TurnState, r: Rec, offset: number): void {
   if (!matchesWitness(r, t.witness)) return;
   t.acceptedAt = typeof r.timestamp === "string" ? r.timestamp : new Date().toISOString();
   t.acceptedOffset = offset;
-  t.witnessCopies = t.witness.kind === "text" ? wholeCopies(userText(r), t.witness.text) : 1;
+  t.witnessCopies = witnessCopiesOf(r, t.witness);
   t.lastChatOffset = offset;
+}
+
+/** Copies of the submitted line the witness record holds: tokens for a pointer, whole copies for text. */
+function witnessCopiesOf(r: Rec, w: Witness): number {
+  if (w.kind === "text") return wholeCopies(userText(r), w.text);
+  if (w.kind === "turn_file") return turnFileCopies(r, w);
+  return 1;
 }
 
 /** One main-chain assistant message id, once: Claude Code writes one record per content block. */
@@ -805,7 +874,7 @@ export function applyRecord(
       t.shadow = null;
       return state;
     }
-    if (t.unwitnessedChat === null && wakesModel(r)) t.unwitnessedChat = offset;
+    noteUnwitnessed(t, r, offset);
     if (t.shadow) foldTurnRecord(state, t.shadow, r, offset);
     return state;
   }
@@ -826,6 +895,28 @@ function foldTurnRecord(state: FollowerState, t: TurnState, r: Rec, offset: numb
 }
 
 /** A main-chain record that shows the model working with no prompt: its reply, or a notification. */
+/**
+ * Before its witness: the first record that shows the model working (`unwitnessedChat`),
+ * unless an excluded injection's pointer opened its own turn (`foreignPointerAt`) and that turn
+ * has not yet ended.
+ */
+function noteUnwitnessed(t: TurnState, r: Rec, offset: number): void {
+  if (t.foreignPointerAt !== null && r.type === "system" && r.subtype === "turn_duration") {
+    t.foreignPointerAt = null;
+    return;
+  }
+  if (t.foreignPointerAt === null && isForeignPointer(r, t.witness)) t.foreignPointerAt = offset;
+  if (t.unwitnessedChat === null && t.foreignPointerAt === null && wakesModel(r))
+    t.unwitnessedChat = offset;
+}
+
+/** A prompt record of an injection's pointer, under a human witness that excludes them. */
+function isForeignPointer(r: Rec, w: Witness): boolean {
+  return (
+    w.kind === "human" && !!w.notTurnDir && isPromptRecord(r) && carriesPointerInto(r, w.notTurnDir)
+  );
+}
+
 function wakesModel(r: Rec): boolean {
   if (r.type === "assistant") return true;
   return isMainUser(r) && !hasToolResult(r) && isTaskNotification(r);
@@ -921,6 +1012,7 @@ function newTurnState(t: {
     localOutput: null,
     steps: [],
     unwitnessedChat: null,
+    foreignPointerAt: null,
     witnessCopies: null,
     shadow: null,
   };

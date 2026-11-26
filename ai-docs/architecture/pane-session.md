@@ -92,9 +92,15 @@ prompt the follower polls and records the transcript size; turn N owns every rec
 offset and before turn N+1's. Evidence from an earlier turn can therefore never satisfy a later
 one. The turn is ACCEPTED at the input gate's confirmation ("Delivery mechanics") or when its
 **witness** appears after the offset, whichever comes first; settle needs the witness either way.
-The witness is a main-chain user record
-whose text equals the typed line (`origin.kind:"human"`), or a `<command-name>/x</command-name>`
-record for a slash command — a user record, or (2.1.287+, `/color yellow` captured on 2.1.291) a
+The witness of a prompt delivered as a pointer line (every prompt
+but a one-line slash command or `/exit`, when the Read tool is available; "Prompt delivery by kind"
+below) is a prompt record that CARRIES the turn file's path in backticks: a main-chain user record,
+not `isMeta`, with no `tool_result`, no compact summary and no task notification, whose `origin`
+is absent or human (`isPromptRecord`, witness kind `turn_file`). The text is not compared at all:
+the path names one turn of one session, so a record can witness only its own turn. The witness of a
+line typed as is (a Read-less session's prompt) is a main-chain user record whose text is that
+line, in k ≥ 1 whole copies (`origin.kind:"human"`), and the witness of a slash command is a
+`<command-name>/x</command-name>` record — a user record, or (2.1.287+, `/color yellow` captured on 2.1.291) a
 `system/local_command` record, which a user-record-only witness never accepts. A slash command is
 also witnessed by a non-`isMeta` user record whose text equals the typed line: `/compact` writes
 one at submit (captured on 2.1.290 and 2.1.291, `"content":"/compact"`, no `origin`) but APPENDS its
@@ -546,30 +552,68 @@ tests; no readiness, acceptance, dialog or corroboration decision calls them.
 
 `pane/prompt-delivery.ts` decides how text reaches the REPL:
 
-- a **plain** single line — at most 512 printable characters, no whitespace at either end and
-  none inside but the ASCII space, no leading `! # ? @ & \ /`, no trailing `@x` or `/x` token — is
-  typed exactly as given, and the box is compared against that same string (`matchBoxText`,
-  untrimmed). A line with whitespace at its ends, or a no-break space or another Unicode space,
-  goes to the turn file with its exact text: the box drops a row's trailing spaces, so a box
-  showing everything before them looks the same whether they were read or not, and it may draw
-  another space at a row break, so such a line cannot be checked in the box character for
-  character;
-- a **slash command** is typed as its first line; when that line is longer than 512 characters or
-  more text follows, the whole text goes to the turn file and the typed line points at it;
-- **everything else** is written to `<turnDir>/turn-<n>.md` (0600, exclusive create) and the child
-  is told, in one typed fixed-template line, to Read it:
+- a **slash command** whose first line is at most 512 characters and has nothing after it
+  (`/model haiku`, `/compact`, `/pear x`) is typed as that line: the REPL has to parse it, and a
+  pointer would hand `/model` the template as its argument. When the first line is longer or more
+  text follows, the whole text goes to the turn file and the typed line points at it
+  (`/name — the full arguments are in the file …`);
+- the control lines **`/exit`** and **`/quit`** are typed: the REPL must run them, and they are
+  never a turn;
+- **every other prompt**, when the Read tool is available and the session has a turn directory, is
+  written to `<turnDir>/turn-<n>.md` (0600, exclusive create) and the child is told, in one typed
+  fixed-template line (the **pointer line**), to Read it:
   `Your task is in the file \`<file>\`. Read all of it with the Read tool (in parts if it is long), then
   do exactly what it says, treating its content as the user's message.`
+  That covers a one-word reply as much as a multi-line task, the first prompt (`create_session`,
+  a `team` task, a judge), every `send_input` follow-up and queued prompt, and every hook
+  injection (the pane's and the interactive driver's). `n` is taken once per admission
+  (`++turnIndex`; the driver's `++fileSeq`) and the file is created exclusively, so no two pointer
+  lines of a session are ever equal, even for byte-identical prompts: a resend after
+  `prompt_not_accepted` is a new turn with a new file. The witness is bound to that file's path
+  (`turn_file`, "The transcript is the turn oracle" above), never to the prompt's text;
+- **without the Read tool** (below), or with no turn directory (no caller today: every
+  `PaneSession` gets one from `mkdtemp` and passes it as `--add-dir`, and the interactive driver
+  gets one from `claude-runner.ts`), a **plain** single line — at most 512 printable characters, no
+  whitespace at either end and none inside but the ASCII space, no leading `! # ? @ & \ /`, no
+  trailing `@x` or `/x` token — is typed exactly as given, and the box is compared against that
+  same string (`matchBoxText`, untrimmed).
 
 There is no paste path. Typing anything else into the REPL reinterprets keystrokes, all captured:
 ctrl-j inserts a line, `\r` submits, a trailing `@` or a leading `/` opens a menu and Enter on an
 open `@` menu SUBMITS the text as typed, a leading `!` is bash mode. A file also sidesteps the
 1 MB `send` lane and the 4 MB frame caps. What file delivery skips is Claude Code's prompt-time
-processing of the CONTENT: `@` mentions, `!`/`#` prefixes and slash commands inside the file are
-not expanded, and a UserPromptSubmit hook sees the template line, not the task. Cost: one or more
-Read calls per non-plain turn, counted in `tool_calls`.
+processing of the CONTENT: `@` mentions (a mid-line `@path` in a one-line prompt included),
+`!`/`#` prefixes, keyword triggers and slash commands inside the file are not expanded, and a
+UserPromptSubmit hook sees the template line, not the task. A caller's request-stage hook that
+reads the latest user message sees the template, then a Read result. Claude Code titles a session
+in its resume picker from the first prompt, which is the template for every session. Cost: one or
+more Read calls per turn, counted in `tool_calls` (one more per turn than when plain lines were
+typed, which shifts bench comparisons), and usually some narration before the Read
+(`preambleBytes`). A model that answers without reading the file fails `prompt_not_read`
+(`hook_injection_not_read` for a hook turn), which a one-line prompt typed as is never could.
+Until its Reads have returned every line, such a turn has no answer (`answerOf`,
+`pane/settled-turn.ts`): its text never reaches a caller, the session output, a `team` response
+file or a settle hook, and the running turn's `turnAnswer`, `chainText` and `liveAnswerBytes`
+read empty as well. Text written without the whole task read cannot answer it. That text stays in
+the transcript, and the coverage numbers stay in `get_diagnostics`' `readCoverage`. A command turn
+with zero Reads keeps its text, since its coverage is unknown, not failed. Coverage counts only the
+main conversation's Read results whose returned lines match the file: a file read with `Bash cat`,
+`Grep`, or by a `Task` subagent (its Read is on the sidechain) counts 0 lines, and its turn's answer
+is withheld too. That is the price of a coverage that can be proven. The settle hooks are told
+(`ctx.turn.answerWithheld`), so an empty answer there is never mistaken for a silent model.
+The template line is about 200 characters (the turn file's absolute path included), against the
+20 to 40 of a typical short prompt, and the child redraws its box on every typed key: measured on
+the fake child, one hook test with two turns took 9.1 to 10.0 s against 7.6 s typed, and
+`pane-hooks.integration.test.ts` at bun's default concurrency of 20 ran 214 s against 80 s on a
+loaded Mac (load average 36 to 68), and failed 1 to 16 tests per run. That file now runs at most
+`SESSION_SLOTS` (3) of its concurrent tests at once, each test's own budget starting when it
+holds a slot: at the weekly runner's `--max-concurrency=12` it passed three runs in a row, 112 to
+131 s each (load average 17 to 40). In degraded mode the echo is found with Claude Code's
+markdown rendering in mind: the history draws the template's path without its backticks
+(`echoAt` drops `` ` ``, `*` and `~` on both sides).
 
-*Without the Read tool* (the caller's flags remove it) there is no file path. A prompt that is
+*Without the Read tool* (the caller's flags remove it) there is no file path, and a plain line
+is typed as is (the list above). A prompt that is
 plain once trimmed, with every no-break or other Unicode space made an ASCII space
 (`normalizedLine`), is typed so, and its witness is that typed string; the anomaly
 `typed_normalized` says so (the interactive driver logs it for a hook injection). This is the one
@@ -989,6 +1033,50 @@ retry of the same text goes into `awaitCopyRecord` and is accepted by that recor
 sent, and another line refuses that record (`departCopy`) and is typed once. Remembering
 nothing, as before, let the retry send a second copy, which the first record then accepted.
 
+**Pointer copies are bound by path.** Everything above about unread BYTES applies to every copy:
+the draw wait, withheld keys, the clear path, the written part, `still_in_box` and the record wait.
+The rules about which RECORD belongs to which copy are guesses between two equal lines, and a
+pointer line has no equal: its record carries its own turn file's token. So a pointer copy read
+whole that expires with its Enter unproven is not remembered (nothing of it is queued, its record
+can accept no other turn, and a witness that still arrives re-wakes its turn while the session is
+IDLE, `late_witness`); a pointer copy that departs is forgotten with no departed rule; a held
+pointer turn is accepted by its own record and by nothing else; and a record holding two turns'
+tokens (joined copies) witnesses the later turn and releases a watched copy of the earlier one. A
+retry of the same caller text is a new turn with a new file, typed once at once. A late record of
+an earlier attempt that lands once a newer turn is open falls inside the newer turn's segment,
+before its witness, and is folded only into that turn's shadow, which is dropped at acceptance:
+the earlier attempt's answer is not reported. That is accepted: the caller was told it failed,
+and resent.
+
+*Known limit, by design: a retry after an unknown Enter outcome may run the task twice.* The
+condition is all three of: the whole pointer line was drawn in the box, the reply to its Enter was
+lost (`client_timeout`, `client_lost`, magmux's `timeout`) or left it unproven (`still_in_box`,
+`unconfirmed`), and the caller resends once the attempt failed. The first copy may have been
+submitted, and Claude Code may run it; the resend is a new turn with its own turn file, so it is
+typed and runs too. Two runs of the same task follow, and the transcript holds both. Records stay
+exact: each run's record carries its own file's token, so the retry's turn is witnessed only by
+its own record, and the first run's answer is never reported as the retry's (the shadow above). A
+pointer copy is therefore not remembered to block the retry, as a typed line's is: blocking would
+leave the retry waiting on a record that may never come, and a caller that resends after a failure
+has asked for the task to run.
+
+**Residual: typed lines keep the equal-text rules, with two known limits.** `wholeCopies`,
+`holdTurn`/`heldMayAccept`, `awaitCopyRecord`, `unreadCopyReadWhole` on a same-text retry,
+`refuseDeparted`/`takeDepartedRecord`/`isOneCopyOf`, the read-whole branch of
+`rememberUnreadCopy` and `witness_copies:<k>` by whole copies stay in force, unchanged, for what
+is still typed as text another turn can repeat: a one-line slash command, `/exit` and `/quit`, and
+every prompt of a Read-less session. Two defects stay reachable there, and only there:
+
+1. *A departed copy and a watched copy of the same text, the departed copy's record never
+   landing.* The watched copy's own record is taken as the departed copy's (`takeDepartedRecord`),
+   so the watched copy stays remembered, and the next prompt types nothing until its deadline.
+2. *A typed line drawn whole, its Enter reply lost, and never recorded.* A retry of the same text
+   goes into `awaitCopyRecord`, types nothing and expires, and so does every same-text retry
+   after it; a prompt of other text, or `/exit`, is typed.
+
+Both need a Read-less session or the same typed command sent again after a copy that was never
+recorded.
+
 The copy is forgotten when the clear path's ctrl-u keys were sent (a clear whose keys were not
 sent forgets nothing and keeps `clearFirst`, so the next attempt clears again, still sized for
 the earlier copy), when it is shown whole and gone, when its own record lands (in IDLE that is
@@ -1010,8 +1098,12 @@ whole and never recorded (keys go again, a different prompt typed, `/exit` typed
 waits again), a departed "PEARPEAR" whose record lands while "PEAR" is out, a space run wrapped
 across a blank row at 80 columns, a menu Escape withheld (no Enter), a departed copy's record
 while a same-text copy is watched, a wrapped command with a no-break space at a row end, the
-whole line read and its Enter reply lost (a same-text retry sends nothing; another line types
-once), and a copy
+whole line read and its Enter reply lost (a typed same-text retry sends nothing; "PEARPEAR" then
+"PEAR": the longer line's late record does not accept the shorter one), pointer copies (a pointer
+read whole and expired is not remembered; a departing pointer copy sets no departed rule; a
+departed and a watched copy of the same caller text, released by the watched copy's own record; a
+same-text retry of a pointer drawn whole and never recorded, typed once and bound to its own
+record; and the same retry answered unconfirmed while the earlier turn's record lands), and a copy
 left unread by an expired admission (the next prompt waits, clears it once shown, or expires
 typing nothing; only the start of it, or a reconnect, before an empty box; a box not located; a
 submit whose reply was lost; a stop row; a ctrl-u not sent; `/quit`; the copy's own record,
@@ -1028,7 +1120,11 @@ not prove, `writtenPartShown`, a caller scroll refused while a copy may be unrea
 before an inherited copy is resolved); `input-gate.test.ts` (the 0.20.3 counts: kept when well
 formed, absent when not, `stopped` only for `writes < writesTotal`, and `writtenPrefix`);
 `transcript-follower.test.ts` (a command bound to its arguments, a held turn and the watched
-copy, a held command, command markers quoted in a prompt); and, through the real `attach` and `onFrame`, an identical keyframe after a
+copy, a held command, command markers quoted in a prompt); `transcript-follower-turn-file.test.ts`
+(a record carrying the turn's token, k joined copies counted, the pointer after an interrupt
+marker, another turn's token, `turn-1.md` inside `turn-11.md`, a record of two turns' tokens, a
+held pointer turn, the records that carry the token and are no submission, and a human witness
+with `notTurnDir`); and, through the real `attach` and `onFrame`, an identical keyframe after a
 reconnect that arrives before the `list` reply, and a drop and reattach finished between two
 polls),
 `pane-gated-stdin-stall.integration.test.ts` (also `FAKE_BLANK_FRAME_AFTER_BYTES`: a
@@ -1114,7 +1210,8 @@ left is cleared by key order, in one KEYS send of `clearKeyCount` ctrl-u keys, b
 deletes one wrapped row (measured on 2.1.330; extra ctrl-u keys on an empty box do nothing). A
 record of k whole copies is accepted as the witness, so a direct text prompt can reach the model k
 times; the file-template launch line only points at the task file, which is read once. A k > 1
-match is recorded as the anomaly `witness_copies:<k>`, once per turn. At
+match is recorded as the anomaly `witness_copies:<k>`, once per turn; for a pointer line k counts
+the turn file's tokens in the record, a diagnostic only, since the path binds the turn. At
 production timings, with no `timings` overrides, the DA-* tests in
 `pane-gated-delivery.integration.test.ts` prove that a lost prompt fails loudly instead of reading
 as an empty answer and that a late transcript still yields exactly one answer, and the DB-* tests

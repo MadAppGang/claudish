@@ -3,8 +3,10 @@ import {
   agentRejectedLine,
   choiceDialog,
   hasChoiceDialog,
+  hasEcho,
   inputBox,
   isWorking,
+  lineSubmittedOnScreen,
   readBoot,
   screenAnswer,
   screenErrorRows,
@@ -262,6 +264,30 @@ describe("screenAnswer (degraded mode)", () => {
   test("no echo, no answer", () => {
     expect(screenAnswer(loadScreen("repl-boot-empty"), "anything")).toBe("");
   });
+
+  test("an echo drawn markdown-rendered (inline code without its backticks) still finds the answer", () => {
+    const rule = "─".repeat(160);
+    const lines = [
+      "❯ Your task is in the file /tmp/t/turn-1.md. Read all of it with the Read tool, then do exactly what it says,",
+      "  treating its content as the user's message.",
+      "⏺ ANSWER fake fb6ad739",
+      "✻ Cogitated for 1s",
+      rule,
+      "❯\u00a0",
+      rule,
+      "  cwd • fake",
+    ];
+    const screen = {
+      lines,
+      cols: 160,
+      rows: lines.length,
+      cursor: { x: 2, y: 5 },
+      spans: lines.map(() => []),
+    } as unknown as Parameters<typeof screenAnswer>[0];
+    const echo =
+      "Your task is in the file `/tmp/t/turn-1.md`. Read all of it with the Read tool, then do exactly what it says, treating its content as the user's message.";
+    expect(screenAnswer(screen, echo)).toBe("ANSWER fake fb6ad739");
+  });
 });
 
 describe("agentRejectedLine", () => {
@@ -287,5 +313,152 @@ describe("transcriptSavingOff", () => {
   test("is false on every captured screen (F4 strips its cause)", () => {
     for (const n of [...REPL_SCREENS, ...DIALOG_SCREENS])
       expect(transcriptSavingOff(loadScreen(n))).toBe(false);
+  });
+});
+
+describe("lineSubmittedOnScreen", () => {
+  const dir = "/tmp/cpt-860e1a20/launch-TNjRC3";
+  const file = (n: number) => `${dir}/turn-${n}.md`;
+  const pointer = (n: number) =>
+    `Your task is in the file \`${file(n)}\`. Read all of it with the Read tool (in parts if it is long), then do exactly what it says, treating its content as the user's message.`;
+  /** The history echo as Claude Code draws it: markdown-rendered, wrapped at 160 columns. */
+  const echoRows = (line: string, keepMarks = false): string[] => {
+    const shown = keepMarks ? line : line.replace(/[`*~]/g, "");
+    return [`❯ ${shown.slice(0, 150)}`, `  ${shown.slice(150)}`];
+  };
+  const box = ["─".repeat(160), "❯\u00a0", "─".repeat(160)];
+
+  test("a pointer's own echo, drawn without its backticks, is submitted", () => {
+    const lines = [...echoRows(pointer(2)), "⏺ ANSWER", ...box];
+    expect(lineSubmittedOnScreen(lines, pointer(2), file(2))).toBe(true);
+  });
+
+  test("an earlier pointer's echo is not this pointer's submission", () => {
+    const lines = [...echoRows(pointer(1)), "⏺ ANSWER", ...box];
+    expect(lineSubmittedOnScreen(lines, pointer(2), file(2))).toBe(false);
+  });
+
+  test("an earlier pointer's echo drawn with its backticks is not this pointer's submission", () => {
+    const lines = [...echoRows(pointer(1), true), "⏺ ANSWER", ...box];
+    expect(lineSubmittedOnScreen(lines, pointer(2), file(2))).toBe(false);
+  });
+
+  test("turn-1's echo is not turn-11's, nor turn-11's turn-1's", () => {
+    expect(lineSubmittedOnScreen([...echoRows(pointer(1)), ...box], pointer(11), file(11))).toBe(
+      false
+    );
+    expect(lineSubmittedOnScreen([...echoRows(pointer(11)), ...box], pointer(1), file(1))).toBe(
+      false
+    );
+  });
+
+  test("a pointer whose path wraps onto the echo's next row is submitted", () => {
+    const shown = pointer(2).replace(/`/g, "");
+    const cut = shown.indexOf("launch-") + 3;
+    const lines = [`❯ ${shown.slice(0, cut)}`, `  ${shown.slice(cut)}`, ...box];
+    expect(lineSubmittedOnScreen(lines, pointer(2), file(2))).toBe(true);
+  });
+
+  test("an echo that only quotes the pointer's path is not its submission", () => {
+    expect(
+      lineSubmittedOnScreen([`❯ Please explain ${file(2)}.`, ...box], pointer(2), file(2))
+    ).toBe(false);
+    expect(lineSubmittedOnScreen([`❯ Compare ${file(2)}.bak`, ...box], pointer(2), file(2))).toBe(
+      false
+    );
+    expect(
+      screenAnswer(
+        {
+          lines: [`❯ Please explain ${file(2)}.`, "⏺ EXPLAINED", ...box],
+          cols: 160,
+          rows: 7,
+          cursor: { x: 2, y: 5 },
+          spans: [[], [], [], [], []],
+        } as unknown as Parameters<typeof screenAnswer>[0],
+        pointer(2),
+        file(2)
+      )
+    ).toBe("");
+  });
+
+  test("the box holding the pointer is not its echo", () => {
+    const lines = ["─".repeat(160), `❯\u00a0${pointer(2).slice(0, 150)}`, "─".repeat(160)];
+    expect(lineSubmittedOnScreen(lines, pointer(2), file(2))).toBe(false);
+  });
+
+  test("a typed line: its echo is submitted, another line's is not", () => {
+    const lines = ["❯ Reply with exactly PEAR.", "⏺ PEAR", ...box];
+    expect(lineSubmittedOnScreen(lines, "Reply with exactly PEAR.", null)).toBe(true);
+    expect(lineSubmittedOnScreen(lines, "Reply with exactly PLUM.", null)).toBe(false);
+  });
+});
+
+describe("screenAnswer for a pointer line (file delivery)", () => {
+  const dir = "/tmp/cpt-860e1a20/launch-TNjRC3";
+  const file = (n: number) => `${dir}/turn-${n}.md`;
+  const pointer = (n: number) =>
+    `Your task is in the file \`${file(n)}\`. Read all of it with the Read tool (in parts if it is long), then do exactly what it says, treating its content as the user's message.`;
+  const echoRows = (line: string): string[] => {
+    const shown = line.replace(/[`*~]/g, "");
+    return [`❯ ${shown.slice(0, 150)}`, `  ${shown.slice(150)}`];
+  };
+  const screenOf = (lines: string[]) =>
+    ({
+      lines,
+      cols: 160,
+      rows: lines.length,
+      cursor: { x: 2, y: lines.length - 3 },
+      spans: lines.map(() => []),
+    }) as unknown as Parameters<typeof screenAnswer>[0];
+  const box = ["─".repeat(160), "❯\u00a0", "─".repeat(160), "  cwd • fake"];
+
+  test("only the earlier pointer's echo and answer on screen: the current turn has no answer", () => {
+    const s = screenOf([...echoRows(pointer(1)), "⏺ FIRST ANSWER", ...box]);
+    expect(screenAnswer(s, pointer(2), file(2))).toBe("");
+  });
+
+  test("the current pointer's echo below the earlier one: its own answer", () => {
+    const s = screenOf([
+      ...echoRows(pointer(1)),
+      "⏺ FIRST ANSWER",
+      ...echoRows(pointer(2)),
+      "⏺ SECOND ANSWER",
+      ...box,
+    ]);
+    expect(screenAnswer(s, pointer(2), file(2))).toBe("SECOND ANSWER");
+  });
+});
+
+describe("a typed line's echo and its markdown marks", () => {
+  const box = ["─".repeat(160), "❯\u00a0", "─".repeat(160), "  cwd • fake"];
+  const earlier = ["❯ an unrelated earlier prompt", "⏺ OLD-ANSWER"];
+  const screenOf = (lines: string[]) =>
+    ({
+      lines,
+      cols: 160,
+      rows: lines.length,
+      cursor: { x: 2, y: lines.length - 3 },
+      spans: lines.map(() => []),
+    }) as unknown as Parameters<typeof screenAnswer>[0];
+
+  for (const marks of ["*", "***", "~~~", "`"]) {
+    test(`a prompt of marks only (${marks}) is not the echo of another line`, () => {
+      expect(hasEcho([...earlier, ...box], marks)).toBe(false);
+      expect(screenAnswer(screenOf([...earlier, ...box]), marks)).toBe("");
+    });
+  }
+
+  test("a prompt of marks only is found by its own echo", () => {
+    expect(hasEcho(["❯ ***", "⏺ STARS", ...box], "***")).toBe(true);
+  });
+
+  test("two prompts that differ only by a mark are not each other's echo", () => {
+    expect(hasEcho(["❯ Use value 42", ...box], "Use value *42")).toBe(false);
+    expect(hasEcho(["❯ Use value *42", ...box], "Use value 42")).toBe(false);
+    expect(hasEcho(["❯ Use value *42", ...box], "Use value *42")).toBe(true);
+  });
+
+  test("paired marks the history renders are still matched", () => {
+    expect(hasEcho(["❯ Read a.md and b now", ...box], "Read `a.md` and **b** now")).toBe(true);
   });
 });

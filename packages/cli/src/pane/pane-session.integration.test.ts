@@ -18,8 +18,10 @@ import {
   type PaneSession,
   type PaneSessionOptions,
   REPL_STABLE_MS,
+  clearKeyCount,
   startPaneSession,
 } from "./pane-session.js";
+import { fileTemplate, turnFilePath } from "./prompt-delivery.js";
 import { inputBox, readBoot } from "./screen-classifier.js";
 import type { ScreenState } from "./screen-model.js";
 import { type ObservedClient, observeClients } from "./test-helpers/client-observer.js";
@@ -35,6 +37,11 @@ import {
 import type { FinalVerdict, PaneSnapshot, SettledTurn } from "./types.js";
 
 const sha8 = (s: string) => createHash("sha1").update(s).digest("hex").slice(0, 8);
+
+/** The pointer line a session types for its turn `n`: every prompt but a command, with Read. */
+function pointerOf(r: Run, n = 1): string {
+  return fileTemplate(turnFilePath((r.s as unknown as { turnDir: string }).turnDir, n), null);
+}
 
 /** A later admission's bound for the tests that wait one out: one magmux send budget. */
 const LATER_ADMIT_BOUND_MS = 16_000;
@@ -286,7 +293,7 @@ describe.skipIf(!MAGMUX)(
             // Measure actual typing, not a sleep that can overshoot under concurrent process tests.
             // The screen polling above can observe the first frame up to 50 ms late.
             expect((sends[0]?.at ?? 0) - firstEmptyBox).toBeGreaterThanOrEqual(3350);
-            expect(sends[0]?.message.text).toBe("Reply with exactly PEAR.");
+            expect(sends[0]?.message.text).toBe(pointerOf(r));
             expect(sends[0]?.message).toMatchObject({ typed: true, enter: true });
             expect(sends).toHaveLength(1);
           } finally {
@@ -299,7 +306,7 @@ describe.skipIf(!MAGMUX)(
 
     describe.concurrent("happy path and delivery", () => {
       test(
-        "answer: STARTING → RUNNING → COMPLETED on turn_duration, the typed line's hash, all reaped",
+        "answer: STARTING → RUNNING → COMPLETED on turn_duration, the prompt's hash, read from its turn file, all reaped",
         async () => {
           const r = await start("answer");
           await r.s.ready;
@@ -312,7 +319,7 @@ describe.skipIf(!MAGMUX)(
           ]);
           expect(r.turns[0]?.answer).toBe(`ANSWER fake-answer ${sha8("Reply with exactly PEAR.")}`);
           expect(r.turns[0]?.settledBy).toBe("turn_duration");
-          expect(r.turns[0]?.delivery.mode).toBe("typed");
+          expect(r.turns[0]?.delivery).toMatchObject({ mode: "file", complete: true });
           expect(snap.turnsCompleted).toBe(1);
           expect(snap.tokensIn).toBeGreaterThan(0);
           expect(snap.claudeCodeVersion).toBe("2.1.290");
@@ -395,10 +402,10 @@ describe.skipIf(!MAGMUX)(
           expect(snap.state).toBe("COMPLETED");
           expect(snap.anomalies).toContain("gate_resent_enter");
           expect(sends.map(({ message }) => message)).toMatchObject([
-            { text: prompt, typed: true, enter: true },
+            { text: pointerOf(r), typed: true, enter: true },
           ]);
           expect(sends).toHaveLength(1);
-          expect(r.submits.map(({ text }) => text)).toEqual([prompt]);
+          expect(r.submits.map(({ text }) => text)).toEqual([pointerOf(r)]);
           expect(r.turns).toHaveLength(1);
           expect(r.turns[0]?.answer).toBe(`ANSWER fake-menu_eats_enter ${sha8(prompt)}`);
           expect(snap.turnsCompleted).toBe(1);
@@ -431,13 +438,14 @@ describe.skipIf(!MAGMUX)(
           expect(Date.now() - at).toBeLessThan(15_000);
           const snap = await close(r);
           expect(snap.anomalies).not.toContain("gate_busy:box_not_empty");
+          // clearKeyCount(the line about to be typed, 0, 160): one ctrl-u per wrapped row it can occupy
+          const clears = Array(clearKeyCount(pointerOf(r), 0, 160)).fill("ctrl-u");
           expect(sends.map(({ message }) => message)).toMatchObject([
-            // clearKeyCount(24-cell line, 0, 160): one ctrl-u per wrapped row the leftover can occupy
-            { keys: ["ctrl-u", "ctrl-u"], enter: false, noGate: true },
-            { text: "Reply with exactly PEAR.", typed: true, enter: true },
+            { keys: clears, enter: false, noGate: true },
+            { text: pointerOf(r), typed: true, enter: true },
           ]);
           expect(sends).toHaveLength(2);
-          expect(r.submits.map(({ text }) => text)).toEqual(["Reply with exactly PEAR."]);
+          expect(r.submits.map(({ text }) => text)).toEqual([pointerOf(r)]);
         },
         T
       );
@@ -452,11 +460,11 @@ describe.skipIf(!MAGMUX)(
           expect(snap.anomalies).toContain("gate_resent_enter");
           expect(sends).toHaveLength(1);
           expect(sends[0]?.message).toMatchObject({
-            text: "Reply with exactly PEAR.",
+            text: pointerOf(r),
             typed: true,
             enter: true,
           });
-          expect(r.submits.map(({ text }) => text)).toEqual(["Reply with exactly PEAR."]);
+          expect(r.submits.map(({ text }) => text)).toEqual([pointerOf(r)]);
           expect(r.turns[0]?.answer).toBe(
             `ANSWER fake-enter_ignored_1 ${sha8("Reply with exactly PEAR.")}`
           );
@@ -1022,7 +1030,7 @@ describe.skipIf(!MAGMUX)(
             ["RUNNING", "AWAITING_INPUT"],
           ]);
           expect(r.transitions.some(([, to]) => to === "STARTING" || to === "FAILED")).toBe(false);
-          expect(r.submits.map(({ text }) => text)).toEqual(["second, answered"]);
+          expect(r.submits.map(({ text }) => text)).toEqual([pointerOf(r, 2)]);
         },
         T * 2
       );

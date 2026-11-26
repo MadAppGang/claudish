@@ -1,7 +1,10 @@
+import { renderedInline } from "../screen-classifier.js";
+
 /** Test-only reflow matching the captured 80- and 120-column Claude Code boxes. */
 export function wrapPrompt(text: string, cols: number, history = false): string[] {
-  // The history copy is markdown-rendered; the input box contains the raw characters.
-  const content = history ? text.replace(/[`*~]/g, "") : text;
+  // The history copy is markdown-rendered (paired marks show only their content); the input
+  // box contains the raw characters.
+  const content = history ? renderedInline(text) : text;
   const width = Math.max(1, cols - 2);
   const rows: string[] = [];
   for (const line of content.split("\n")) {

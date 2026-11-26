@@ -207,19 +207,14 @@ describe("classifyRunOutput — in-band API errors", () => {
     expect(result?.detail).toContain("You have no credits remaining");
   });
 
-  it("reports a trailing billing error after an unread turn's preamble as api_error", () => {
+  it("reads no marker at the end of a longer answer, unread turn or not: a turn not read in full has no answer", () => {
     const result = classifyRunOutput({
       answer: `I'll read the file.\n\n${answer.trim()}`,
       apiError: null,
       promptRead: unread,
       requirePattern: "VERDICT:",
     });
-    expect(result).toEqual({
-      state: "FAILED",
-      reason: "api_error",
-      detail: expect.stringContaining("credit_balance_exhausted"),
-    });
-    expect(result?.detail).toContain("You have no credits remaining");
+    expect(result?.reason).toBe("prompt_not_read");
   });
 
   const overflowAnswer =
@@ -243,9 +238,9 @@ describe("classifyRunOutput — in-band API errors", () => {
     expect(result?.detail).toContain("oai@gpt-5.6-sol");
   });
 
-  it("reports a trailing context overflow after an unread turn's preamble as api_error", () => {
+  it("reports a whole-answer context overflow on an unread turn as api_error, before prompt_not_read", () => {
     const result = classifyRunOutput({
-      answer: `I'll read the file.\n\n${overflowAnswer.trim()}`,
+      answer: overflowAnswer,
       apiError: null,
       promptRead: unread,
       requirePattern: "VERDICT:",
@@ -499,7 +494,7 @@ describe("classifyRunOutput — in-band API error as the turn's last API respons
 
   it("applies the joined-answer rules when no last-response data exists", () => {
     const result = classifyRunOutput({
-      answer: `I'll read the file.\n\n[API Error: cyber_policy refused]`,
+      answer: "[API Error: cyber_policy refused]",
       apiError: null,
       promptRead: delivery({ linesRead: 0, complete: false }),
     });

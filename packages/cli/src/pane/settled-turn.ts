@@ -16,6 +16,29 @@ export type TurnCore = Omit<
 >;
 
 /**
+ * The answer a turn may hand to its caller, its hooks and its output: the model's text, except
+ * for a turn delivered as a file whose Reads did not return every line of it. Text written
+ * without the whole task read cannot answer the task; it stays in the transcript and in
+ * `readCoverage`, never as the answer. A COMMAND turn with zero Reads keeps its text: its
+ * coverage is unknown, not failed (R3-M3). `mode` is the turn's delivery mode, null when unknown.
+ */
+export function answerOf(
+  t: Pick<TurnView, "assistantText" | "delivery" | "readCoverage">,
+  mode: Delivery["mode"] | null
+): string {
+  return answerWithheld(t, mode) ? "" : t.assistantText.join("\n\n");
+}
+
+/** `answerOf` withholds this turn's text: its turn file is known not to be read in full. */
+export function answerWithheld(
+  t: Pick<TurnView, "delivery" | "readCoverage">,
+  mode: Delivery["mode"] | null
+): boolean {
+  if (!t.delivery || t.readCoverage.complete) return false;
+  return !(mode === "command" && t.readCoverage.reads === 0);
+}
+
+/**
  * The core of a turn that settled on the transcript. `delivery` is the plan the turn's prompt
  * was delivered by; `shape` the session's shape at the settle. `unverified` is set for a
  * file-carrying COMMAND turn with zero Reads (R3-M3): its text went to the command's own
@@ -33,7 +56,7 @@ export function settledTurnCoreOf(
   const core: TurnCore = {
     index: t.index,
     // a local command's answer is its own stdout: it has no assistant message (path L)
-    answer: local ? (t.localCommandOutput ?? "") : t.assistantText.join("\n\n"),
+    answer: local ? (t.localCommandOutput ?? "") : answerOf(t, d?.mode ?? null),
     ...(local || !t.lastResponseEnd ? {} : { lastResponseEnd: t.lastResponseEnd }),
     acceptedAt: t.acceptedAt,
     apiError: t.apiError,

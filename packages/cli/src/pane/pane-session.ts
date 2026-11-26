@@ -184,7 +184,7 @@ import {
   agentCountMismatch,
   decideSettle,
 } from "./settle-rule.js";
-import { type TurnCore, settledTurnCoreOf } from "./settled-turn.js";
+import { type TurnCore, answerOf, settledTurnCoreOf } from "./settled-turn.js";
 import {
   type Phase,
   type PhaseEvent,
@@ -658,6 +658,8 @@ interface ListResult {
 
 interface ScreenTurn {
   echo: string;
+  /** The turn file a file delivery's echo names: its echo is found by it (`screenAnswer`). */
+  turnFile: string | null;
   acceptedAt: number;
   errorLogSize: number;
 }
@@ -2008,20 +2010,16 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     this.abandonedIndex = null;
     if (plan.mode === "refused" || plan.mode === "control") {
       this.anomaly(`delivery_refused:${plan.mode === "refused" ? plan.reason : "control"}`);
-      this.admission = null;
-      if (item.kind === "hook") {
-        this.hookAdmissionFailed(item);
-        return;
-      }
-      this.fire(initial ? "admit_deadline" : "admit_abandoned", {
-        detail: plan.mode === "refused" ? plan.reason : undefined,
-      });
+      this.failAdmissionUntyped(item, initial, plan.mode === "refused" ? plan.reason : undefined);
       return;
     }
     try {
       writeTurnFile(plan);
     } catch (e) {
+      // a pointer to a file that is not there would be typed for nothing: fail, as the driver does
       this.anomaly(`turn_file_failed:${e instanceof Error ? e.message : String(e)}`);
+      this.failAdmissionUntyped(item, initial, "turn_file_failed");
+      return;
     }
     const delivery =
       (plan.mode === "file" || plan.mode === "command") &&
@@ -2041,6 +2039,20 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     });
     this.admission = adm;
     void this.runAdmission(adm);
+  }
+
+  /** An admission that typed nothing ends here: a hook item is dropped, a caller's fails. */
+  private failAdmissionUntyped(
+    item: QueueItem,
+    initial: boolean,
+    detail: string | undefined
+  ): void {
+    this.admission = null;
+    if (item.kind === "hook") {
+      this.hookAdmissionFailed(item);
+      return;
+    }
+    this.fire(initial ? "admit_deadline" : "admit_abandoned", { detail });
   }
 
   /** This admission is still the live one: nothing accepted, expired or ended it meanwhile. */
@@ -2604,7 +2616,12 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       this.acceptAdmission(adm);
       return;
     }
-    if (copy === adm.line && this.unreadCopy === copy) {
+    // a pointer line names its own turn file, so no earlier copy is ever this line
+    if (
+      copy === adm.line &&
+      this.unreadCopy === copy &&
+      this.unreadCopyWitness?.kind !== "turn_file"
+    ) {
       adm.leftoverOf = copy;
       this.unreadCopyReadWhole = true;
       await this.awaitCopyRecord(adm);
@@ -2615,13 +2632,14 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   }
 
   /**
-   * The remembered copy left the box, submitted, and is forgotten before its record landed: that
-   * record, when it lands, must never be read as a later line's (`refuseDeparted`: a late
-   * "PEARPEAR" is two joined copies of "PEAR").
+   * The remembered copy left the box, submitted, and is forgotten before its record landed: a
+   * typed line's record, when it lands, must never be read as a later line's
+   * (`refuseDeparted`: a late "PEARPEAR" is two joined copies of "PEAR"). A pointer copy is
+   * just forgotten: its record carries its own turn file's token, which no other turn has.
    */
   private departCopy(): void {
-    if (this.unreadCopyWitness)
-      this.follower.refuseDeparted(this.unreadCopyWitness, this.unreadCopyAfter);
+    const w = this.unreadCopyWitness;
+    if (w && w.kind !== "turn_file") this.follower.refuseDeparted(w, this.unreadCopyAfter);
     this.forgetCopy();
   }
 
@@ -3264,9 +3282,13 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       return;
     }
     if (adm.readWhole && adm.submittedUnproven !== null) {
-      // read whole and maybe submitted (its Enter reply lost or unconfirmed): its record may
-      // still land, so a retry of the same text waits for it (`awaitCopyRecord`) and another
-      // line refuses it (`departCopy`); nothing of it is queued, so no key is withheld
+      // a pointer line read whole: nothing of it is queued, and its record, should it land,
+      // carries its own turn file's token, so it can accept no other turn; a witness that
+      // still arrives re-wakes this turn while the session is idle (`abandonedIndex`)
+      if ("witness" in adm.plan && adm.plan.witness.kind === "turn_file") return;
+      // a typed line read whole and maybe submitted (its Enter reply lost or unconfirmed): its
+      // record may still land, so a retry of the same text waits for it (`awaitCopyRecord`) and
+      // another line refuses it (`departCopy`); nothing of it is queued, so no key is withheld
       this.rememberCopy(
         adm.line,
         "witness" in adm.plan ? adm.plan.witness : { kind: "text", text: adm.line },
@@ -3461,6 +3483,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       void this.returnToLiveBottom(SCROLL_REPLY_MS);
       this.screenTurn = {
         echo: d && d.mode !== "refused" ? d.line : "",
+        turnFile: d && d.mode === "file" ? d.file : null,
         acceptedAt: at,
         errorLogSize: this.turnErrorLogSize,
       };
@@ -3783,6 +3806,8 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
           {
             index: turn.index,
             answer: turn.answer,
+            // `complete` is false exactly when `answerOf` withheld the answer (null: unknown)
+            answerWithheld: turn.delivery.complete === false,
             stopReason: turn.stopReason,
             apiError: turn.apiError !== null,
             hookCaused: turn.hookCaused,
@@ -4076,7 +4101,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     if (!st) return;
     if (this.settleUnwitnessedEnd(view, st)) return;
     if (!this.client) return;
-    const answer = screenAnswer(this.screen, st.echo);
+    const answer = screenAnswer(this.screen, st.echo, st.turnFile);
     const apiError = this.screenApiError(st, answer);
     this.activity = "thinking";
     if (!this.screenViewLive() || !this.screenSettleReady(view, answer, apiError)) return;
@@ -4115,8 +4140,8 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
    * as a witnessed turn decides, so a background agent still pending, a pending tool or a
    * waking record holds the turn open exactly as it does there. The answer is that
    * transcript's assistant text; with none, the screen's, read from the live bottom of a
-   * connected client. The turn settles at the shadow's last chat offset, so a re-wake past
-   * it is seen while held or idle.
+   * connected client, unless the turn file is known not to be read in full. The turn settles
+   * at the shadow's last chat offset, so a re-wake past it is seen while held or idle.
    */
   private settleUnwitnessedEnd(view: TranscriptView, st: ScreenTurn): boolean {
     const u = view.current?.index === this.turnIndex ? view.current.unwitnessed : null;
@@ -4141,10 +4166,12 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     // counted only once the turn really settles: the screen branch below may still wait
     const notes: string[] = [];
     let core = this.settledTurnOf(turn, decision, (key) => notes.push(key));
-    if (!core.answer && !core.apiError) {
+    // a turn file known not to be read in full has no answer (`answerOf`): the screen would
+    // only show the text that rule withheld. Unknown coverage still falls back to the screen.
+    if (!core.answer && !core.apiError && core.delivery.complete !== false) {
       // the screen and the scroll position are the last frame before a dropped client
       if (!this.client || !this.screenViewLive()) return false;
-      const answer = screenAnswer(this.screen, st.echo);
+      const answer = screenAnswer(this.screen, st.echo, st.turnFile);
       core = {
         ...core,
         answer,
@@ -4309,7 +4336,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       tokensIn: hasTranscript ? view.usage.tokensIn : null,
       tokensOut: hasTranscript ? view.usage.tokensOut : null,
       toolCalls: view.toolCalls,
-      liveAnswerBytes: cur ? Buffer.byteLength(cur.assistantText.join("\n\n")) : 0,
+      liveAnswerBytes: cur ? Buffer.byteLength(this.liveAnswerOf(cur)) : 0,
       exitCode: this.exitCode,
       captureSource: this.lastCaptureSource,
       turnSource: this.turnSource,
@@ -4665,7 +4692,12 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     const done = this.answers.get(index);
     if (done !== undefined) return done;
     const cur = this.follower.view().current;
-    return cur && cur.index === index ? cur.assistantText.join("\n\n") : "";
+    return cur && cur.index === index ? this.liveAnswerOf(cur) : "";
+  }
+
+  /** The running turn's answer so far, under the same read-coverage rule as a settled one. */
+  private liveAnswerOf(cur: TurnView): string {
+    return answerOf(cur, this.currentDelivery?.mode ?? null);
   }
 
   chainText(): string {
@@ -4673,7 +4705,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     const lastIndex = this.chain[this.chain.length - 1]?.index ?? 0;
     const cur = this.follower.view().current;
     // the running chain turn: one above the last recorded index, not yet recorded
-    if (cur && cur.index > lastIndex) parts.push(cur.assistantText.join("\n\n"));
+    if (cur && cur.index > lastIndex) parts.push(this.liveAnswerOf(cur));
     return parts.filter((a) => a !== "").join("\n\n");
   }
 

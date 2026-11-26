@@ -537,7 +537,10 @@ The verdict is taken once, at the end, on the joined chain answer, with the **ch
 prompt-read result (`SettledTurn.chainDelivery`), since each admission replaces the current delivery.
 `require_pattern` passes when it matches the joined answer or any single turn's, so a `^`-anchored
 pattern still matches a turn that starts with it. An unread hook-turn file records
-`hook_injection_not_read`, never the caller-facing `prompt_not_read`. `timeout_seconds` spans the
+`hook_injection_not_read`, never the caller-facing `prompt_not_read`. A turn whose task file was
+not read in full has no answer (`answerOf`, `pane-session.md`), so `sessionIdle` gets `answer: ""`
+with `ctx.turn.answerWithheld: true`. The flag is what tells a hook that the model was not silent:
+without it, a rule such as "the model produced nothing, inject a nudge" fires on every unread turn. `timeout_seconds` spans the
 chain. The cost, stated plainly: an injecting hook changes what a slot's answer is. That is opt-in by
 loading such a hook, and capped.
 
@@ -576,9 +579,12 @@ declares `responseEnd` or a session event.
   written after the last tick moves the phase and the item waits, rather than being read and then
   overwritten by the injection's witness.
 - **Delivery gate.** IDLE, booted, the box drawn and empty with no menu or dialog, not working, the box
-  unchanged for 1,500 ms, no recovery overlay lease held. One `send {typed, enter}` of a plain line,
-  or a turn file in the `--add-dir` directory. Never Esc. The text witness must appear within 30 s,
-  else `send_not_accepted`. A **lost reply** (`client_timeout`, `client_lost`) is not a refusal:
+  unchanged for 1,500 ms, no recovery overlay lease held. One `send {typed, enter}` of the pointer
+  line to a turn file in the `--add-dir` directory (a plain line typed as is only when the Read tool
+  is unavailable). Never Esc. The witness (`turn_file`, bound to that file's path; `text` for a
+  typed line) must appear within 30 s, else `send_not_accepted`. The human-witness turn excludes
+  any record carrying a pointer into the driver's turn directory (`notTurnDir`), so a late record of
+  an injection is never taken as the human's prompt. A **lost reply** (`client_timeout`, `client_lost`) is not a refusal:
   as in a pane's `typeLine`, the driver waits a frame, presses Enter when the line sits in the box,
   and otherwise accepts it when its echo or witness is there. "Sits in the box" means the box shows
   exactly the whole typed line (`boxShowsLine`, read across the wrap, against the line as typed,

@@ -100,6 +100,24 @@ function squash(s: string): string {
 }
 
 /**
+ * `line` as the history draws it: Claude Code renders a submitted line as markdown, so a PAIRED
+ * inline mark (a code span, `**strong**`, `*emphasis*`, `~~strike~~`, `~strike~`) shows only
+ * its content. An unpaired mark is drawn as typed: `*42` stays `*42`, `***` stays `***`.
+ */
+export function renderedInline(line: string): string {
+  return line
+    .replace(/(`+)(?!`)([\s\S]*?[^`])\1(?!`)/g, "$2")
+    .replace(/\*\*(?=\S)([\s\S]*?\S)\*\*/g, "$1")
+    .replace(/\*(?=[^\s*])([^*]*?[^\s*])?\*/g, (m, inner: string | undefined) =>
+      inner === undefined ? m : inner
+    )
+    .replace(/~~(?=\S)([\s\S]*?\S)~~/g, "$1")
+    .replace(/~(?=[^\s~])([^~]*?[^\s~])?~/g, (m, inner: string | undefined) =>
+      inner === undefined ? m : inner
+    );
+}
+
+/**
  * How many leading characters of a typed line identify it on screen: `min(40, cols − 4)`,
  * compared with whitespace removed and across wrapped rows (`echoAt`, `boxStartsWith`).
  */
@@ -139,29 +157,105 @@ export function boxStartsWith(box: InputBox, head: string): boolean {
 }
 
 /**
- * Row `i` is the echo of a submitted line starting with `head`: `❯ ` with an ASCII space
- * (the box prompt is `❯` + NO-BREAK SPACE, so the box itself never matches), followed by
- * its two-space continuation rows when the echo wraps, compared with whitespace removed.
+ * Row `i` is the echo of the submitted `line` (its first `headLength` characters): `❯ ` with an
+ * ASCII space (the box prompt is `❯` + NO-BREAK SPACE, so the box itself never matches),
+ * followed by its two-space continuation rows when the echo wraps, compared with whitespace
+ * removed. The echo is drawn markdown-rendered, so the line is compared as typed and as
+ * rendered (`renderedInline`), never with a lone mark dropped: `Use value *42` and
+ * `Use value 42` are two lines. A head with nothing left to compare never matches.
  * At 120 columns a prompt whose third word is a long path echoes as `❯ Use the Write tool
  * to create the file` alone, the path on the next row (`size-120x40-permission-…`).
  */
-export function echoAt(lines: readonly string[], i: number, head: string): boolean {
+export function echoAt(
+  lines: readonly string[],
+  i: number,
+  line: string,
+  headLength = Number.POSITIVE_INFINITY
+): boolean {
   const first = lines[i] ?? "";
   if (!first.startsWith("❯ ")) return false;
-  const want = squash(head);
+  const wants = [line, renderedInline(line)]
+    .map((l) => squash(l.slice(0, headLength)))
+    .filter((w) => w.length > 0);
+  if (wants.length === 0) return false;
+  const longest = Math.max(...wants.map((w) => w.length));
   let got = squash(first.slice(2));
-  for (let j = i + 1; got.length < want.length && j < lines.length; j++) {
+  for (let j = i + 1; got.length < longest && j < lines.length; j++) {
     const row = lines[j] ?? "";
     if (!/^ {2}\S/.test(row)) break;
     got += squash(row);
   }
-  return got.startsWith(want);
+  return wants.some((w) => got.startsWith(w));
 }
 
-/** Some row is the echo of a submitted line starting with `head`. */
-export function hasEcho(lines: readonly string[], head: string): boolean {
-  for (let i = 0; i < lines.length; i++) if (echoAt(lines, i, head)) return true;
+/** Some row is the echo of the submitted `line` (its first `headLength` characters). */
+export function hasEcho(
+  lines: readonly string[],
+  line: string,
+  headLength = Number.POSITIVE_INFINITY
+): boolean {
+  for (let i = 0; i < lines.length; i++) if (echoAt(lines, i, line, headLength)) return true;
   return false;
+}
+
+/** The echo starting at row `i` (`❯ ` and its two-space continuation rows), squashed; else null. */
+function squashedEchoAt(lines: readonly string[], i: number): string | null {
+  const first = lines[i] ?? "";
+  if (!first.startsWith("❯ ")) return null;
+  let got = squash(first.slice(2));
+  for (let j = i + 1; j < lines.length; j++) {
+    const row = lines[j] ?? "";
+    if (!/^ {2}\S/.test(row)) break;
+    got += squash(row);
+  }
+  return got;
+}
+
+/**
+ * Row `i` is the echo of the pointer `line`: the WHOLE line as the history draws it (its
+ * backticks rendered away, `renderedInline`), read across the echo's wrapped rows. Every
+ * pointer starts with the same words and the same turn directory, so only the whole line, with
+ * its own `turn-<n>.md` and the words after it, names the turn: an echo that quotes the path
+ * (`Please explain …/turn-2.md.`, `…/turn-2.md.bak`) is another line.
+ */
+function pointerEchoAt(lines: readonly string[], i: number, line: string): boolean {
+  return squashedEchoAt(lines, i)?.startsWith(squash(renderedInline(line))) ?? false;
+}
+
+/**
+ * The LAST echo row above `end` of `line`, or -1: for a pointer line (a file delivery, its
+ * `turnFile` given) the echo of the whole line (`pointerEchoAt`), for a typed line the echo of
+ * its first `headLength` characters (`echoAt`).
+ */
+function echoRowOf(
+  lines: readonly string[],
+  end: number,
+  line: string,
+  turnFile: string | null,
+  headLength = Number.POSITIVE_INFINITY
+): number {
+  const above = lines.slice(0, end);
+  for (let i = end - 1; i >= 0; i--)
+    if (turnFile === null ? echoAt(above, i, line, headLength) : pointerEchoAt(above, i, line))
+      return i;
+  return -1;
+}
+
+/**
+ * The screen shows `line` as submitted: an echo row above the box. A pointer line (its
+ * `turnFile` given) is known by its whole rendered line (`echoRowOf`). A typed line is known by its first
+ * 40 characters on the echo row.
+ */
+export function lineSubmittedOnScreen(
+  lines: readonly string[],
+  line: string,
+  turnFile: string | null
+): boolean {
+  if (turnFile === null) {
+    const head = line.slice(0, 40);
+    return lines.some((l) => l.startsWith(`❯ ${head}`));
+  }
+  return echoRowOf(lines, lines.length, line, turnFile) >= 0;
 }
 
 const MENU_ROW = /^\s{2}❯ \/\S|^\s{4}\/\S|^\s{4}[*+] \S/;
@@ -317,12 +411,14 @@ const NON_ANSWER_ROW =
  * Degraded-mode answer (C4): the `⏺` prose rows after the LAST echo of `echo` and
  * their indented continuations, minus tool rows, sub-result rows (`  ⎿ …`), collapsed
  * tool summaries (`  Ran 1 shell command`), working/finished rows and error rows (L14).
+ * A file delivery's echo (`turnFile` given) is found by its whole pointer line (`echoRowOf`), never by
+ * the first characters every pointer of a session shares.
  */
-export function screenAnswer(s: ScreenState, echo: string): string {
+export function screenAnswer(s: ScreenState, echo: string, turnFile: string | null = null): string {
   const lines = s.lines;
   const top = boxTopRow(lines, s.cols);
   const end = top >= 0 ? top : lines.length;
-  const start = echoRow(lines, end, echoHead(echo, s.cols)) + 1;
+  const start = echoRowOf(lines, end, echo, turnFile, echoHeadLength(s.cols)) + 1;
   if (start <= 0) return "";
   const out: string[] = [];
   let inProse = false;
@@ -332,13 +428,6 @@ export function screenAnswer(s: ScreenState, echo: string): string {
     if (row.text !== null) out.push(row.text);
   }
   return out.join("\n").trim();
-}
-
-/** The LAST echo row above `end` of a line starting with `head`, or -1. */
-function echoRow(lines: readonly string[], end: number, head: string): number {
-  const above = lines.slice(0, end);
-  for (let i = end - 1; i >= 0; i--) if (echoAt(above, i, head)) return i;
-  return -1;
 }
 
 /** One row of the degraded answer: its text (or null) and whether a prose block continues. */

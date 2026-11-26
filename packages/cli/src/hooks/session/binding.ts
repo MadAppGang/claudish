@@ -43,6 +43,8 @@ import type { ApplicableHook, HookEventName } from "../registry.js";
 export interface HoldTurnInfo {
   index: number;
   answer: string;
+  /** the answer was withheld: the turn file was not read in full (`ctx.turn.answerWithheld`) */
+  answerWithheld?: boolean;
   stopReason: string | null;
   apiError: boolean;
   hookCaused: boolean;
@@ -410,6 +412,7 @@ class EngineSessionHookBinding implements SessionHookBinding {
           turn: Object.freeze({
             index: turn.index,
             answer: turn.answer,
+            answerWithheld: turn.answerWithheld ?? false,
             stopReason: turn.stopReason,
             apiError: turn.apiError,
             hookCaused: turn.hookCaused,
