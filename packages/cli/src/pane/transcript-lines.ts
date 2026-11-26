@@ -233,11 +233,13 @@ export function toolCall(name: unknown, input: unknown): RenderedLine {
 // ─── Entry → lines ───────────────────────────────────────────────────────────
 
 /**
- * A claudish task file, by path shape: `…/launch-XXXXXX/turn-<n>.md` (the `mkdtemp`
- * suffix is six characters). Not anchored to a pane root: the root is per server, and a
- * renderer that read it would mint different lines on two servers.
+ * A claudish task file, by path shape: `…/launch-XXXXXX/turn-<n>.md` (a pane's turn
+ * directory) or `…/claudish-turns-XXXXXX/turn-<n>.md` (the interactive driver's, under the
+ * system temp directory); the `mkdtemp` suffix is six characters. Not anchored to a pane
+ * root: the root is per server, and a renderer that read it would mint different lines on
+ * two servers.
  */
-const TASK_FILE_RE = /\/launch-[A-Za-z0-9]{6}\/turn-\d+\.md$/;
+const TASK_FILE_RE = /\/(?:launch|claudish-turns)-[A-Za-z0-9]{6}\/turn-\d+\.md$/;
 
 const COMMAND_NAME_RE = /<command-name>([\s\S]*?)<\/command-name>/;
 const COMMAND_ARGS_RE = /<command-args>([\s\S]*?)<\/command-args>/;
