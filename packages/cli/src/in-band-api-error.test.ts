@@ -29,18 +29,12 @@ describe("in-band API error markers", () => {
     }
   );
 
-  test("accepts a trailing marker after a preamble only when requested", () => {
-    const answer = `I'll read the file.\n\n${marker}`;
-    expect(parseInBandApiError(answer, { trailing: true })).toEqual({ code, text });
-    expect(parseInBandApiError(answer, { trailing: false })).toBeNull();
-    expect(parseInBandApiError(answer)).toBeNull();
-  });
-
   test.each([
+    `I'll read the file.\n\n${marker}`,
     `I'll read the file.\n\n${marker}\n\nThe answer continues.`,
     `I'll read the file.\n${marker}`,
-  ])("trailing mode rejects a nonterminal marker or a missing blank line: %s", (answer) => {
-    expect(parseInBandApiError(answer, { trailing: true })).toBeNull();
+  ])("never reads a marker after a preamble: %s", (answer) => {
+    expect(parseInBandApiError(answer)).toBeNull();
   });
 
   test.each([

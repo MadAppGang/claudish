@@ -1299,9 +1299,9 @@ const CONTENT_POLICY_CODE = "cyber_policy";
  * earlier blocks of that response never matter, and a marker followed by any other block (a
  * tool_use) did not end the turn. The marker's message is upstream text that may hold `]` and
  * newlines, so the text cannot tell the writer from a model quoting it; without the record the
- * block is the model's text. Without last-response data, the whole answer (or its end, for a
- * turn that never read its task file) decides. A marker inside a longer text block is the
- * model's text.
+ * block is the model's text. Without last-response data, the whole answer decides. A marker
+ * inside a longer text block is the model's text. (A turn whose task file was not read in full
+ * has no answer at all, `answerOf`, so its preamble never comes here.)
  */
 function inBandErrorOf(
   input: Parameters<typeof classifyRunOutput>[0]
@@ -1315,7 +1315,7 @@ function inBandErrorOf(
       proxyProvesInBandError(marker.code, input.proxyInBandError, input.turnStartedAt);
     return proven ? marker : null;
   }
-  return parseInBandApiError(input.answer, { trailing: input.promptRead?.complete === false });
+  return parseInBandApiError(input.answer);
 }
 
 /** The turn's own failure signals: an API error, an unread task file, a refusal. */
