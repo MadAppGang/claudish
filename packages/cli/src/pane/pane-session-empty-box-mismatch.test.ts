@@ -30,6 +30,7 @@ import {
   readyTimeoutFor,
 } from "./pane-session.js";
 import * as paneSession from "./pane-session.js";
+import { planDelivery, writeTurnFile } from "./prompt-delivery.js";
 import type { ScreenState } from "./screen-model.js";
 import { wrapPrompt } from "./test-helpers/repl-wrap.js";
 
@@ -312,6 +313,36 @@ function admit(s: PaneSessionImpl, boundMs: number, line = LINE): any {
   const any = s as any;
   any.phase = "ADMITTING";
   any.admission = adm;
+  return adm;
+}
+
+/**
+ * An admission of the caller's `text` as turn `index`, planned as `startAdmission` plans it
+ * (the Read tool available), its turn file written and the follower's turn opened at the
+ * transcript's current size, which is also the offset its copy is typed after.
+ */
+function admitPlanned(s: PaneSessionImpl, boundMs: number, text: string, index: number): any {
+  const any = s as any;
+  const plan = planDelivery(text, any.turnDir as string, index, true);
+  if (plan.mode !== "typed" && plan.mode !== "file") throw new Error(`plan ${plan.mode}`);
+  writeTurnFile(plan);
+  const offset = any.follower.size() as number;
+  any.turnIndex = index;
+  any.follower.openTurn({
+    index,
+    offset,
+    witness: plan.witness,
+    delivery: plan.mode === "file" ? { file: plan.file, text: plan.fileContent } : null,
+  });
+  const adm = admit(s, boundMs, plan.line);
+  Object.assign(adm, {
+    index,
+    item: { kind: "caller", text },
+    text,
+    plan,
+    initial: false,
+    mark: offset,
+  });
   return adm;
 }
 
@@ -2159,6 +2190,35 @@ describe("a late record, unproven spaces, and keys while a copy may be unread", 
     writeRecord(s, NEW);
     expect(any.witnessNow()).toBe(true);
   }, 60_000);
+
+  test("a pointer line read whole, its Enter reply lost, then expiry: nothing is remembered, its record cannot accept another turn", async () => {
+    const s = session();
+    const sc = wire(s, [mismatchEmpty], [LOST]);
+    const any = s as any;
+    const first = admitPlanned(s, 30_000, "line one\nline two", 1);
+    expect(first.plan.witness.kind).toBe("turn_file");
+    const done = any.runAdmission(first) as Promise<void>;
+    await Bun.sleep(500);
+    sc.box = first.line;
+    await done;
+    expect(messagesOf(sc).filter(isEnterOnly)).toHaveLength(1);
+    expect(first.readWhole).toBe(true);
+    sc.box = "";
+    any.admitExpired(first);
+    expect(any.unreadCopy).toBeNull();
+    expect(any.keysWithheld()).toBe(false);
+  }, 30_000);
+
+  test("a pointer copy that departs is forgotten without a departed rule: its own record is no one copy of anything", () => {
+    const s = session();
+    wire(s, [ACCEPTED]);
+    const any = s as any;
+    const first = admitPlanned(s, 30_000, "line one\nline two", 1);
+    any.rememberCopy(first.line, first.plan.witness, first.mark);
+    any.departCopy();
+    expect(any.unreadCopy).toBeNull();
+    expect(any.follower.state.departed).toBeNull();
+  });
 
   test("a command whose menu highlights another item while keys are withheld: no Escape, and no Enter", async () => {
     const s = session();

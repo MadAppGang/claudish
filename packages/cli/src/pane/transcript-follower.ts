@@ -228,16 +228,18 @@ export interface FollowerState {
    */
   copy: { witness: Witness; after: number; seen: boolean } | null;
   /**
-   * The open turn's admission has typed nothing yet (it waits on `copy`): a record accepts it
-   * only when it is exactly one copy of its own line and that line is the copy's
-   * (`heldMayAccept`). Any other matching record is the earlier copy's.
+   * The open turn's admission has typed nothing yet (it waits on `copy`). For a residual
+   * (typed) witness a record accepts it only when it is exactly one copy of its own line and
+   * that line is the copy's (`heldMayAccept`); any other matching record is the earlier
+   * copy's. A pointer turn's own token is in no earlier record, so holding changes nothing.
    */
   held: boolean;
   /**
-   * A copy of another line that left the input box and was forgotten before its record landed
-   * (`refuseDeparted`): its witness, and the offset it was typed after. The first record that
-   * is exactly one copy of it (`isOneCopyOf`) is that copy's, and accepts no turn; it is then
-   * cleared. Without it, "PEARPEAR" landing late reads as two joined copies of "PEAR".
+   * A typed copy of another line that left the input box and was forgotten before its record
+   * landed (`refuseDeparted`): its witness, and the offset it was typed after. The first record
+   * that is exactly one copy of it (`isOneCopyOf`) is that copy's, and accepts no turn; it is
+   * then cleared. Without it, "PEARPEAR" landing late reads as two joined copies of "PEAR". Never
+   * set for a pointer copy, whose record carries its own token.
    */
   departed: { witness: Witness; after: number } | null;
   /** the session's subagents; lives across turns and survives `rewindTo` */

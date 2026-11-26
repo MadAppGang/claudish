@@ -2604,7 +2604,12 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       this.acceptAdmission(adm);
       return;
     }
-    if (copy === adm.line && this.unreadCopy === copy) {
+    // a pointer line names its own turn file, so no earlier copy is ever this line
+    if (
+      copy === adm.line &&
+      this.unreadCopy === copy &&
+      this.unreadCopyWitness?.kind !== "turn_file"
+    ) {
       adm.leftoverOf = copy;
       this.unreadCopyReadWhole = true;
       await this.awaitCopyRecord(adm);
@@ -2615,13 +2620,14 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   }
 
   /**
-   * The remembered copy left the box, submitted, and is forgotten before its record landed: that
-   * record, when it lands, must never be read as a later line's (`refuseDeparted`: a late
-   * "PEARPEAR" is two joined copies of "PEAR").
+   * The remembered copy left the box, submitted, and is forgotten before its record landed: a
+   * typed line's record, when it lands, must never be read as a later line's
+   * (`refuseDeparted`: a late "PEARPEAR" is two joined copies of "PEAR"). A pointer copy is
+   * just forgotten: its record carries its own turn file's token, which no other turn has.
    */
   private departCopy(): void {
-    if (this.unreadCopyWitness)
-      this.follower.refuseDeparted(this.unreadCopyWitness, this.unreadCopyAfter);
+    const w = this.unreadCopyWitness;
+    if (w && w.kind !== "turn_file") this.follower.refuseDeparted(w, this.unreadCopyAfter);
     this.forgetCopy();
   }
 
@@ -3264,9 +3270,13 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       return;
     }
     if (adm.readWhole && adm.submittedUnproven !== null) {
-      // read whole and maybe submitted (its Enter reply lost or unconfirmed): its record may
-      // still land, so a retry of the same text waits for it (`awaitCopyRecord`) and another
-      // line refuses it (`departCopy`); nothing of it is queued, so no key is withheld
+      // a pointer line read whole: nothing of it is queued, and its record, should it land,
+      // carries its own turn file's token, so it can accept no other turn; a witness that
+      // still arrives re-wakes this turn while the session is idle (`abandonedIndex`)
+      if ("witness" in adm.plan && adm.plan.witness.kind === "turn_file") return;
+      // a typed line read whole and maybe submitted (its Enter reply lost or unconfirmed): its
+      // record may still land, so a retry of the same text waits for it (`awaitCopyRecord`) and
+      // another line refuses it (`departCopy`); nothing of it is queued, so no key is withheld
       this.rememberCopy(
         adm.line,
         "witness" in adm.plan ? adm.plan.witness : { kind: "text", text: adm.line },
