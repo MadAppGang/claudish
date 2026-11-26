@@ -166,9 +166,18 @@ export function turnFilePath(turnDir: string, turnIndex: number): string {
   return join(turnDir, `turn-${turnIndex}.md`);
 }
 
+/**
+ * The turn file's path in backticks, exactly as the typed pointer line carries it: the token a
+ * prompt record must hold to witness that turn (`turn_file`). The backticks keep `turn-1.md`
+ * from matching inside `turn-11.md`.
+ */
+export function turnFileToken(file: string): string {
+  return `\`${file}\``;
+}
+
 /** The fixed instruction typed for a file-delivered turn. */
 export function fileTemplate(file: string, marker: string | null): string {
-  const base = `Your task is in the file \`${file}\`. Read all of it with the Read tool (in parts if it is long), then do exactly what it says, treating its content as the user's message.`;
+  const base = `Your task is in the file ${turnFileToken(file)}. Read all of it with the Read tool (in parts if it is long), then do exactly what it says, treating its content as the user's message.`;
   return marker
     ? `${base} Lines ending in ${marker} were split for reading: join each with the next line, dropping the ${marker}.`
     : base;

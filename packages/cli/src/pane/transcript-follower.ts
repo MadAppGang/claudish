@@ -41,19 +41,27 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import type { SlotStep } from "./contract.js";
+import { turnFileToken } from "./prompt-delivery.js";
 import { RECENT_STEP_LIMIT, stepOf } from "./slot-steps.js";
 import { type MetaFile, SubagentLedger } from "./subagent-ledger.js";
 import type { SubagentRow } from "./view-contract.js";
 
 export type Witness =
-  | { kind: "text"; text: string } // typed plain line or the file-reference instruction (exact)
+  /** a typed line, exact (whole copies, `wholeCopies`): a Read-less session's prompt */
+  | { kind: "text"; text: string }
+  /**
+   * A pointer line naming the turn's own file: any prompt record that carries the file's token
+   * (`turnFileToken`, `isPromptRecord`). `line` is the typed pointer, for diagnostics only.
+   */
+  | { kind: "turn_file"; file: string; line: string }
   /** slash command: its `<command-name>` record, or the plain user record of the typed `line` */
   | { kind: "command"; name: string; line?: string }
   /**
    * A prompt a HUMAN typed (the interactive driver, hook-system §7.5): matched by
-   * provenance, never by text. See `isHumanPrompt`.
+   * provenance, never by text. See `isHumanPrompt`. With `notTurnDir`, a record carrying a
+   * pointer into that turn directory is claudish's own injection, never the human's prompt.
    */
-  | { kind: "human" };
+  | { kind: "human"; notTurnDir?: string };
 
 export interface TurnDelivery {
   /** absolute path of the turn file the child must Read */
@@ -117,8 +125,8 @@ export interface TurnView {
    */
   unwitnessedChatOffset: number | null;
   /**
-   * Whole copies of the typed line the witness record held: 1 for every witness but a text
-   * witness of a doubled submit (k > 1); null until accepted.
+   * Copies of the typed line the witness record held: whole copies for a text witness, the
+   * turn file's tokens for a pointer (k > 1: a doubled submit), 1 otherwise; null until accepted.
    */
   witnessCopies: number | null;
   /**
@@ -370,8 +378,42 @@ function wholeCopies(text: string, line: string): number {
   return k >= 1 && got === core.repeat(k) ? k : 0;
 }
 
+/**
+ * A prompt a user record submitted, whatever its text: a main-chain user record that is not
+ * `isMeta`, carries no `tool_result`, is no compact summary and no task notification, and whose
+ * `origin`, when present, is human. That is `isHumanPrompt` without its interrupt-marker
+ * exclusion: a send made while a question dialog is open presses Escape, and Claude Code can
+ * write the next prompt into the record that holds the interrupt marker.
+ */
+function isPromptRecord(r: Rec): boolean {
+  if (!isMainUser(r) || r.isMeta || hasToolResult(r) || r.isCompactSummary) return false;
+  if (isTaskNotification(r)) return false;
+  const origin = r.origin;
+  return origin === undefined || origin === null || origin?.kind === "human";
+}
+
+/** Non-overlapping occurrences of `token` in `text`. */
+function countOccurrences(text: string, token: string): number {
+  if (!token) return 0;
+  let n = 0;
+  for (let at = text.indexOf(token); at >= 0; at = text.indexOf(token, at + token.length)) n++;
+  return n;
+}
+
+/** How many times a prompt record carries the turn file's token: 0 for any other record. */
+function turnFileCopies(r: Rec, w: Extract<Witness, { kind: "turn_file" }>): number {
+  return isPromptRecord(r) ? countOccurrences(userText(r), turnFileToken(w.file)) : 0;
+}
+
+/** A pointer into `turnDir`, as the typed pointer line spells one: the start of its token. */
+function carriesPointerInto(r: Rec, turnDir: string): boolean {
+  return userText(r).includes(turnFileToken(join(turnDir, "turn-")).slice(0, -1));
+}
+
 function matchesWitness(r: Rec, w: Witness): boolean {
-  if (w.kind === "human") return isHumanPrompt(r);
+  if (w.kind === "human")
+    return isHumanPrompt(r) && !(w.notTurnDir && carriesPointerInto(r, w.notTurnDir));
+  if (w.kind === "turn_file") return turnFileCopies(r, w) > 0;
   // Some local commands are written as system records, not user records (captured:
   // 2.1.291 `/color yellow` → two `system/local_command` records).
   if (w.kind === "command" && isLocalCommandSystem(r))
@@ -715,8 +757,12 @@ function takeDepartedRecord(state: FollowerState, r: Rec, offset: number): boole
   return true;
 }
 
-/** A main-chain record of exactly one submission of the line `w` stands for. */
+/**
+ * A main-chain record of exactly one submission of the line `w` stands for. Never a pointer's:
+ * its record carries its own token, so no departed rule is needed for it.
+ */
 function isOneCopyOf(r: Rec, w: Witness): boolean {
+  if (w.kind === "turn_file") return false;
   if (w.kind === "text")
     return isMainUser(r) && !r.isMeta && !hasToolResult(r) && userText(r).trim() === w.text.trim();
   return w.kind === "command" && matchesWitness(r, w);
@@ -746,6 +792,8 @@ function acceptUnlessHeld(
  */
 function heldMayAccept(state: FollowerState, t: TurnState, r: Rec): boolean {
   const w = t.witness;
+  // a pointer turn's own token is in no record before its own send: holding changes nothing
+  if (w.kind === "turn_file") return matchesWitness(r, w);
   const c = state.copy?.witness;
   if (w.kind === "command")
     return c?.kind === "command" && c.name === w.name && c.line === w.line && matchesWitness(r, w);
@@ -757,8 +805,15 @@ function acceptIfWitness(t: TurnState, r: Rec, offset: number): void {
   if (!matchesWitness(r, t.witness)) return;
   t.acceptedAt = typeof r.timestamp === "string" ? r.timestamp : new Date().toISOString();
   t.acceptedOffset = offset;
-  t.witnessCopies = t.witness.kind === "text" ? wholeCopies(userText(r), t.witness.text) : 1;
+  t.witnessCopies = witnessCopiesOf(r, t.witness);
   t.lastChatOffset = offset;
+}
+
+/** Copies of the submitted line the witness record holds: tokens for a pointer, whole copies for text. */
+function witnessCopiesOf(r: Rec, w: Witness): number {
+  if (w.kind === "text") return wholeCopies(userText(r), w.text);
+  if (w.kind === "turn_file") return turnFileCopies(r, w);
+  return 1;
 }
 
 /** One main-chain assistant message id, once: Claude Code writes one record per content block. */
