@@ -2042,7 +2042,11 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   }
 
   /** An admission that typed nothing ends here: a hook item is dropped, a caller's fails. */
-  private failAdmissionUntyped(item: QueueItem, initial: boolean, detail: string | undefined): void {
+  private failAdmissionUntyped(
+    item: QueueItem,
+    initial: boolean,
+    detail: string | undefined
+  ): void {
     this.admission = null;
     if (item.kind === "hook") {
       this.hookAdmissionFailed(item);
