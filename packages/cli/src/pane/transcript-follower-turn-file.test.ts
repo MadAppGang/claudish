@@ -206,6 +206,47 @@ describe("a human witness that excludes claudish's own pointer lines", () => {
     expect(view.unwitnessedChatOffset).toBeNull();
   });
 
+  test("with notTurnDir, a wake after the injection's own turn_duration is a re-wake again", () => {
+    const answer = {
+      type: "assistant",
+      isSidechain: false,
+      uuid: "00000000-0000-4000-8000-000000000004",
+      timestamp: TS,
+      message: { id: "msg_late", role: "assistant", content: [{ type: "text", text: "A2-LATE" }] },
+    };
+    const end = { type: "system", subtype: "turn_duration", isSidechain: false, timestamp: TS };
+    const notification = userRecord(
+      "<task-notification><task-id>bg-1</task-id><status>completed</status></task-notification>",
+      { origin: { kind: "task-notification" } }
+    );
+    const { view } = fold(human(TURN_DIR), [userRecord(pointer(5)), answer, end, notification]);
+    expect(view.acceptedAt).toBeNull();
+    expect(view.unwitnessedChatOffset).toBe(103);
+  });
+
+  test("with notTurnDir, a stop_hook_summary does not end the injection: its continuation stays its own", () => {
+    const answer = (id: string) => ({
+      type: "assistant",
+      isSidechain: false,
+      uuid: `00000000-0000-4000-8000-00000000000${id.length}`,
+      timestamp: TS,
+      message: { id, role: "assistant", content: [{ type: "text", text: id }] },
+    });
+    const hooks = {
+      type: "system",
+      subtype: "stop_hook_summary",
+      isSidechain: false,
+      timestamp: TS,
+    };
+    const { view } = fold(human(TURN_DIR), [
+      userRecord(pointer(5)),
+      answer("msg_a"),
+      hooks,
+      answer("msg_continued"),
+    ]);
+    expect(view.unwitnessedChatOffset).toBeNull();
+  });
+
   test("with notTurnDir, the model's answer with no prompt before it is still a re-wake", () => {
     const answer = {
       type: "assistant",

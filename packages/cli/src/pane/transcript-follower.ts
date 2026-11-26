@@ -207,7 +207,9 @@ interface TurnState {
   /**
    * A human turn (`notTurnDir`) saw a pointer into the turn directory before its witness: an
    * injection the driver gave up on landed late. What the model does after it answers that
-   * injection, never a re-wake of the turn before.
+   * injection, never a re-wake of the turn before, until the injection's own main-chain
+   * `turn_duration` (null again then). A `stop_hook_summary` does not end it: a Stop hook can
+   * continue the same turn.
    */
   foreignPointerAt: number | null;
   witnessCopies: number | null;
@@ -895,9 +897,14 @@ function foldTurnRecord(state: FollowerState, t: TurnState, r: Rec, offset: numb
 /** A main-chain record that shows the model working with no prompt: its reply, or a notification. */
 /**
  * Before its witness: the first record that shows the model working (`unwitnessedChat`),
- * unless an excluded injection's pointer came first (`foreignPointerAt`).
+ * unless an excluded injection's pointer opened its own turn (`foreignPointerAt`) and that turn
+ * has not yet ended.
  */
 function noteUnwitnessed(t: TurnState, r: Rec, offset: number): void {
+  if (t.foreignPointerAt !== null && r.type === "system" && r.subtype === "turn_duration") {
+    t.foreignPointerAt = null;
+    return;
+  }
   if (t.foreignPointerAt === null && isForeignPointer(r, t.witness)) t.foreignPointerAt = offset;
   if (t.unwitnessedChat === null && t.foreignPointerAt === null && wakesModel(r))
     t.unwitnessedChat = offset;
