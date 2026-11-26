@@ -120,8 +120,9 @@ describe("a turn_file witness: a prompt record carrying the turn file's token", 
     expect(state.copy?.seen).toBe(true);
   });
 
-  test("a departed copy whose text is the pointer line takes the pointer's record: a pointer copy must never be departed", () => {
-    // pane-session's departCopy keeps a pointer copy out of `departed`; this is what it prevents
+  test("documents the hazard: a departed copy whose text is the pointer line takes the pointer's record", () => {
+    // Not a test of the guard. pane-session's departCopy keeps a pointer copy out of `departed`
+    // (pane-session-empty-box-mismatch.test.ts tests that); this pins what would happen without it.
     const { state, view } = fold(witnessOf(2), [userRecord(pointer(2))], (s) => {
       s.departed = { witness: { kind: "text", text: pointer(2) }, after: 0 };
     });
