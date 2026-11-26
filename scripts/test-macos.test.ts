@@ -22,10 +22,14 @@ import {
   LATEST_CANARY_STEP,
   NO_ENV_FILE,
   advisoryResults,
+  binaryKindOf,
   bunPinOf,
   bunVersionOf,
+  bunxCacheDir,
+  bunxCachePlaceholder,
   canaryOutputDir,
   compareVersions,
+  fetchPinnedBun,
   gateRed,
   launchArgv,
   parseClaudeCodePin,
@@ -727,5 +731,167 @@ describe("compareVersions", () => {
     expect(compareVersions("0.19.0", "0.19.0")).toBe(0);
     expect(compareVersions("0.9.0", "0.19.0")).toBe(-1);
     expect(compareVersions("0.20.0", "0.19.0")).toBe(1);
+  });
+});
+
+describe("the pinned Bun from bunx", () => {
+  // The first bytes of a 64-bit arm64 Mach-O, the way the real 60 MB bun.exe starts.
+  const MACH_O = {
+    head: Uint8Array.from([0xcf, 0xfa, 0xed, 0xfe, 0x0c, 0x00, 0x00, 0x01]),
+    size: 60_953_744,
+  };
+  // The npm package's bun.exe before its postinstall replaces it: a 450-byte shell script.
+  const SCRIPT = {
+    head: new TextEncoder().encode('echo "Error: Bun\'s postinstall script was not run." >&2\n'),
+    size: 450,
+  };
+  const SHEBANG = { head: new TextEncoder().encode("#!/bin/sh\n"), size: 450 };
+
+  test("a Mach-O header is a real binary", () => {
+    expect(binaryKindOf(MACH_O)).toBe("mach-o");
+    // A universal (fat) binary and the big-endian magic are Mach-O too.
+    expect(binaryKindOf({ head: Uint8Array.from([0xca, 0xfe, 0xba, 0xbe]), size: 1 << 26 })).toBe(
+      "mach-o"
+    );
+    expect(binaryKindOf({ head: Uint8Array.from([0xfe, 0xed, 0xfa, 0xcf]), size: 1 << 26 })).toBe(
+      "mach-o"
+    );
+  });
+
+  test("the 450-byte script, a #! script or a far too small file is a placeholder", () => {
+    expect(binaryKindOf(SCRIPT)).toBe("placeholder");
+    expect(binaryKindOf(SHEBANG)).toBe("placeholder");
+    expect(binaryKindOf({ head: MACH_O.head, size: 450 })).toBe("placeholder");
+    expect(binaryKindOf({ head: new Uint8Array(0), size: 0 })).toBe("placeholder");
+  });
+
+  test("a missing file is not a real binary", () => {
+    expect(binaryKindOf(null)).toBe("missing");
+  });
+
+  test("the cache folder is bunx-<uid>-bun@<version> under the temp directory", () => {
+    expect(bunxCacheDir("/var/folders/x/T", 501, "1.3.10")).toBe(
+      "/var/folders/x/T/bunx-501-bun@1.3.10"
+    );
+    expect(bunxCacheDir("/tmp", 0, "latest")).toBe("/tmp/bunx-0-bun@latest");
+  });
+
+  const CACHE = "/T/bunx-501-bun@1.3.10";
+  const BIN = `${CACHE}/node_modules/bun/bin`;
+
+  test("bunxCachePlaceholder names a placeholder bun.exe or bunx.exe, and nothing else", () => {
+    const files =
+      (f: Record<string, typeof MACH_O>) =>
+      (path: string): typeof MACH_O | null =>
+        f[path] ?? null;
+    expect(bunxCachePlaceholder(CACHE, files({}))).toBeNull();
+    expect(
+      bunxCachePlaceholder(
+        CACHE,
+        files({ [`${BIN}/bun.exe`]: MACH_O, [`${BIN}/bunx.exe`]: MACH_O })
+      )
+    ).toBeNull();
+    expect(bunxCachePlaceholder(CACHE, files({ [`${BIN}/bun.exe`]: SCRIPT }))).toBe(
+      `${BIN}/bun.exe`
+    );
+    expect(
+      bunxCachePlaceholder(
+        CACHE,
+        files({ [`${BIN}/bun.exe`]: MACH_O, [`${BIN}/bunx.exe`]: SCRIPT })
+      )
+    ).toBe(`${BIN}/bunx.exe`);
+  });
+
+  /**
+   * A bunx whose cache holds the placeholder for its first `placeholderRuns` runs. On a
+   * placeholder run it exits 1 like the script does, or, with `reportsSuccess`, exits 0 and
+   * reports the placeholder as its executable.
+   */
+  function fakeBunx(placeholderRuns: number, reportsSuccess = false) {
+    const exe = `${BIN}/bun.exe`;
+    let runs = 0;
+    const removed: string[] = [];
+    const logged: string[] = [];
+    const placeholder = () => runs <= placeholderRuns;
+    const io = {
+      cacheDir: CACHE,
+      runBunx: () => {
+        runs++;
+        if (!placeholder() || reportsSuccess) {
+          return { status: 0, stdout: `1.3.10\t${exe}\n`, stderr: "" };
+        }
+        return { status: 1, stdout: "", stderr: "Error: Bun's postinstall script was not run.\n" };
+      },
+      readHead: (path: string) =>
+        path === exe || path === `${BIN}/bunx.exe` ? (placeholder() ? SCRIPT : MACH_O) : null,
+      removeDir: (path: string) => {
+        removed.push(path);
+      },
+      log: (line: string) => {
+        logged.push(line);
+      },
+    };
+    return { io, exe, removed, logged, runs: () => runs };
+  }
+
+  test("a real Bun on the first run is returned with no removal", () => {
+    const f = fakeBunx(0);
+    expect(fetchPinnedBun("1.3.10", f.io)).toEqual({ exe: f.exe, resolved: "1.3.10" });
+    expect(f.removed).toEqual([]);
+    expect(f.logged).toEqual([]);
+    expect(f.runs()).toBe(1);
+  });
+
+  test("a placeholder on the first run removes the cache folder and fetches once more", () => {
+    const f = fakeBunx(1);
+    expect(fetchPinnedBun("1.3.10", f.io)).toEqual({ exe: f.exe, resolved: "1.3.10" });
+    expect(f.removed).toEqual([CACHE]);
+    expect(f.runs()).toBe(2);
+    expect(f.logged).toHaveLength(1);
+    expect(f.logged[0]).toContain(CACHE);
+    expect(f.logged[0]).toContain("placeholder bun.exe");
+    expect(f.logged[0]).toContain("postinstall never ran");
+    expect(f.logged[0]).toContain("bun@1.3.10");
+  });
+
+  test("a placeholder behind a run that exits 0 is caught before its exe is trusted", () => {
+    const f = fakeBunx(1, true);
+    expect(fetchPinnedBun("1.3.10", f.io)).toEqual({ exe: f.exe, resolved: "1.3.10" });
+    expect(f.removed).toEqual([CACHE]);
+    expect(f.runs()).toBe(2);
+  });
+
+  test("a placeholder on both runs stops with the cause and the folder, after one retry", () => {
+    const f = fakeBunx(99);
+    let message = "";
+    try {
+      fetchPinnedBun("1.3.10", f.io);
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    expect(message).toContain("placeholder bun.exe");
+    expect(message).toContain("postinstall never ran");
+    expect(message).toContain(CACHE);
+    expect(message).not.toContain("could not get Bun");
+    expect(f.runs()).toBe(2);
+    expect(f.removed).toEqual([CACHE]);
+  });
+
+  test("a failure that is not a placeholder keeps the bunx error and does not retry", () => {
+    const f = fakeBunx(0);
+    let runs = 0;
+    const io = {
+      ...f.io,
+      runBunx: () => {
+        runs++;
+        return { status: 1, stdout: "", stderr: "error: no such version\n" };
+      },
+      readHead: () => null,
+    };
+    expect(() => fetchPinnedBun("9.9.9", io)).toThrow(
+      "could not get Bun 9.9.9 with bunx:\nerror: no such version"
+    );
+    expect(runs).toBe(1);
+    expect(f.removed).toEqual([]);
   });
 });

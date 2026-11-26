@@ -61,10 +61,14 @@
 import { spawn, spawnSync } from "node:child_process";
 import {
   chmodSync,
+  closeSync,
   existsSync,
+  fstatSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
+  readSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -492,6 +496,113 @@ function fail(message: string): never {
   process.exit(1);
 }
 
+/** The first bytes of a file and its size in bytes; `null` when the file cannot be read. */
+export type FileHead = { head: Uint8Array; size: number } | null;
+
+/**
+ * What a cached Bun executable is: a Mach-O binary, a stand-in for one (the npm `bun` package
+ * ships `bin/bun.exe` as a 450-byte shell script that its postinstall overwrites with the real
+ * ~60 MB binary), or no file at all.
+ */
+export type BinaryKind = "mach-o" | "placeholder" | "missing";
+
+/** Below this size no Bun executable is real: the binary is tens of megabytes. */
+const MIN_BUN_BINARY_BYTES = 1024 * 1024;
+
+/** The Mach-O magic numbers: 32- and 64-bit in either byte order, and the universal (fat) header. */
+const MACH_O_MAGICS = [
+  [0xfe, 0xed, 0xfa, 0xce],
+  [0xfe, 0xed, 0xfa, 0xcf],
+  [0xce, 0xfa, 0xed, 0xfe],
+  [0xcf, 0xfa, 0xed, 0xfe],
+  [0xca, 0xfe, 0xba, 0xbe],
+];
+
+/** Classifies a cached Bun executable from its first bytes and its size, never from its output. */
+export function binaryKindOf(file: FileHead): BinaryKind {
+  if (file === null) return "missing";
+  if (file.size < MIN_BUN_BINARY_BYTES) return "placeholder";
+  const isMachO = MACH_O_MAGICS.some((magic) => magic.every((b, i) => file.head[i] === b));
+  return isMachO ? "mach-o" : "placeholder";
+}
+
+/** The folder bunx installs `bun@<version>` into: `<tmpdir>/bunx-<uid>-bun@<version>`. */
+export function bunxCacheDir(tmp: string, uid: number, version: string): string {
+  return join(tmp, `bunx-${uid}-bun@${version}`);
+}
+
+/** The first of the cache's `bun.exe` and `bunx.exe` that is a placeholder, or `null`. */
+export function bunxCachePlaceholder(
+  cacheDir: string,
+  readHead: (path: string) => FileHead
+): string | null {
+  const bin = join(cacheDir, "node_modules", "bun", "bin");
+  for (const name of ["bun.exe", "bunx.exe"]) {
+    const path = join(bin, name);
+    if (binaryKindOf(readHead(path)) === "placeholder") return path;
+  }
+  return null;
+}
+
+/** What `fetchPinnedBun` runs, reads and removes, injected so its retry runs without a network. */
+export interface PinnedBunIO {
+  /** bunx's cache folder for this exact version (`bunxCacheDir`). */
+  cacheDir: string;
+  /** One `bunx bun@<version>` run that prints `Bun.version` and `process.execPath`, tab-separated. */
+  runBunx: () => { status: number | null; stdout: string; stderr: string };
+  readHead: (path: string) => FileHead;
+  removeDir: (path: string) => void;
+  log: (line: string) => void;
+}
+
+/**
+ * `bun@<version>`'s executable and the version it reports. A cache holding the package's
+ * placeholder (bunx exits 1 through the script, or reports the script as its executable) is
+ * removed and bunx runs once more; a placeholder after that throws with the cause and the folder.
+ * Any other failure throws bunx's own stderr. bunx runs at most twice.
+ */
+export function fetchPinnedBun(
+  version: string,
+  io: PinnedBunIO
+): { exe: string; resolved: string } {
+  const cause = `bunx's cache ${io.cacheDir} holds the bun package's placeholder bun.exe (its postinstall never ran)`;
+  for (let run = 1; ; run++) {
+    const r = io.runBunx();
+    const [resolved = "", exe = ""] = (r.stdout.trim().split("\n").pop() ?? "").split("\t");
+    const exeKind = binaryKindOf(exe ? io.readHead(exe) : null);
+    const placeholder =
+      bunxCachePlaceholder(io.cacheDir, io.readHead) !== null ||
+      (r.status === 0 && exeKind === "placeholder");
+    if (placeholder) {
+      if (run > 1) {
+        throw new Error(`${cause}, again after removing it and fetching bun@${version} once more`);
+      }
+      io.log(`[test:macos] ${cause}; removing it and fetching bun@${version} again`);
+      io.removeDir(io.cacheDir);
+      continue;
+    }
+    if (r.status !== 0 || exeKind !== "mach-o") {
+      throw new Error(`could not get Bun ${version} with bunx:\n${r.stderr}`);
+    }
+    return { exe, resolved };
+  }
+}
+
+/** The first bytes and the size of `path`, following symlinks; `null` when it cannot be read. */
+function readFileHead(path: string): FileHead {
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, "r");
+    const head = new Uint8Array(8);
+    const n = readSync(fd, head, 0, head.length, 0);
+    return { head: head.subarray(0, n), size: fstatSync(fd).size };
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
 /**
  * The executable of `bun@<version>`, fetched by bunx, linked as `bun` into `bun-<version>` under
  * this run's own directory.
@@ -500,19 +611,31 @@ function pinnedBun(
   version: string,
   runDir: string
 ): { exe: string; dir: string; resolved: string } {
-  const r = spawnSync(
-    "bunx",
-    [`bun@${version}`, NO_ENV_FILE, "-e", 'console.log(Bun.version + "\\t" + process.execPath)'],
-    {
-      cwd: runDir,
-      encoding: "utf8",
-      env: { ...process.env },
-    }
-  );
-  const [resolved = "", exe = ""] = (r.stdout?.trim().split("\n").pop() ?? "").split("\t");
-  if (r.status !== 0 || !existsSync(exe)) {
-    fail(`could not get Bun ${version} with bunx:\n${r.stderr ?? ""}`);
+  let fetched: { exe: string; resolved: string };
+  try {
+    fetched = fetchPinnedBun(version, {
+      cacheDir: bunxCacheDir(tmpdir(), process.getuid?.() ?? 0, version),
+      runBunx: () => {
+        const r = spawnSync(
+          "bunx",
+          [
+            `bun@${version}`,
+            NO_ENV_FILE,
+            "-e",
+            'console.log(Bun.version + "\\t" + process.execPath)',
+          ],
+          { cwd: runDir, encoding: "utf8", env: { ...process.env } }
+        );
+        return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
+      },
+      readHead: readFileHead,
+      removeDir: (path) => rmSync(path, { recursive: true, force: true }),
+      log: (line) => console.error(line),
+    });
+  } catch (e) {
+    fail((e as Error).message);
   }
+  const { exe, resolved } = fetched;
   if (/^\d+\.\d+\.\d+$/.test(version) && resolved !== version) {
     fail(`bunx bun@${version} ran Bun ${resolved}`);
   }
