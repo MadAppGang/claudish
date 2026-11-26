@@ -177,6 +177,16 @@ describe("a human witness that excludes claudish's own pointer lines", () => {
     expect(fold(human(TURN_DIR), [userRecord(other)]).view.acceptedAt).toBe(TS);
   });
 
+  test("with notTurnDir, a human prompt naming a non-turn file in that directory is accepted", () => {
+    const text = `look at \`${TURN_DIR}/turn-notes.md\` first`;
+    expect(fold(human(TURN_DIR), [userRecord(text)]).view.acceptedAt).toBe(TS);
+  });
+
+  test("with notTurnDir, a human prompt naming turn-<n>.md without backticks is accepted", () => {
+    const text = `what does ${TURN_DIR}/turn-3.md say?`;
+    expect(fold(human(TURN_DIR), [userRecord(text)]).view.acceptedAt).toBe(TS);
+  });
+
   test("without notTurnDir, a pointer record is a human prompt (unchanged)", () => {
     expect(fold(human(), [userRecord(pointer(5))]).view.acceptedAt).toBe(TS);
   });

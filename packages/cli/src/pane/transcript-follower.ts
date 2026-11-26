@@ -407,9 +407,17 @@ function turnFileCopies(r: Rec, w: Extract<Witness, { kind: "turn_file" }>): num
   return isPromptRecord(r) ? countOccurrences(userText(r), turnFileToken(w.file)) : 0;
 }
 
-/** A pointer into `turnDir`, as the typed pointer line spells one: the start of its token. */
+/**
+ * A pointer into `turnDir`, as the typed pointer line spells one: an exact turn-file token,
+ * `` `<turnDir>/turn-<digits>.md` ``. Another file of that directory (`turn-notes.md`), or a
+ * turn file named without its backticks, is a human's text.
+ */
 function carriesPointerInto(r: Rec, turnDir: string): boolean {
-  return userText(r).includes(turnFileToken(join(turnDir, "turn-")).slice(0, -1));
+  const open = turnFileToken(join(turnDir, "turn-")).slice(0, -1);
+  const text = userText(r);
+  for (let at = text.indexOf(open); at !== -1; at = text.indexOf(open, at + 1))
+    if (/^\d+\.md`/.test(text.slice(at + open.length))) return true;
+  return false;
 }
 
 function matchesWitness(r: Rec, w: Witness): boolean {
