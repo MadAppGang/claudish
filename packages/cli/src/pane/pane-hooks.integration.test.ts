@@ -50,6 +50,7 @@ import {
   waitNoOrphans,
 } from "./test-helpers/hermetic-env.js";
 import { readKeylog } from "./test-helpers/keylog.js";
+import { SlotLimiter, outerTimeout } from "./test-helpers/slot-limiter.js";
 import type { PaneSnapshot, SettledTurn } from "./types.js";
 
 /** A test's own work plus a full REAP_DEADLINE_MS, so a real leak fails with its list. */
@@ -59,55 +60,23 @@ const T = 120_000;
  * At most this many of the file's concurrent tests run at once, whatever `--max-concurrency`
  * the runner passes: each test drives one or more real panes, and a pane child redraws its box
  * on every typed key, so many panes typing at once starve each other of CPU and turns miss
- * their bounds. The weekly runner passes `--max-concurrency=12` and the largest block has 8.
+ * their bounds. The weekly runner passes `--max-concurrency=12`.
  */
-const SESSION_SLOTS = 3;
-/** The most tests one `describe.concurrent` block holds: the most a test can queue behind. */
-const LARGEST_BLOCK = 8;
-let freeSlots = SESSION_SLOTS;
-const slotWaiters: Array<() => void> = [];
-
-async function takeSlot(): Promise<void> {
-  if (freeSlots > 0) {
-    freeSlots--;
-    return;
-  }
-  await new Promise<void>((resolve) => slotWaiters.push(resolve));
-}
-
-function releaseSlot(): void {
-  const next = slotWaiters.shift();
-  if (next) next();
-  else freeSlots++;
-}
+const slots = new SlotLimiter(3);
+/** Tests registered so far, and the longest own budget among them: a test queues behind them. */
+let registered = 0;
+let longestBudget = 0;
 
 /**
- * `test`, run inside a slot. The test's own budget (`timeout`) starts once it holds a slot;
- * bun's timeout also covers the wait behind the rest of its block.
+ * `test`, run inside a slot (`SlotLimiter.run`). The test's own budget (`timeout`) starts once
+ * it holds a slot; bun's timeout also covers the wait behind every test registered before it
+ * (`outerTimeout`).
  */
 function slotTest(name: string, fn: () => Promise<void> | void, timeout = T): void {
-  test(
-    name,
-    async () => {
-      await takeSlot();
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      try {
-        await Promise.race([
-          Promise.resolve().then(fn),
-          new Promise<never>((_, reject) => {
-            timer = setTimeout(
-              () => reject(new Error(`timed out after ${timeout} ms holding a slot`)),
-              timeout
-            );
-          }),
-        ]);
-      } finally {
-        clearTimeout(timer);
-        releaseSlot();
-      }
-    },
-    timeout * Math.ceil(LARGEST_BLOCK / SESSION_SLOTS)
-  );
+  const outer = outerTimeout(timeout, registered, slots.slots, Math.max(longestBudget, timeout));
+  registered++;
+  longestBudget = Math.max(longestBudget, timeout);
+  test(name, () => slots.run(fn, timeout, Date.now() + outer), outer);
 }
 
 /* ───────────────────────────── the test double binding ───────────────────────────── */
