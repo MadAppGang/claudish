@@ -1038,6 +1038,18 @@ before its witness, and is folded only into that turn's shadow, which is dropped
 the earlier attempt's answer is not reported. That is accepted: the caller was told it failed,
 and resent.
 
+*Known limit, by design: a retry after an unknown Enter outcome may run the task twice.* The
+condition is all three of: the whole pointer line was drawn in the box, the reply to its Enter was
+lost (`client_timeout`, `client_lost`, magmux's `timeout`) or left it unproven (`still_in_box`,
+`unconfirmed`), and the caller resends once the attempt failed. The first copy may have been
+submitted, and Claude Code may run it; the resend is a new turn with its own turn file, so it is
+typed and runs too. Two runs of the same task follow, and the transcript holds both. Records stay
+exact: each run's record carries its own file's token, so the retry's turn is witnessed only by
+its own record, and the first run's answer is never reported as the retry's (the shadow above). A
+pointer copy is therefore not remembered to block the retry, as a typed line's is: blocking would
+leave the retry waiting on a record that may never come, and a caller that resends after a failure
+has asked for the task to run.
+
 **Residual: typed lines keep the equal-text rules, with two known limits.** `wholeCopies`,
 `holdTurn`/`heldMayAccept`, `awaitCopyRecord`, `unreadCopyReadWhole` on a same-text retry,
 `refuseDeparted`/`takeDepartedRecord`/`isOneCopyOf`, the read-whole branch of
