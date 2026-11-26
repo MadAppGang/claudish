@@ -14,7 +14,7 @@
  * screen are set directly, and a scripted client answers each send.
  */
 import { afterEach, describe, expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { locateBox } from "./box-locate.js";
 import { classifySendReply, mismatchBoxStayedEmpty, writtenPrefix } from "./input-gate.js";
@@ -1965,7 +1965,7 @@ describe("a late record, unproven spaces, and keys while a copy may be unread", 
     any.phase = "COMPLETED";
   }, 60_000);
 
-  test("a copy that left the box whole and is never recorded: the next prompt of the same text types nothing and waits for that record", async () => {
+  test("a typed (Read-less) line that left the box whole and is never recorded: the next prompt of the same text types nothing and waits for that record", async () => {
     const s = session();
     const sc = wire(s, [LOST, ACCEPTED]);
     const any = s as any;
@@ -2139,7 +2139,7 @@ describe("a late record, unproven spaces, and keys while a copy may be unread", 
     await Bun.sleep(5);
   }
 
-  test("the whole line drawn, its Enter reply lost, expiry, the same text again: its first record accepts the retry, which sends nothing", async () => {
+  test("a typed (Read-less) line drawn whole, its Enter reply lost, expiry, the same text again: its first record accepts the retry, which sends nothing", async () => {
     const s = session();
     const sc = wire(s, [mismatchEmpty, ACCEPTED], [LOST, ACCEPTED]);
     await enterLostAfterWholeLine(s, sc);
@@ -2221,6 +2221,101 @@ describe("a late record, unproven spaces, and keys while a copy may be unread", 
     expect(any.unreadCopy).toBeNull();
     expect(any.follower.state.departed).toBeNull();
   });
+
+  test("a departed copy and a watched copy of the same caller text: the watched copy's own record releases it, and the next prompt is typed once", async () => {
+    const s = session();
+    const sc = wire(s, [ACCEPTED]);
+    const any = s as any;
+    const adm2 = admitPlanned(s, 30_000, LINE, 2);
+    const adm3 = admitPlanned(s, 30_000, LINE, 3);
+    any.rememberCopy(adm2.line, adm2.plan.witness, adm2.mark);
+    any.departCopy();
+    any.rememberCopy(adm3.line, adm3.plan.witness, adm3.mark);
+    // only the watched copy's record lands; the departed copy's never does
+    writeRecord(s, adm3.line);
+    any.pollFollower(true);
+    expect(any.unreadCopy).toBeNull();
+    expect(s.snapshot().anomalies.some((a: string) => a.startsWith("unread_copy_recorded"))).toBe(
+      true
+    );
+    const nextAt = Date.now();
+    const adm4 = admitPlanned(s, 30_000, NEXT_LINE, 4);
+    await runWithRoomToSend(s, adm4);
+    expect(
+      messagesOf(sc, nextAt)
+        .filter(isTyped)
+        .map((m) => m.text)
+    ).toEqual([adm4.line]);
+  }, 30_000);
+
+  /** Turn 1 of `text` planned as `startAdmission` plans it: its whole line drawn, its Enter reply lost, expiry. */
+  async function plannedEnterLost(s: PaneSessionImpl, sc: Scripted, text: string): Promise<any> {
+    const first = admitPlanned(s, 30_000, text, 1);
+    const done = (s as any).runAdmission(first) as Promise<void>;
+    await Bun.sleep(500);
+    sc.box = first.line;
+    await done;
+    expect(messagesOf(sc).filter(isEnterOnly)).toHaveLength(1);
+    sc.box = "";
+    (s as any).admitExpired(first);
+    (s as any).phase = "ADMITTING";
+    await Bun.sleep(5);
+    return first;
+  }
+
+  test("the whole line drawn, its Enter reply lost, the box emptied, no record ever: a retry of the same text types its own line once and is accepted", async () => {
+    const s = session();
+    const sc = wire(s, [mismatchEmpty, ACCEPTED], [LOST, ACCEPTED]);
+    const any = s as any;
+    const first = await plannedEnterLost(s, sc, LINE);
+    const retryAt = Date.now();
+    const retry = admitPlanned(s, 30_000, LINE, 2);
+    await runWithRoomToSend(s, retry);
+    expect(
+      messagesOf(sc, retryAt)
+        .filter(isTyped)
+        .map((m) => m.text)
+    ).toEqual([retry.line]);
+    expect(sc.accepted).toBe(true);
+    // the first turn's record lands late, then the retry's own: only the retry's binds the turn
+    writeRecord(s, first.line);
+    any.pollFollower(true);
+    expect(any.follower.view().current.acceptedOffset).toBeNull();
+    const at = statSync(any.o.transcriptPath).size;
+    writeRecord(s, retry.line);
+    any.pollFollower(true);
+    expect(any.follower.view().current.acceptedOffset).toBe(at + 1);
+  }, 60_000);
+
+  test("the whole line drawn, its Enter reply lost, expiry; then the same caller text as turn 2, its SUBMIT answered unconfirmed: turn 1's late record, written while turn 2's send is out, does not accept turn 2; turn 2's record does", async () => {
+    const unconfirmed: MagmuxReply = {
+      ok: false,
+      code: "not_accepted",
+      reason: "unconfirmed",
+      typed: true,
+      error: "pane 0: Enter was pressed with no evidence",
+    };
+    const s = session();
+    const sc = wire(s, [mismatchEmpty, unconfirmed], [LOST]);
+    const any = s as any;
+    const first = await plannedEnterLost(s, sc, LINE);
+    const nextAt = Date.now();
+    const next = admitPlanned(s, 30_000, LINE, 2);
+    const request = any.client.request as (m: Record<string, unknown>) => Promise<MagmuxReply>;
+    any.client.request = async (m: Record<string, unknown>) => {
+      // turn 1's late record, written while turn 2's SUBMIT is out
+      if (m.text === next.line) writeRecord(s, first.line);
+      return request(m);
+    };
+    await runWithRoomToSend(s, next);
+    expect(messagesOf(sc, nextAt).filter(isTyped)).toEqual([
+      expect.objectContaining({ text: next.line }),
+    ]);
+    expect(any.witnessNow()).toBe(false);
+    expect(sc.accepted).toBe(false);
+    writeRecord(s, next.line);
+    expect(any.witnessNow()).toBe(true);
+  }, 60_000);
 
   test("a command whose menu highlights another item while keys are withheld: no Escape, and no Enter", async () => {
     const s = session();

@@ -49,10 +49,9 @@ export function assertOneCopy(r: GateRun, prompt: string): void {
     expect(r.turns[0]?.answer).toBe("Set model to `haiku`");
   } else {
     expect(r.turns[0]?.answer).toBe(`ANSWER fake-${r.scenario} ${sha8(prompt)}`);
-    if (prompt.includes("\n")) {
-      expect(submissions(r)[0]?.text).toMatch(/^Your task is in the file `.+`\. Read all of it/);
-      expect(r.turns[0]?.delivery).toMatchObject({ mode: "file", complete: true });
-    } else expect(submissions(r)[0]?.text).toBe(prompt);
+    // every prompt but a command goes as a pointer to its turn file, read whole
+    expect(submissions(r)[0]?.text).toMatch(/^Your task is in the file `.+`\. Read all of it/);
+    expect(r.turns[0]?.delivery).toMatchObject({ mode: "file", complete: true });
   }
 }
 

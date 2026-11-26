@@ -49,6 +49,7 @@ import {
   newSessionUuid,
   waitNoOrphans,
 } from "./test-helpers/hermetic-env.js";
+import { readKeylog } from "./test-helpers/keylog.js";
 import type { PaneSnapshot, SettledTurn } from "./types.js";
 
 /** A test's own work plus a full REAP_DEADLINE_MS, so a real leak fails with its list. */
@@ -164,9 +165,9 @@ function env(script: Script, extra: Record<string, string> = {}): PaneTestEnv {
   return t;
 }
 
+/** Every submitted prompt, a pointer line read as its turn file's content. */
 function keylog(t: PaneTestEnv): string[] {
-  const p = t.env.FAKE_KEYLOG as string;
-  return existsSync(p) ? readFileSync(p, "utf8").split("\n").filter(Boolean) : [];
+  return readKeylog(t.env.FAKE_KEYLOG as string);
 }
 
 /** Occurrences of a whole line in the output. */
@@ -380,7 +381,9 @@ describe.skipIf(!MAGMUX)(`the settle hold (§11.5) ${MAGMUX ? "" : NO_MAGMUX_MES
         const c = await channel({
           script: [{ say: "ANS-ONE" }, { say: "ANS-NEVER" }],
           binding: ctl.binding,
-          timeoutSeconds: 5,
+          // the session budget covers turn 1 (a pointer line typed, then its turn file read) and
+          // ends during the hold or the chain turn the test is about
+          timeoutSeconds: 7,
         });
         try {
           await until(() => ctl.calls.length === 1, "settle()");
@@ -497,7 +500,9 @@ wait $child
         const c = await channel({
           script: [{ say: "ANS-ONE" }, { partial: "ANS-TWO-PART" }],
           binding: ctl.binding,
-          timeoutSeconds: 6,
+          // the session budget covers turn 1 (a pointer line typed, then its turn file read) and
+          // ends during the hold or the chain turn the test is about
+          timeoutSeconds: 8,
         });
         try {
           await until(() => ctl.calls.length === 1, "settle()");
@@ -523,7 +528,9 @@ wait $child
         const c = await channel({
           script: [{ say: "ANS-ONE" }, { say: "ANS-TWO" }],
           binding: ctl.binding,
-          timeoutSeconds: 6,
+          // the session budget covers two turns (each a pointer line typed, then its turn file
+          // read) and ends during the second hold
+          timeoutSeconds: 10,
         });
         try {
           await until(() => ctl.calls.length === 1, "settle() 1");

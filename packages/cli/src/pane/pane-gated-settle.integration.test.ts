@@ -13,6 +13,7 @@ import {
   disposeGatePanes,
   gateUntil,
   gatedSends,
+  pointerOf,
   startGatePane,
   submissions,
 } from "./test-helpers/gated-pane.js";
@@ -64,7 +65,7 @@ describe.skipIf(!MAGMUX)(
         expect(screen(r).cols).toBe(400);
         expect(locateBox(screen(r))).not.toBeNull();
         expect(r.turns[0]?.answer).toBe(`ANSWER fake-tool_slow ${sha8(PROMPT)}`);
-        expect(submissions(r).map(({ text }) => text)).toEqual([PROMPT]);
+        expect(submissions(r).map(({ text }) => text)).toEqual([pointerOf(r)]);
       },
       T
     );
@@ -214,7 +215,7 @@ describe.skipIf(!MAGMUX)(
             env: { FAKE_GAP_MS_WITNESS: "5000" },
           });
           await settled(r);
-          expect(submissions(r).map(({ text }) => text)).toEqual([prompt]);
+          expect(submissions(r).map(({ text }) => text)).toEqual([command ? prompt : pointerOf(r)]);
           expect(gatedSends(r)).toHaveLength(1);
           expect(gatedSends(r)[0]?.reply).toMatchObject({
             ok: true,
@@ -234,7 +235,7 @@ describe.skipIf(!MAGMUX)(
           initialPrompt: PROMPT,
         });
         await settled(r);
-        expect(submissions(r).map(({ text }) => text)).toEqual([PROMPT]);
+        expect(submissions(r).map(({ text }) => text)).toEqual([pointerOf(r)]);
         expect(gatedSends(r)).toHaveLength(1);
         expect(gatedSends(r)[0]?.reply).toMatchObject({
           ok: false,

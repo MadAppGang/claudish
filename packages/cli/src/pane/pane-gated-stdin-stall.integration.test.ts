@@ -18,6 +18,7 @@ import {
   DISPOSE_GATE_PANES_HOOK_MS,
   disposeGatePanes,
   gateUntil,
+  pointerOf,
   startGatePane,
   submissions,
 } from "./test-helpers/gated-pane.js";
@@ -71,9 +72,9 @@ describe.skipIf(!MAGMUX)(
         // types a send once and never retypes it
         expect(typedUnseen).toHaveLength(1);
         expect(clearsUnseen).toHaveLength(0);
-        expect(copiesOf(stall.text, PROMPT)).toBe(1);
+        expect(copiesOf(stall.text, pointerOf(r))).toBe(1);
         expect(snapshot.state).toBe("COMPLETED");
-        expect(submissions(r).map(({ text }) => text)).toEqual([PROMPT]);
+        expect(submissions(r).map(({ text }) => text)).toEqual([pointerOf(r)]);
       },
       T
     );
@@ -150,7 +151,7 @@ describe.skipIf(!MAGMUX)(
         // start inside the line, after its start
         const head = stall.text.slice(0, 16);
         expect(head.length).toBeGreaterThan(0);
-        expect(prompt.indexOf(head)).toBeGreaterThan(0);
+        expect(pointerOf(r).indexOf(head)).toBeGreaterThan(0);
         const typed = r.sends.filter(
           ({ message }) => typeof message.text === "string" && message.noGate !== true
         );
@@ -171,7 +172,7 @@ describe.skipIf(!MAGMUX)(
         );
         expect(enters.length).toBeGreaterThanOrEqual(1);
         expect(snapshot.state).toBe("COMPLETED");
-        expect(submissions(r).map(({ text }) => text)).toEqual([prompt]);
+        expect(submissions(r).map(({ text }) => text)).toEqual([pointerOf(r)]);
       },
       T
     );

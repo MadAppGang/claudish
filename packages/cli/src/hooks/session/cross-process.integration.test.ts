@@ -24,6 +24,7 @@ import {
   waitNoOrphans,
   writeFakeClaudeWrapper,
 } from "../../pane/test-helpers/hermetic-env.js";
+import { readKeylog } from "../../pane/test-helpers/keylog.js";
 import {
   type StubScript,
   type StubUpstream,
@@ -127,10 +128,8 @@ async function rig(o: {
     stub,
     manager,
     id,
-    keylog: () => {
-      const p = t.env.FAKE_KEYLOG as string;
-      return existsSync(p) ? readFileSync(p, "utf8").split("\n").filter(Boolean) : [];
-    },
+    // every submitted prompt, a pointer line read as its turn file's content
+    keylog: () => readKeylog(t.env.FAKE_KEYLOG as string),
     info: () => manager.getSession(id),
     output: () => manager.getOutput(id).output,
   };

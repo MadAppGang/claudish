@@ -7,6 +7,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { MagmuxReply } from "../magmux-client.js";
 import { type PaneSession, type PaneSessionOptions, startPaneSession } from "../pane-session.js";
+import { fileTemplate, turnFilePath } from "../prompt-delivery.js";
 import type { PaneSnapshot, SettledTurn } from "../types.js";
 import { type ObservedClient, observeClients } from "./client-observer.js";
 import {
@@ -158,6 +159,11 @@ export function submissions(r: GateRun): Array<{ text: string; at: number }> {
     .split("\n")
     .filter(Boolean)
     .map((line) => JSON.parse(line));
+}
+
+/** The pointer line the session types for its turn `n` (every prompt but a command, with Read). */
+export function pointerOf(r: GateRun, n = 1): string {
+  return fileTemplate(turnFilePath((r.s as unknown as { turnDir: string }).turnDir, n), null);
 }
 
 export function gatedSends(r: GateRun): SendTrace[] {
