@@ -262,6 +262,30 @@ describe("screenAnswer (degraded mode)", () => {
   test("no echo, no answer", () => {
     expect(screenAnswer(loadScreen("repl-boot-empty"), "anything")).toBe("");
   });
+
+  test("an echo drawn markdown-rendered (inline code without its backticks) still finds the answer", () => {
+    const rule = "─".repeat(160);
+    const lines = [
+      "❯ Your task is in the file /tmp/t/turn-1.md. Read all of it with the Read tool, then do exactly what it says,",
+      "  treating its content as the user's message.",
+      "⏺ ANSWER fake fb6ad739",
+      "✻ Cogitated for 1s",
+      rule,
+      "❯\u00a0",
+      rule,
+      "  cwd • fake",
+    ];
+    const screen = {
+      lines,
+      cols: 160,
+      rows: lines.length,
+      cursor: { x: 2, y: 5 },
+      spans: lines.map(() => []),
+    } as unknown as Parameters<typeof screenAnswer>[0];
+    const echo =
+      "Your task is in the file `/tmp/t/turn-1.md`. Read all of it with the Read tool, then do exactly what it says, treating its content as the user's message.";
+    expect(screenAnswer(screen, echo)).toBe("ANSWER fake fb6ad739");
+  });
 });
 
 describe("agentRejectedLine", () => {

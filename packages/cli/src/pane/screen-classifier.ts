@@ -100,6 +100,15 @@ function squash(s: string): string {
 }
 
 /**
+ * `squash` without the markdown marks Claude Code drops when it draws a submitted line in
+ * the history: the echo is markdown-rendered, so `` `a.md` `` shows as `a.md`, while the
+ * line itself (and the input box) keeps the raw characters.
+ */
+function squashEcho(s: string): string {
+  return squash(s).replace(/[`*~]/g, "");
+}
+
+/**
  * How many leading characters of a typed line identify it on screen: `min(40, cols − 4)`,
  * compared with whitespace removed and across wrapped rows (`echoAt`, `boxStartsWith`).
  */
@@ -141,19 +150,20 @@ export function boxStartsWith(box: InputBox, head: string): boolean {
 /**
  * Row `i` is the echo of a submitted line starting with `head`: `❯ ` with an ASCII space
  * (the box prompt is `❯` + NO-BREAK SPACE, so the box itself never matches), followed by
- * its two-space continuation rows when the echo wraps, compared with whitespace removed.
+ * its two-space continuation rows when the echo wraps, compared with whitespace and the
+ * markdown marks the history drops removed (`squashEcho`).
  * At 120 columns a prompt whose third word is a long path echoes as `❯ Use the Write tool
  * to create the file` alone, the path on the next row (`size-120x40-permission-…`).
  */
 export function echoAt(lines: readonly string[], i: number, head: string): boolean {
   const first = lines[i] ?? "";
   if (!first.startsWith("❯ ")) return false;
-  const want = squash(head);
-  let got = squash(first.slice(2));
+  const want = squashEcho(head);
+  let got = squashEcho(first.slice(2));
   for (let j = i + 1; got.length < want.length && j < lines.length; j++) {
     const row = lines[j] ?? "";
     if (!/^ {2}\S/.test(row)) break;
-    got += squash(row);
+    got += squashEcho(row);
   }
   return got.startsWith(want);
 }
