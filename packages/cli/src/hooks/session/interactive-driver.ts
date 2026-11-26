@@ -47,6 +47,7 @@ import { log, logStderr } from "../../logger.js";
 import { boxShowsLine } from "../../pane/box-locate.js";
 import {
   SEND_READY_WAIT_DEFAULT_MS,
+  type SendOutcome,
   classifySendReply,
   sendBudgetMs,
 } from "../../pane/input-gate.js";
@@ -1077,7 +1078,9 @@ export class InteractiveDriver {
     line: string,
     turnFile: string | null
   ): Promise<boolean> {
-    // Twice: the Enter itself can meet a connection that is closing.
+    // Twice, and only when the Enter's reply proves no key was written (a closing
+    // connection, a busy pane). A reply that says Enter was or may have been pressed, or
+    // that was lost too, ends here: the witness accepts the line, or `acceptMs` drops it.
     for (let attempt = 0; attempt < 2; attempt++) {
       const seen = this.screen.seq;
       const client = await this.connectedClient(RECONNECT_WAIT_MS);
@@ -1089,6 +1092,7 @@ export class InteractiveDriver {
       const r = await client.request({ type: "send", pane, keys: ["enter"], enter: false }, 10_000);
       if (r.ok) return true;
       log(`[hooks] interactive driver: Enter after a lost reply: ${r.code} ${r.error}`);
+      if (enterMayHaveLanded(classifySendReply(r))) return true;
     }
     const landed = this.submitted(line, turnFile);
     if (landed) log("[hooks] interactive driver: send reply lost; the line was submitted");
@@ -1170,6 +1174,12 @@ function screenNotIdleReason(screen: ScreenState): string | null {
   const box = inputBox(screen);
   if (!box) return "no_input_box";
   return box.text === "" ? null : "box_not_empty";
+}
+
+/** An Enter's reply after which the key was, or may have been, written. */
+function enterMayHaveLanded(o: SendOutcome): boolean {
+  if (o.kind === "reply_lost") return true;
+  return o.kind === "not_accepted" && enterMayHaveBeenPressed(o);
 }
 
 /** A gated `not_accepted` after which Enter was, or may have been, pressed. */

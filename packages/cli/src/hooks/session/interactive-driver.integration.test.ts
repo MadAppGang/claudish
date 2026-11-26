@@ -705,6 +705,60 @@ describe.skipIf(!MAGMUX)(
       );
     }
     test(
+      "the line in the box after a lost reply, its recovery Enter answered still_in_box: Enter is never pressed a second time",
+      async () => {
+        const dbl = controlled();
+        const r = await rig([{ say: "A1" }, { say: "A2" }], {
+          binding: dbl.binding,
+          driver: { timings: { acceptMs: 5_000 } },
+        });
+        const proto = MagmuxClient.prototype as unknown as {
+          request(msg: Record<string, unknown>, ms?: number): Promise<unknown>;
+        };
+        const original = proto.request;
+        const enters: Array<Record<string, unknown>> = [];
+        try {
+          const d = r.driver as InteractiveDriver;
+          await until(() => d.snapshot().booted, "boot");
+          await r.type("go");
+          await until(() => dbl.calls.length === 1, "settle 1");
+          const line = pointerIn(r, 1);
+          proto.request = async function (
+            this: unknown,
+            msg: Record<string, unknown>,
+            ms?: number
+          ) {
+            if (msg.type === "send" && Array.isArray(msg.keys) && msg.keys.includes("enter")) {
+              enters.push(msg);
+              // Enter may have been written; the line still shows in the box
+              return {
+                ok: false,
+                code: "not_accepted",
+                reason: "still_in_box",
+                typed: false,
+                error: "pane 0: the line is still in the box (test)",
+              };
+            }
+            if (msg.type !== "send" || msg.text !== line) return original.call(this, msg, ms);
+            await original.call(this, { ...msg, enter: false }, ms);
+            return { ok: false, code: "client_timeout", error: "no reply (test)" };
+          };
+          dbl.calls[0]?.resolve(inject("HOOK-STUCK"));
+          await until(
+            () => dbl.dropped.length === 1 || enters.length > 1,
+            "the drop, or a second Enter",
+            30_000
+          );
+          expect(enters).toHaveLength(1);
+        } finally {
+          proto.request = original;
+          await finish(r);
+        }
+      },
+      T
+    );
+
+    test(
       "with Read, an earlier pointer on screen, the next pointer typed and its Enter lost: Enter goes to it, and it is the hook's turn",
       async () => {
         const dbl = controlled();
