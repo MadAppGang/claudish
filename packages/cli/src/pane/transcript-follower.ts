@@ -357,21 +357,17 @@ export function isHumanPrompt(record: Record<string, unknown>): boolean {
  * is not the line at all. Under load Claude
  * Code can read a typed line into its buffer before drawing it, so a second copy is typed onto
  * the first and Enter submits both; that record is still the submitted line. Both sides are
- * compared trimmed: k copies of the trimmed line match, and so do k exact copies of the line
- * as typed, trimmed once as a whole (the spaces between copies kept). Empty text, a partial
- * copy and any other text are refused (0).
+ * compared trimmed; a typed line never has whitespace at its ends (`isPlainLine`,
+ * `normalizedLine`), and neither does the file template. Empty text, a partial copy and any
+ * other text are refused (0).
  */
 function wholeCopies(text: string, line: string): number {
   const got = text.trim();
   const core = line.trim();
   if (!core) return got === core ? 1 : 0;
-  const copies = (unit: string, padding: number): number => {
-    const total = got.length + padding;
-    if (total % unit.length !== 0) return 0;
-    const k = total / unit.length;
-    return k >= 1 && got === unit.repeat(k).trim() ? k : 0;
-  };
-  return copies(core, 0) || copies(line, line.length - core.length);
+  if (got.length % core.length !== 0) return 0;
+  const k = got.length / core.length;
+  return k >= 1 && got === core.repeat(k) ? k : 0;
 }
 
 function matchesWitness(r: Rec, w: Witness): boolean {
