@@ -24,6 +24,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -570,11 +571,14 @@ describe.skipIf(!MAGMUX)(`interactive driver: delivery ${MAGMUX ? "" : NO_MAGMUX
     "acceptance: an injection whose record lands after acceptMs is dropped, and its late answer never re-opens the turn before it",
     async () => {
       const dbl = controlled();
+      // corroboration can delay a transcript-proven end by at most this much chat quiet
+      // (`corroborationGraceMs`, which the driver takes from `secondaryQuietMs`)
+      const graceMs = 2_000;
       const r = await rig([{ say: "A1" }, { say: "A2-LATE" }], {
         binding: dbl.binding,
         // every prompt's record (and echo) lands 3 s after it is submitted
         extraEnv: { FAKE_GAP_MS_WITNESS: "3000" },
-        driver: { timings: { acceptMs: 1_000 } },
+        driver: { timings: { acceptMs: 1_000, secondaryQuietMs: graceMs } },
       });
       try {
         const d = r.driver as InteractiveDriver;
@@ -584,12 +588,20 @@ describe.skipIf(!MAGMUX)(`interactive driver: delivery ${MAGMUX ? "" : NO_MAGMUX
         dbl.calls[0]?.resolve(inject("HOOK-LATE-RECORD"));
         await until(() => dbl.dropped.length === 1, "the acceptance timeout", 10_000);
         expect(dbl.dropped).toEqual([{ text: "HOOK-LATE-RECORD", reason: "send_not_accepted" }]);
+        const turnEnds = () =>
+          existsSync(r.transcript)
+            ? readFileSync(r.transcript, "utf8").split('"turn_duration"').length - 1
+            : 0;
+        // the injection's own end record, after turn 1's
+        await until(() => turnEnds() >= 2, "the injection's turn_duration", 20_000);
+        // a settle of that ending, right or wrong, comes once the chat has been quiet for the
+        // grace, at the latest, plus the corroboration window and a tick or two to see it
+        const windowMs = graceMs + 200 + 2 * 100;
         await until(
-          () => existsSync(r.transcript) && readFileSync(r.transcript, "utf8").includes("A2-LATE"),
-          "the injection's late answer",
+          () => Date.now() - statSync(r.transcript).mtimeMs >= windowMs,
+          "the settle window after the injection's end",
           20_000
         );
-        await Bun.sleep(3_000);
         expect(dbl.calls.map((c) => c.turn.index)).toEqual([1]);
       } finally {
         await finish(r);
