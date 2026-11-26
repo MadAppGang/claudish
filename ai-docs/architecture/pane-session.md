@@ -591,6 +591,12 @@ more Read calls per turn, counted in `tool_calls` (one more per turn than when p
 typed, which shifts bench comparisons), and usually some narration before the Read
 (`preambleBytes`). A model that answers without reading the file fails `prompt_not_read`
 (`hook_injection_not_read` for a hook turn), which a one-line prompt typed as is never could.
+Until its Reads have returned every line, such a turn has no answer (`answerOf`,
+`pane/settled-turn.ts`): its text never reaches a caller, the session output, a `team` response
+file or a settle hook, and the running turn's `turnAnswer`, `chainText` and `liveAnswerBytes`
+read empty as well. Text written without the whole task read cannot answer it. That text stays in
+the transcript, and the coverage numbers stay in `get_diagnostics`' `readCoverage`. A command turn
+with zero Reads keeps its text, since its coverage is unknown, not failed.
 The template line is about 200 characters (the turn file's absolute path included), against the
 20 to 40 of a typical short prompt, and the child redraws its box on every typed key: measured on
 the fake child, one hook test with two turns took 9.1 to 10.0 s against 7.6 s typed, and
