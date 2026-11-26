@@ -2,6 +2,49 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.29.2] - 2026-11-26
+
+### Bug Fixes
+
+- count a re-wake again after a late injection's turn ends *(hooks)* ([`79e27f3`](https://github.com/MadAppGang/claudish/commit/79e27f31876db9b92e1765e341b01ed99d470cf7))
+- stop the screen refilling a withheld unread-file answer *(pane)* ([`6182139`](https://github.com/MadAppGang/claudish/commit/6182139fee02bd40f1464023da61d5dce545302f))
+- withhold a file-delivered turn's answer until read in full *(pane)* ([`0d624c7`](https://github.com/MadAppGang/claudish/commit/0d624c748f96ab2ef12186f084cfef5a2718c972))
+- stop a second Enter after a still_in_box recovery reply *(hooks)* ([`04421d5`](https://github.com/MadAppGang/claudish/commit/04421d5fff5225bbeadfc8b2df101dfe6c9efb8f))
+- stop a late injection's answer re-waking the turn before it *(hooks)* ([`5d587da`](https://github.com/MadAppGang/claudish/commit/5d587da61557c0b1303b93e97ad24840042a908a))
+- fail an admission whose turn file cannot be written *(pane)* ([`abf6898`](https://github.com/MadAppGang/claudish/commit/abf68982c6b9df769ed40bc0995cf9715bcd0aca))
+- refuse only an exact turn-file token as a driver pointer *(pane)* ([`41a8d66`](https://github.com/MadAppGang/claudish/commit/41a8d66340a972d49eec88fab1963311d4b5cb5b))
+- match a pointer's screen echo on its whole rendered line *(pane)* ([`1813706`](https://github.com/MadAppGang/claudish/commit/18137065161dac1c2d7aea36cf539e7ff8472696))
+- stop a mark-only typed line matching every screen echo *(pane)* ([`c269c33`](https://github.com/MadAppGang/claudish/commit/c269c3373341c6c53a9ea332a06ec3466f86d13f))
+- find a degraded file turn's echo by its turn-file path *(pane)* ([`17b8af6`](https://github.com/MadAppGang/claudish/commit/17b8af6e4ffece9c0bed8477ef1ba03e4d820cd2))
+- match a lost-reply pointer's echo by its turn-file path *(hooks)* ([`4d14ede`](https://github.com/MadAppGang/claudish/commit/4d14ede73167c06f2b16db352761739db544cc22))
+- deliver every plain prompt as a turn-file pointer with Read *(pane)* ([`21598c6`](https://github.com/MadAppGang/claudish/commit/21598c61d650c73eb66db5985cd0b1711c44fda7))
+- render the interactive driver's turn-file Read as task_file *(pane)* ([`ff591b0`](https://github.com/MadAppGang/claudish/commit/ff591b0421608ba4d3ea95735c6851e683213254))
+- match a screen echo drawn without its markdown backticks *(pane)* ([`19744f0`](https://github.com/MadAppGang/claudish/commit/19744f052b073450a96cd9d1da80fbaa4c623d44))
+- stop applying the typed-copy rules to a pointer line's copy *(pane)* ([`770e536`](https://github.com/MadAppGang/claudish/commit/770e5363fabbed17c292f17453a5d84d0ff52629))
+- bind a file-delivered turn by its turn-file path *(pane)* ([`a5ae604`](https://github.com/MadAppGang/claudish/commit/a5ae6049f905a0a60af14be6fa39bff5bbec5152))
+- refetch a pinned Bun when bunx caches the placeholder bun.exe *(test)* ([`d2d59ba`](https://github.com/MadAppGang/claudish/commit/d2d59baa95e2e91e71d2a112c9a1d7ad68f9aab2))
+
+### Documentation
+
+- describe the answer rule for a turn file not read in full *(pane)* ([`cc7abe1`](https://github.com/MadAppGang/claudish/commit/cc7abe12f42fbd022a2c47a89ff46f12973aecb8))
+- record that a resend after a lost pointer Enter runs twice *(pane)* ([`0cb5d18`](https://github.com/MadAppGang/claudish/commit/0cb5d18b1fc36e8596c21489cffb7517a0588c09))
+- update CHANGELOG.md for v14.29.1([`078f4f0`](https://github.com/MadAppGang/claudish/commit/078f4f0644518be7cdda7f5173accff25c176dce))
+
+### New Features
+
+- add ctx.turn.answerWithheld to sessionIdle *(hooks)* ([`2aeb91c`](https://github.com/MadAppGang/claudish/commit/2aeb91c8176d449083ab135f89085f4fd2f57647))
+- add a turn_file witness that binds a record by its path *(pane)* ([`113de90`](https://github.com/MadAppGang/claudish/commit/113de908eb432e45b86525c6eafb7391d1ce49fb))
+
+### Other Changes
+
+- declare SlotLimiter's overrun timer with const *(pane)* ([`caacb8e`](https://github.com/MadAppGang/claudish/commit/caacb8e6d3c5eb086c26df912e4ab0ad393a158e))
+- wrap failAdmissionUntyped's signature to the line limit *(pane)* ([`832ab51`](https://github.com/MadAppGang/claudish/commit/832ab515c35bca5c4e76d48d8d8dce03c70fe172))
+
+### Refactoring
+
+- remove parseInBandApiError's trailing-marker option *(team)* ([`2ae5467`](https://github.com/MadAppGang/claudish/commit/2ae5467b36048724b55c869ea90fda956e08d5f2))
+- remove the padded-line branch of wholeCopies *(pane)* ([`faa777c`](https://github.com/MadAppGang/claudish/commit/faa777cfd6356eebedbee82718380f9c9bd7bfae))
+
 ## [14.29.1] - 2026-11-25
 
 ### Bug Fixes
