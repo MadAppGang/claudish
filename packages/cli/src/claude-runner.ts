@@ -967,11 +967,16 @@ function gitDirOfFile(entry: string, readFile: (path: string) => string): string
   return match ? resolve(dirname(entry), match[1]) : undefined;
 }
 
-/** {@link ChildAuthControlDeps.pathKind} on the real file system. */
-function statPathKind(path: string): "dir" | "file" | undefined {
+/**
+ * {@link ChildAuthControlDeps.pathKind} on the real file system. Only a regular
+ * file is a "file": a named pipe, socket or device is undefined, as a missing
+ * path is, since reading a pipe with no writer blocks.
+ */
+export function statPathKind(path: string): "dir" | "file" | undefined {
   try {
     const stat = statSync(path);
-    return stat.isDirectory() ? "dir" : "file";
+    if (stat.isDirectory()) return "dir";
+    return stat.isFile() ? "file" : undefined;
   } catch {
     return undefined;
   }
