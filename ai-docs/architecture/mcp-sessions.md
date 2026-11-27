@@ -451,6 +451,14 @@ from `realManagedPaths()`: all three files sit in the directory of `managedSetti
 `SessionManager` takes them as the `managedPaths` option, which the pane tests point at an empty
 temp directory.
 
+**A managed `disableSideloadFlags: true` hands over nothing too**, because Claude Code 2.1.332
+reads it from policy settings only (`yD(){return he("policySettings")?.disableSideloadFlags===!0}`,
+a restrictive key, so a `true` in the base file or any drop-in wins over a `false` elsewhere) and
+exits at startup on a non-sdk `--mcp-config` (`dt=yD()&&!MHi(lt);if(dt&&!we){let
+st=EIt(["--mcp-config"]);return cm(st),...Yn(void 0,void 0,"sideload_flags_disabled")}`), so
+claudish builds no `inherited-mcp.json` while `managed-settings.json` or a drop-in sets it, and
+logs the file's path.
+
 - **`.mcp.json` servers, only when `work_dir` is not within `setup_from`** (`isWithin`: realpaths,
   compared by path segment, so `/a/bc` is not within `/a/b`). The `.mcp.json` of every folder
   Claude Code's walk-up from `setup_from` reads (`mcpJsonWalkDirs`), the nearest file winning a

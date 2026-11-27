@@ -475,11 +475,10 @@ function disabledListOf(file: string, acceptString: boolean): string[] {
 }
 
 /**
- * The managed `disabledMcpjsonServers`: the base file, then every drop-in in `dropInDir`
- * whose name ends in `.json` and does not start with `.`, in sorted name order, as Claude
- * Code reads them. Claude Code concatenates arrays across those files, so the lists add up.
+ * The managed settings files: the base file, then every drop-in in `dropInDir` whose name
+ * ends in `.json` and does not start with `.`, in sorted name order, as Claude Code reads them.
  */
-function managedDisabledList(file: string | undefined, dropInDir: string | undefined): string[] {
+function managedSettingsFiles(file: string | undefined, dropInDir: string | undefined): string[] {
   const files = file ? [file] : [];
   if (dropInDir && regularPathKind(dropInDir) === "dir") {
     let names: string[] = [];
@@ -491,7 +490,44 @@ function managedDisabledList(file: string | undefined, dropInDir: string | undef
     const dropIns = names.filter((name) => name.endsWith(".json") && !name.startsWith("."));
     files.push(...dropIns.sort().map((name) => join(dropInDir, name)));
   }
-  return files.flatMap((path) => disabledListOf(path, false));
+  return files;
+}
+
+/**
+ * The managed `disabledMcpjsonServers` of {@link managedSettingsFiles}. Claude Code
+ * concatenates arrays across those files, so the lists add up.
+ */
+function managedDisabledList(file: string | undefined, dropInDir: string | undefined): string[] {
+  return managedSettingsFiles(file, dropInDir).flatMap((path) => disabledListOf(path, false));
+}
+
+/**
+ * Whether any of {@link managedSettingsFiles} sets `disableSideloadFlags` to `true`, with a
+ * log line naming the first such file. Claude Code then exits at startup on a non-sdk
+ * `--mcp-config` server. It reads the setting from managed settings only, and a restrictive
+ * `true` in one managed file wins over a `false` in any other. An unreadable or malformed
+ * file is skipped, as {@link disabledListOf} skips it.
+ */
+function managedSideloadFlagsDisabled(
+  file: string | undefined,
+  dropInDir: string | undefined
+): boolean {
+  for (const path of managedSettingsFiles(file, dropInDir)) {
+    if (!isRegularFile(path)) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(readText(path));
+    } catch {
+      continue;
+    }
+    if (isPlainObject(parsed) && parsed.disableSideloadFlags === true) {
+      log(
+        `[mcp-session] no MCP server handed over: ${path} sets disableSideloadFlags, and Claude Code refuses --mcp-config while it does`
+      );
+      return true;
+    }
+  }
+  return false;
 }
 
 /**
@@ -553,6 +589,15 @@ function managedMcpPresent(file: string | undefined): boolean {
   return true;
 }
 
+/** Whether a managed file makes Claude Code refuse `--mcp-config`, each case logged by path. */
+function managedPolicyRefusesMcpConfig(managed: Partial<ManagedPaths>): boolean {
+  if (managedMcpPresent(managed.managedMcpFile)) return true;
+  return managedSideloadFlagsDisabled(
+    managed.managedSettingsFile,
+    managed.managedSettingsDropInDir
+  );
+}
+
 /** The real main checkout holding `dir` (`.git` files read only when regular), else `dir`. */
 function mainCheckoutKey(dir: string): string {
   return realOrResolved(mainCheckoutRoot(dir, readText, regularPathKind) ?? dir);
@@ -577,6 +622,8 @@ export interface InheritedMcpOptions extends Partial<ManagedPaths> {
  *
  * - Nothing while `options.managedMcpFile` exists: Claude Code would refuse the
  *   `--mcp-config` flag and the child would not start. A log line names the file.
+ * - Nothing while a managed settings file or drop-in sets `disableSideloadFlags: true`:
+ *   Claude Code exits at startup on that flag too. A log line names the file.
  * - `.mcp.json` servers, only when `childCwd` is not within setupFrom (walk-up cannot
  *   reach them): every regular file of the folders Claude Code's walk-up from setupFrom
  *   reads ({@link mcpJsonWalkDirs}) except a folder holding `childCwd`, nearest wins, minus every
@@ -614,7 +661,7 @@ export function buildInheritedMcpConfig(
   const sharedMain = setupMain === mainCheckoutKey(childReal);
   const localGate = !sharedMain && loads("local");
   if (!projectGate && !localGate) return null;
-  if (managedMcpPresent(options.managedMcpFile)) return null;
+  if (managedPolicyRefusesMcpConfig(options)) return null;
 
   const entry = globalConfigProjectEntry(env, setupMain, childReal);
   const localDefined = isPlainObject(entry?.mcpServers) ? entry.mcpServers : {};

@@ -1375,3 +1375,122 @@ describe("realManagedPaths", () => {
     });
   });
 });
+
+describe("a managed disableSideloadFlags", () => {
+  /** Both gates open: setupFrom is its own repository, the child is outside it. */
+  function openCaller(): { caller: string; work: string } {
+    const caller = mainCheckout(join(tmp, "caller"));
+    const work = join(tmp, "work");
+    mkdirSync(work);
+    put(join(caller, ".mcp.json"), { mcpServers: { proj: srv("proj") } });
+    return { caller, work };
+  }
+
+  function forWithLog(
+    caller: string,
+    work: string,
+    layer: Record<string, unknown> | null,
+    managed: ReturnType<typeof tempManaged>
+  ): { result: ReturnType<typeof inherited.inheritedMcpFor>; lines: string[] } {
+    const logged = spyOn(logger, "log").mockImplementation(() => {});
+    try {
+      const result = inherited.inheritedMcpFor(caller, work, layer, [], mcpEnv(), managed);
+      return { result, lines: logged.mock.calls.map(([line]) => String(line)) };
+    } finally {
+      logged.mockRestore();
+    }
+  }
+
+  test("true in the managed settings file hands over nothing and logs only its path", () => {
+    const { caller, work } = openCaller();
+    const managed = tempManaged();
+    put(managed.managedSettingsFile, { disableSideloadFlags: true, note: "secret-value" });
+
+    const { result, lines } = forWithLog(caller, work, null, managed);
+
+    expect(result).toBeNull();
+    expectNamesPath(
+      lines.find((line) => line.includes("disableSideloadFlags")),
+      managed.managedSettingsFile
+    );
+    expect(lines.some((line) => line.includes("secret-value"))).toBe(false);
+  });
+
+  test("true in a managed drop-in hands over nothing and logs the drop-in's path", () => {
+    const { caller, work } = openCaller();
+    const managed = tempManaged();
+    const dropIn = join(managed.managedSettingsDropInDir, "20-policy.json");
+    put(dropIn, { disableSideloadFlags: true });
+
+    const { result, lines } = forWithLog(caller, work, null, managed);
+
+    expect(result).toBeNull();
+    expectNamesPath(
+      lines.find((line) => line.includes("disableSideloadFlags")),
+      dropIn
+    );
+  });
+
+  test("a later drop-in's false does not undo an earlier true", () => {
+    const { caller, work } = openCaller();
+    const managed = tempManaged();
+    put(managed.managedSettingsFile, { disableSideloadFlags: true });
+    put(join(managed.managedSettingsDropInDir, "90-relax.json"), { disableSideloadFlags: false });
+
+    expect(forWithLog(caller, work, null, managed).result).toBeNull();
+  });
+
+  test("a hidden or non-.json drop-in is not read", () => {
+    const { caller, work } = openCaller();
+    const managed = tempManaged();
+    put(join(managed.managedSettingsDropInDir, ".hidden.json"), { disableSideloadFlags: true });
+    put(join(managed.managedSettingsDropInDir, "notes.txt"), { disableSideloadFlags: true });
+
+    expect(forWithLog(caller, work, null, managed).result?.mcpServers).toEqual({
+      proj: srv("proj"),
+    });
+  });
+
+  test("false hands the servers over as before", () => {
+    const { caller, work } = openCaller();
+    const managed = tempManaged();
+    put(managed.managedSettingsFile, { disableSideloadFlags: false });
+    put(join(managed.managedSettingsDropInDir, "a.json"), { disableSideloadFlags: false });
+
+    expect(forWithLog(caller, work, null, managed).result?.mcpServers).toEqual({
+      proj: srv("proj"),
+    });
+  });
+
+  test("absent hands the servers over as before", () => {
+    const { caller, work } = openCaller();
+    const managed = tempManaged();
+    put(managed.managedSettingsFile, { disabledMcpjsonServers: [] });
+
+    expect(forWithLog(caller, work, null, managed).result?.mcpServers).toEqual({
+      proj: srv("proj"),
+    });
+  });
+
+  test("a string value does not gate: Claude Code compares with true", () => {
+    const { caller, work } = openCaller();
+    const managed = tempManaged();
+    put(managed.managedSettingsFile, { disableSideloadFlags: "true" });
+
+    expect(forWithLog(caller, work, null, managed).result?.mcpServers).toEqual({
+      proj: srv("proj"),
+    });
+  });
+
+  test("true outside managed settings does not gate: Claude Code reads it from policy only", () => {
+    const { caller, work } = openCaller();
+    put(join(caller, ".claude", "settings.json"), { disableSideloadFlags: true });
+    put(join(caller, ".claude", "settings.local.json"), { disableSideloadFlags: true });
+    put(join(tmp, "config", "settings.json"), { disableSideloadFlags: true });
+    const layer = { disableSideloadFlags: true };
+
+    expect(forWithLog(caller, work, layer, tempManaged()).result?.mcpServers).toEqual({
+      proj: srv("proj"),
+    });
+  });
+});
