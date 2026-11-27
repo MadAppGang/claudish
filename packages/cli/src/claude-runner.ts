@@ -893,7 +893,7 @@ export function userSettingsFile(configDir: string | undefined, home: string, cw
  * working directory. Outside Git only the working directory's file. Project
  * settings (`settings.json`) load from the working directory alone.
  */
-function localSettingsFiles(
+export function localSettingsFiles(
   cwd: string,
   readFile: (path: string) => string,
   pathKind: (path: string) => "dir" | "file" | undefined
@@ -911,10 +911,11 @@ function localSettingsFiles(
  * directory makes its parent the root. A `.git` file (`gitdir: <path>`, a
  * linked worktree) points at a Git directory whose `commondir` names the common
  * Git directory; the root is that directory's parent. A `.git` file with no
- * readable `commondir` keeps its own directory as the root. No `.git` at all:
- * undefined.
+ * readable `commondir` keeps its own directory as the root, and so does one whose
+ * `commondir` `pathKind` does not call a file: a named pipe is never read, since
+ * a read with no writer blocks. No `.git` at all: undefined.
  */
-function mainCheckoutRoot(
+export function mainCheckoutRoot(
   cwd: string,
   readFile: (path: string) => string,
   pathKind: (path: string) => "dir" | "file" | undefined
@@ -924,22 +925,34 @@ function mainCheckoutRoot(
     const entry = join(dir, ".git");
     const kind = pathKind(entry);
     if (kind === "dir") return dir;
-    if (kind === "file") {
-      const gitDir = gitDirOfFile(entry, readFile);
-      if (gitDir === undefined) return dir;
-      let common: string;
-      try {
-        common = readFile(join(gitDir, "commondir")).trim();
-      } catch {
-        return dir;
-      }
-      if (!common) return dir;
-      return dirname(resolve(gitDir, common));
-    }
+    if (kind === "file") return linkedCheckoutRoot(dir, entry, readFile, pathKind);
     const parent = dirname(dir);
     if (parent === dir) return undefined;
     dir = parent;
   }
+}
+
+/**
+ * The main checkout a `.git` FILE at `entry` (in `dir`) leads to through its Git
+ * directory's `commondir`, else `dir` ({@link mainCheckoutRoot}).
+ */
+function linkedCheckoutRoot(
+  dir: string,
+  entry: string,
+  readFile: (path: string) => string,
+  pathKind: (path: string) => "dir" | "file" | undefined
+): string {
+  const gitDir = gitDirOfFile(entry, readFile);
+  if (gitDir === undefined) return dir;
+  const commondir = join(gitDir, "commondir");
+  if (pathKind(commondir) !== "file") return dir;
+  let common: string;
+  try {
+    common = readFile(commondir).trim();
+  } catch {
+    return dir;
+  }
+  return common ? dirname(resolve(gitDir, common)) : dir;
 }
 
 /** The Git directory a `.git` file's `gitdir:` line names, resolved against the file's directory. */
@@ -1115,7 +1128,7 @@ export function unreadableSettingsArgs(
 }
 
 /** A settings file tier `--setting-sources` can turn on or off. */
-type SettingSource = "user" | "project" | "local";
+export type SettingSource = "user" | "project" | "local";
 
 /**
  * The file tiers Claude Code loads under the passthrough `--setting-sources`
@@ -1124,7 +1137,7 @@ type SettingSource = "user" | "project" | "local";
  * means every tier loads. `--setting-sources ""` loads none of them. Managed
  * settings and `--settings` values are outside this flag's reach.
  */
-function enabledSettingSources(args: readonly string[]): Set<SettingSource> | null {
+export function enabledSettingSources(args: readonly string[]): Set<SettingSource> | null {
   let value: string | undefined;
   for (let i = 0; i < args.length; i++) {
     const token = args[i];
@@ -1179,7 +1192,7 @@ function readSettingsSource(
  * tier, which "cannot be overridden by anything" (not even our --settings overlay).
  * https://code.claude.com/docs/en/settings
  */
-function managedSettingsPath(): string {
+export function managedSettingsPath(): string {
   if (isWindows()) {
     return join(
       process.env.PROGRAMDATA || "C:\\ProgramData",

@@ -193,7 +193,8 @@ every runtime file (`output.log`, `events.jsonl`, `tokens.json`, `waits.jsonl`, 
   "model": "<as the caller asked for it>",
   "timeoutSeconds": 600,             // effective: min(requested ?? 600, 3600)
   "claudeSessionId": "<the child's uuid>",
-  "setupFrom": "/abs/caller/project" // OPTIONAL — present only when the child inherits a settings layer
+  "setupFrom": "/abs/caller/project", // OPTIONAL — present only when the child inherits a settings layer
+  "inheritedMcpServers": ["linear"]   // OPTIONAL — server NAMES in inherited-mcp.json, never their definitions
 }
 ```
 
@@ -373,9 +374,28 @@ What `createSession` does now (`mcp-session/inherited-settings.ts`, `session-man
   child's argv and files are byte-for-byte what they were. An explicit `setup_from` that is not an
   existing directory, or a value that is neither a string nor null, is refused as `invalid_args`;
   the implicit default is not checked.
-- The layer is `settings.json`, then `settings.local.json`, then every caller `--settings` value
-  (both `--settings v` and `--settings=v`), merged in that order: objects deep, arrays
-  concatenated without duplicates, scalars later-wins.
+- The layer is `<setup_from>/.claude/settings.json`, then the local settings files Claude Code
+  reads for a launch from `setup_from` (`localSettingsFiles` in `claude-runner.ts`: the MAIN
+  checkout's `.claude/settings.local.json` when `setup_from` is a linked worktree or a
+  subdirectory of a repository, then `<setup_from>/.claude/settings.local.json`), then every
+  caller `--settings` value (both `--settings v` and `--settings=v`), merged in that order:
+  objects deep, arrays concatenated without duplicates, scalars later-wins.
+- `createSession` resolves `setup_from` to its real path ONCE and hands that path to both the
+  settings layer and the MCP builder, so a symlink to a subdirectory of a repository finds the
+  main checkout's `settings.local.json` in both (and its `disabledMcpjsonServers` reaches the
+  MCP builder). Each builder also takes its argument by real path.
+- The caller's `--setting-sources` limits the layer's files as it limits the child's own reads:
+  without `project` no `settings.json` is read, without `local` no `settings.local.json`. A
+  caller `--settings` value is outside that flag's reach and always applies.
+- A string `enabledMcpjsonServers` / `disabledMcpjsonServers` naming one server
+  (`/^[A-Za-z0-9_-]+$/`) is read as a one-name list in each file BEFORE the merge, as Claude
+  Code does, so a string in one file and an array in another add up.
+- A file that is not a regular file (a named pipe, socket or device) is skipped, never read: a
+  synchronous read of a pipe with no writer blocks the whole MCP server. The same holds for
+  every `.mcp.json`, `.claude.json` and settings file the MCP builder reads. A caller
+  `--settings` path that is not a regular file fails as `invalid_args`.
+- A malformed inline `--settings` value is reported as `inline --settings value`, never by its
+  text: the value can carry an `env` token.
 - **Exactly one `--settings` reaches the child.** Claude Code keeps only the LAST one (E14: the
   root settings then `{}` lists the 5 built-ins; E15, reversed, the full list), and claudish's
   child runner merges only the first bare `--settings` into its own overlay (`claude-runner.ts`).
@@ -397,10 +417,235 @@ What `createSession` does now (`mcp-session/inherited-settings.ts`, `session-man
   `claude-runner-settings-mode.test.ts` pins umask 022, because a runner with umask 077 passes
   the old code. Overlays left behind by older versions are MTL-258.
 
-Known gaps, not carried: exact plugin versions outside the repo (needs per-row `--plugin-dir`,
-E13, which depends on Claude Code's undocumented install-row keying); project `.claude/skills`,
-`.claude/commands` and `.mcp.json`; project hooks with relative paths, which resolve against
-`work_dir`. `team` needs none of this: its slots run in the server's cwd.
+#### The caller's cwd-bound MCP servers: `inherited-mcp.json`
+
+Two MCP scopes are found from Claude Code's cwd, so a child in another directory can lose them:
+project `.mcp.json` (walked up from the cwd) and local scope (`.claude.json`
+`projects[<main checkout>].mcpServers`). The settings layer carries only approval NAMES
+(`enabledMcpjsonServers`), never a definition. `buildInheritedMcpConfig`
+(`inherited-settings.ts`) collects what the child would lack, under two separate gates:
+
+`setup_from` is taken by its real path for every step (the walk-up, the main checkout, the
+`.claude.json` key and both gates): a symlinked `setup_from` would otherwise read another
+tree's ancestors and miss the local-scope entry. That Claude Code keys `.claude.json` by its
+REAL cwd is not measured: M9 measured only that the key is the main checkout. A `work_dir` that
+does not exist yet is compared by the real path of its nearest existing ancestor plus the
+remaining segments.
+
+**An enterprise `managed-mcp.json` hands over nothing.** While that file exists, Claude Code
+refuses every `--mcp-config` server and the child would not start. Read from the 2.1.332
+bundle: the file is `<managed dir>/managed-mcp.json` (`hGt(){return Yq($w(),"managed-mcp.json")}`),
+the managed dir is `/Library/Application Support/ClaudeCode` on macOS and `/etc/claude-code`
+on Linux, and the check refuses a dynamic config that holds any ordinary server:
+
+```js
+if(Kdt()===null){if(n)return{kind:"refuse",message:"You cannot use --strict-mcp-config when an enterprise MCP config is present"};
+let h=Object.entries(e).filter(([y,k])=>!tHt(y,k));
+if(h.length>0)return{kind:"refuse",message:...:"You cannot dynamically configure MCP servers when an enterprise MCP config is present"}
+```
+
+The file counts as present unless reading it fails with `ENOENT`/`ENOTDIR`; an unparseable file
+keeps exclusive control and the servers are dropped instead. claudish checks only that the path
+exists, writes a log line naming it, and builds no `inherited-mcp.json`. The managed paths come
+from `realManagedPaths()`: all three files sit in the directory of `managedSettingsPath()`.
+`SessionManager` takes them as the `managedPaths` option, which the pane tests point at an empty
+temp directory.
+
+- **`.mcp.json` servers, only when `work_dir` is not within `setup_from`** (`isWithin`: realpaths,
+  compared by path segment, so `/a/bc` is not within `/a/b`). The `.mcp.json` of every folder
+  Claude Code's walk-up from `setup_from` reads (`mcpJsonWalkDirs`), the nearest file winning a
+  name clash, minus every name in `disabledMcpjsonServers` from the inherited settings layer, the
+  `.claude.json` project entry, the user settings file (`userSettingsFile`:
+  `<CLAUDE_CONFIG_DIR>/settings.json`, else `$HOME/.claude/settings.json`) and the managed
+  settings (`managed-settings.json`, then every drop-in in `managed-settings.d`), because a
+  `--mcp-config` server bypasses that list (M5). Inside the tree the child's own walk-up already
+  finds them.
+- **The walk-up, as the 2.1.332 bundle walks it** (`MHt`, case `"project"`):
+
+  ```js
+  z=vs()??A;while(z!==Qoi(z).root){if(Rle(z)&&Vyt(z))k.push(Yq(z,".mcp.json"));else if(!i3(z))y.push(z);z=Xoi(z)}
+  ```
+
+  It stops BEFORE the file system root, so `/.mcp.json` is never read, and claudish stops there
+  too. A folder in a connector-downloads folder is left out. `Rle` is `configFolderInDownloads`
+  and `Vyt` is `isClaudeDownloadsFolderAbove` (the chunk's export names); a path segment is a
+  connector-downloads folder when `a0t` holds, after lower-casing, `ſ` read as `s` and invisible
+  format characters dropped:
+
+  ```js
+  uM="connector-downloads";var aa=new RegExp(`^${uM}[. ]*(?::.*)?$`);
+  function a0t(e){return e.length>=uM.length&&aa.test(e.toLowerCase().replaceAll("ſ","s").replace(q3e,""))}
+  ```
+
+  claudish leaves out every folder with
+  such a segment; `Vyt` additionally asks whether the folder is Claude Code's own downloads
+  folder, so claudish may leave out a file Claude Code reads, never the reverse. An automount
+  map root is left out (`i3`): a path in `CLAUDE_CODE_AUTOMOUNT_ROOTS`
+  (`s.CLAUDE_CODE_AUTOMOUNT_ROOTS?.split(u).some((r)=>S(r)&&g(r)===e)`, `u` the path delimiter),
+  or on Linux a folder directly under `/` whose `statfs` type is autofs (`M=391`, 0x0187).
+  claudish reads `CLAUDE_CODE_AUTOMOUNT_ROOTS` from the child's environment. A folder at or
+  under either browser-downloads root is left out as well, whatever `Vyt`'s other checks say:
+  `Vyt` returns true first when `ozo` holds, and `ozo` matches the fixed roots of `L3e`
+  (`so` and `s0t`, both under `/mnt/user-data`):
+
+  ```js
+  oo="/browser-downloads",...,so=Ae(Me(FD),oo),io="/desktop-browser-downloads",...,s0t=Ae(Me(FD),io)
+  // FD="/mnt/user-data/uploads", so Me(FD) is "/mnt/user-data"
+  function qDe(e){...let n=we.normalize(e.split("/").slice(0,-1).join("/"));return L3e.find(({fixedRoot:r})=>n===r||n.startsWith(`${r}/`))?.savedBy}
+  function Vyt(e){if(ozo(`${e}/.`))return!0;...}
+  ```
+
+  claudish leaves out `/mnt/user-data/browser-downloads` and
+  `/mnt/user-data/desktop-browser-downloads` and every folder below them, compared on the
+  path as walked.
+- **A folder above both `setup_from` and `work_dir` is left to the child.** The child's own
+  walk-up reads that folder's `.mcp.json`, under the child's own disabled lists, so a copy in
+  `inherited-mcp.json` would only bypass those lists. Only folders the child's walk-up does not
+  reach (none holding `work_dir`) are read.
+- **A `.mcp.json` Claude Code skips is skipped.** In the walk-up a file whose read fails
+  (`_Wn` returns `config:null`) is logged and passed over:
+
+  ```js
+  if(!_e){let Se=ie.filter((Ce)=>!Ce.message.startsWith("MCP config file not found"));if(Se.length>0)t(`MCP config errors for ${Q}: ...`,{level:"error"}),h.push(...Se);continue}
+  ```
+
+  That covers an unreadable file, invalid JSON and a file whose shape fails the schema. A blank
+  project file is no servers:
+
+  ```js
+  if(g==="project"&&!A.trim())return t(`MCP config is blank, read as no servers: ${n}`),{config:{mcpServers:{}},errors:[],present:!0,read:!0};
+  ```
+
+  A file larger than 2 MiB is skipped from its size, before it is read (`FYl` asks `cl`, which
+  answers `skip` on `l.size>n`):
+
+  ```js
+  var fwe=2097152;function _Wn(e){...let Y=g==="dynamic"?y.readFileSync(n,{encoding:"utf8"}):FYl(y,n,fwe);if(Y===null)return t(`MCP config skipped for ${n} (scope=${g}): not a regular file or exceeds ${fwe} byte limit`,{level:"warn"}),...
+  ```
+
+  claudish does the same: a blank or whitespace-only file is no servers; a file over 2097152
+  bytes is skipped after a `stat`, never read; an unreadable or malformed one (not JSON, not an
+  object, `mcpServers` not an object) is skipped. Each skip gets a log line naming only its
+  path, and the walk goes on.
+- **The caller's `/mcp disable` list applies to both scopes.** Claude Code drops any server
+  named in the `.claude.json` project entry's `disabledMcpServers` before it connects, whatever
+  its scope, by exact name: `function ni(e){let n=$c();...return Aoe(n.disabledMcpServers).includes(e)}`,
+  `Aoe(e){return Array.isArray(e)?e:[]}`. `$c()` is the child's own project entry, so a child
+  under another key never sees the caller's list. claudish withholds every name on the caller's
+  list from the `.mcp.json` and local-scope servers it hands over, compared exactly (no `_`
+  normalisation).
+- **The disabled-list forms**, as the 2.1.332 bundle reads them. An array of names, from every
+  source. A string naming one server, from every source except managed settings: the
+  normaliser `zLt` (`if(typeof o==="string"&&ns.test(o))e[n]=[o]`, `ns=/^[A-Za-z0-9_-]+$/`) runs
+  only `if(!o?.policySource)`. The managed drop-ins are the names in `managed-settings.d` that end
+  in `.json` and do not start with `.` (`Ele(e){return e.endsWith(".json")&&!e.startsWith(".")}`),
+  read after the base file in sorted name order (`O.map((P)=>P.name).sort()`); arrays concatenate
+  across them (`WZ`: `return R([...e,...n])`), so the lists add up. A disabled name matches a
+  server whose name is equal once every character outside `[A-Za-z0-9_-]` becomes `_` (`Eeo`,
+  `Ln`); a `plugin:` name matches only exactly.
+- **The child's own disabled list cannot stop an inherited server.** A `disabledMcpjsonServers`
+  in `work_dir`'s project or local settings filters only `.mcp.json` servers (M5), so a server
+  handed over in `inherited-mcp.json` runs whatever the child's own settings disable.
+- **Local-scope servers, only when the child's main checkout differs from `setup_from`'s**
+  (`mainCheckoutRoot`; a directory outside Git is its own key). That covers a work_dir outside
+  the repository and a separately initialised repository inside the tree; a linked worktree of
+  the same repository gets nothing, since Claude Code keys local scope by the main checkout.
+  Read from `claudeCodeGlobalConfigPath(parentEnv, work_dir)`, so `CLAUDE_CONFIG_DIR` moves it,
+  and a relative `CLAUDE_CONFIG_DIR` resolves against the child's cwd, as the user settings path
+  does. They win a `.mcp.json` server of the same name, as local scope does.
+- **Same repository, outside `setup_from`** (the `.mcp.json` gate open, the local-scope gate
+  closed): a name the shared local scope defines is left out of the file, so the local
+  definition the child loads itself is not overridden by the `.mcp.json` one.
+- **The caller's `--setting-sources`** (`enabledSettingSources`, either spelling, the last one
+  wins) is honoured the way the child honours it: without `project` no `.mcp.json` server is
+  handed over, without `local` no local-scope server (and no local name is withheld from the
+  `.mcp.json` set), without `user` the user settings' disabled list is not read. The managed
+  files, the settings layer and the `.claude.json` entry always apply. A child without
+  `project` in its `--setting-sources` skips its own `.mcp.json`, and without `local` its
+  local-scope servers; the 2.1.332 bundle gates both scopes on the setting sources before it
+  reads them (`MHt`):
+
+  ```js
+  let r={project:"projectSettings",user:"userSettings",local:"localSettings"};
+  if(e in r&&!(e==="local"?kLn():nn(r[e])))return{servers:jC(),errors:[]};
+  ```
+
+The servers go to `<sessionDir>/inherited-mcp.json` as `{"mcpServers": {...}}`, mode 0600 (a
+definition can hold `headers.Authorization` and `env`), definitions copied VERBATIM. A
+`${VAR}` reference stays unexpanded and the child expands it from its own environment (M7). A
+literal value (a key in `env`, a header stored by `claude mcp add -e KEY=v` or written by hand)
+is copied as it is into that 0600 file, and the file stays in the session directory after the
+session ends, like every other session file. The file is written by `writePrivateJson`, which
+narrows an existing file to 0600 BEFORE writing (`mode` applies only when a file is created; a
+caller-supplied session id can reuse a directory). The child gets
+`--mcp-config <that file>` BEFORE the caller's own flags (`["--mcp-config", file, ...rest,
+"--settings", layer]`), so a caller's own `--mcp-config`, coming later, wins a name clash.
+`spawn.json` records only the names (`inheritedMcpServers`); no definition value is logged. No
+server: no file, no flag. A caller flag `--strict-mcp-config` skips all of it: the caller has
+stated the exact set. An unreadable or malformed `.mcp.json` is skipped with a log line naming
+the file (an unreadable one says "cannot be read", not "not valid JSON"), as Claude Code skips
+it. No message carries the parser's text, for `.mcp.json` and settings files alike: Bun's
+message quotes the rejected token (`JSON Parse error: Unexpected identifier "<token>"`), which is
+a credential when the unquoted value is a header or key. An unreadable or malformed
+`.claude.json`, user settings or managed settings file is skipped the same way, and never fails
+the call. A malformed settings file of the inherited layer (`settings.json`,
+`settings.local.json`, a `--settings` value) still fails the call as `invalid_args` naming it.
+User-scope servers are global and need nothing.
+
+Precedence an outside child sees: an inherited server beats a server of the same name in the
+child's OWN `.mcp.json` (any `--mcp-config` beats `.mcp.json`, M4), so a child in project B whose
+`.mcp.json` defines `db` runs project A's `db`. A caller's own `--mcp-config` beats both. Whether
+a `--mcp-config` server beats the child's own local-scope server of the same name is not
+measured.
+
+Known gaps in the managed and walk-up reads, against the 2.1.332 bundle:
+
+- **Windows managed directory.** The bundle's managed directory on Windows is
+  `C:\Program Files\ClaudeCode` (`hr(){...case"windows":return"C:\\Program Files\\ClaudeCode";default:return"/etc/claude-code"}`);
+  `managedSettingsPath()` uses `%PROGRAMDATA%\ClaudeCode`. On Windows the `managed-mcp.json`
+  check and the managed disabled lists therefore read the wrong directory. Panes do not run on
+  Windows, so no session reaches this today.
+- **MDM-held managed settings.** Claude Code also takes managed settings from MDM documents (the
+  macOS managed preferences `/Library/Managed Preferences/<user>/com.anthropic.claudecode.plist`,
+  the Windows policy key `HKLM\SOFTWARE\Policies\ClaudeCode`). claudish reads only the files, so
+  a `disabledMcpjsonServers` delivered through MDM does not withhold an inherited server.
+  Claude Code's enterprise `deniedMcpServers` check still applies to `--mcp-config` servers.
+- **The WSL second managed directory.** Under WSL Claude Code also reads
+  `/mnt/c/Program Files/ClaudeCode` (`SH`); claudish reads only `/etc/claude-code`.
+- **An invalid nearer server entry.** Claude Code validates each server entry of a `.mcp.json`
+  before it merges the walk-up, so an invalid nearer definition does not hide a valid farther
+  one of the same name: the farther one runs. claudish merges the definitions unvalidated, so
+  the nearer invalid one wins the name, goes into `inherited-mcp.json`, and the child drops it;
+  the child runs neither.
+
+Measured on Claude Code 2.1.332, with stdio probe servers that write a marker file naming the
+definition used:
+
+- M2: `-p --output-format stream-json`, init `mcp_servers`: an outside folder lists `[]`; a plain
+  subfolder of a folder holding `.mcp.json` lists the server with `source "project"` (walk-up
+  needs no repository); `--mcp-config` lists its servers as `source "dynamic"`; a flag server
+  and a same-name `.mcp.json` server give ONE entry, the flag one.
+- M3: an unapproved `.mcp.json` server shows the "New MCP server found in this project" dialog
+  in default and `--permission-mode auto` and is not spawned; under bypass permissions (the pane
+  child's mode, `-y`) it is spawned unapproved, even with user `enableAllProjectMcpServers:
+  false`. A `--mcp-config` server spawns with no dialog in every mode.
+- M4: on a name clash the LAST `--mcp-config` wins, and any `--mcp-config` beats `.mcp.json`.
+- M5: `disabledMcpjsonServers` filters only `.mcp.json`; a `--mcp-config` server of a disabled
+  name is still spawned, so claudish drops disabled names itself.
+- M6: `--strict-mcp-config --mcp-config <f>` spawns only `<f>`'s servers.
+- M7: `${VAR}` and `${VAR:-default}` in a `--mcp-config` file are expanded against the CHILD's
+  environment, in `-p` and interactive.
+- M8: a caller's `.mcp.json` servers are on because the caller runs in bypass permissions mode,
+  not because of an approval entry; every pane child runs bypass too.
+- M9: `claude mcp add --scope local` keys the server by the MAIN checkout in `.claude.json`;
+  every worktree and subfolder of that repository sees it, an outside folder does not.
+- `claude mcp list` ignores `--mcp-config`, and the flag is variadic, so it is never followed by
+  a positional (`checkChildFlags` refuses positionals).
+
+Known gaps, not carried: exact plugin versions, and the MCP servers plugins bundle, outside the
+repo (needs per-row `--plugin-dir`, E13, which depends on Claude Code's undocumented install-row
+keying); project `.claude/skills` and `.claude/commands`; project hooks with relative paths,
+which resolve against `work_dir`. `team` needs none of this: its slots run in the server's cwd.
 
 An inherited layer also turns on the caller's plugin hooks in the child, and those hooks keep
 per-cwd state: in the live run they wrote `.claude/.coaching/state.json` and `.mnemex/` into the

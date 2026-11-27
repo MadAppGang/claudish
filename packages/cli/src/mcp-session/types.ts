@@ -6,6 +6,7 @@ import type { SessionHookBinding } from "../hooks/session/binding.js";
 import type { FailureReason, PaneSessionOptions, SlotState, SlotStep } from "../pane/index.js";
 import type { ViewClaims } from "../view/view-claims.js";
 import type { ViewFeed } from "../view/view-feed.js";
+import type { ManagedPaths } from "./inherited-settings.js";
 
 /**
  * Every value a session row's `event` field may carry, as a runtime list so a
@@ -234,6 +235,11 @@ export interface SessionManagerOptions {
   feed?: ViewFeed;
   /** Holders of the active view. Absent: no answer carries `view` and no resize claims. */
   claims?: ViewClaims;
+  /**
+   * Claude Code's managed files, read for a `setup_from` child's inherited MCP servers.
+   * Defaults to the machine's own (`realManagedPaths()`); tests point them at a temp dir.
+   */
+  managedPaths?: ManagedPaths;
   /**
    * @internal test seam (§11.5): the binding for one session, instead of the real one.
    * Return null for no binding.
