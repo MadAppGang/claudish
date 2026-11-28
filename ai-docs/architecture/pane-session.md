@@ -785,7 +785,7 @@ Enter and never answers ok, `in_box` or `submitted_by_other`; its detail starts 
 after W of T writes (reason), so the rest of the text was never written". `failureOf`
 (`magmux-client.ts`) keeps a count only when it is a non-negative integer and a stop reason only
 when it is one of those seven; anything else reads as absent. `MIN_MAGMUX_VERSION` is "0.20.3" and
-`.github/magmux.env` pins v0.20.3.
+`.github/magmux.env` pins v0.20.5.
 
 *A partly written send is cleared and typed again.* A `text_mismatch` whose reply says it stopped
 partway (`stopped` on the outcome, from `stoppedOf` in `input-gate.ts`) records the anomaly
@@ -820,6 +820,38 @@ The written part goes with the copy when the admission expires before its box se
 (`unreadCopyPart`, kept by `rememberCopy`): the next admission's inherited wait
 (`leftoverCopy.part`) and a control line's wait (`awaitControlCopy`) apply the same rule, so a
 box settled on exactly that part is cleared and the new line typed once.
+
+*magmux 0.20.4 and 0.20.5: a stopped send is the common case, and how its part is cut.* From 0.20.4
+a gated typed send writes each chunk after the first only once the box shows exactly what was
+written before it, and waits for that to the send's readiness deadline (never less than 1.2 s per
+chunk). A box that does not show a chunk (a stdin stall, a render lag longer than the deadline)
+ends the send `typingStopped: deadline` after the writes it could prove, where 0.20.3 wrote the
+whole line into the unread box at 8 ms a chunk. So the stopped-partway path above is what a stall
+now produces, and a whole line written into an empty box happens only for a line of one write.
+Measured with the fake child on magmux 0.20.5: a 12 s stall at boot stops after 1 of 7 writes, the
+part is drawn when the stall ends, cleared and typed again, and the slot completes; an 8 s stall
+after the first write is waited out inside the one send, `confirmed` 7/7. Two rules follow:
+
+- *Other text followed by the whole written part also settles* (`writtenPartAfterOther`,
+  `boxEndsWith`): text another writer left can be read ahead of the part when a stall ends. The box
+  then ends with the whole part, and magmux wrote nothing after it, so nothing of this copy is
+  unread; it is cleared (anomaly `box_drawn_other_after_mismatch`) and the line typed again. Other
+  text followed by only the start of the part is still waited on, and the part's trailing spaces
+  need the same cursor proof. Before this rule the box read as "text ending in the start of the
+  line" and the slot failed `prompt_not_accepted` with the leftover in the box.
+- *The part is cut as the connected magmux cuts it* (`writtenPrefix(…, evidenced)`,
+  `EVIDENCED_WRITES_VERSION`): 0.20.5 never ends a write but the last in whitespace (whitespace goes
+  with the next write, a write of whitespace alone joins it), so `writes: 1` of
+  `"aaa…a bbb…"` is the a's without the space. Cut in 0.20.3's plain runs, that part would end in a
+  space never sent, whose cursor proof never comes, and the wait would run to the deadline. The
+  version comes from `capabilities` at each attach; an unknown version is cut in plain runs, which
+  can only wait longer, never clear early.
+
+The integration tests take the path of the magmux under test: `MAGMUX_TYPES_ON_EVIDENCE`
+(`capabilities: typed-verify` in `magmux --help`) selects the 0.20.4+ expectations, and the same
+files still pass against 0.20.3. The fake child's `self_submit` reader draws a partly typed line as
+it is and presses its Enter only once the whole line is in the box (`wholeLineTyped`), because a
+reader that never draws the box gives magmux no evidence for the next chunk.
 
 *Which replies count as empty.* magmux says so in a field: `boxEmpty`, a boolean beside
 `maybeSubmitted` on a gated send's `text_mismatch` (true: the box was read empty after typing;
@@ -1767,7 +1799,7 @@ reserves N panes before a run's spawn loop; each start consumes one, whether it 
   panes need a 0.x release >= 0.20.3 (…): <path> reports <v>, …; upgrade: brew upgrade
   MadAppGang/tap/magmux`; claudish never falls back
   to the box-reading path or to print mode: one validator per fact. The release job bundles the
-  magmux pinned in `.github/magmux.env` (v0.20.3), test.yml runs the pane suites against that pin,
+  magmux pinned in `.github/magmux.env` (v0.20.5), test.yml runs the pane suites against that pin,
   and release.yml checks the pin against `MIN_MAGMUX_VERSION`.
 - **The `--version` probe must settle on its own deadline, never on the child's exit.**
   `assertMagmuxAvailable` shares ONE in-flight probe per binary with every caller, so a probe that
