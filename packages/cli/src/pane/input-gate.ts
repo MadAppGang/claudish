@@ -451,14 +451,47 @@ export function typedWriteCount(text: string): number {
   return typedWriteEnds(text).length;
 }
 
+/** The first magmux release whose gated typed writes each end with a visible rune. */
+export const EVIDENCED_WRITES_VERSION = "0.20.5";
+
+/** Go's `unicode.IsSpace`: JavaScript's `\s` without U+FEFF and with U+0085. */
+function isGoSpace(c: string): boolean {
+  return c === "\u0085" || (c !== "﻿" && /\s/.test(c));
+}
+
 /**
- * The text the first `writes` writes of a typed send carried (`typedWriteEnds`): what reached
- * the pane when magmux stopped typing partway. A count at or past the whole text is the whole
- * text.
+ * `typedWriteEnds` as magmux 0.20.5 sends a gated typed text (`evidencedWrites`): whitespace at
+ * the end of a write goes with the next write, a write of whitespace alone joins the next one,
+ * and whitespace at the end of the text stays in the last write. So every write but the last
+ * ends with a visible rune.
  */
-export function writtenPrefix(text: string, writes: number): string {
+function evidencedWriteEnds(text: string): number[] {
+  const rs = Array.from(text);
+  const ends: number[] = [];
+  let start = 0;
+  for (const end of typedWriteEnds(text)) {
+    let visibleEnd = end;
+    while (visibleEnd > start && isGoSpace(rs[visibleEnd - 1] as string)) visibleEnd--;
+    if (visibleEnd === start) continue;
+    ends.push(visibleEnd);
+    start = visibleEnd;
+  }
+  if (start < rs.length) {
+    if (ends.length === 0) ends.push(rs.length);
+    else ends[ends.length - 1] = rs.length;
+  }
+  return ends;
+}
+
+/**
+ * The text the first `writes` writes of a typed send carried: what reached the pane when magmux
+ * stopped typing partway. `evidenced`: magmux cut the writes as 0.20.5 does
+ * (`EVIDENCED_WRITES_VERSION`, `evidencedWriteEnds`), else in plain runs (`typedWriteEnds`). A
+ * count at or past the whole text is the whole text.
+ */
+export function writtenPrefix(text: string, writes: number, evidenced = false): string {
   if (writes <= 0) return "";
-  const ends = typedWriteEnds(text);
+  const ends = evidenced ? evidencedWriteEnds(text) : typedWriteEnds(text);
   if (writes >= ends.length) return text;
   return Array.from(text)
     .slice(0, ends[writes - 1])

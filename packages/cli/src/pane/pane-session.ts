@@ -77,6 +77,7 @@ import {
 } from "./gate-binding.js";
 import {
   BOOT_DIALOG_KINDS,
+  EVIDENCED_WRITES_VERSION,
   type GateDialogKind,
   type GateInput,
   SEND_READY_WAIT_DEFAULT_MS,
@@ -777,6 +778,8 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   private appliedSize: PaneSize | null;
   /** `capabilities.verbs` contains "resize", as of the latest attach */
   private supportsResize = false;
+  /** `capabilities.version` as of the latest attach; "" = unknown */
+  private magmuxVersion = "";
   private resizeWaiters: ResizeWaiter[] = [];
   private resizeDraining = false;
   /** the size of the worker's last send on this connection; null = none since the attach */
@@ -1111,6 +1114,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     this.gateTrusted = false;
     this.gate = null;
     const magmuxVersion = caps.ok ? String(caps.result.version ?? "") : "";
+    this.magmuxVersion = magmuxVersion;
     if (caps.ok) {
       const v = magmuxVersion;
       if (caps.result.protocol !== 1 || !versionAtLeast(v, MIN_MAGMUX_VERSION)) {
@@ -3239,7 +3243,12 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     adm.writtenPart = null;
     if (!out.stopped) return;
     this.anomaly(`typing_stopped:${out.stopped.reason}`);
-    adm.writtenPart = writtenPrefix(adm.line, out.stopped.writes);
+    // an unknown version is cut in plain runs: a part that ends in spaces is then only waited on
+    adm.writtenPart = writtenPrefix(
+      adm.line,
+      out.stopped.writes,
+      versionAtLeast(this.magmuxVersion, EVIDENCED_WRITES_VERSION)
+    );
   }
 
   /** What one reply says about this admission's copy (`mayHaveTyped`, `provesReadWhole`). */

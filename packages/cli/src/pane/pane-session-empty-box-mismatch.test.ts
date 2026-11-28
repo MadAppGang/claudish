@@ -1640,6 +1640,34 @@ describe("a send magmux stopped partway", () => {
     expect(messagesOf(sc).filter(isTyped)).toHaveLength(1);
     expect(sc.accepted).toBe(false);
   }, 40_000);
+
+  // magmux 0.20.5 moves a space at a write's end into the next write, so its first write of
+  // SPACED is the 31 a's alone: the box showing them is the whole written part.
+  const SPACED = `${"a".repeat(31)} ${"b".repeat(100)}`;
+  for (const [version, cleared] of [
+    ["0.20.5", true],
+    ["0.20.3", false],
+  ] as const) {
+    test(`magmux ${version}, writes 1 of 5, the box shows the 31 runes before the first space: ${cleared ? "cleared, typed once more" : "the space is unproven, waited on"}`, async () => {
+      const s = session();
+      (s as any).magmuxVersion = version;
+      const sc = wire(s, [
+        mismatchStopped({ writes: 1, writesTotal: 5, typingStopped: "deadline" }),
+        ACCEPTED,
+      ]);
+      sc.gateBox = null;
+      // the line typed again needs room in the admission; the waited case runs to its end
+      const adm = admit(s, cleared ? 30_000 : 14_000, SPACED);
+      adm.initial = false;
+      const done = (s as any).runAdmission(adm) as Promise<void>;
+      sc.box = "a".repeat(31);
+      await done;
+      expect(messagesOf(sc).filter(isClear)).toHaveLength(cleared ? 1 : 0);
+      expect(messagesOf(sc).filter(isTyped)).toHaveLength(cleared ? 2 : 1);
+      expect(sc.accepted).toBe(cleared);
+    }, 40_000);
+  }
+
   test("the same box with no counts: the start of the line is waited on, never cleared", async () => {
     const s = session();
     const sc = wire(s, [mismatchStopped({}), ACCEPTED]);
