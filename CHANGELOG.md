@@ -2,6 +2,25 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.29.3] - 2026-11-28
+
+### Bug Fixes
+
+- hand an outside work_dir child the caller's plugin copies *(mcp)* ([`088d4d1`](https://github.com/MadAppGang/claudish/commit/088d4d1d9315589b46ade84222f3ab2cf328e7ff))
+- withhold the inherited --mcp-config under disableSideloadFlags *(mcp)* ([`96de538`](https://github.com/MadAppGang/claudish/commit/96de538be9e2eb42a37707ae18e156c3268669c4))
+- skip a named-pipe commondir instead of blocking on it *(launcher)* ([`32c18f6`](https://github.com/MadAppGang/claudish/commit/32c18f69e01287d80c7ea3a155c6e43960942020))
+- hand an outside work_dir child the caller's MCP servers *(mcp)* ([`cbb99a5`](https://github.com/MadAppGang/claudish/commit/cbb99a534438d56a5cc39dd75a08590f706d2882))
+- cut a stopped send's written part as magmux 0.20.5 writes it *(pane)* ([`b51c31d`](https://github.com/MadAppGang/claudish/commit/b51c31da6d5f29cb06ac9e48f8a69eec0e5d7311))
+- clear a box holding other text before the whole written part *(pane)* ([`c2052fc`](https://github.com/MadAppGang/claudish/commit/c2052fc41c84a8a1eb0627eb58424c91d3f3ffd1))
+
+### Documentation
+
+- update CHANGELOG.md for v14.29.2([`788d01e`](https://github.com/MadAppGang/claudish/commit/788d01e78c9d77fb5b71d33c98b8774d899e80e9))
+
+### Other Changes
+
+- pin magmux v0.20.5 *(release)* ([`e9ba189`](https://github.com/MadAppGang/claudish/commit/e9ba18939585fb40672e53b15f65a154d322a199))
+
 ## [14.29.2] - 2026-11-26
 
 ### Bug Fixes
@@ -26,9 +45,9 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
 ### Documentation
 
+- update CHANGELOG.md for v14.29.1([`078f4f0`](https://github.com/MadAppGang/claudish/commit/078f4f0644518be7cdda7f5173accff25c176dce))
 - describe the answer rule for a turn file not read in full *(pane)* ([`cc7abe1`](https://github.com/MadAppGang/claudish/commit/cc7abe12f42fbd022a2c47a89ff46f12973aecb8))
 - record that a resend after a lost pointer Enter runs twice *(pane)* ([`0cb5d18`](https://github.com/MadAppGang/claudish/commit/0cb5d18b1fc36e8596c21489cffb7517a0588c09))
-- update CHANGELOG.md for v14.29.1([`078f4f0`](https://github.com/MadAppGang/claudish/commit/078f4f0644518be7cdda7f5173accff25c176dce))
 
 ### New Features
 
