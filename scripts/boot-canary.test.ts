@@ -6,7 +6,7 @@ import { join } from "node:path";
 
 const SCRIPT = join(import.meta.dir, "boot-canary.ts");
 
-import { armHandoff } from "./boot-canary.plugin-probe.js";
+import { armHandoff, policySourcesReading } from "./boot-canary.plugin-probe.js";
 
 describe("the host creds file writer", () => {
   /** How long a reader of the pipe may wait for its writer before it is killed. */
@@ -436,6 +436,43 @@ const answer = prompt === "/effort"
   );
   return bin;
 }
+
+describe("the policy source names, against the binary's version", () => {
+  /** Every name claudish checks is present except `absent`. */
+  const holdsAllBut =
+    (...absent: string[]) =>
+    (name: string) =>
+      !absent.includes(name);
+
+  test("a name missing from a binary older than its first version reads known, and says so", () => {
+    const { reading, notYet } = policySourcesReading(holdsAllBut("hybrid-settings"), "2.1.296");
+    expect(reading).toBe("known");
+    expect(notYet).toEqual(["hybrid-settings: not yet in 2.1.296"]);
+  });
+
+  test("a name missing from the binary at its first version reads missing", () => {
+    const { reading } = policySourcesReading(holdsAllBut("hybrid-settings"), "2.1.332");
+    expect(reading).toBe("missing:hybrid-settings");
+  });
+
+  test("a name missing from a binary newer than its first version reads missing", () => {
+    expect(policySourcesReading(holdsAllBut("hybrid-settings"), "2.1.400").reading).toBe(
+      "missing:hybrid-settings"
+    );
+    expect(policySourcesReading(holdsAllBut("hybrid-settings"), "2.2.0").reading).toBe(
+      "missing:hybrid-settings"
+    );
+    expect(policySourcesReading(holdsAllBut("remote-settings.json"), "2.1.296").reading).toBe(
+      "missing:remote-settings.json"
+    );
+  });
+
+  test("a binary version that is not x.y.z reads unreadable", () => {
+    for (const version of ["unknown", "2.1", "2.1.x", ""]) {
+      expect(policySourcesReading(holdsAllBut(), version).reading).toBe("unreadable");
+    }
+  });
+});
 
 describe("the pluginprobe scenario, on a stand-in claude", () => {
   function runProbe(mode: FakeMode, bundle?: string[]) {

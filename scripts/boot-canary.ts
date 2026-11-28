@@ -228,7 +228,12 @@ async function runScenario(
   if (scenario === "pluginprobe") {
     mkdirSync(world, { recursive: true });
     try {
-      const { reading, summary } = await runPluginProbeCheck(bin, realpathSync(world), canaryEnv());
+      const { reading, summary } = await runPluginProbeCheck(
+        bin,
+        version,
+        realpathSync(world),
+        canaryEnv()
+      );
       writeFileSync(join(outDir, `${scenario}.screen.txt`), `${summary}\n`);
       return reading;
     } finally {

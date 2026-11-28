@@ -498,6 +498,15 @@ source under a new name, and a rename of the reader while the old quoted name su
 "policy-limits.json"].map(Ayt)`). Tying each name to its reader's code would key on minified names
 that change with every release, so it is not done.
 
+Each name carries the first Claude Code version measured to hold it (`POLICY_SOURCE_NAMES` in
+`scripts/boot-canary.plugin-probe.ts`): `hybrid-settings` from 2.1.332, the other five with no
+lower bound (2.1.296, the pin, holds them). claudish's gate still looks for every source on every
+Claude Code: a source that a pinned older Claude Code does not read can only make the gate refuse
+more, never admit a probe the child would not match. So the canary requires a name only from its
+first version on. A name missing from an older binary reads `known`, and the screen says
+`hybrid-settings: not yet in 2.1.296`. A name missing at or above its first version reads
+`missing:<name>`, and a binary version that is not `x.y.z` reads `unreadable`. Both are red.
+
 Read from the 2.1.332 bundle. The plist list, per-user first and only for a safe user name:
 
 ```js

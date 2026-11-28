@@ -185,7 +185,10 @@ export interface PluginProbeReading {
    * result before init, a second one or one that is not that success, `none` for no result
    */
   result: string;
-  /** `known`, or `missing:<names>`: the policy source names the binary no longer holds */
+  /**
+   * `known`, `missing:<names>` (the policy source names the binary does not hold, each at or
+   * above its first version), or `unreadable` (the binary or its version could not be read)
+   */
   policySources: string;
   /** `known`, or `unknown:+<new>,-<gone>`: the binary's provider switches against the list */
   providerSwitches: string;
@@ -225,18 +228,57 @@ export interface PluginProbeReading {
 
 /**
  * The managed policy source names claudish's plugin probe gate looks for, as Claude Code
- * 2.1.332 spells them in its binary. Each must appear as a whole quoted string (`"…"`, `'…'`
- * or a template literal), so a renamed `new-remote-settings.json` does not pass for
- * `remote-settings.json`.
+ * 2.1.332 spells them in its binary, each with the first Claude Code version measured to hold
+ * it (`null`: held by every version the canary has booted, 2.1.296 included). Each must appear
+ * as a whole quoted string (`"…"`, `'…'` or a template literal), so a renamed
+ * `new-remote-settings.json` does not pass for `remote-settings.json`.
  */
-const POLICY_SOURCE_NAMES = [
-  "managed-settings.json",
-  "managed-settings.d",
-  "managed-mcp.json",
-  "com.anthropic.claudecode",
-  "remote-settings.json",
-  "hybrid-settings",
+const POLICY_SOURCE_NAMES: readonly { name: string; since: string | null }[] = [
+  { name: "managed-settings.json", since: null },
+  { name: "managed-settings.d", since: null },
+  { name: "managed-mcp.json", since: null },
+  { name: "com.anthropic.claudecode", since: null },
+  { name: "remote-settings.json", since: null },
+  { name: "hybrid-settings", since: "2.1.332" },
 ];
+
+/** `x.y.z` as three numbers, or null for anything else. */
+function versionParts(version: string): [number, number, number] | null {
+  const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(version.trim());
+  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+}
+
+/** Whether `a` is lower than `b`, compared numerically part by part. */
+function versionBelow(a: [number, number, number], b: [number, number, number]): boolean {
+  for (let i = 0; i < 3; i++) {
+    if (a[i] !== b[i]) return (a[i] as number) < (b[i] as number);
+  }
+  return false;
+}
+
+/**
+ * {@link PluginProbeReading.policySources} for a binary at `version` whose bytes hold a name
+ * when `holds` says so: a name is required only from its first version on, so one missing from
+ * an older binary reads known and is listed in `notYet` (`<name>: not yet in <version>`). A
+ * version that is not `x.y.z` reads `unreadable`.
+ */
+export function policySourcesReading(
+  holds: (name: string) => boolean,
+  version: string
+): { reading: string; notYet: string[] } {
+  const binary = versionParts(version);
+  if (binary === null) return { reading: "unreadable", notYet: [] };
+  const missing: string[] = [];
+  const notYet: string[] = [];
+  for (const { name, since } of POLICY_SOURCE_NAMES) {
+    if (holds(name)) continue;
+    const first = since === null ? null : versionParts(since);
+    if (first !== null && versionBelow(binary, first))
+      notYet.push(`${name}: not yet in ${version}`);
+    else missing.push(name);
+  }
+  return { reading: missing.length > 0 ? `missing:${missing.join(",")}` : "known", notYet };
+}
 
 /**
  * Claude Code 2.1.332's `CLAUDE_CODE_USE_*` names that are not provider switches: a plugin
@@ -303,8 +345,12 @@ function commandSettingsIn(bytes: Buffer): string[] | null {
  * {@link PluginProbeReading.policySources}, `providerSwitches` and `commandSettings` of the
  * binary at `bin`.
  */
-function bundleNames(bin: string): {
+function bundleNames(
+  bin: string,
+  version: string
+): {
   policySources: string;
+  policySourcesNotYet: string[];
   providerSwitches: string;
   commandSettings: string;
 } {
@@ -314,17 +360,19 @@ function bundleNames(bin: string): {
   } catch {
     return {
       policySources: "unreadable",
+      policySourcesNotYet: [],
       providerSwitches: "unreadable",
       commandSettings: "unreadable",
     };
   }
-  const missing = POLICY_SOURCE_NAMES.filter((name) => !holdsQuoted(bytes, name));
+  const sources = policySourcesReading((name) => holdsQuoted(bytes, name), version);
   const switches = [...useNamesIn(bytes)].filter((n) => !NON_PROVIDER_USE_NAMES.includes(n));
   const diff = listDiff(switches, PROBE_PROVIDER_SWITCHES);
   const commands = commandSettingsIn(bytes);
   const commandDiff = commands ? listDiff(commands, COMMAND_SETTINGS) : [];
   return {
-    policySources: missing.length > 0 ? `missing:${missing.join(",")}` : "known",
+    policySources: sources.reading,
+    policySourcesNotYet: sources.notYet,
     providerSwitches: diff.length > 0 ? `unknown:${diff.join(",")}` : "known",
     commandSettings:
       commands === null
@@ -1057,12 +1105,13 @@ async function launchModeCheck(
 }
 
 /**
- * Runs the check in `world` (created and left for the caller to remove) against `bin`, with
- * `baseEnv` as the environment the probe's own is built from. Returns the reading and a text
+ * Runs the check in `world` (created and left for the caller to remove) against `bin`, whose
+ * `--version` printed `version`, with `baseEnv` as the environment the probe's own is built from. Returns the reading and a text
  * summary for `pluginprobe.screen.txt`.
  */
 export async function runPluginProbeCheck(
   bin: string,
+  version: string,
   world: string,
   baseEnv: Record<string, string>
 ): Promise<{ reading: PluginProbeReading; summary: string }> {
@@ -1254,6 +1303,7 @@ export async function runPluginProbeCheck(
     ...markersIn(markers, [USER_API_KEY_HELPER_MARKER]),
     ...(wroteTranscript(cfg) ? ["transcript"] : []),
   ];
+  const names = bundleNames(bin, version);
   const reading: PluginProbeReading = {
     boot: typed.some((e) => e.type === "system" && e.subtype === "init") ? "init" : "no-init",
     agentRejected: false,
@@ -1274,7 +1324,9 @@ export async function runPluginProbeCheck(
     handoffControl,
     unixSocket: unixConnections > 0 ? `connected:${unixConnections}` : "unused",
     runnerSocket: runnerConnections > 0 ? `connected:${runnerConnections}` : "unused",
-    ...bundleNames(bin),
+    policySources: names.policySources,
+    providerSwitches: names.providerSwitches,
+    commandSettings: names.commandSettings,
     policyGate,
     userHelperGate,
     userApiKeyHelper,
@@ -1292,7 +1344,7 @@ export async function runPluginProbeCheck(
     `/cost run without the marker: exit ${costRun.exit}, login: ${reading.login}; with it: exit ${probeCostRun.exit}, login: ${reading.probeLogin}`,
     `host creds file: ${reading.handoff}; control boot with it handed back: ${reading.handoffControl}`,
     `ANTHROPIC_UNIX_SOCKET listener: ${reading.unixSocket}; CLAUDE_CODE_RUNNER_MODEL_SOCKET listener: ${reading.runnerSocket}`,
-    `policy sources: ${reading.policySources}, provider switches: ${reading.providerSwitches}, command settings: ${reading.commandSettings}, policy gate: ${reading.policyGate}`,
+    `policy sources: ${reading.policySources}${names.policySourcesNotYet.length > 0 ? ` (${names.policySourcesNotYet.join("; ")})` : ""}, provider switches: ${reading.providerSwitches}, command settings: ${reading.commandSettings}, policy gate: ${reading.policyGate}`,
     `user apiKeyHelper world: claudish's gate ${reading.userHelperGate}; a direct production-argv boot: ${reading.userApiKeyHelper}`,
     `launch mode world: restrictedMode ${reading.restrictedMode}, safeMode ${reading.safeMode}`,
     ...modes.lines.map((line) => `  ${line}`),
