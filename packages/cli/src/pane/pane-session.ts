@@ -52,6 +52,7 @@ import { log } from "../logger.js";
 import { redactSecrets } from "../redact.js";
 import {
   type BoxMatch,
+  boxEndsWith,
   cursorGapAfterText,
   locateBox,
   locatedBoxText,
@@ -2591,9 +2592,11 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       adm.step = "enter";
       return;
     }
-    // settled on exactly the part magmux wrote before it stopped: all of it read, none queued
+    // settled on the part magmux wrote before it stopped, alone or after other text: all of it
+    // read, none queued
     if (seen?.match === "prefix") {
-      this.anomaly("box_drawn_written_part");
+      const alone = adm.writtenPart !== null && writtenPartShown(adm.writtenPart, seen);
+      this.anomaly(alone ? "box_drawn_written_part" : "box_drawn_other_after_mismatch");
       this.noteReadWhole(adm);
       adm.writtenPart = null;
       markClearFirst(adm);
@@ -4980,8 +4983,9 @@ function drawOutcome(
 }
 
 /**
- * `drawOutcome`, or "settled" for a box settled on exactly the written part (`partOnly`). Text
- * that may be that part with its final spaces unread never settles (`unprovenSpaces`).
+ * `drawOutcome`, or "settled" for a box settled on the written part (`partOnly`), alone or after
+ * other text. Text that may be that part with its final spaces unread never settles
+ * (`unprovenSpaces`).
  */
 function drawEnded(
   now: DrawnBox | undefined,
@@ -4993,7 +4997,23 @@ function drawEnded(
   if (!partOnly) return ended;
   if (ended === "settled" && unprovenSpaces(now, partOnly)) return null;
   if (ended !== null) return ended;
-  return isWrittenPart(now, partOnly, quietMs) ? "settled" : null;
+  if (quietMs < DRAW_SETTLE_MS) return null;
+  return writtenPartShown(partOnly, now) || writtenPartAfterOther(partOnly, now) ? "settled" : null;
+}
+
+/**
+ * A normal box showing other text followed by the WHOLE written part `part`: text another writer
+ * left, read ahead of the part. magmux wrote nothing after the part, so all of it was read and
+ * none of it is queued. The part's trailing spaces need the same cursor proof as in
+ * `writtenPartShown`. Text followed by only the start of the part is not this: the rest of the
+ * part may still be unread.
+ */
+function writtenPartAfterOther(part: string, now: DrawnBox | undefined): boolean {
+  if (!now || now.match !== "prefix") return false;
+  const shown = trimTrailingSpaces(part);
+  if (shown === "" || !boxEndsWith(now.text, shown)) return false;
+  const spaces = part.length - shown.length;
+  return spaces === 0 || now.cursorGap === spaces;
 }
 
 /**
@@ -5006,11 +5026,6 @@ function drawEnded(
 function unprovenSpaces(now: DrawnBox | undefined, part: string): boolean {
   if (!now || !part.endsWith(" ") || writtenPartShown(part, now)) return false;
   return part.replace(/\s+/g, "").startsWith(now.text.replace(/\s+/g, ""));
-}
-
-/** A normal box, unchanged for the settle window, showing exactly the written part of the line. */
-function isWrittenPart(now: DrawnBox | undefined, part: string, quietMs: number): boolean {
-  return quietMs >= DRAW_SETTLE_MS && writtenPartShown(part, now);
 }
 
 /**

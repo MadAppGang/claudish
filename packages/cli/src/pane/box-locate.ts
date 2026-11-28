@@ -232,6 +232,19 @@ function isRowSpace(c: string | undefined): boolean {
   return c !== undefined && c !== "\n" && /\s/.test(c);
 }
 
+/**
+ * The box text ends with the WHOLE of `whole`: exactly it, or other text followed by it, read
+ * across wrap breaks as `matchBoxText` reads them.
+ */
+export function boxEndsWith(shown: string, whole: string): boolean {
+  if (matchFrom(shown, whole) === "line") return true;
+  for (let k = 1; k < shown.length; k++) {
+    if (shown[k] === "\n") continue;
+    if (matchFrom(shown.slice(k), whole) === "line") return true;
+  }
+  return false;
+}
+
 /** `matchBoxText` for text that must start where the line starts. */
 function matchFrom(shown: string, line: string): BoxMatch {
   // untrimmed: spaces at the line's end that the box does not show are not read yet
