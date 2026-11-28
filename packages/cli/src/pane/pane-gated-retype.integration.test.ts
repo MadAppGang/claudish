@@ -22,7 +22,11 @@ import {
   startGatePane,
   submissions,
 } from "./test-helpers/gated-pane.js";
-import { MAGMUX, NO_MAGMUX_MESSAGE } from "./test-helpers/hermetic-env.js";
+import {
+  MAGMUX,
+  MAGMUX_TYPES_ON_EVIDENCE,
+  NO_MAGMUX_MESSAGE,
+} from "./test-helpers/hermetic-env.js";
 import { wrapPrompt } from "./test-helpers/repl-wrap.js";
 
 /** A prompt of about 300 characters, which wraps onto several rows at 80 columns. */
@@ -279,12 +283,15 @@ describe.skipIf(!MAGMUX)(
     // claudish neither clears nor types again onto a box that shows nothing: once the line
     // is drawn and has stopped changing, only its Enter is sent, and the prompt lands as one
     // copy. The 8 s lag outlasts magmux's 3 s verify window, so the reply is the empty-box
-    // mismatch (a lag inside the window lets magmux see the draw itself).
+    // mismatch (a lag inside the window lets magmux see the draw itself). magmux 0.20.4+ writes
+    // a chunk only once the box shows the ones before it, so it writes a whole line into a box
+    // that shows nothing only when the line is one write: there the line is a command, typed as
+    // is. A longer line stops partway instead (the stall tests).
     test(
       "a line drawn 8 s late after an empty-box mismatch is submitted with Enter, never cleared or typed again",
       async () => {
         const cols = 80;
-        const prompt = longPrompt();
+        const prompt = MAGMUX_TYPES_ON_EVIDENCE ? "/model haiku" : longPrompt();
         const r = await startGatePane("answer", {
           shape: "one-shot",
           initialPrompt: prompt,
@@ -297,7 +304,9 @@ describe.skipIf(!MAGMUX)(
           60_000
         );
         expect(snapshot.state).toBe("COMPLETED");
-        expect(submissions(r).map(({ text }) => text)).toEqual([pointerOf(r)]);
+        expect(submissions(r).map(({ text }) => text)).toEqual([
+          MAGMUX_TYPES_ON_EVIDENCE ? prompt : pointerOf(r),
+        ]);
         expect(r.sends.filter(({ message }) => isTypedSend(message))).toHaveLength(1);
         expect(r.sends.filter(({ message }) => isClearSend(message))).toHaveLength(0);
         // the path ran: magmux read the box empty, and claudish's next send was Enter alone

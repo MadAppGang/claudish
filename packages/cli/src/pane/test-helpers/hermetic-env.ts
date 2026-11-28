@@ -41,6 +41,19 @@ export const FAKE_CHILD = join(import.meta.dir, "fake-interactive-child.ts");
 export const MAGMUX = findMagmuxBinaryOrNull();
 export const NO_MAGMUX_MESSAGE = "magmux not installed — not checked";
 
+/**
+ * The magmux under test writes each typed chunk of a gated send only once the box shows the
+ * chunks before it (0.20.4+, `capabilities: typed-verify` in `magmux --help`). An older one
+ * writes the whole line at a fixed pace. The two give different, both valid, delivery paths.
+ */
+export const MAGMUX_TYPES_ON_EVIDENCE =
+  MAGMUX !== null &&
+  /^\s*capabilities:.*\btyped-verify\b/m.test(
+    new TextDecoder().decode(
+      Bun.spawnSync([MAGMUX, "--help"], { env: { PATH: process.env.PATH ?? "" } }).stdout
+    )
+  );
+
 export interface PaneTestEnv {
   tmp: string;
   home: string;

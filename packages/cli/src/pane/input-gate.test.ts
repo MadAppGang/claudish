@@ -924,4 +924,24 @@ describe("a send magmux stopped partway (0.20.3 counts)", () => {
     expect(writtenPrefix(line, 9)).toBe(line);
     expect(writtenPrefix("ab\ncd", 2)).toBe("ab\n");
   });
+
+  // magmux 0.20.5 cuts a gated typed send so that every write but the last ends with a visible
+  // rune: whitespace at a write's end, and a write that is only whitespace, go with the next one.
+  test("writtenPrefix on magmux >= 0.20.5: whitespace travels with the next write", () => {
+    const spaceAtCut = `${"a".repeat(31)} ${"b".repeat(40)}`;
+    expect(writtenPrefix(spaceAtCut, 1, true)).toBe("a".repeat(31));
+    expect(writtenPrefix(spaceAtCut, 2, true)).toBe(`${"a".repeat(31)} ${"b".repeat(32)}`);
+    expect(writtenPrefix(spaceAtCut, 1)).toBe(`${"a".repeat(31)} `);
+    const blankWrite = `${"a".repeat(32)}${" ".repeat(32)}bbbbb`;
+    expect(writtenPrefix(blankWrite, 1, true)).toBe("a".repeat(32));
+    expect(writtenPrefix(blankWrite, 2, true)).toBe(blankWrite);
+    expect(writtenPrefix(blankWrite, 2)).toBe(`${"a".repeat(32)}${" ".repeat(32)}`);
+    expect(writtenPrefix("ab\ncd", 2, true)).toBe("ab\ncd");
+    expect(writtenPrefix("a\r\nb", 1, true)).toBe("a");
+    expect(writtenPrefix("a\r\nb", 2, true)).toBe("a\r\nb");
+    expect(writtenPrefix("ab  ", 1, true)).toBe("ab  ");
+    expect(writtenPrefix("   ", 1, true)).toBe("   ");
+    expect(writtenPrefix("a".repeat(100), 2, true)).toBe("a".repeat(64));
+    expect(writtenPrefix("a".repeat(100), 0, true)).toBe("");
+  });
 });

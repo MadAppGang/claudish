@@ -13,6 +13,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { writtenPrefix } from "./input-gate.js";
 import { PROMPT, T } from "./test-helpers/gated-delivery.js";
 import {
   DISPOSE_GATE_PANES_HOOK_MS,
@@ -22,7 +23,11 @@ import {
   startGatePane,
   submissions,
 } from "./test-helpers/gated-pane.js";
-import { MAGMUX, NO_MAGMUX_MESSAGE } from "./test-helpers/hermetic-env.js";
+import {
+  MAGMUX,
+  MAGMUX_TYPES_ON_EVIDENCE,
+  NO_MAGMUX_MESSAGE,
+} from "./test-helpers/hermetic-env.js";
 
 const STALL_MS = 12_000;
 
@@ -68,11 +73,27 @@ describe.skipIf(!MAGMUX)(
             message.noGate === true &&
             ((message.keys as string[] | undefined) ?? []).includes("ctrl-u")
         );
-        // the whole backlog is one copy: claudish sent one gated send, and magmux (>= 0.20.2)
-        // types a send once and never retypes it
+        // claudish sent one gated send while the box was unread, and magmux (>= 0.20.2) types a
+        // send once and never retypes it
         expect(typedUnseen).toHaveLength(1);
         expect(clearsUnseen).toHaveLength(0);
-        expect(copiesOf(stall.text, pointerOf(r))).toBe(1);
+        if (MAGMUX_TYPES_ON_EVIDENCE) {
+          // magmux wrote the first chunk and nothing more while the box did not show it, then
+          // stopped; once the stall ends the written part is drawn, cleared, and typed again
+          const first = r.sends[0]?.reply as Record<string, unknown> | undefined;
+          expect(first).toMatchObject({ ok: false, typingStopped: "deadline" });
+          expect(stall.text).toBe(writtenPrefix(pointerOf(r), first?.writes as number, true));
+          expect(stall.text.length).toBeLessThan(pointerOf(r).length);
+          expect(snapshot.anomalies).toContain("box_drawn_written_part");
+          const typed = r.sends.filter(
+            ({ message }) => typeof message.text === "string" && message.noGate !== true
+          );
+          expect(typed).toHaveLength(2);
+          expect(typed[1]?.at ?? 0).toBeGreaterThanOrEqual(stall.endedAt);
+        } else {
+          // magmux wrote the whole line at its fixed pace: the backlog is one copy
+          expect(copiesOf(stall.text, pointerOf(r))).toBe(1);
+        }
         expect(snapshot.state).toBe("COMPLETED");
         expect(submissions(r).map(({ text }) => text)).toEqual([pointerOf(r)]);
       },
@@ -111,10 +132,12 @@ describe.skipIf(!MAGMUX)(
       T
     );
 
-    // magmux types a long line in 32-rune writes 8 ms apart. Claude Code can read and draw
-    // the first writes and then stop reading: magmux then sees part of the line and answers
-    // text_mismatch with boxEmpty false. A ctrl-u and a second copy sent then would queue
-    // behind the unread tail and be read with it in one long read, where the ctrl-u is lost.
+    // magmux before 0.20.4 types a long line in 32-rune writes 8 ms apart. Claude Code can read
+    // and draw the first writes and then stop reading: magmux then sees part of the line and
+    // answers text_mismatch with boxEmpty false. A ctrl-u and a second copy sent then would
+    // queue behind the unread tail and be read with it in one long read, where the ctrl-u is
+    // lost. magmux 0.20.4+ writes the next chunk only once the box shows the ones before it, so
+    // it waits out the stall inside the send and finishes the line itself.
     test(
       "a stall after the first typed write: no ctrl-u and no second copy while the tail is unread, then Enter alone",
       async () => {
@@ -162,15 +185,23 @@ describe.skipIf(!MAGMUX)(
         );
         expect(typed).toHaveLength(1);
         expect(clears).toHaveLength(0);
-        expect(snapshot.anomalies).toContain("box_drawn_after_mismatch");
-        const enters = r.sends.filter(
-          ({ message, at }) =>
-            at >= stall.endedAt &&
-            message.noGate !== true &&
-            typeof message.text !== "string" &&
-            ((message.keys as string[] | undefined) ?? [])[0] === "enter"
-        );
-        expect(enters.length).toBeGreaterThanOrEqual(1);
+        if (MAGMUX_TYPES_ON_EVIDENCE) {
+          // the one send wrote every chunk and was answered only after the stall ended
+          const reply = typed[0]?.reply as { ok?: boolean; result?: Record<string, unknown> };
+          expect(reply?.ok).toBe(true);
+          expect(reply?.result?.writes).toBe(reply?.result?.writesTotal);
+          expect(typed[0]?.repliedAt ?? 0).toBeGreaterThanOrEqual(stall.endedAt);
+        } else {
+          expect(snapshot.anomalies).toContain("box_drawn_after_mismatch");
+          const enters = r.sends.filter(
+            ({ message, at }) =>
+              at >= stall.endedAt &&
+              message.noGate !== true &&
+              typeof message.text !== "string" &&
+              ((message.keys as string[] | undefined) ?? [])[0] === "enter"
+          );
+          expect(enters.length).toBeGreaterThanOrEqual(1);
+        }
         expect(snapshot.state).toBe("COMPLETED");
         expect(submissions(r).map(({ text }) => text)).toEqual([pointerOf(r)]);
       },

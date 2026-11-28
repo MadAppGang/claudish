@@ -539,13 +539,25 @@ let inputRender: ReturnType<typeof setTimeout> | null = null;
 let selfSubmit: ReturnType<typeof setTimeout> | null = null;
 let externalSubmitDone = false;
 
+/**
+ * The `self_submit` scenarios' "another writer": it presses Enter once the WHOLE line is in the
+ * box. A pointer line ends with its fixed sentence; a slash command (`/model haiku`) is one write.
+ * A partly typed line is drawn as it is, because magmux (>= 0.20.4) writes the next chunk only
+ * when the box shows the ones before it.
+ */
+function wholeLineTyped(box: string): boolean {
+  return box.startsWith("/") || box.endsWith("treating its content as the user's message.");
+}
+
 function drawInput(): void {
   if (inputRender) clearTimeout(inputRender);
   inputRender = null;
-  const selfSubmitting = scenario.startsWith("self_submit") && S.box && !externalSubmitDone;
+  const selfSubmitting =
+    scenario.startsWith("self_submit") && wholeLineTyped(S.box) && !externalSubmitDone;
   const historyWithheld = scenario === "self_submit_history_withheld";
-  // F14a must submit before the first verify read at 150 ms; never draw the exact text.
-  // F14b needs a non-exact prefix visible to verify before the box empties, with no history.
+  // F14a must submit before magmux's first verify read, 150 ms after its last write; never draw
+  // the whole line. F14b needs a non-exact prefix visible to verify before the box empties, with
+  // no history.
   S.drawnBox = selfSubmitting ? (historyWithheld ? S.box.slice(0, -1) : "") : S.box;
   render();
   if (selfSubmitting) {
