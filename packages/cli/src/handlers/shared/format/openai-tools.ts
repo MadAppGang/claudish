@@ -23,8 +23,10 @@ import { removeUriFormat } from "../../../transform.js";
  * compiles, and `\p{Cc}` raises "bad escape \p". The Unicode property escape is
  * the whole cause, so this list is the letters Python's `re` knows —
  * `\A \b \B \d \D \s \S \w \W \Z`, the character escapes, and `\x \u \U \N`.
- * Every non-letter escape (`\.`, `\\`, `\[`) and every digit backreference is
- * portable and is not listed.
+ * Every non-letter escape (`\.`, `\\`, `\[`) and every `\1`..`\9` backreference
+ * is portable and is not listed. `\0` is not: DeepSeek rejects `^[^\0]*$` with
+ * "is not a regex". A lone `\0` is rewritten to `\x00` first (see
+ * `rewriteNulEscapes`); a `\0` followed by digits is an octal escape and is dropped.
  */
 const PORTABLE_ESCAPE_LETTERS = new Set([
   "A",
@@ -64,6 +66,8 @@ export function isPortablePattern(pattern: string): boolean {
       const escaped = pattern[i + 1];
       // Consume the escaped character, or `\\p` reads as an opener for `p`.
       i++;
+      // `\0` is NUL or octal, not a backreference; strict engines reject it.
+      if (escaped === "0") return false;
       if (escaped && /[A-Za-z]/.test(escaped) && !PORTABLE_ESCAPE_LETTERS.has(escaped)) {
         return false;
       }
@@ -79,6 +83,30 @@ export function isPortablePattern(pattern: string): boolean {
   }
 
   return true;
+}
+
+/**
+ * Rewrite a lone `\0` (NUL) to `\x00`, which every engine measured accepts, so
+ * the constraint survives. `\0` followed by a digit is an octal escape: left
+ * alone, so `isPortablePattern` rejects it.
+ */
+export function rewriteNulEscapes(pattern: string): string {
+  let out = "";
+  for (let i = 0; i < pattern.length; i++) {
+    const char = pattern[i];
+    if (char === "\\" && i + 1 < pattern.length) {
+      const escaped = pattern[i + 1];
+      if (escaped === "0" && !/[0-9]/.test(pattern[i + 2] ?? "")) {
+        out += "\\x00";
+      } else {
+        out += char + escaped;
+      }
+      i++;
+      continue;
+    }
+    out += char;
+  }
+  return out;
 }
 
 /**
@@ -117,8 +145,9 @@ function stripUnportablePatterns(schema: any, path = "parameters"): any {
     const value = schema[key];
 
     if (key === "pattern" && typeof value === "string") {
-      if (isPortablePattern(value)) {
-        result[key] = value;
+      const rewritten = rewriteNulEscapes(value);
+      if (isPortablePattern(rewritten)) {
+        result[key] = rewritten;
       } else {
         log(`[OpenAITools] Dropped unportable pattern at ${path}: ${value}`);
       }
