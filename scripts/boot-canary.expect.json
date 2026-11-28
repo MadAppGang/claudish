@@ -8,5 +8,30 @@
   "bypass": { "boot": "dialog:bypass", "registry": "absent" },
   "mcp": { "boot": "choice", "registry": "absent" },
   "settingserr": { "boot": "choice", "registry": "absent" },
-  "nokey": { "boot": "repl", "registry": "idle" }
+  "nokey": { "boot": "repl", "registry": "idle" },
+  "pluginprobe": {
+    "boot": "init",
+    "probe": "ok",
+    "plugins": "installed",
+    "productionRequests": 0,
+    "modelRequests": 0,
+    "realTurns": 0,
+    "sideEffects": "none",
+    "exit": "0",
+    "result": "turns:0",
+    "policySources": "known",
+    "providerSwitches": "known",
+    "policyGate": "open",
+    "answer": "effort-usage",
+    "login": "subscription",
+    "probeLogin": "none",
+    "handoff": "unread",
+    "handoffControl": "read",
+    "unixSocket": "unused",
+    "runnerSocket": "unused",
+    "commandSettings": "known",
+    "userHelperGate": "user_command_setting",
+    "restrictedMode": "matches",
+    "safeMode": "refused"
+  }
 }

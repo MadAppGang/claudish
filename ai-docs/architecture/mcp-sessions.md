@@ -194,7 +194,9 @@ every runtime file (`output.log`, `events.jsonl`, `tokens.json`, `waits.jsonl`, 
   "timeoutSeconds": 600,             // effective: min(requested ?? 600, 3600)
   "claudeSessionId": "<the child's uuid>",
   "setupFrom": "/abs/caller/project", // OPTIONAL — present only when the child inherits a settings layer
-  "inheritedMcpServers": ["linear"]   // OPTIONAL — server NAMES in inherited-mcp.json, never their definitions
+  "inheritedMcpServers": ["linear"],  // OPTIONAL — server NAMES in inherited-mcp.json, never their definitions
+  "inheritedPlugins": [{ "id": "dev@magus", "version": "9.8.2" }], // OPTIONAL — plugins handed over with --plugin-dir: ids and versions, never paths
+  "pluginProbe": "ok"                 // OPTIONAL — present when the plugin probe was due: ok, its fail-closed cause, or why none started (plugin_url, managed_policy_present, await_initialize, caller_argv_unreadable, caller_env_unreadable, caller_settings_unreadable, caller_mode_unmodelled, setup_from_not_caller, work_dir_command_setting, caller_command_setting, user_command_setting)
 }
 ```
 
@@ -417,6 +419,120 @@ What `createSession` does now (`mcp-session/inherited-settings.ts`, `session-man
   `claude-runner-settings-mode.test.ts` pins umask 022, because a runner with umask 077 passes
   the old code. Overlays left behind by older versions are MTL-258.
 
+#### The managed policy sources claudish reads
+
+Both handovers below (`inherited-mcp.json` and `--plugin-dir`) depend on the managed policy, under
+two different rules, because a wrong guess costs different things:
+
+- **`inherited-mcp.json` refuses only where Claude Code itself would, except the server-managed
+  cache** (see Known limits) (`readManagedPolicy`, once per `create_session`):
+  `disableSideloadFlags: true` in a source Claude Code reads, a managed `managed-mcp.json`, or a
+  Windows policy key that holds a `Settings` value or cannot be queried. A source Claude Code
+  skips is skipped as absent. The cache is the exception: claudish reads a cached
+  `remote-settings.json` as in effect, where Claude Code first checks the cache's signature and
+  the stored copy's trust, and applies no cache at all on a machine with no stored login (measured
+  below). On such a machine a cached `disableSideloadFlags: true` withholds servers Claude Code
+  would have accepted. Withholding the servers there would change a
+  same-repository child's argv for nothing (a linked worktree of the caller's repository gets
+  `--mcp-config` too).
+- **The plugin probe starts only on a machine with no managed policy source at all**
+  (`managedPolicySourcePresent`): any source that exists in any form, readable or not, is enough,
+  and Windows and WSL never get one. A wrong guess there hands over a plugin copy, or runs a
+  managed hook in a probe, so the probe needs almost no format knowledge. The one exception is
+  the server-managed cache: Claude Code writes a two-byte `{}` `remote-settings.json` for an
+  ordinary login (this Mac's, mode 0600, written by Claude Code on 26 Nov), and counting it as
+  present refused every probe on such a machine, which is to say the fix did nothing there. A
+  `remote-settings.json` that is a regular file (not a symlink) of at most 8 MiB holding one
+  JSON object whose every key starts with `$` counts as absent: Claude Code drops `$`-prefixed
+  keys other than `$schema` as metadata before it applies the cache (2.1.332:
+  `function _Vr(e){let n=js(e,(r,a)=>a.startsWith("$")&&a!=="$schema");…}`), and `$schema` sets
+  nothing. Anything else there (a key without `$`, an unparsable file, a non-object, an
+  oversize file, a folder, a symlink) stays present. The gate checks the config dir each probe
+  uses: the child probe runs in work_dir under the server's environment, the caller probe in the
+  caller's own launch directory (the MCP host's cwd) under the caller's own `CLAUDE_CONFIG_DIR`
+  (read from the host process, below), and a relative `CLAUDE_CONFIG_DIR` resolves against each
+  cwd, so a source in either config dir stops both. setup_from's config dir under the server's
+  environment is checked too.
+
+In Claude Code's priority order:
+
+| Source | Path | `inherited-mcp.json` reads it as | Probe gate |
+|---|---|---|---|
+| server-managed | `remote-settings.json` in the config dir (`CLAUDE_CONFIG_DIR`, else `~/.claude`, resolved against work_dir; for the probe gate also against setup_from and the caller's launch directory) | a regular file of at most 8 MiB, one JSON object; else skipped | present, unless a regular file of at most 8 MiB holding one object whose keys all start with `$` (`{}` included) |
+| per-user MDM | `/Library/Managed Preferences/<user>/com.anthropic.claudecode.plist` (macOS) | `/usr/bin/plutil -convert json -o - -- <file>`, at most 5 s (then `SIGKILL`) and 2 MiB of output, one JSON object. When the conversion fails, `plutil -lint -s -- <file>`: a plist that lints (a date or data value) is skipped, a damaged one that can be opened is taken and sets nothing. A plist that converts, or is taken damaged, is the only one read: the device plist after it is not | present |
+| device MDM | `/Library/Managed Preferences/com.anthropic.claudecode.plist` (macOS) | the same, only when the per-user plist is missing or skipped | present |
+| file | `managed-settings.json`, then the drop-ins of `managed-settings.d` (`.json`, not dot files, sorted) | a regular file, one JSON object, else skipped; a file over 8 MiB withholds (claudish found no evidence that Claude Code skips it) | present; ANY entry of `managed-settings.d`, one Claude Code skips included |
+| `managed-mcp.json` | beside `managed-settings.json` | present: withholds | present |
+| hybrid sign-in cache | `<config dir>/state/hybrid-settings*.json` | not read | present (a `state` folder that cannot be listed counts as present) |
+| Windows registry | `HKLM\SOFTWARE\Policies\ClaudeCode`, `HKCU\SOFTWARE\Policies\ClaudeCode` | `%SystemRoot%\System32\reg.exe query <key> /v Settings`, 5 s: exit 0 with a `Settings REG_*` line withholds, exit status 1 (`reg`'s failure status) with no such line is absent, anything else (a timeout, a failure to run, another status) withholds. Absence is read by status, never by the message: `reg` prints it in the system's language, and matching the English text withheld every same-repository `--mcp-config` on a non-English Windows. A key `reg` cannot read (access denied) also exits 1 and reads as absent; Claude Code reads the policy with the same `reg` query and applies nothing it cannot read either | Windows: no probe |
+
+Presence is `lstat`: anything at the path counts (a dangling symlink, a named pipe, a folder), and
+only `ENOENT`/`ENOTDIR` is absence. Nothing a probe gate sees is opened, but the one
+`remote-settings.json` that is a regular file small enough to tell whether it sets anything
+(above). For `inherited-mcp.json`, a
+source that is not a regular file (a named pipe is never opened or handed to plutil), cannot be read,
+is not JSON or not a JSON object, a plist that lints but plutil cannot convert, a device plist behind a
+per-user plist that converted, a remote cache over 8 MiB and a
+drop-in folder that cannot be listed are all skipped, as Claude Code skips them (2.1.332: a document
+it cannot read is "Managed settings document (${e}) could not be read: ${n}; none of its settings are
+in effect"; plutil's failures are `unreadReason`s such as "it holds a value plutil cannot convert to
+JSON"; the remote cache "Disk cache exceeds ${St} bytes; ignoring it as if absent", and a cache that
+is not a plain object reads as `null`). Every gate reads ALL present sources and refuses on any of
+them, so it holds under both of Claude Code's composition modes. The tests inject every path through
+`ManagedPaths` (`managedPreferencePlists`, `remoteSettingsFile`, `hybridSettingsDir`,
+`registryPolicyKeys`, and the `readPlist` and `readRegistry` seams); `remoteSettingsFile: null` and
+`hybridSettingsDir: null` are the production values, derived from the child's environment.
+
+The hybrid sign-in cache, from the bundle: `function CVr(){{let e=Ua();if(e!==null)return
+Un(e,"state",`hybrid-settings${xH()}.json`)}return null}`, read by `ceo()` (its `settings`,
+`organizationUuid`, `pluginLocksByUrl`) and seeded into the policy layer by `zAe()` when the account's
+`hybridOrganizationUuid` matches. When a real account writes it was not measured (it needs a gateway
+or hybrid organisation sign-in); the probe gate needs only its presence. The canary turns red when
+the pinned binary no longer holds `hybrid-settings`, `remote-settings.json`,
+`com.anthropic.claudecode`, `managed-settings.json`, `managed-settings.d` or `managed-mcp.json` as a
+whole quoted string (`"…"`, `'…'` or a template literal). It used to search for the bare text, so a
+rename to `new-remote-settings.json` passed: the old name survived inside the new one. Each of the
+six is a double-quoted literal in 2.1.332. Two things the check still cannot see: a wholly new
+source under a new name, and a rename of the reader while the old quoted name survives elsewhere
+(2.1.332 also lists `"remote-settings.json"` in the signature cleanup list, `Uwa=["remote-settings.json",
+"policy-limits.json"].map(Ayt)`). Tying each name to its reader's code would key on minified names
+that change with every release, so it is not done.
+
+Read from the 2.1.332 bundle. The plist list, per-user first and only for a safe user name:
+
+```js
+var r="com.anthropic.claudecode",s="ClaudeCode",AXt=`HKLM\\SOFTWARE\\Policies\\${s}`,E6r=`HKCU\\SOFTWARE\\Policies\\${s}`,
+  CZn="Settings",Pwa="/usr/bin/plutil",zed=["-convert","json","-o","-","--"],Ved=["-lint","-s","--"],EGo=5000,jqs=60000,Gqs=2097152
+function Yed(){let e="";try{e=i().username}catch{}let o=[],n=/[/\x00-\x1f\x7f]/.test(e);
+  if(!["",".",".."].includes(e)&&!n)o.push({path:`/Library/Managed Preferences/${e}/${r}.plist`,label:c});
+  return o.push({path:`/Library/Managed Preferences/${r}.plist`,label:"device-level managed preferences"}),o}
+```
+
+The first plist that answers wins (`o6r`): each plist is checked with `access(R_OK)` (`ENOENT`
+skips it), converted with `plutil -convert json`, and on a failed conversion linted with
+`plutil -lint -s`: a plist that lints is unconvertible and answers `null`, a damaged one answers
+`{stdout:""}`. Then the list is cut after the first answer,
+`u=o.findIndex((s)=>s.stdout!==null);return{plistStdouts:u===-1?o:o.slice(0,u+1),...}`, so a
+per-user plist that converts without any policy key still hides the device plist.
+`readManagedPolicy` does the same, and `inherited-settings.test.ts` pins it: a per-user plist
+without `disableSideloadFlags` beside a device plist that sets it keeps `--mcp-config`. The probe
+gate stays presence-based, so any plist present refuses a probe, the device one included.
+
+A plist that is present but unreadable is "Managed settings document (${e}) could not be read:
+${n}; none of its settings are in effect." The composition, from the `managedSourcesBehavior`
+schema text: `"first-wins" (default): the highest-priority source present (server-managed > MDM
+(managed plist / HKLM) > managed-settings.json) is the managed tier alone. "merge": every present
+source deep-merge…`. The server-managed cache: `u0t="remote-settings.json"`,
+`function jV(){return bH()??Un(nt(),u0t)}`, read as a plain object
+(`let a=Z(Ei(r));if(!a||typeof a!=="object"||Array.isArray(a))return null;`) and ignored over
+`St=8388608` bytes ("Disk cache exceeds ${St} bytes; ignoring it as if absent"); `$`-prefixed keys
+other than `$schema` are metadata. Measured on 2.1.332, isolated config with no stored login: a
+`remote-settings.json` holding a `SessionStart` hook did NOT run it under the plugin probe's argv,
+so without a login Claude Code does not apply the cache; with an organisation login it was not
+measured (no such account in an isolated config). The MDM plists were not measured live: writing
+under `/Library` needs root, and the tests never touch it. A binary plist converted by the real
+plutil is read in `plugin-probe.test.ts` and `inherited-settings.test.ts` (macOS only).
+
 #### The caller's cwd-bound MCP servers: `inherited-mcp.json`
 
 Two MCP scopes are found from Claude Code's cwd, so a child in another directory can lose them:
@@ -456,17 +572,24 @@ reads it from policy settings only (`yD(){return he("policySettings")?.disableSi
 a restrictive key, so a `true` in the base file or any drop-in wins over a `false` elsewhere) and
 exits at startup on a non-sdk `--mcp-config` (`dt=yD()&&!MHi(lt);if(dt&&!we){let
 st=EIt(["--mcp-config"]);return cm(st),...Yn(void 0,void 0,"sideload_flags_disabled")}`), so
-claudish builds no `inherited-mcp.json` while `managed-settings.json` or a drop-in sets it, and
-logs the file's path.
+claudish builds no `inherited-mcp.json` while any managed policy source sets it (the
+server-managed `remote-settings.json`, a managed preference plist, `managed-settings.json` or a
+drop-in; see "The managed policy sources claudish reads" above), and logs that source's path.
+Before the plists were read, an MDM `disableSideloadFlags` passed this gate and the child exited
+at startup on the inherited `--mcp-config`. **A managed source Claude Code skips is skipped here
+too** (above): an earlier rule withheld the servers beside any source claudish could not read, and
+so changed the argv of a same-repository child (a linked worktree outside `setup_from`'s tree) beside
+a malformed plist, an oversize remote cache, or on any Windows machine, where Claude Code itself
+would have accepted `--mcp-config`.
 
 - **`.mcp.json` servers, only when `work_dir` is not within `setup_from`** (`isWithin`: realpaths,
   compared by path segment, so `/a/bc` is not within `/a/b`). The `.mcp.json` of every folder
   Claude Code's walk-up from `setup_from` reads (`mcpJsonWalkDirs`), the nearest file winning a
   name clash, minus every name in `disabledMcpjsonServers` from the inherited settings layer, the
   `.claude.json` project entry, the user settings file (`userSettingsFile`:
-  `<CLAUDE_CONFIG_DIR>/settings.json`, else `$HOME/.claude/settings.json`) and the managed
-  settings (`managed-settings.json`, then every drop-in in `managed-settings.d`), because a
-  `--mcp-config` server bypasses that list (M5). Inside the tree the child's own walk-up already
+  `<CLAUDE_CONFIG_DIR>/settings.json`, else `$HOME/.claude/settings.json`) and every managed
+  policy source (the remote settings, both plists, `managed-settings.json`, then every drop-in in
+  `managed-settings.d`), because a `--mcp-config` server bypasses that list (M5). Inside the tree the child's own walk-up already
   finds them.
 - **The walk-up, as the 2.1.332 bundle walks it** (`MHt`, case `"project"`):
 
@@ -595,8 +718,9 @@ the file (an unreadable one says "cannot be read", not "not valid JSON"), as Cla
 it. No message carries the parser's text, for `.mcp.json` and settings files alike: Bun's
 message quotes the rejected token (`JSON Parse error: Unexpected identifier "<token>"`), which is
 a credential when the unquoted value is a header or key. An unreadable or malformed
-`.claude.json`, user settings or managed settings file is skipped the same way, and never fails
-the call. A malformed settings file of the inherited layer (`settings.json`,
+`.claude.json` or user settings file is skipped the same way, and never fails the call. An
+unreadable or malformed managed policy source is skipped, as Claude Code skips it (above), and
+never fails the call either. A malformed settings file of the inherited layer (`settings.json`,
 `settings.local.json`, a `--settings` value) still fails the call as `invalid_args` naming it.
 User-scope servers are global and need nothing.
 
@@ -613,13 +737,13 @@ Known gaps in the managed and walk-up reads, against the 2.1.332 bundle:
   `managedSettingsPath()` uses `%PROGRAMDATA%\ClaudeCode`. On Windows the `managed-mcp.json`
   check and the managed disabled lists therefore read the wrong directory. Panes do not run on
   Windows, so no session reaches this today.
-- **MDM-held managed settings.** Claude Code also takes managed settings from MDM documents (the
-  macOS managed preferences `/Library/Managed Preferences/<user>/com.anthropic.claudecode.plist`,
-  the Windows policy key `HKLM\SOFTWARE\Policies\ClaudeCode`). claudish reads only the files, so
-  a `disabledMcpjsonServers` delivered through MDM does not withhold an inherited server.
-  Claude Code's enterprise `deniedMcpServers` check still applies to `--mcp-config` servers.
-- **The WSL second managed directory.** Under WSL Claude Code also reads
-  `/mnt/c/Program Files/ClaudeCode` (`SH`); claudish reads only `/etc/claude-code`.
+- **The Windows registry policy.** claudish checks only that a key holds a `Settings` value
+  (above), and withholds the servers when one does: it does not parse the value. One `reg.exe` run
+  per key per `create_session`. Panes do not run on Windows, so no session reaches this today.
+- **The WSL second managed directory.** Under WSL with `wslInheritsWindowsSettings` Claude Code
+  also reads `/mnt/c/Program Files/ClaudeCode` (`SH`) and the registry through
+  `/mnt/c/Windows/System32/reg.exe`; the `inherited-mcp.json` gate reads only `/etc/claude-code`.
+  The plugin probe never runs on WSL.
 - **An invalid nearer server entry.** Claude Code validates each server entry of a `.mcp.json`
   before it merges the walk-up, so an invalid nearer definition does not hide a valid farther
   one of the same name: the farther one runs. claudish merges the definitions unvalidated, so
@@ -650,10 +774,799 @@ definition used:
 - `claude mcp list` ignores `--mcp-config`, and the flag is variadic, so it is never followed by
   a positional (`checkChildFlags` refuses positionals).
 
-Known gaps, not carried: exact plugin versions, and the MCP servers plugins bundle, outside the
-repo (needs per-row `--plugin-dir`, E13, which depends on Claude Code's undocumented install-row
-keying); project `.claude/skills` and `.claude/commands`; project hooks with relative paths,
-which resolve against `work_dir`. `team` needs none of this: its slots run in the server's cwd.
+#### The caller's plugin copies: `--plugin-dir`
+
+Claude Code picks a plugin's copy from its OWN launch directory (the install rows that apply to
+its real cwd), not from the settings that enable the plugin. So a child whose cwd applies other
+rows loads another version of a plugin the caller loads, or none: outside the repository, in a
+separate repository nested inside the caller's tree, and in a subfolder of a `setup_from` that is
+not in Git. Rather than re-implement that choice (install-row keying, file order, the settings
+merge, managed marketplace policy, a plugin its marketplace dropped, naming), `createSession` asks
+Claude Code: `inheritedPluginsFor` (`mcp-session/plugin-probe.ts`) starts it twice, quietly, and
+reads which copies each launch loads.
+
+**When it runs.** Only when the handover can matter: `setup_from` is set and `work_dir` does not
+share its main checkout (`sharesMainCheckout` in `inherited-settings.ts`; outside Git a folder is
+its own key, so a subfolder of a non-Git `setup_from` is probed). A subfolder or a linked worktree
+of the same repository applies the same rows: no probe, and the argv is byte-for-byte what it was.
+No probe runs, and nothing is handed over, in the cases below, checked in this order, each recorded
+as `pluginProbe` and logged once with the flag, the source, the platform or the host pid (never a
+value or a url).
+
+| `pluginProbe` | When | Why |
+|---|---|---|
+| `plugin_url` | the child's flags, or the caller's own launch, pass `--plugin-url` (either spelling) | the probes never get `--plugin-url` (below), so a marketplace copy a url plugin shadows would look loaded and be handed over |
+| `managed_policy_present` | the child's flags or the caller's launch pass `--managed-settings`; the machine is Windows or WSL; or a managed policy source exists in the config dir of setup_from or work_dir (the server's `CLAUDE_CONFIG_DIR`), of the caller's launch directory (the caller's), or at a machine path (the "Probe gate" column of "The managed policy sources claudish reads") | below |
+| `await_initialize` | the child's flags or the caller's launch pass `--await-initialize`, `--initialize-fields` or `--managed-settings-in-initialize` (either spelling) | under these Claude Code reads its first stdin line as an `initialize` request that can carry inline plugins (`--plugin-dir` entries "so the launch command line does not grow with the plugin count"), MCP servers ("the stdin form of one --mcp-config item"), settings (`--initialize-fields=settings`: "applies them as it applies --settings") and managed settings (`--managed-settings-in-initialize`). None of that is in the argv, so no probe can model it. 2.1.332 treats any of the three as that mode (`ye()`: `--managed-settings-in-initialize`, then `--initialize-fields`, then `--await-initialize`); `claude plugin configure --values-stdin` is a subcommand, never a session launch |
+| `caller_argv_unreadable` | the caller's process (the MCP host) has no argv claudish can read exactly, or is not a Claude Code launch whose argv holds its flags | the caller probe must be started with the caller's own launch flags (below) |
+| `caller_env_unreadable` | the caller's launch environment cannot be read, or one of its listed keys (`CLAUDE_CONFIG_DIR`, a plugin variable, a launch mode switch) is not exact UTF-8 | the caller probe must use the caller's config dir, which decides its install rows and user settings, and the caller's plugin variables and mode switches (below) |
+| `caller_settings_unreadable` | the caller's own last `--settings` (inline JSON, or a path resolved against the host's cwd), or a user, project or local settings file whose `env` block the caller applies (below), cannot be read or parsed, is not a regular file, is not an object, or holds an `env` that is not one | it may turn a plugin off, or set a launch mode switch the gate below must see |
+| `caller_mode_unmodelled` | the caller runs in safe mode (`--safe-mode` before any `--`, or `CLAUDE_CODE_SAFE_MODE` on in its effective environment, below) or bare mode (`--bare`, or `CLAUDE_CODE_SIMPLE`), with "on" as 2.1.332's `He()` reads it: `1`, `true`, `yes` or `on`, any case, trimmed. Also: cowork plugins mode, `CLAUDE_CODE_USE_COWORK_PLUGINS` on in the caller's launch environment or in ANY of its settings `env` layers (a later `0` never clears it, below), in the server's environment (the child's spawn environment), in the inherited layer's `env`, or in the `env` of a settings file the child probe reads, or `--cowork` in either launch's flags; a caller settings `env` block that sets `CLAUDE_CONFIG_DIR` to another value than the launch's; and a caller settings `env` block that sets `CLAUDE_CODE_RESTRICTED` to a value whose on/off reading differs from the launch's (`--restricted` before any `--`, or the launch environment's value) | measured on 2.1.332: safe and bare mode keep the init `plugins` list unchanged but run none of those plugins' commands or skills (`if(Jo("plugins",{explicitlyRequested:…}))return[]`), so the probe would list copies the caller does not run, and a child handed them by `--plugin-dir` would run them. Restricted mode is not refused: it changes the list itself, and the caller probe gets the caller's LAUNCH switch (`restrictedMode` in the canary); only a settings layer that reads it otherwise refuses, since the caller chose its sources before that layer applied (below). Cowork plugins mode moves the plugin folder to `cowork_plugins` and the user settings file to `cowork_settings.json` (`ws(e){if(e.coworkPlugins\|\|s.CLAUDE_CODE_USE_COWORK_PLUGINS)return LO.cowork;return LO.default}` with `LO={default:"settings.json",cowork:"cowork_settings.json"}`); claudish does not model `cowork_settings.json`, so its helper gate would check the wrong file. The other way into that mode, `eqo(){return n().host.settingsSource.useCoworkPlugins()}`, is set only by `Are(!0)`, which only the `claude plugin …` and `claude plugin marketplace …` subcommands call, on their own `--cowork` (`if(o.cowork)Are(!0)`, 16 sites), never a session launch |
+| `setup_from_not_caller` | setup_from and the caller's launch directory (the host's cwd) do not share a main checkout; outside Git, they are not the same folder | the inherited settings layer comes from setup_from, so it describes the caller only when the caller runs in that repository. `setup_from` accepts any existing directory: one in another repository, back when the caller probe ran in setup_from, listed that repository's project-installed copies, which the caller never loaded, and they were handed over. The caller probe now runs in the caller's own launch directory (below), and this refusal stays |
+| `work_dir_command_setting` | work_dir's project `settings.json` or a local settings file of a launch there, or the project settings of the child's last `--project-config-root` (resolved against work_dir), sets a command-valued setting (below), or cannot be parsed | the work_dir is not trusted, and `-p` skips the trust dialog the pane child stops at |
+| `caller_command_setting` | the caller's launch directory's project `settings.json` or a local settings file of a launch there, or those of the caller's last `--project-config-root` (resolved against that directory), sets `apiKeyHelper`, `otelHeadersHelper`, `proxyAuthHelper`, `awsAuthRefresh`, `awsCredentialExport`, `gcpAuthRefresh` or `policyHelpers`, or cannot be parsed (a file the caller loads that cannot be parsed already answers `caller_settings_unreadable` above) | the caller trusted that directory, so the caller probe's boot would run such a helper (below) |
+| `user_command_setting` | the user `settings.json` a probe loads (in that probe's config dir: its own environment's `CLAUDE_CONFIG_DIR`, else `~/.claude`, resolved against its cwd; skipped for a probe whose `--setting-sources` leaves out `user`) sets `apiKeyHelper`, `otelHeadersHelper`, `proxyAuthHelper`, `awsAuthRefresh`, `awsCredentialExport`, `gcpAuthRefresh` or `policyHelpers`, or cannot be parsed | user settings are trusted, so no dialog stops a helper there, and a probe needs no credential (below) |
+
+**Why no probe beside any managed policy.** A managed policy reaches into a probe in ways its flags
+cannot close. Managed hooks run despite the probe's `disableAllHooks`: in 2.1.332 the function that
+picks the settings hooks reads managed settings first,
+
+```js
+function r(){let o=he("policySettings");if(o?.disableAllHooks===!0)return{};
+  if(o?.allowManagedHooksOnly===!0||ms())return o?.hooks??{};if(zl("hooks"))return o?.hooks??{};
+  let t=dr();if(t.disableAllHooks===!0){if(!dNr())return o?.hooks??{};return l()} ...
+```
+
+so `allowManagedHooksOnly`, or even a plain managed `hooks` block, runs before init, too early to
+stop. A managed `env` outranks the probe's closed `env` block. A managed `forceLoginOrgUUID` runs an
+organisation check against the stored login before init. A managed `policyHelpers` entry runs a
+helper whose policy is applied before init. A gate per key leaves the next path open (a policy
+helper, the WSL Windows chain and the hybrid sign-in cache are three); a gate that reads no key at
+all has nothing left to miss. The cost: on a managed machine the
+child gets no plugin copy, and `pluginProbe` says why.
+
+**The caller's own launch, read from the host process.** The caller probe must load what the caller
+loads, so it gets the caller's launch flags, not the child's: a caller started with
+`--settings` that turns off a project-installed `alpha@m`, probed with the child's flags instead,
+listed `alpha@m`, and the outside child (which has no install row for it) was handed the copy the
+caller had turned off. The MCP host is the caller's Claude Code process; `SessionManager` already
+knows its pid (`hostPidFrom`: our parent, or the npm launcher's parent; `spawn.json` `hostPid`), and
+`readHostLaunch` (`mcp-session/host-launch.ts`) reads its argv and cwd exactly:
+
+| Platform | argv | cwd |
+|---|---|---|
+| macOS | `sysctl(CTL_KERN, KERN_PROCARGS2, pid)` through `bun:ffi` on libSystem: `int argc`, the exec path NUL-padded to a multiple of 8 bytes, then `argc` NUL-terminated arguments (`argvOfProcargs`). Measured on this Mac for exec paths of every length mod 8: argv[0] starts exactly at that aligned end. An empty argv[0] (`perl -e 'exec {"/bin/sleep"} "", "30"'`) puts one more NUL there; the old parser skipped every NUL after the path, took that empty argument for padding, read argv[1] as argv[0] and the first environment entry as the last argument. Now a NUL at the aligned start, a non-NUL byte in the padding, or a buffer that ends early reads as null | `proc_pidinfo(pid, PROC_PIDVNODEPATHINFO)`: the NUL-ended path in the 1024-byte field at byte 152 of the 2352-byte `proc_vnodepathinfo` (`cwdOfVnodePathInfo`). The NUL is looked for inside that field only: a field with none is null, where the old scan accepted the next struct's first byte as its end |
+| Linux | `/proc/<pid>/cmdline`, NUL-separated (`argvOfCmdline`). Unreadable: one that does not end in NUL, and a rewritten process title, read as arguments after `argv[0]` that are all empty. 2.1.332 sets `process.title="claude"` unless `CLAUDE_CODE_DISABLE_TERMINAL_TITLE` is set, and on Linux the title is written over the argv area with NULs after it, so `claude\0\0…` ends in NUL and would otherwise read as a launch with only empty flags: the caller probe would run without the caller's `--settings`. Not measured on Linux; on macOS `KERN_PROCARGS2` keeps the original argv (`ps` shows live sessions' full argv) | the `/proc/<pid>/cwd` link |
+| elsewhere | none: `caller_argv_unreadable` | |
+
+**The caller's launch environment keys.** `readHostLaunch` also reads a FIXED list of keys of the
+host's launch environment (`CALLER_LAUNCH_ENV_KEYS`, `probe-launch-vars.ts`): `CLAUDE_CONFIG_DIR`,
+the plugin variables (`PROBE_PLUGIN_VARS`) and the launch mode switches (`PROBE_MODE_VARS`, both
+tables below). On macOS they come from the environment strings that follow argv in the same
+`KERN_PROCARGS2` buffer, up to the empty string before the apple strings (`hostEnvOfProcargs`); on
+Linux from `/proc/<pid>/environ` (`hostEnvOfEnviron`); the first copy of a key wins, as `getenv`
+reads. Every other entry is compared by its key prefix and dropped, and no value is ever logged.
+The server's values are not the caller's: the MCP server may run with any of them set by an `env`
+in its server definition, and 2.1.332 removes several from what it hands the processes it starts
+(`Y1a(e)` deletes `S=["CLAUDE_CODE_SAFE_MODE","CLAUDE_CODE_SIMPLE","CLAUDE_CODE_RESTRICTED",...[]]`,
+then the same function deletes `CLAUDE_CODE_PLUGIN_DIRS`, `CLAUDE_CODE_SKIP_PLUGIN_LOCAL_MCP_SERVERS`
+and `CLAUDE_CODE_SKIP_PLUGIN_MCP_BUNDLES`). So the caller probe gets the caller's value of every
+listed key, or none when the caller was started without it, never the server's (`callerEnvOf`);
+the child probe keeps the server's, as the child does. A buffer with no environment terminator, a
+listed value that is not exact UTF-8, or an unreadable `environ` refuses (`caller_env_unreadable`).
+macOS shows no environment for a platform binary (`/bin/sh`, `/bin/sleep` read as null), but does
+for Claude Code; `host-launch.test.ts` reads a live Bun child whose environment holds a second,
+secret-looking key and gets only `CLAUDE_CONFIG_DIR` back. The same read takes
+`CLAUDE_CODE_USE_COWORK_PLUGINS` (`HOST_READ_ENV_KEYS`), only to refuse: it is never handed to a
+probe.
+
+**The caller's effective environment** (`callerEffectiveEnv`, `plugin-probe.ts`). The launch
+environment is not what the caller runs under: 2.1.332 applies each settings `env` block to
+`process.env` before it loads plugins, so a switch set only in the caller's `--settings` is on.
+The order, from the bundle:
+`ks=["userSettings","projectSettings","localSettings","flagSettings","policySettings"]`, filtered by
+`Jr(){let e=HNt(),…let t=new Set(e);t.add("flagSettings"),t.add("policySettings");let o=ks.filter((i)=>t.has(i));…}`
+(the enabled sources, plus flag and policy always), then the full pass
+`for(let H of Jr()){let F=this.filterSettingsEnv(he(H)?.env,H,…);if(eK(H)){…Object.assign(process.env,F);…}else this.assignFromAboveTheRepository(F)}`
+with `assignFromAboveTheRepository(e){Object.assign(process.env,e);…}`: user, project, local,
+flag (`--settings`, file or inline JSON), managed, each over the launch environment and a later one
+winning. A `-p` boot runs that pass before plugins load (`if(ge()){T1();…` precedes
+`plugin_init`); the interactive boot runs it once the folder is trusted. Managed is never read
+here: no probe runs beside a managed policy source. Restricted mode empties the first three
+(`qNs(){…if(Zv("--restricted")\|\|ILe())m(""),…}`), as does a `--setting-sources` that leaves one
+out. So claudish reads the caller's user settings (in its own config dir), its project and local
+settings (its launch directory and its last `--project-config-root`) and its `--settings`, each
+only when the caller loads that tier, and from each `env` block only the keys it needs; no value is
+logged. A missing file is skipped; one that is not a regular file, or cannot be read or parsed,
+refuses (`caller_settings_unreadable`). Each file is opened `O_RDONLY | O_NONBLOCK`, `fstat`ed on the
+open descriptor and read from it, so a named pipe swapped in between the check and the read
+never blocks the server; the command setting gates read their files the same way. A string value is kept, a number
+or boolean as its string, anything else dropped, as 2.1.332's `K()` does.
+
+A project or local block may not apply: 2.1.332 drops many keys a project's settings set
+(`pt(e,n,r,E,_,f){if(!e\|\|!eK(n))return e;…if(!z(S)\|\|…)continue;…delete g[S]…}`, "project-scoped
+settings can't set this key"; `CLAUDE_CODE_SAFE_MODE`, `CLAUDE_CODE_SIMPLE`, `CLAUDE_CONFIG_DIR`,
+`CLAUDE_CODE_PLUGIN_CACHE_DIR`, `_SEED_DIR` and `_DIRS` are among the listed names, not every
+switch is). claudish does not model that filter. The mode gate counts a switch on when it is on
+in ANY order of applying or dropping each project and local block, keys compared in any case: a
+project `1` refuses, and a project `0` does not clear a user `1`. The caller probe is given the
+launch value of each `CALLER_LAUNCH_ENV_KEYS` key with the user and `--settings` values over it
+(exact names, the later winning), so a plugin variable set only in `--settings` reaches the
+probe; project and local values are left to the probe's own boot, which reads the same files and
+applies Claude Code's own filter. `CLAUDE_CONFIG_DIR` and `CLAUDE_CODE_RESTRICTED` always stay the
+launch's (below); `CLAUDE_CONFIG_DIR` decides where the user settings were read, and a settings block that sets it to another value refuses
+(`caller_mode_unmodelled`).
+
+**Two switches act at launch only.** 2.1.332 picks the setting sources inside
+`eagerLoadSettings`, before any settings `env` block applies:
+`function sea(){…ds("eagerLoadSettings_start");let r=J_("--settings");if(r)VNs(r);let g=J_("--managed-settings");if(g)KNs(g);qNs(),v(),ds("eagerLoadSettings_end")…}`
+with `qNs(){let e=J_("--setting-sources");if(e!==void 0)m(e);if(Zv("--restricted")\|\|ILe())m(""),…}`.
+The user settings file is named the same way, by the launch environment, when the settings are
+first read: `ws(e){if(e.coworkPlugins\|\|s.CLAUDE_CODE_USE_COWORK_PLUGINS)return LO.cowork;return LO.default}`.
+So for these two keys a settings layer's value does not undo what the launch chose:
+
+| Key | Probe gets | Refuses (`caller_mode_unmodelled`) |
+|---|---|---|
+| `CLAUDE_CODE_RESTRICTED` | the launch environment's value only (`--restricted` reaches it as a flag), never a settings layer's | a user, project, local or `--settings` layer sets it to a value whose on/off reading (`He()`) differs from the launch's: `--restricted` before any `--`, or the launch value on. The probe started with that value would choose other sources than the caller did |
+| `CLAUDE_CODE_USE_COWORK_PLUGINS` | never (read to refuse) | on in the launch environment, or on in ANY settings layer the caller reads; a later `0` does not clear a launch or user `1` |
+
+`--restricted` counts only before `--`, as for `--safe-mode` and `--bare`: after it the word is a
+prompt.
+
+Only an integer pid from 2 to 2^31-1 is read. The native calls declare the pid a signed 32-bit
+`int`, so a larger number reached the call truncated: `2**32 + process.pid` read the current
+process's own launch. Pid 1 (launchd, init) is never a caller.
+
+`ps -o args=` and `ps -ww -o command=` are not used: they join the arguments with spaces, so
+`--settings "/a b.json"` and two arguments `/a` `b.json` print alike. Measured on this Mac: a
+`zsh -c` argument holding spaces, quotes and a newline came back as one exact token, a test's
+`/bin/sh` with an empty argument, a `--settings={"x": 1}` argument, a newline and non-ASCII
+text round-trips, the test's own process reads as `ps` shows it, and pid 0, 1, a negative, a
+fraction, an out-of-range and a gone pid read as null, and so does a live process with an empty
+argv[0] (`host-launch.test.ts`, which also feeds the parsers built buffers: truncated ones, a
+missing NUL end, an `argc` larger than the strings present, exec paths of 1 to 17 bytes, an empty
+argv[0], extra or missing padding, and a full cwd field with a NUL right after it). The flags are the tokens
+after a native `claude` (or a binary under `claude/versions/`), or after `node`/`bun` and the
+package's `@anthropic-ai/claude-code/cli.js` with no runtime option between (`callerLaunchFlags`).
+Two hosts on this Mac show why the rest fails closed: one claudish MCP server's host was a
+pre-started Claude Code spare, argv `claude bg-spare --bg-spare <socket>`, whose session flags
+arrive over the socket and are in no argv; another's was Codex. Both read as
+`caller_argv_unreadable`, as does any `bg-spare`, `bg-pty-host` or `daemon` subcommand or `--bg-*`
+token.
+
+From those flags the caller probe gets `--plugin-dir`, `--plugin-dir-no-mcp`,
+`--project-config-root` (relative paths resolved against the host's cwd, as the caller resolved
+them), `--setting-sources`, and
+`--safe-mode`, `--bare`, `--restricted`. Those three only take away what a launch loads (2.1.332's
+help: `--safe-mode` disables installed plugins, hooks and MCP servers; `--bare` skips hooks and plugin
+sync; `--restricted` ignores the user, project and local settings files), so a probe given one runs
+less, never more, and models the caller exactly. The caller's own last `--settings` (Claude Code
+keeps only the last; inline JSON or a path against the host's cwd) becomes the caller probe's
+settings layer, under the closed `env` block. `--plugin-url` and `--managed-settings` cannot be
+modelled and start no probe, and neither can the `initialize` flags (`await_initialize`).
+
+`--project-config-root <dir>` is hidden in 2.1.332's help: "Read project settings, .mcp.json and
+the .claude config trees (…) from this directory rather than the working directory (for a session
+a host starts in a worktree of it)". A caller started with it reads `enabledPlugins` from that
+root; probed without it, a root that disables `alpha@m` while setup_from enables it would list
+`alpha@m`, and the copy would go to the outside child (read from the bundle, not run live; the
+unit test pins the argv). Each probe now gets its own launch's last root, absolute.
+
+The child probe keeps the child's flags, the same kinds: `--setting-sources` included. Each probe
+gets its own launch's sources, the child probe exactly what the child gets, and the inherited
+layer is built under the same sources (`inheritedLayerFor`), so a child `--setting-sources` needs
+no refusal.
+
+Limits, stated plainly: the probe runs only on machines with no managed policy source; the caller's
+argv is read from the host process, so a caller that is not a plain Claude Code launch (a pre-started
+spare, another MCP host, a Node launch with runtime options) gets no hand-over; the host's cwd is its
+current directory when the call runs, which Claude Code does not change in a session but nothing
+pins; and a value-taking option whose value happens to spell one of these flags is read as that
+flag (the scan, like Claude Code's own help, has no full option table).
+
+**The caller probe runs where the caller runs.** It used to run in setup_from, which
+`setup_from_not_caller` only required to share the caller's main checkout. Sharing a main checkout
+is not sharing project settings: two linked worktrees hold their own `.claude/settings.json` (each
+its own branch), and project settings load from the working directory alone. With setup_from = the
+main checkout enabling `alpha@m` and the caller in a linked worktree whose `settings.json` sets
+`alpha@m: false`, the probe in setup_from listed `alpha@m` and its copy went to an outside child,
+though the caller never loaded it (`plugin-probe.test.ts`, "boots the caller probe in the caller's
+own launch directory"). The probe now runs in the host's cwd (`readCallerLaunch`), the directory
+the caller's relative flags and `--settings` path were already resolved against. The default case
+is unchanged: setup_from defaults to the MCP server's cwd, which is the caller's launch directory
+when Claude Code starts the server, so the probe runs in the same folder as before (the test pins
+that case too).
+
+**The probe.** Two at once, one with cwd = the caller's launch directory, real path (the caller
+probe) and one with cwd = work_dir's (the child probe), each:
+
+```
+<claude> --output-format stream-json --verbose --settings <tmp>/<caller|child>-settings.json \
+  --strict-mcp-config --no-session-persistence <that launch's plugin-loading flags> -p /effort </dev/null
+```
+
+| Part | Why |
+|---|---|
+| `<claude>` | `findClaudeBinary` of the probe's environment, `CLAUDE_PATH` first: the binary the child claudish starts. The probe spawns in another cwd, so the binary is spawned by an absolute path (`pluginProbeRunner`). An absolute `CLAUDE_PATH` or found path is used as is: the spawn follows its symlinks. A relative one is accepted only when, past one leading `./`, it has no empty, `.` or `..` segment and no trailing slash; it is then joined to the server's cwd as plain text (`claudePathIn`, `pane-launch.ts`), which is exactly the path the kernel walks, so nothing is resolved by claudish. A component walk or `path.resolve` would not be: with `link -> a/b` they read `./link/../bin/claude` as the file the kernel does not start, and from `/` a walk accepts `./usr/bin/true/` and `./usr/bin/true/.`, which the kernel refuses (`ENOTDIR`). Any other relative value, or a joined path that is not a file with the execute bit, refuses as `no_claude_binary`. The pane child gets the same absolute `CLAUDE_PATH` (`buildPaneEnv`), since it runs in work_dir; there the same refusal is a `PaneClaudePathError` (`no_claude_binary`) before anything is spawned. Its last step runs `command -v claude` in a shell; that shell leads its own process group, the probe's deadline and a shutdown abort it (`shellLookup` kills the group), and the probe answers only once the shell is gone, so a lookup stalled on a hung `PATH` mount outlives neither |
+| `-p /effort` | a prompt that does no work (below): `/effort` with no argument answers locally with its usage line, needs no credential, and prints the init event with no model request while a credential is present (table below) |
+| `--output-format stream-json --verbose` | the init event (`{"type":"system","subtype":"init",…}`) is printed only in this form |
+| `--settings <file>` | `pluginProbeSettings`: for the child probe the inherited layer the child gets, for the caller probe the caller's own launch `--settings` (never the inherited layer: a layer read from a main checkout's `settings.local.json` could turn on a plugin the caller never loaded); without its `hooks` and every command-valued setting (neither changes which plugins load); then `disableAllHooks: true` (plugin `SessionStart` hooks otherwise run on every probe boot) and the closed `env` block (below) over it. One file per probe, because Claude Code keeps only the last `--settings`. Both written 0600 in one temp folder (0700), never in setup_from or work_dir, and removed once both probes end. The folder's name carries the server's pid (`claudish-plugin-probe-<pid>-XXXXXX`). A server killed mid-probe (`SIGKILL` runs no `finally`) leaves its folder, which holds the caller's `--settings` content; at server start and before each probe pair, `sweepStaleProbeDirs` removes every such folder of this user (a real folder, not a symlink) whose pid is gone, at any age. A folder whose pid is alive goes only after 10 minutes (that pid was reused), as does one named without a pid |
+| `--strict-mcp-config` | plugin MCP servers are otherwise spawned; that wait was most of the boot (2.8 s with one, 1.0 s without) |
+| `--no-session-persistence` | no transcript, so the probe never shows in the resume list |
+| that launch's plugin-loading flags | the caller's own launch flags for the caller probe, the child's for the child probe (above): `--plugin-dir`, `--plugin-dir-no-mcp`, `--project-config-root`, `--setting-sources`, `--safe-mode`, `--bare`, `--restricted`. A relative `--plugin-dir`/`--plugin-dir-no-mcp`/`--project-config-root` is resolved against the host's cwd for the caller probe and against work_dir for the child probe, as each launch resolves it. `--plugin-url` is never passed: Claude Code downloads it before init, sending the url (often a signed one) from every probe; a launch that passes it gets no probe at all (`plugin_url`). Every other flag stays out |
+| stdin `/dev/null` | no input; the probe is its own process group, killed with `SIGKILL` on every way out (below) |
+
+**The probe prompt must do no work.** Claude Code prints the init event only after the prompt is
+processed (2.1.332, `CLAUDE_CODE_PROFILE_STARTUP=1`: every startup mark is done by 207 ms, then
+`after_processUserInput` comes 9 s later, and init with it). So whatever the prompt does comes
+before the plugin list, inside the probe's deadline. The probe used `-p /cost` until 2.1.332 on a
+real machine showed the cost: `/cost` is an alias of `/usage` (aliases `cost` and `stats`), and on
+a Claude subscription login `/usage` takes its subscription branch, which awaits the plan-usage
+fetch (signed with the OAuth login) and a scan of the last 7 days of local transcripts together.
+On the owner's Mac (27 GB of transcripts, 2140 files changed in 7 days) init, result and exit came
+at 8.2 to 8.4 s, 9.3 to 9.4 s with both probes at once, CPU-bound at about 1.1 to 1.3 cores, so
+every probe ran past its 8 s kill and answered `timeout`. The isolated canary, with no
+subscription login, took the plain branch and answered in about 1 s, so it never saw this.
+`/effort` with no argument, same flags, environment and cwd: 0.24 to 0.38 s, the identical plugin
+list (same count, same sorted ids) and the same event shape. In the 2.1.332 bundle the
+non-interactive `/effort` (`type:"local"`, `supportsNonInteractive:!0`) is:
+
+```
+async function Ywd(r,t){let e=r.trim(),o=t.getAppState(),a=Jt(o.mainLoopModelForSession??o.mainLoopModel??Fv());
+if(rU.includes(e))return{type:"text",value:ztr()};
+if(e==="current"||e==="status"){…}
+if(!e)return{type:"text",value:`Usage: /effort <${GTe(a).join("|")}|auto${Z6(a)?"|ultracode [on|off]":""}>`};
+return{type:"text",value:await xos(e,t,"noninteractive")}}
+```
+
+With no argument it returns the usage line before `xos`, the only path to the setter (`U2e`), and
+everything it calls on the way is synchronous (`GTe` filters the effort levels by the cached
+`modelAccessCache`; `Z6` reads workflow settings), so it writes no setting and sends no request.
+The canary asserts the answer is that usage line, so a Claude Code whose `/effort` becomes a turn,
+a picker or a setter turns the canary red before it reaches the probe.
+
+**The spawn environment is an allowlist** (`pluginProbeEnv`), built from scratch rather than
+from the pane child's minus a list: a denylist leaked twice (`ANTHROPIC_UNIX_SOCKET`, then
+`CLAUDE_CODE_RUNNER_MODEL_SOCKET`, which a review traced through 2.1.332's `$4l()` on a nested
+self-hosted Linux runner, before `--settings` applies; not measured here). From the parent it
+takes only `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TMPDIR`, `LANG`, `LC_*`, `TERM`,
+`XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`,
+`CLAUDE_PATH` (the binary lookup's input), and, as the launch the probe stands for holds them (the
+caller's own for the caller probe, read from its launch environment above), `CLAUDE_CONFIG_DIR`,
+the variables 2.1.332 reads to decide which plugins load and from where (`PROBE_PLUGIN_VARS`):
+
+| Variable | 2.1.332 reader |
+|---|---|
+| `CLAUDE_CODE_PLUGIN_CACHE_DIR` | `Xd(){let e=s.CLAUDE_CODE_PLUGIN_CACHE_DIR;if(e)return $p(e);return k(nt(),B())}`: the plugin folder |
+| `CLAUDE_CODE_PLUGIN_SEED_DIR` | `oV(){let e=s.CLAUDE_CODE_PLUGIN_SEED_DIR;if(!e)return[];return e.split(Le).filter(Boolean).map($p)}`: seed folders |
+| `CLAUDE_CODE_PLUGIN_DIRS` | `if(process.env.CLAUDE_CODE_PLUGIN_DIRS?.trim()){…setInlinePlugins…}`: folders loaded as `--plugin-dir` ones |
+| `CLAUDE_CODE_PLUGIN_USE_ZIP_CACHE` | `w6(){return s.CLAUDE_CODE_PLUGIN_USE_ZIP_CACHE}function MCo(){if(!w6())return;let e=s.CLAUDE_CODE_PLUGIN_CACHE_DIR;…}`: marketplaces from a zip cache |
+
+The settings files' location is decided by
+`aOt=["CLAUDE_CONFIG_DIR","HOME","USERPROFILE","HOMEDRIVE","HOMEPATH","CLAUDE_CODE_USE_COWORK_PLUGINS"]`;
+the three Windows names are left out, since no probe runs on Windows, and
+`CLAUDE_CODE_USE_COWORK_PLUGINS` is not on the allowlist: it moves the plugin folder
+(`B(){if(eqo())return H;if(s.CLAUDE_CODE_USE_COWORK_PLUGINS)return H;return re}`, `plugins` or
+`cowork_plugins`) and the user settings file to `cowork_settings.json`, which claudish does not
+model, so a launch that sets it gets no probe (`caller_mode_unmodelled`). No variable moves the
+managed settings folder (`hr(){let e=qSa();…}` with `qSa(){return}`). Left out on purpose:
+`CLAUDE_CODE_SYNC_PLUGIN_INSTALL` and `FORCE_AUTOUPDATE_PLUGINS`, which install or update plugins
+over the network instead of choosing among the installed ones.
+
+And the launch mode switches (`PROBE_MODE_VARS`): each is read at a `-p` boot and only takes away
+setting sources, plugins, skills or MCP configs, so a probe given one loads less, never more. A
+value the launch holds passes through unchanged; the probe never sets one itself.
+
+| Variable | 2.1.332 reader |
+|---|---|
+| `CLAUDE_CODE_RESTRICTED` | `ILe(){return He(process.env.CLAUDE_CODE_RESTRICTED)}` and `qNs(){let e=J_("--setting-sources");if(e!==void 0)m(e);if(Zv("--restricted")\|\|ILe())m(""),LKo(!0);…}`: no user, project or local settings, as `--restricted`. Measured: a user-enabled and a project-enabled plugin both leave the init list |
+| `CLAUDE_CODE_SAFE_MODE` | a caller in safe mode starts no probe (`caller_mode_unmodelled`); the child's value still passes to the child probe. `ms(){return He(process.env.CLAUDE_CODE_SAFE_MODE)\|\|kZt("--safe-mode")\|\|!1}`, `Jo(e,t){…if(ms()&&!a[e])return!0;…}` with `a={claudeMd:!1,skills:!1,workflows:!1,plugins:!1,…}`, and the plugin command and skill loaders' `if(Jo("plugins",{explicitlyRequested:…}))return[]`: as `--safe-mode`. Measured: the init `plugins` list is unchanged |
+| `CLAUDE_CODE_SIMPLE` | a caller in bare mode starts no probe (`caller_mode_unmodelled`); the child's value still passes to the child probe. `eo(){return He(process.env.CLAUDE_CODE_SIMPLE)\|\|kZt("--bare")}` and `if(eo()&&!t?.explicitlyRequested)return l[e]` with `l={claudeMd:!0,skills:!0,workflows:!1,plugins:!0,…}`: bare mode, as `--bare`. Measured: the init `plugins` list is unchanged |
+| `CLAUDE_CODE_RESTRICT_PERSONAL_CONFIG` | `cb(){return s.CLAUDE_CODE_RESTRICT_PERSONAL_CONFIG===!0\|\|…}` and `h=cb(),…if(Le.scope==="user"&&h)return y++,!1;…"[skill-as-plugin] not loading plugins from ${y} folder(s) in your own skills directory (CLAUDE_CODE_RESTRICT_PERSONAL_CONFIG)…"`: no plugin from the user's own skills folder |
+| `CLAUDE_CODE_DISABLE_BUNDLED_SKILLS` | `k7(i){return s.CLAUDE_CODE_DISABLE_BUNDLED_SKILLS\|\|(i??Rt()).disableBundledSkills===!0}` |
+| `CLAUDE_CODE_DISABLE_POLICY_SKILLS` | `s.CLAUDE_CODE_DISABLE_POLICY_SKILLS\|\|hCe()\|\|Ye?Promise.resolve([]):Xz(h,"policySettings")` |
+| `CLAUDE_CODE_DISABLE_CLAUDE_API_SKILL`, `CLAUDE_CODE_DISABLE_CLAUDE_CODE_SKILL` | `g({disabled:s.CLAUDE_CODE_DISABLE_CLAUDE_API_SKILL===!0});…y({disabled:s.CLAUDE_CODE_DISABLE_CLAUDE_CODE_SKILL===!0})` |
+| `CLAUDE_CODE_SKIP_PLUGIN_MCP_SERVERS`, `CLAUDE_CODE_SKIP_PLUGIN_MCP_SERVERS_EXCEPT` | `if(s.CLAUDE_CODE_SKIP_PLUGIN_MCP_SERVERS){if(!rAo(e,{fullIdsOnly:!1})){t(…Skipping plugin MCP server discovery for "${e.name}"…);return}…` with `rAo(e,{fullIdsOnly:n}){let r=s.CLAUDE_CODE_SKIP_PLUGIN_MCP_SERVERS_EXCEPT;if(!r)return!1;…}` |
+| `CLAUDE_CODE_SKIP_PLUGIN_LOCAL_MCP_SERVERS`, `CLAUDE_CODE_SKIP_PLUGIN_MCP_BUNDLES` | `L=!A&&s.CLAUDE_CODE_SKIP_PLUGIN_LOCAL_MCP_SERVERS,z=L\|\|!A&&s.CLAUDE_CODE_SKIP_PLUGIN_MCP_BUNDLES` |
+| `ENABLE_CLAUDEAI_MCP_SERVERS` | `Hwr(){return s.ENABLE_CLAUDEAI_MCP_SERVERS===!1?"env_var":NWe()?"setting":void 0}`: no claude.ai connector |
+
+Read and left out: `CLAUDE_CODE_MANAGED_SETTINGS_PATH` and `CLAUDE_CODE_REMOTE_SETTINGS_PATH`,
+whose readers are empty in this build (`qSa(){return}`, `bH(){return}`);
+`CLAUDE_CODE_SHOWN_PLUGINS_DIR` and `CLAUDE_CODE_DESKTOP_SKILLS_PLUGIN_DIR`, read only under a
+desktop host (`n.setShownPluginsDir(wX()&&a!==void 0&&L(a)?a:void 0)`,
+`n.setDesktopSkillsPluginDir(d?s.CLAUDE_CODE_DESKTOP_SKILLS_PLUGIN_DIR:void 0)` with `d=iu()`);
+`CLAUDE_CODE_MCP_SERVE_SETTINGS` and `CLAUDE_CODE_MCP_SERVE_ENABLED_PLUGINS`, read only by
+`claude mcp serve`; `CLAUDE_CODE_REMOTE_MCP_CONFIG`, read only in a remote session
+(`let n=Ku()?s.CLAUDE_CODE_REMOTE_MCP_CONFIG:void 0`); `CLAUDE_CODE_PERSONAL_HOOKS_OFF` and
+`CLAUDE_CODE_DISABLE_CLAUDE_MDS`, which change hooks and CLAUDE.md files only (the probe runs no
+hook: `disableAllHooks`); `CLAUDE_CODE_PLUGIN_DIR_WATCH`, which changes which `--plugin-dir`
+folders are watched, not loaded; and the plugin and skill sync switches, which install over the
+network. The canary pins two of the switches against the real binary, in a world with one
+user-enabled and one project-enabled plugin and the switch set in the caller's launch environment
+only. `restrictedMode`: the caller probe must list exactly what a plain `-p /effort` boot under
+`CLAUDE_CODE_RESTRICTED` lists; on 2.1.332 that drops both plugins, and with the switch dropped
+from the allowlist the reading turned red (measured:
+`differs:probe=…,projectonly@modemkt,useronly@modemkt;plain=…` with the builtins only).
+`safeMode`: under `CLAUDE_CODE_SAFE_MODE` no probe may start and the outcome must be
+`caller_mode_unmodelled` (`refused`); the summary also shows that the plain boot's list is the
+same with and without the switch, the measurement behind that refusal.
+
+Then the probe's own values: `ANTHROPIC_BASE_URL=http://127.0.0.1:9`, a
+loopback port nothing listens on, `CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST=1` and
+`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`. No credential, handoff, socket, provider switch,
+provider base URL or helper switch reaches the spawn, named or not. The canary pins it: its server
+environment names a recording unix listener as `CLAUDE_CODE_RUNNER_MODEL_SOCKET` and another as
+`ANTHROPIC_UNIX_SOCKET` (`runnerSocket=unused`, `unixSocket=unused`; with the old denylist a
+stand-in that connects read `runnerSocket=connected:5`), and the real 2.1.332 boot still lists the
+world's installed copy (`plugins=installed`, the same list as before the allowlist), and the live
+handover still hands over 16 plugins, so the allowlist dropped no plugin-loading variable. The
+provider switches still matter to the settings `env` block (below): 2.1.332's `IR` list
+(`CLAUDE_CODE_USE_BEDROCK`, `_VERTEX`, `_FOUNDRY`, `_ANTHROPIC_AWS`, `_ANTHROPIC_GOOGLE_CLOUD`,
+`_MANTLE`, `_GATEWAY`) and each provider's base URL. `CLAUDE_CODE_USE_` is not a prefix rule:
+`CLAUDE_CODE_USE_COWORK_PLUGINS` changes which plugins load, and refuses a probe. The canary compares the binary's
+`CLAUDE_CODE_USE_*` names with that split and turns red on a new or dropped switch. On the test
+data below the init `plugins` list was the same against that closed port as against a logging mock
+listener.
+
+**Startup helper switches.** Two more variables never reach the spawn, and are closed to `""` in
+the settings `env` block: `CLAUDE_CODE_ENABLE_PROXY_AUTH_HELPER` and `CLAUDE_CODE_ENABLE_TELEMETRY`
+(`PROBE_STARTUP_HELPER_SWITCHES`). Each starts a settings helper at boot with no model turn and
+no key: the first runs `proxyAuthHelper` (`G2o` stores the helper config and checks
+`s.CLAUDE_CODE_ENABLE_PROXY_AUTH_HELPER`; `OLt` runs it), the second builds the OTLP exporter,
+which prefetches `otelHeadersHelper` (`prefetchOtelHeadersFromHelper`, called when the exporter's
+headers come from the helper over `http/json` or `http/protobuf`). User settings are trusted, so
+nothing else stops a user helper. Measured on 2.1.332 with the canary world (below) and both
+switches, `HTTPS_PROXY` and an OTLP/HTTP exporter in the server environment, before the change:
+the production-argv probe ran the untrusted cwd's `proxyAuthHelper`, `otelHeadersHelper` AND its
+local `apiKeyHelper` (no key anywhere; previously no project helper had ever run under the
+production argv), and the second boot ran the user `proxyAuthHelper` and `otelHeadersHelper`.
+After it: no marker in either boot. Which of the two switches let the local `apiKeyHelper` run
+was not isolated. What else was checked in the bundle: `awsAuthRefresh` and `awsCredentialExport`
+run only for the Bedrock and AWS providers, and `gcpAuthRefresh` only for Vertex and Google
+Cloud, whose switches are withheld already; `policyHelpers` is a managed key, and no probe runs
+beside a managed source; `statusLine`, `subagentStatusLine` and `fileSuggestion` belong to the
+interactive interface; `processWrapper` is the daemon launcher's.
+
+**User helpers start no probe (`user_command_setting`).** The switches close two known boot
+paths, not every one: a 2.1.332 startup path read from the bundle (`Pe()` to `Oda()`) reaches
+the `apiKeyHelper` prefetch with neither switch and no environment key. That path was not
+confirmed live (below), and the gate does not depend on it. Rather than chase each path, no probe
+starts while the user settings either probe loads set any helper a `-p` boot can run. Those are
+the six the bundle lists together,
+
+```js
+var va=["apiKeyHelper","proxyAuthHelper","awsCredentialExport","awsAuthRefresh","gcpAuthRefresh","otelHeadersHelper"],
+    Ta=["statusLine","subagentStatusLine","fileSuggestion"];
+```
+
+plus `policyHelpers`, read from managed and remote settings, refused beside at no cost
+(`USER_STARTUP_HELPERS`). The file is the `settings.json` in each probe's config dir
+(`userSettingsFile`: `CLAUDE_CONFIG_DIR`, else `~/.claude`, resolved against that probe's cwd),
+read only for a probe whose `--setting-sources` loads `user`. One that cannot be parsed refuses too.
+`--restricted` (which ignores the user settings file) does not lift the refusal; that is
+deliberate, to keep the gate simple, and costs only a hand-over on such a launch.
+
+The rest of `Nrd` does not refuse, because none of it runs under `-p`. `statusLine` runs only from
+`jbs(...)`, whose one caller is the status line component (`execute:(Do,Wo,zo)=>jbs(ft,Do,Wo,zo)`
+inside the interface's memo cache). `fileSuggestion` runs only from `bLi(...)`, whose one caller
+is the `@` mention file suggester (`if((a?xfs(Rt().fileSuggestion):void 0)?.type==="command"){…
+c=await bLi(g,f)`). `subagentStatusLine` runs from the interface's task rows ("subagentStatusLine
+tick failed", "subagentStatusLine is deprecated in favor of mods"). `processWrapper` is described
+as the "Corporate launcher argv prefix for the background-agent supervisor, the sessions and
+workers it hosts, and the other covered background processes"; a `-p` boot only copies it into
+the environment and starts none of those. Measured, not only read: the canary's user settings set
+all four to marker scripts, and no boot of the canary (the production probe, the open run, the
+`/cost` run, the fourth world below) ran any of them on 2.1.332 (`sideEffects=none`, three runs).
+
+Whether a user `apiKeyHelper` runs at a production-argv boot with no switch, measured on 2.1.332
+in the canary's fourth world (a placeholder subscription login, the closed `env` block, no switch
+in the environment): `not-run` in three of three runs. The refusal does not depend on that answer:
+a later Claude Code that runs it is still refused, and the canary reports the reading without
+comparing it (`userApiKeyHelper`).
+
+**The closed `env` block.** A settings `env` block replaces the launch environment
+([`settings-env.md`](settings-env.md)), so a user, project or local settings file could hand the
+probe back an API key or a gateway's base URL. Each probe's settings file therefore carries
+`env: {ANTHROPIC_BASE_URL: "http://127.0.0.1:9"}` and every credential, handoff, provider switch,
+provider base URL, helper switch and first-party switch above set to `""` (`PROBE_SETTINGS_EMPTY_VARS`),
+over the layer's (a layer key equal to one of these in any case is
+dropped: Claude Code keys `env` upper-cased). Claude Code applies the blocks in the order
+`["userSettings","projectSettings","localSettings","flagSettings","policySettings"]`, a later one
+winning, so `--settings` beats all but managed. Measured on 2.1.332, isolated config, two logging
+listeners: with user settings `env` holding listener A and a fake key, `-p hi` posted six
+`/v1/messages` to A with that key; with a `--settings` `env` of listener B and an empty key, it
+printed "Not logged in · Please run /login" and neither listener saw a request; with listener B and
+another fake key, all six went to B with the flag key. A managed `env` outranks the block, and no
+probe runs beside a managed policy. A user `apiKeyHelper` is not closed by the block; no probe starts
+while one is set (`user_command_setting`, above).
+
+**No probe is eligible for the managed settings fetch.** At boot Claude Code fetches
+server-managed settings for an eligible account (`${un().BASE_API_URL}/api/claude_code/settings`,
+signed with the stored login), and a `-p` boot waits for it
+(`QJt("headless_managed_settings_wait",()=>F3())`). A policy fetched there applies to that boot
+with no cache file present, and its hooks run despite the probe's `disableAllHooks` (2.1.332:
+"Hooks configured in managed settings (they run even under a non-managed disableAllHooks)"). The
+closed base URL alone does not make an account ineligible. The eligibility check is
+`e=be()!=="firstParty"?"third_party_provider":!ha()?"custom_base_url":void 0;if(e)return
+C(!1)??{eligible:!1,ineligibleReason:e}`, where `ha(){if(K9())return!0;return cd()}` treats any
+base URL as first-party while `_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL` or the client-data
+document named by `CLAUDE_CODE_CLIENT_DATA_URL` says so, and `C()` answers from a stored hybrid
+sign-in, and `be()` answers `"gateway"` for a stored gateway sign-in, which `I1o` restores from the
+credential store unless `T4e()`. So each probe gets `CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST=1` and
+never the two first-party switches (`PROBE_HOST_MANAGED_MARKER`, `PROBE_FIRST_PARTY_SWITCHES`):
+`T4e(){return Pc()||xd()||TH()}` with `Pc(){return s.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST||uH()}`
+skips the gateway restore, the hybrid lookup (`getHybridSettingsOrganization`) answers null under
+the same marker, and eligibility ends at `custom_base_url`. That needs no read of the credential
+store, which claudish never touches. Measured on 2.1.332 against this Mac's own login: the same 11
+plugins and the same `success` result with zero turns, about 235 ms, with and without the marker.
+The marker also goes into the closed `env` block, so a settings `env` cannot clear it. The child
+pane makes the fetch at its own start, as the caller did; a policy it applies there is the
+child's own, and a cached one stops the probe (above). The boot canary pins the precedence on every pinned version: its user
+`settings.json` `env` names its listener with a placeholder key, and the production-argv probe must
+send that listener no request.
+
+**The probe takes no handed-over credential.** The host-managed marker opens a launcher path of
+its own. At init, before the managed settings load, 2.1.332 runs `REr()`:
+`if(!s.CLAUDE_CODE_HOST_CREDS_FILE||!He(s.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST))return;let
+e=await h();`, and `h()` reads the file `CLAUDE_CODE_HOST_CREDS_FILE` names (a regular file or a
+pipe, mode 0600, owned by the user, naming a live launcher pid and no past expiry) and writes its
+`env` into `process.env`: the bearer `ANTHROPIC_AUTH_TOKEN` the probe left out comes back. Its
+neighbours read more: `Cpn(){return s.CLAUDE_CODE_HOST_AUTH_ENV_VAR||"ANTHROPIC_AUTH_TOKEN"}`
+names the bearer variable, so it can point at any variable the parent holds;
+`n=s.CLAUDE_CODE_HOST_AUTH_ASK_AT_START?a??"":a||void 0` lets the file's endpoints win over blank
+launch values; `CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH` wires a host token refresh, timed by
+`CLAUDE_CODE_HOST_AUTH_REFRESH_TIMEOUT_MS`; `mo()` takes
+`token:s.CLAUDE_CODE_LAUNCHER_RUNS_API_KEY_HELPER&&!s.CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH&&s.ANTHROPIC_AUTH_TOKEN`.
+The same boot reads a credential from a descriptor or a file when one is named:
+`if(s.CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR||s.CLAUDE_BG_AUTH_SNAPSHOT_PATH&&...)BP();if(s.CLAUDE_CODE_GATEWAY_TOKEN_FILE_DESCRIPTOR)sXt();if(s.CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR)W4();if(s.CLAUDE_CODE_WEBSOCKET_AUTH_FILE_DESCRIPTOR)Vu()`,
+and `CLAUDE_CODE_OAUTH_REFRESH_TOKEN`, `CLAUDE_CODE_SESSION_ACCESS_TOKEN` and
+`CLAUDE_SESSION_INGRESS_TOKEN_FILE` hand over a sign-in or a session token. None of the fourteen
+is on the spawn allowlist, and all are closed to `""` in the settings `env` block
+(`PROBE_HOST_HANDOFF_VARS`). Measured on 2.1.332 by the canary (below), whose server environment
+names a creds file: with the fourteen passed through, the production probe, the full run and the
+marked `/cost` boot each opened it (`handoff=read:probe,full,probecost`); left out, none did
+(`handoff=unread`), while a control boot with the variable handed back still did
+(`handoffControl=read`). The creds file is a pipe whose writer creates a marker file only once its
+write has returned, and the check waits (up to 5 s) for the writer to exit 0 after that marker,
+so `read` means a reader took the handoff and the writer finished; a writer that ends without that
+write (a redirection error, a broken pipe), or ends other than with 0 after its marker, reads
+`writer_failed` and fails the expectation.
+`ANTHROPIC_UNIX_SOCKET` is not on the allowlist either, and is not set in the settings `env`
+block, because `""` would change the bundle's `s.ANTHROPIC_UNIX_SOCKET!==void 0` checks; a known
+limit: a settings layer that sets it is not closed. The canary's server environment names a
+recording unix listener there, and no production boot may connect to it (`unixSocket=unused`; a
+stand-in that connects fails it; 2.1.332 itself made no connection even with the variable passed
+through, since these boots make no Anthropic API request).
+
+**The probe reads no stored login.** The env credentials never reach it (`ANTHROPIC_API_KEY`,
+`ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, and the handoffs above), and the host-managed marker keeps the
+credential store off limits (`if(T4e()){r.storeOffLimits=!0;return}`), so Claude Code does not read
+the Claude subscription login it stores (the Keychain item on macOS, `.credentials.json`
+elsewhere) either; claudish never reads it. Measured on 2.1.332 by the canary: the same world's
+`/cost` boot answers with the subscription line without the marker, and not under the
+production environment (`login: subscription`, `probeLogin: none`). A probe needs no credential:
+`/effort` answers locally. Without the marker, every probe boot on a logged-in machine started the
+claude.ai connector fetch to `api.anthropic.com`, signed with that login; with the store off limits
+it has no login to sign with (not measured with a socket trace). The plugins a login can bring
+(an organisation policy, a hybrid sign-in's plugin locks) arrive through a server-managed or
+hybrid cache file, and any such file but an empty `{}` cache already refuses the probe.
+
+**Command-valued settings in work_dir.** Claude Code 2.1.332 lists the settings whose value is a
+command (`Nrd=["apiKeyHelper","awsAuthRefresh","awsCredentialExport","fileSuggestion",
+"gcpAuthRefresh","otelHeadersHelper","processWrapper","policyHelpers","proxyAuthHelper",
+"statusLine","subagentStatusLine"]`). The pane child in an untrusted work_dir stops at the trust
+dialog (boot dialogs are never accepted), but `-p` skips it. Measured on 2.1.332, isolated config,
+untrusted cwd whose `settings.json` sets every one of them (and `policyHelpers.macos`, a project
+`SessionStart` hook, and the telemetry and proxy switches some wait for) to a script writing a
+marker, `settings.local.json` setting `apiKeyHelper`:
+
+| Boot | Markers |
+|---|---|
+| production argv (closed `env`; measured with `-p /cost`, and with `-p /effort` by the canary), with and without a user `env` key, with and without the switches | none, in every run |
+| the same argv with a key in the flag `env` and the environment, against a listener (the canary's second boot) | the local `apiKeyHelper`, once in two canary runs; none in a third run |
+| negative control: `-p "say hi"`, production argv otherwise | the local `apiKeyHelper` (it is read from the highest source only) |
+
+So a probe boot can run `apiKeyHelper` once a key is present. Rather than rely on the production
+probe never having one, `inheritedPluginsFor` starts no probe while a project or local settings file
+of work_dir (or of the child's `--project-config-root`) sets any key on that list, or cannot be
+parsed (`work_dir_command_setting`). The caller's launch directory is trusted (the caller runs
+there), so its interface-only keys are harmless to a `-p` boot, but a startup helper there runs at
+the caller probe's boot: no probe starts while its project or local settings, or those of the
+caller's `--project-config-root`, set a `USER_STARTUP_HELPERS` key or cannot be parsed
+(`caller_command_setting`). Overriding each key in
+the probe's `--settings` was not chosen: a harmless `apiKeyHelper` there would count as a login.
+The canary pins that the production-argv probe runs none of them (its project settings hold all of
+them, writing markers); the canary's second boot runs with the cwd's settings removed.
+
+**Reading to the exit.** The probe reads stdout until the process exits, and the init `plugins`
+count only for init first, then exactly one `result` event with `subtype: "success"`,
+`is_error: false` (both exactly) and `num_turns: 0`, then exit 0. A `result` before init, a
+second `result`, or any other `result` anywhere fails at once as `bad_result` (before, a later
+successful result overwrote an earlier error, so a wrapper printing an error result, then a
+zero-turn one, then exiting 0 supplied plugins; and a result that merely lacked `is_error: true`
+passed: `{"type":"result","subtype":"error_during_execution","num_turns":0}` and exit 0 answered
+`{"ok":true,"plugins":[]}`). The `/effort` answer is a synthetic assistant event
+(`"model":"<synthetic>"`) printed after init; any other assistant event after init fails at once as
+`turns`, and the probe is killed. Measured on 2.1.332: `system/init`, `assistant` (synthetic),
+`result/success` with `is_error: false`, `num_turns: 0` and the usage line as `result`, exit 0, in
+0.24 to 0.38 s on the owner's Mac with its real config.
+
+**Shutdown.** `createSession` refuses at entry once `shutdownAll` has begun, and again after each
+await (the magmux check and the probes), so a start that arrives during teardown (a transport close
+while a tool call was still preparing its credentials) starts no probe and no pane. `shutdownAll`
+sets that flag before anything else and never clears it, and the abort controller is never replaced:
+before, `shutdownAll` replaced it before waiting on a snapshot of `pendingStarts`, so a start entering
+then took the fresh signal and ran its probes after the server exited. A start already past entry is
+in `pendingStarts` from before the magmux check, and `shutdownAll` aborts its signal first: each
+running probe's process group is killed (`aborted`), both settings files are removed once both probes
+settle, and the start throws ("MCP server is shutting down") instead of starting a pane;
+`shutdownAll` returns after that.
+
+**Measured on Claude Code 2.1.332**, fake data only: an isolated `CLAUDE_CONFIG_DIR` and `HOME`
+holding a `directory` marketplace `fakemkt` whose entries have `github` sources (so the cache copies
+are used), `alpha` 1.0.0 and 2.0.0, `beta` 1.0.0, `gamma` 1.0.0 under a folder with a space. Rows:
+alpha project 2.0.0 keyed to `repoA` listed before alpha user 1.0.0, beta project keyed to `repoA`,
+gamma user. User settings enable alpha and gamma, `repoA`'s `settings.json` enables beta; `repoA`
+is neither a repository nor trusted.
+
+| Variant (cwd `repoA`) | init event | `/v1/messages` requests | exit |
+|---|---|---|---|
+| `--agent __probe__ -p hi` | no: exits at argv validation (`--agent '__probe__' not found. Available agents: …`) | 0 | 1 |
+| `-p --input-format stream-json`, empty stdin | no | 0 | 0 |
+| SDK `initialize` control request | no; the reply has agent names, no `plugins` | 0 | 0 |
+| SDK `reload_plugins` | no; re-resolves sources and dropped every `fakemkt` plugin | 0 | 0 |
+| `-p hi`, `--max-turns 0`, an unknown `--model`, with a key | yes | 6 (a turn and its retries) | 1 |
+| `-p /cost`, with a key | yes, `num_turns: 0` | 0 (one `HEAD /api/hello`) | 0 |
+| `-p /effort`, with a key (the canary's second boot, its own world) | yes, `num_turns: 0` | 0 (no request at all) | 0 |
+
+Each `plugins` entry is `{name, path, source, version}`: `path` is the exact copy loaded,
+`source` is `<name>@<marketplace>`; Claude Code's own plugins have `path: "builtin"` and no version.
+What the list reflects:
+
+| Scenario | `fakemkt` part of `plugins` |
+|---|---|
+| cwd `repoA` (project row first) | alpha 2.0.0, gamma, beta |
+| cwd outside | alpha 1.0.0, gamma: only the user rows apply |
+| rows reversed, cwd `repoA` | alpha 1.0.0, gamma, beta: the first applicable row in file order wins |
+| `repoA` `settings.local.json` `alpha@fakemkt: false` | gamma, beta |
+| managed `strictKnownMarketplaces: []`, `allowedMarketplaces: []`, or `blockedMarketplaces` naming the marketplace | none |
+| beta removed from `marketplace.json`, cache and row kept | alpha, gamma |
+
+A real managed-file `enabledPlugins: false` was not measured (`--managed-settings` keeps only policy
+keys, and `CLAUDE_CODE_MANAGED_SETTINGS_PATH` is a no-op in this build); the list is the copies
+Claude Code loaded, so it reflects that case by construction. Side effects of the quiet probe: no
+hook ran, no MCP server started, no transcript, nothing changed under the cwd or the plugin caches;
+Claude Code still rewrites its `.claude.json` (startup counters). A managed `allowManagedHooksOnly`
+or managed `hooks` outrank `--settings`, so no probe starts beside any managed source. Time: 0.95 to
+1.0 s per quiet probe (0.25 s with outbound traffic denied, 2.8 s for a boot that starts MCP
+servers; these times were taken with `/cost` on a world with no subscription login); both probes
+run at once, about 0.4 s on that test data. `claude plugin list --json` is no substitute: it prints every row of every project, `enabled` per id rather than per
+row, applies no marketplace policy, and tries to clone every plugin's remote source (2.5 s).
+
+**Fail closed.** Each of these hands over NO plugin, with its cause as `pluginProbe`:
+
+| Cause | When |
+|---|---|
+| `exited_before_init` | the probe, or a `CLAUDE_PATH` wrapper, exits before an init event |
+| `timeout` | the deadline passes (below), during the binary lookup included |
+| `assistant_before_init` | an `assistant` event before init |
+| `plugins_malformed` | an init whose `plugins` is missing or not a list of `{name, path, source}` |
+| `output_too_large` | more than 32 MiB of stdout |
+| `no_result` | exit 0 after init with no `result` event |
+| `bad_result` | a `result` before init, a second `result`, or a `result` that is not exactly `subtype: "success"` with `is_error: false` |
+| `nonzero_exit` | a non-zero exit, or one on a signal, after init |
+| `turns` | a non-synthetic `assistant` event after init, or a `result` whose `num_turns` is not 0 |
+| `aborted` | a shutdown |
+| `no_claude_binary`, `spawn_failed` | no `claude` found, or a spawn failure |
+
+One log line names the cause, never a path or an environment value. Nothing is guessed: a half
+answer would hand over a copy the caller does not load.
+
+**The deadline is end to end**: 10 s (`PLUGIN_PROBE_TIMEOUT_MS`, ten times the measured boot on a
+loaded machine) from the call, the binary lookup included. A probe still running at the deadline
+less the reap time (2 s, or a quarter of the deadline when shorter) is killed, and the result
+returns once its process group is gone, or at the deadline, whichever is first. Both probes run at
+once, so the probes add at most 10 s to `create_session`. The binary lookup is stopped at the
+kill time (or on a shutdown) and waited for, so its shell does not outlive it, but never past
+the deadline: a shell `SIGKILL` cannot reap at once (uninterruptible sleep on a hung mount)
+would otherwise hold `create_session`, and `shutdownAll` awaits the start. At the deadline the
+probe answers `timeout` (`aborted` on a shutdown) and logs that the lookup outlived it. On
+settling, the probe also lets go of its stdout, so a descendant outside the group that still
+holds it keeps nothing waiting.
+
+**The process group goes on every way out.** The probe runs detached, as its own process group.
+On a failure the group is killed at once; on the probe's exit the group is killed too, since a
+`CLAUDE_PATH` wrapper that starts Claude Code and exits leaves Claude Code in the group holding
+stdout. The result waits for the exit, the end of stdout and `kill(-pgid, 0)` answering `ESRCH`,
+checked every 20 ms; no timer is cleared before then, only the deadline settles earlier. Before,
+an early exit with no output cleared the deadline and left the wrapper's child running.
+
+**The comparison**, by `source` (`pluginsToHandOver`): for each caller entry with an absolute path
+whose `source` is not `<name>@inline`, the caller's copy is handed over when the work_dir probe
+lists that `source` at another path or not at all; the same path is never handed over. An `@inline`
+entry came from a launch flag (`--plugin-dir`/`--plugin-url`), not from an install row, and is never
+handed over. A caller copy of a plugin the child loads from its OWN launch flag (a child entry
+`<name>@inline` of the same `name`) is not handed over either, with a log line: the child's flags
+chose that copy, and two `--plugin-dir` copies of one name at different paths both load. Only an
+`@inline` child entry counts: a child `alpha@m` at another version is exactly the case the
+handover exists for (a `--plugin-dir` copy overrides an installed one of the same name).
+Order: the caller's init order. argv: the inherited `--mcp-config`, then one `--plugin-dir <path>`
+pair per copy (one token per path, spaces included), then the caller's flags. `spawn.json` records
+`inheritedPlugins: [{id, version}]` (never a path) and `pluginProbe`: `ok`, the fail-closed cause,
+or why no probe started, so a user can see why nothing was handed over.
+
+**A plugin the child's settings turn off is not handed over.** A copy whose id the inherited layer's
+`enabledPlugins` (setup_from's project and local settings, then every caller `--settings`) sets to
+anything but `true` is dropped from the list, with a log line naming the id. Without that, a request
+with `claude_flags: ["--settings", "{\"enabledPlugins\":{\"alpha@m\":false}}"]` and a user-enabled
+`alpha@m` handed `alpha` over: the child probe did not list it, the caller probe (which never gets the
+layer) did, and the `--plugin-dir` copy loads as `alpha@inline`, which that `false` does not match.
+
+**A relative `--plugin-dir`.** With the caller launched with `--plugin-dir ./extras` and an
+`extras/` under its cwd holding an inline `alpha`, the caller loads that inline copy, which shadows its
+`alpha@m`. The caller probe resolves `./extras` against the host's cwd and reports `alpha@inline`,
+which is never handed over; resolved anywhere else it reported `alpha@m`, and its marketplace copy
+was handed over: a copy the caller never loaded. A child `--plugin-dir` is resolved against work_dir
+in the child probe, as the child resolves it.
+
+**The naming guard.** A `--plugin-dir` copy takes its name from its manifest, else from its folder:
+
+```js
+function Vdt(e,n){let r=Qy(e).replace(/\.zip$/i,"");return n===Ws?gHe(r):r}
+// the inline loader: ot=Vdt(ze,n); ... Mge(ze,`${ot}@${n}`,!0,ot,...)   (manifest-less: {name:n})
+```
+
+so a cache folder `…/alpha/2.0.0` with no manifest would load as `2.0.0@inline` beside the child's
+own `alpha`. A copy is handed over only when `<path>/.claude-plugin/plugin.json` is a regular file
+whose `name` is the entry's `name`; otherwise it is skipped and its id logged.
+
+**Why only the caller's loaded set.** A `--plugin-dir` copy is keyed `<name>@inline`, it beats an
+installed plugin of the same name (`Plugin "${lt.name}" from --plugin-dir overrides installed
+version`), and its enabled state defaults to on whatever `enabledPlugins` says of
+`<name>@<marketplace>`:
+
+```js
+function neo(e,n,r,a){let l=QWe(e,n);if(l!==void 0&&!l.enabled&&n[l.index]?.managed)return!1;return jS(e,a)||(l?.enabled??(r!==!1||Uo(e)&&wi()))}
+```
+
+A managed `enabledPlugins: {"x@m": false}` or `strictKnownMarketplaces: []` does not stop a
+`--plugin-dir` copy either. The caller probe applies all of those, so a plugin they turn off is
+absent from its list and is never handed over; a `false` in the inherited layer is honoured by the
+filter above. A `false` in work_dir's OWN settings for an id the caller turns on only in user
+settings still does not keep the handed-over copy off. Also measured: a handed-over copy loads agents,
+skills, commands, hooks and its bundled MCP server (unless the caller passes `--strict-mcp-config`),
+and the agent namespace is unchanged (`alpha:alpha-v2`), so `--agent <plugin>:<agent>` resolves to
+it; two copies of one name at different paths both load; the same path twice loads once.
+
+**The canary.** `scripts/boot-canary.ts` runs the `pluginprobe` scenario on each pinned Claude Code
+(`scripts/boot-canary.plugin-probe.ts`). The isolated config has one installed plugin whose copy
+carries a `SessionStart` hook and an MCP server, a user `settings.json` whose `env` names a
+loopback listener with a placeholder key and which sets a `proxyAuthHelper`, an
+`otelHeadersHelper`, a `processWrapper`, a `statusLine`, a `subagentStatusLine` and a
+`fileSuggestion` writing markers, a `{}` `remote-settings.json` as an ordinary login leaves
+it, a placeholder Claude subscription login in `.credentials.json` (`claudeAiOauth`; with
+`CLAUDE_CONFIG_DIR` set, Claude Code's Keychain item name carries a hash of that dir, so the Mac's
+own login is never found and the file is read instead), and an untrusted cwd whose project and local settings set every command-valued setting to a
+marker script. The server environment carries `CLAUDE_CODE_ENABLE_PROXY_AUTH_HELPER=1`,
+`HTTPS_PROXY`, `CLAUDE_CODE_ENABLE_TELEMETRY=1` and an OTLP/HTTP exporter to a closed port, so a
+probe that kept either switch runs a user helper. claudish's probe gate must admit that config
+dir (`policyGate: open`). `spawnPluginProbe` with claudish's own argv, settings file and
+environment must answer `ok` with that copy while the listener sees no request
+(`productionRequests: 0`) and no helper marker appears. Then the same argv runs to its exit with the
+listener and the key in its own settings `env` (the production block would override them), so a
+turn would reach it, and the cwd's settings removed: it must exit 0 within 30 s, end on a `result`
+event with `subtype: "success"`, `is_error: false` and `num_turns: 0`, make no `/v1/messages`
+request, print no assistant event but the synthetic one, run no hook, start no MCP server and
+write no transcript. A stand-in that prints init and then hangs, prints a fatal result or a
+result with a turn, sends a request to the user `env` base URL, runs the project `apiKeyHelper`,
+or runs a user startup helper while its switch is in the environment fails it, and so does an
+error result before a good one, two results, a result before init, or an `error_during_execution`
+result with `num_turns: 0` and no `is_error` (`bad_result`). Production applies the same exit and
+result rule; the second boot adds the open endpoint that shows a model request. When the second
+boot's process exits, the canary kills its process group and reads stdout to its close, so a
+wrapper's child still holding stdout goes too; a descendant in a group of its own is out of reach
+of that kill, so 2 s after the run's 30 s deadline the run settles anyway as `exit: stdout-held`
+(red). The canary also reads the binary for the policy source names and the provider switches
+(above): `policySources` and `providerSwitches` must both read `known`. The second boot's result
+text must be `/effort`'s usage line (`answer: effort-usage`; a stand-in answering other text fails
+it). A third boot, the production argv with `-p /cost` in place of the probe prompt and the
+host-managed marker removed from the environment and the settings `env` block, must answer with
+the subscription line (`login: subscription`; a stand-in that never reads the login file fails
+it): that proves the world holds a login Claude Code can read, the one a subscription user's
+machine has. A fourth, the same `/cost` boot under the production environment, marker included,
+must not (`probeLogin: none`; a stand-in that reads the login under the marker fails it): the probe
+reads no stored login. That reading counts only when the fourth boot ended with init, one
+successful result and exit 0; otherwise it reads `probeLogin: unreadable` (a stand-in that exits
+with no output on that boot fails it), since a crashed boot prints no subscription line either.
+The server environment names a host creds file, a named pipe holding a placeholder bearer and
+re-armed before each boot, so a boot that opens it is seen: no boot built from the production
+environment may open it and no listener request may carry its token (`handoff: unread`), and a
+control boot of the production argv with the variable handed back in the environment and the
+settings `env` block must open it (`handoffControl: read`; a stand-in that never reads it fails
+it). The third boot does not reproduce the 8 s: the world holds no
+transcripts, and the
+plan-usage fetch fails at once at the closed `HTTPS_PROXY` port, where every outbound attempt of
+the world goes (a recording proxy in its place saw one `CONNECT api.anthropic.com:443` per boot,
+for `/effort` and `/cost` alike, and nothing else). A user `statusLine`, `subagentStatusLine`,
+`fileSuggestion` or `processWrapper` that runs at any of these boots turns `sideEffects` red (a
+stand-in that runs the user `statusLine` fails it).
+
+A fourth world is the same with a user `apiKeyHelper` (writing its own marker) in place of the two
+switch-gated user helpers, and no startup helper switch in the server environment. In it,
+`inheritedPluginsFor` runs as `createSession` would, for a child in the world's cwd with the caller
+in another folder (its host launch read as a plain `claude` there; the machine's own managed paths
+are never read): it must start no probe and answer `userHelperGate: user_command_setting`. Then a
+direct `spawnPluginProbe` of the production argv and environment boots in that world, and
+`userApiKeyHelper` reports whether the helper ran and the probe's outcome; that reading is printed,
+not compared. The binary is also read for its command-valued settings list (`Nrd`: the one array
+literal of quoted names holding `"apiKeyHelper"`, `"statusLine"` and `"proxyAuthHelper"`), which
+must equal `COMMAND_SETTINGS` (`commandSettings: known`; a name added or gone reads `unknown:+…,-…`,
+no such list or two of them `unreadable`). So a setting Claude Code adds to that list turns the
+canary red until it is sorted into `USER_STARTUP_HELPERS` or left out with a reason. What no string
+check can see is a new boot path for a setting already on the list, or a new environment switch
+that starts one (2.1.332 has 26 `CLAUDE_CODE_ENABLE_*` names, most unrelated). The user gate makes
+that matter less: a helper in `USER_STARTUP_HELPERS` refuses the probe whatever starts it, and the
+marker boots catch any of the other four that starts to run.
+
+Real run on 2.1.332, three times on the final code: `boot=init probe=ok plugins=installed
+productionRequests=0 modelRequests=0 realTurns=0 sideEffects=none exit=0 result=turns:0
+policySources=known providerSwitches=known policyGate=open answer=effort-usage login=subscription
+probeLogin=none handoff=unread handoffControl=read unixSocket=unused commandSettings=known userHelperGate=user_command_setting userApiKeyHelper="not-run probe=ok"`.
+The same world with the two switches still passed to the probe read
+`sideEffects=helper:localApiKeyHelper,helper:otelHeadersHelper,helper:proxyAuthHelper,helper:user-otelHeadersHelper,helper:user-proxyAuthHelper`.
+`/effort`'s no-argument answer, the init `plugins` shape and the quiet flags are CLI surface, not a
+contract.
+
+**Known limits, not closed.**
+
+- A stale server-managed cache can withhold the inherited `--mcp-config`. `inherited-mcp.json`
+  treats a readable `remote-settings.json` holding `disableSideloadFlags: true` as in effect,
+  also on a machine with no stored login, where Claude Code applies no cache. Claude Code checks a cached copy before it applies it:
+  a signed cache keeps its signature beside it (`remote-settings.json.signature.json`, built by
+  `function jWe(e){return`${e}.signature.json`}`), and the stored-copy trust check
+  (`storedCopyTrust`, the account's organisation pin, the helper consent) can refuse the copy.
+  claudish does not repeat that check. So when Claude Code would refuse the cached copy and accept
+  the flag, a child that needed the inherited project servers (a linked worktree outside
+  setup_from's tree, a child in another repository) starts without them. The trade-off is chosen on
+  purpose: the opposite mistake, a `--mcp-config` beside a policy that IS in effect, makes Claude
+  Code exit at startup (`sideload_flags_disabled`), so the child would not start at all. Losing the
+  servers is the smaller failure, and it is logged with the cache's path.
+  `inherited-settings.test.ts` pins it: a cached `disableSideloadFlags: true` beside a signature
+  that does not verify still withholds a linked worktree's `--mcp-config`, and the same child gets
+  the project server once the cache is gone.
+- A `CLAUDE_PATH` wrapper that starts Claude Code in a process group of its own (`setsid`, a
+  daemonising launcher) and then exits leaves that process running: the probe kills only its own
+  group, and nothing in claudish tracks a descendant outside it. The probe still settles by its
+  deadline, lets go of stdout, and hands over nothing unless that process printed a full valid run
+  first. The orphan holds no claudish resource, but it lives until it exits by itself, and it was
+  started with the probe's environment (no credential, the closed base URL). The canary's own
+  stand-in for this case is killed by the test that started it; production has no such cleanup.
+  This needs a wrapper written to escape its parent's group, so it is left open.
+- The caller's user settings are found from the SERVER's `HOME` when the caller has no
+  `CLAUDE_CONFIG_DIR`: `readHostLaunch` does not read the caller's `HOME`. A caller launched
+  with another `HOME` than the server's has its mode gate (`callerEffectiveEnv`) and its user
+  settings gate (`userSettingsRefusal`) read the server's user settings instead. Both make the
+  same assumption, so they agree with each other.
+- The probe models a fresh boot of the caller, not the running caller. A plugin installed,
+  updated or removed after the caller started is handed over as it is on disk now: the child gets
+  the new version, or a copy the caller never loaded.
+- An argument that is not valid UTF-8 (a path in another encoding) is decoded with replacement
+  characters, on Linux `/proc/<pid>/cmdline` and on macOS alike: the caller probe then names a
+  different path, so a `--settings` file reads as `caller_settings_unreadable` and a
+  `--plugin-dir` names a folder that does not exist. Only `CLAUDE_CONFIG_DIR` is checked for exact
+  UTF-8.
+
+Open questions, not measured: whether state keyed by plugin id (the plugin's data folder,
+`pluginConfigs` and user config for `<name>@<marketplace>`, `/plugin` actions, auto-update) follows
+an `@inline` copy. Not handed over: plugins the caller loaded with its own `--plugin-dir` (the
+caller probe lists them as `@inline`). Claude Code's worktree check (`Ut`: the backlink file and the
+`<common>/worktrees/<name>` layout) is not replicated by the probe gate; a broken worktree can look
+like the same repository to claudish, which then starts no probe where Claude Code would apply
+other rows: the plugin goes missing, never an extra one.
+
+Known gaps, not carried: project `.claude/skills` and `.claude/commands`; project hooks with
+relative paths, which resolve against `work_dir`. `team` needs none of this: its slots run in
+the server's cwd.
 
 An inherited layer also turns on the caller's plugin hooks in the child, and those hooks keep
 per-cwd state: in the live run they wrote `.claude/.coaching/state.json` and `.mnemex/` into the

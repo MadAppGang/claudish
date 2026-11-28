@@ -11,16 +11,22 @@
  * settings layer.
  */
 
+import { spawnSync } from "node:child_process";
 import {
   chmodSync,
+  closeSync,
   existsSync,
+  lstatSync,
+  openSync,
   readFileSync,
+  readSync,
   readdirSync,
   realpathSync,
   statSync,
   statfsSync,
   writeFileSync,
 } from "node:fs";
+import { userInfo } from "node:os";
 import {
   basename,
   delimiter,
@@ -33,7 +39,7 @@ import {
   sep,
 } from "node:path";
 
-import { claudeCodeGlobalConfigPath } from "../auth/claude-code-facts.js";
+import { claudeCodeConfigDir, claudeCodeGlobalConfigPath } from "../auth/claude-code-facts.js";
 import {
   type SettingSource,
   enabledSettingSources,
@@ -138,7 +144,7 @@ function parseLayer(text: string, source: string): SettingsLayer {
  * A `--settings` value: inline JSON when it starts with `{`, else a file path. Inline JSON
  * is named only as "inline --settings value": the value itself can hold a credential.
  */
-function readSettingsValue(value: string): SettingsLayer {
+export function readSettingsValue(value: string): SettingsLayer {
   if (value.trim().startsWith("{")) return parseLayer(value, "inline --settings value");
   if (regularPathKind(value) === undefined && existsSync(value)) {
     throw new Error(`invalid_args: settings ${value} cannot be read (not a regular file)`);
@@ -221,6 +227,30 @@ function settingsFilesFor(setupReal: string, sources: ReadonlySet<SettingSource>
       ? localSettingsFiles(setupReal, readText, regularPathKind).map(([file]) => file)
       : []),
   ];
+}
+
+/**
+ * The project and local settings files Claude Code reads for a launch from `dir` (its real
+ * path), in merge order, whether or not they exist.
+ */
+export function launchSettingsFiles(dir: string): string[] {
+  return settingsFilesFor(realOrResolved(dir), null);
+}
+
+/**
+ * {@link launchSettingsFiles} split by tier: the project file, then the local files, each
+ * only when `sources` (null: all) loads that tier.
+ */
+export function launchSettingsFilesByTier(
+  dir: string,
+  sources: ReadonlySet<SettingSource> | null
+): { project: string[]; local: string[] } {
+  const real = realOrResolved(dir);
+  const loads = (source: SettingSource) => sources === null || sources.has(source);
+  return {
+    project: loads("project") ? settingsFilesFor(real, new Set(["project"])) : [],
+    local: loads("local") ? settingsFilesFor(real, new Set(["local"])) : [],
+  };
 }
 
 function readText(path: string): string {
@@ -474,9 +504,125 @@ function disabledListOf(file: string, acceptString: boolean): string[] {
   }
 }
 
+/** One managed policy source's JSON object, with its path. */
+export interface ManagedSettingsObject {
+  path: string;
+  value: SettingsLayer;
+}
+
+/**
+ * The managed policy sources Claude Code builds `policySettings` from, read once: `objects`
+ * holds each readable source's JSON object, in Claude Code's priority order (the server-managed
+ * `remote-settings.json`, the first managed preference plist Claude Code takes (per-user, else
+ * device: {@link PlistReader}), `managed-settings.json`, then its drop-ins). A source Claude Code
+ * skips is skipped here too, as absent: one that cannot be read or parsed or is not a JSON
+ * object (2.1.332: "none of its settings are in effect"), a plist that lints but plutil cannot
+ * convert, a device plist behind a per-user one that answered, a `remote-settings.json` over its
+ * size limit ("ignoring it as if absent"), a named pipe. `oversize` names a managed settings
+ * file or drop-in larger than claudish reads: Claude Code may still apply it, so a gate that
+ * finds one withholds.
+ *
+ * Claude Code applies only the highest present source by default (`managedSourcesBehavior`
+ * `"first-wins"`) and deep-merges them under `"merge"`; every gate here reads ALL sources, so
+ * it refuses under either.
+ */
+export interface ManagedPolicy {
+  objects: ManagedSettingsObject[];
+  oversize: string[];
+}
+
+/**
+ * A managed preference plist read as Claude Code 2.1.332 reads it (`o6r`): the JSON text of
+ * `/usr/bin/plutil -convert json -o - -- <path>` (at most {@link PLUTIL_TIMEOUT_MS}, then
+ * SIGKILL, and {@link PLUTIL_MAX_BYTES} of output); when the conversion fails,
+ * `plutil -lint -s -- <path>` decides: a plist that lints (a date or data value plutil cannot
+ * turn into JSON) answers null, and a damaged one that can be opened answers `""`, as Claude
+ * Code's own `{stdout:""}`. Null too when plutil could not be run or finish, or the file cannot
+ * be opened. Any answer but null makes that plist the one Claude Code takes.
+ */
+export type PlistReader = (path: string) => string | null;
+
+const PLUTIL = "/usr/bin/plutil";
+/** Claude Code's own plutil timeout and output cap (2.1.332: `EGo=5000`, `Gqs=2097152`). */
+const PLUTIL_TIMEOUT_MS = 5_000;
+const PLUTIL_MAX_BYTES = 2 * 1024 * 1024;
+
+/** The largest `remote-settings.json` Claude Code reads (2.1.332: `St=8388608`). */
+const REMOTE_SETTINGS_MAX_BYTES = 8 * 1024 * 1024;
+
+/** The largest managed settings file or drop-in claudish reads; a larger one is `oversize`. */
+const MANAGED_FILE_MAX_BYTES = 8 * 1024 * 1024;
+
+export const plutilJson: PlistReader = (path) => {
+  const plutil = (args: string[]) =>
+    spawnSync(PLUTIL, [...args, "--", path], {
+      encoding: "utf-8",
+      timeout: PLUTIL_TIMEOUT_MS,
+      killSignal: "SIGKILL",
+      maxBuffer: PLUTIL_MAX_BYTES,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+  const run = plutil(["-convert", "json", "-o", "-"]);
+  if (run.error || run.signal !== null) return null;
+  if (run.status === 0 && typeof run.stdout === "string") return run.stdout;
+  const lint = plutil(["-lint", "-s"]);
+  if (lint.error || lint.signal !== null || lint.status === 0) return null;
+  // Claude Code's damaged-plist answer needs a file it can open and read one byte of
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, "r");
+    readSync(fd, Buffer.alloc(1), 0, 1, 0);
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+  return "";
+};
+
+/**
+ * A JSON policy source's object: `null` when it is missing or cannot be read or parsed (not a
+ * regular file, so a named pipe is never opened; unreadable; not JSON; not a JSON object), and
+ * `oversize` when it is larger than `maxBytes`.
+ */
+function readJsonPolicy(path: string, maxBytes: number): SettingsLayer | null | "oversize" {
+  try {
+    const stat = statSync(path);
+    if (!stat.isFile()) return null;
+    if (stat.size > maxBytes) return "oversize";
+    const parsed: unknown = JSON.parse(readText(path));
+    return isPlainObject(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A plist as Claude Code takes it: `skipped` when it is missing, not a regular file, or
+ * `readPlist` answers null (Claude Code moves on to the next plist); else `taken`, with its JSON
+ * object, or null when its text is not one (a damaged plist's `""` included), which sets
+ * nothing but still ends the walk.
+ */
+function readPlistPolicy(
+  path: string,
+  readPlist: PlistReader
+): "skipped" | { taken: SettingsLayer | null } {
+  // a named pipe or a folder is never handed to plutil: a pipe with no writer stalls it
+  if (!isRegularFile(path)) return "skipped";
+  const text = readPlist(path);
+  if (text === null) return "skipped";
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return { taken: isPlainObject(parsed) ? parsed : null };
+  } catch {
+    return { taken: null };
+  }
+}
+
 /**
  * The managed settings files: the base file, then every drop-in in `dropInDir` whose name
  * ends in `.json` and does not start with `.`, in sorted name order, as Claude Code reads them.
+ * A drop-in folder that cannot be listed adds none: Claude Code applies none of it either.
  */
 function managedSettingsFiles(file: string | undefined, dropInDir: string | undefined): string[] {
   const files = file ? [file] : [];
@@ -493,39 +639,242 @@ function managedSettingsFiles(file: string | undefined, dropInDir: string | unde
   return files;
 }
 
-/**
- * The managed `disabledMcpjsonServers` of {@link managedSettingsFiles}. Claude Code
- * concatenates arrays across those files, so the lists add up.
- */
-function managedDisabledList(file: string | undefined, dropInDir: string | undefined): string[] {
-  return managedSettingsFiles(file, dropInDir).flatMap((path) => disabledListOf(path, false));
+/** The `remote-settings.json` path `managed` names for a child with `env` in `cwd`. */
+function remoteSettingsPath(
+  managed: Partial<ManagedPaths>,
+  env: Record<string, string | undefined>,
+  cwd: string
+): string | undefined {
+  if (managed.remoteSettingsFile === null) {
+    return join(claudeCodeConfigDir(env, cwd), REMOTE_SETTINGS_FILE);
+  }
+  return managed.remoteSettingsFile;
+}
+
+/** The hybrid sign-in cache's folder `managed` names for a child with `env` in `cwd`. */
+function hybridSettingsDirOf(
+  managed: Partial<ManagedPaths>,
+  env: Record<string, string | undefined>,
+  cwd: string
+): string | undefined {
+  if (managed.hybridSettingsDir === null) return join(claudeCodeConfigDir(env, cwd), "state");
+  return managed.hybridSettingsDir;
 }
 
 /**
- * Whether any of {@link managedSettingsFiles} sets `disableSideloadFlags` to `true`, with a
- * log line naming the first such file. Claude Code then exits at startup on a non-sdk
- * `--mcp-config` server. It reads the setting from managed settings only, and a restrictive
- * `true` in one managed file wins over a `false` in any other. An unreadable or malformed
- * file is skipped, as {@link disabledListOf} skips it.
+ * The readable managed policy sources in `managed` ({@link ManagedPolicy}). A field absent
+ * from `managed` is a source not read. `remoteSettingsFile: null` reads
+ * `<config dir>/remote-settings.json` of the child's `env`, resolved against `cwd`.
+ * Never writes; a plist costs one plutil run ({@link plutilJson}) when it is a regular file.
  */
-function managedSideloadFlagsDisabled(
-  file: string | undefined,
-  dropInDir: string | undefined
-): boolean {
-  for (const path of managedSettingsFiles(file, dropInDir)) {
-    if (!isRegularFile(path)) continue;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(readText(path));
-    } catch {
-      continue;
-    }
-    if (isPlainObject(parsed) && parsed.disableSideloadFlags === true) {
-      log(
-        `[mcp-session] no MCP server handed over: ${path} sets disableSideloadFlags, and Claude Code refuses --mcp-config while it does`
-      );
-      return true;
-    }
+export function readManagedPolicy(
+  managed: Partial<ManagedPaths>,
+  env: Record<string, string | undefined>,
+  cwd: string
+): ManagedPolicy {
+  const objects: ManagedSettingsObject[] = [];
+  const oversize: string[] = [];
+  const remote = remoteSettingsPath(managed, env, cwd);
+  if (remote !== undefined) {
+    const value = readJsonPolicy(remote, REMOTE_SETTINGS_MAX_BYTES);
+    if (value !== null && value !== "oversize") objects.push({ path: remote, value });
+  }
+  // Claude Code 2.1.332 takes only the first plist whose read answers (`o6r`: `u=o.findIndex((s)=>
+  // s.stdout!==null);return{plistStdouts:u===-1?o:o.slice(0,u+1),...}`); one that converts
+  // without policy content still hides the device plist after it
+  const readPlist = managed.readPlist ?? plutilJson;
+  for (const plist of managed.managedPreferencePlists ?? []) {
+    const read = readPlistPolicy(plist, readPlist);
+    if (read === "skipped") continue;
+    if (read.taken !== null) objects.push({ path: plist, value: read.taken });
+    break;
+  }
+  for (const path of managedSettingsFiles(
+    managed.managedSettingsFile,
+    managed.managedSettingsDropInDir
+  )) {
+    const value = readJsonPolicy(path, MANAGED_FILE_MAX_BYTES);
+    if (value === "oversize") oversize.push(path);
+    else if (value !== null) objects.push({ path, value });
+  }
+  return { objects, oversize };
+}
+
+/**
+ * Whether anything exists at `path`, unread: `lstat` succeeds (a dangling symlink, a named
+ * pipe and a folder all exist), or fails with anything but `ENOENT`/`ENOTDIR`.
+ */
+function pathPresent(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    return code !== "ENOENT" && code !== "ENOTDIR";
+  }
+}
+
+/**
+ * The entries of folder `dir` that `keep` names: `[]` when nothing is at `dir`, `[dir]` when
+ * something is there that cannot be listed (not a folder, or a folder that cannot be read).
+ */
+function presentEntries(dir: string, keep: (name: string) => boolean): string[] {
+  if (!pathPresent(dir)) return [];
+  try {
+    return readdirSync(dir)
+      .filter(keep)
+      .sort()
+      .map((name) => join(dir, name));
+  } catch {
+    return [dir];
+  }
+}
+
+/**
+ * Whether a `remote-settings.json` that exists sets nothing: a regular file (not a symlink) of
+ * at most 8 MiB holding one JSON object whose every key starts with `$`. Claude Code drops
+ * `$`-prefixed keys other than `$schema` as metadata before it applies the cache (2.1.332:
+ * `_Vr`, `a.startsWith("$")&&a!=="$schema"`), and `$schema` sets nothing; an ordinary login
+ * leaves a two-byte `{}` there. Anything else, unreadable included, sets something.
+ */
+function remoteSettingsSetsNothing(path: string): boolean {
+  try {
+    const stat = lstatSync(path);
+    if (!stat.isFile() || stat.size > REMOTE_SETTINGS_MAX_BYTES) return false;
+    const parsed: unknown = JSON.parse(readText(path));
+    return isPlainObject(parsed) && Object.keys(parsed).every((key) => key.startsWith("$"));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The first managed policy source that exists in any form, readable or not, else undefined.
+ * Nothing is read or parsed but one case: `remote-settings.json` counts as absent when it sets
+ * nothing ({@link remoteSettingsSetsNothing}). The rest: the managed preference plists,
+ * `managed-settings.json`, any entry of `managed-settings.d` (one Claude Code skips included),
+ * `managed-mcp.json`, any `hybrid-settings*.json` of the hybrid sign-in cache, and every
+ * registry policy key `managed` lists.
+ */
+export function managedPolicySourcePresent(
+  managed: Partial<ManagedPaths>,
+  env: Record<string, string | undefined>,
+  cwd: string
+): string | undefined {
+  const remote = remoteSettingsPath(managed, env, cwd);
+  if (remote !== undefined && pathPresent(remote) && !remoteSettingsSetsNothing(remote)) {
+    return remote;
+  }
+  const files = [...(managed.managedPreferencePlists ?? []), managed.managedSettingsFile];
+  for (const path of files) if (path !== undefined && pathPresent(path)) return path;
+  const dropInDir = managed.managedSettingsDropInDir;
+  const dropIn = dropInDir ? presentEntries(dropInDir, () => true)[0] : undefined;
+  if (dropIn !== undefined) return dropIn;
+  if (managed.managedMcpFile !== undefined && pathPresent(managed.managedMcpFile)) {
+    return managed.managedMcpFile;
+  }
+  const hybridDir = hybridSettingsDirOf(managed, env, cwd);
+  const hybrid = hybridDir
+    ? presentEntries(hybridDir, (n) => n.startsWith("hybrid-settings") && n.endsWith(".json"))[0]
+    : undefined;
+  if (hybrid !== undefined) return hybrid;
+  return managed.registryPolicyKeys?.[0];
+}
+
+/**
+ * The first managed source that sets `disableSideloadFlags` to `true`, else undefined. Claude
+ * Code then exits at startup on `--plugin-dir`, `--plugin-url`, `--agents` and a non-sdk
+ * `--mcp-config`. It reads the setting from managed settings only, and a restrictive `true`
+ * in one managed source wins over a `false` in any other.
+ */
+export function sideloadFlagsDisabledBy(policy: ManagedPolicy): string | undefined {
+  return policy.objects.find(({ value }) => value.disableSideloadFlags === true)?.path;
+}
+
+/**
+ * Whether the managed policy keeps a `--mcp-config` from the child: `disableSideloadFlags`
+ * ({@link sideloadFlagsDisabledBy}), or a managed settings file too large to read. Logs the
+ * path either way.
+ */
+function managedPolicyBlocksMcpConfig(policy: ManagedPolicy): boolean {
+  const oversize = policy.oversize[0];
+  if (oversize !== undefined) {
+    log(
+      `[mcp-session] no MCP server handed over: ${oversize} is larger than claudish reads, so claudish cannot tell whether it sets disableSideloadFlags`
+    );
+    return true;
+  }
+  const path = sideloadFlagsDisabledBy(policy);
+  if (path === undefined) return false;
+  log(
+    `[mcp-session] no MCP server handed over: ${path} sets disableSideloadFlags, and Claude Code refuses --mcp-config while it does`
+  );
+  return true;
+}
+
+/** One `reg query <key> /v Settings` run: exit status (null when killed) and its output. */
+export interface RegistryAnswer {
+  status: number | null;
+  stdout: string;
+  stderr: string;
+}
+
+/** Queries a policy key's `Settings` value; null when `reg` cannot be run or times out. */
+export type RegistryReader = (key: string) => RegistryAnswer | null;
+
+/** How long one registry query may take (Claude Code's own plutil and reg budget). */
+const REG_TIMEOUT_MS = 5_000;
+
+/** A `Settings` value line of a `reg query` answer: `    Settings    REG_SZ    {...}`. */
+const REG_SETTINGS_LINE = /^[ \t]+Settings[ \t]+REG_/im;
+
+/**
+ * `%SystemRoot%\System32\reg.exe query <key> /v Settings`, as Claude Code 2.1.332 reads its
+ * Windows policy (`HKLM` and `HKCU\SOFTWARE\Policies\ClaudeCode`, value `Settings`).
+ */
+export const regQuery: RegistryReader = (key) => {
+  const root = process.env.SystemRoot ?? "C:\\Windows";
+  const run = spawnSync(`${root}\\System32\\reg.exe`, ["query", key, "/v", "Settings"], {
+    encoding: "utf-8",
+    timeout: REG_TIMEOUT_MS,
+    killSignal: "SIGKILL",
+    windowsHide: true,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (run.error) return null;
+  return { status: run.status, stdout: run.stdout ?? "", stderr: run.stderr ?? "" };
+};
+
+/**
+ * A policy key as one query answers it: `present` (exit 0 and a `Settings` value is listed),
+ * `absent` (exit status 1, `reg`'s failure status, with no `Settings` value line: read by
+ * status, never by the message, which `reg` prints in the system's language), else `unknown`
+ * (a timeout, a failure to run, any other answer).
+ */
+function registryPolicyState(answer: RegistryAnswer | null): "present" | "absent" | "unknown" {
+  if (answer === null) return "unknown";
+  const listed = REG_SETTINGS_LINE.test(answer.stdout);
+  if (answer.status === 0 && listed) return "present";
+  if (answer.status === 1 && !listed) return "absent";
+  return "unknown";
+}
+
+/**
+ * Whether a Windows policy key keeps a `--mcp-config` from the child: one that holds a
+ * `Settings` value, or whose query cannot say, with a log line naming the key. Off win32
+ * `managed.registryPolicyKeys` is empty and nothing is queried.
+ */
+function registryPolicyBlocksMcpConfig(managed: Partial<ManagedPaths>): boolean {
+  const read = managed.readRegistry ?? regQuery;
+  for (const key of managed.registryPolicyKeys ?? []) {
+    const state = registryPolicyState(read(key));
+    if (state === "absent") continue;
+    log(
+      state === "present"
+        ? `[mcp-session] no MCP server handed over: the policy key ${key} holds a Settings value, which claudish does not read`
+        : `[mcp-session] no MCP server handed over: the policy key ${key} could not be queried, so claudish cannot tell whether it is present`
+    );
+    return true;
   }
   return false;
 }
@@ -548,7 +897,7 @@ function isDisabledBy(name: string, disabled: readonly string[]): boolean {
   );
 }
 
-/** Claude Code's managed (enterprise) files, read only. */
+/** Claude Code's managed (enterprise) policy sources, read only. */
 export interface ManagedPaths {
   /** `managed-settings.json`, whose `disabledMcpjsonServers` always applies. */
   managedSettingsFile: string;
@@ -560,20 +909,92 @@ export interface ManagedPaths {
    * present"), so nothing is handed over.
    */
   managedMcpFile: string;
+  /**
+   * The macOS managed preference plists, in Claude Code's order: the per-user
+   * `/Library/Managed Preferences/<user>/com.anthropic.claudecode.plist`, then the device
+   * `/Library/Managed Preferences/com.anthropic.claudecode.plist`. Empty elsewhere.
+   */
+  managedPreferencePlists: string[];
+  /**
+   * The server-managed settings Claude Code caches. `null`: `remote-settings.json` in the
+   * child's config dir (`CLAUDE_CONFIG_DIR`, else `~/.claude`).
+   */
+  remoteSettingsFile: string | null;
+  /**
+   * The folder of the hybrid sign-in cache, whose `hybrid-settings*.json` feed Claude Code's
+   * policy layer. `null`: `state` in the child's config dir. Only its presence is checked,
+   * by the plugin probe's gate.
+   */
+  hybridSettingsDir: string | null;
+  /**
+   * The Windows policy keys Claude Code reads (win32 only; empty elsewhere). Each is queried
+   * for a `Settings` value ({@link regQuery}).
+   */
+  registryPolicyKeys: string[];
+  /** @internal test seam: converts a plist to JSON text. Default {@link plutilJson}. */
+  readPlist?: PlistReader;
+  /** @internal test seam: queries one registry policy key. Default {@link regQuery}. */
+  readRegistry?: RegistryReader;
+}
+
+/** The cached server-managed settings' file name in the config dir. */
+const REMOTE_SETTINGS_FILE = "remote-settings.json";
+
+/** Claude Code's managed preference domain (2.1.332: `r="com.anthropic.claudecode"`). */
+const MANAGED_PREFERENCE_DOMAIN = "com.anthropic.claudecode";
+
+/** The Windows policy keys Claude Code reads (2.1.332: `HKLM`/`HKCU\SOFTWARE\Policies\ClaudeCode`). */
+const WINDOWS_POLICY_KEYS = [
+  "HKLM\\SOFTWARE\\Policies\\ClaudeCode",
+  "HKCU\\SOFTWARE\\Policies\\ClaudeCode",
+];
+
+/**
+ * The managed preference plists Claude Code 2.1.332 reads on macOS for `username`: the
+ * per-user plist only for a name that is not empty, `.` or `..` and holds no `/` or control
+ * character, then the device plist.
+ */
+export function managedPreferencePlistsFor(username: string): string[] {
+  const root = "/Library/Managed Preferences";
+  const plists: string[] = [];
+  // Claude Code's test is `/[/\x00-\x1f\x7f]/`: a slash, a C0 control character or DEL
+  const unsafe = [...username].some((ch) => {
+    const code = ch.charCodeAt(0);
+    return ch === "/" || code <= 0x1f || code === 0x7f;
+  });
+  if (!["", ".", ".."].includes(username) && !unsafe) {
+    plists.push(join(root, username, `${MANAGED_PREFERENCE_DOMAIN}.plist`));
+  }
+  plists.push(join(root, `${MANAGED_PREFERENCE_DOMAIN}.plist`));
+  return plists;
+}
+
+function currentUsername(): string {
+  try {
+    return userInfo().username;
+  } catch {
+    return "";
+  }
 }
 
 /**
- * The managed files on this machine: all three live in the directory of
+ * The managed policy sources on this machine: the three files in the directory of
  * `managedSettingsPath()` (macOS `/Library/Application Support/ClaudeCode`, Linux
- * `/etc/claude-code`).
+ * `/etc/claude-code`), the managed preference plists on macOS, the child's own
+ * `remote-settings.json` and hybrid sign-in cache, and on win32 the registry policy keys.
  */
-export function realManagedPaths(): ManagedPaths {
+export function realManagedPaths(platform: NodeJS.Platform = process.platform): ManagedPaths {
   const managedSettingsFile = managedSettingsPath();
   const dir = dirname(managedSettingsFile);
   return {
     managedSettingsFile,
     managedSettingsDropInDir: join(dir, "managed-settings.d"),
     managedMcpFile: join(dir, "managed-mcp.json"),
+    managedPreferencePlists:
+      platform === "darwin" ? managedPreferencePlistsFor(currentUsername()) : [],
+    remoteSettingsFile: null,
+    hybridSettingsDir: null,
+    registryPolicyKeys: platform === "win32" ? [...WINDOWS_POLICY_KEYS] : [],
   };
 }
 
@@ -589,18 +1010,32 @@ function managedMcpPresent(file: string | undefined): boolean {
   return true;
 }
 
-/** Whether a managed file makes Claude Code refuse `--mcp-config`, each case logged by path. */
-function managedPolicyRefusesMcpConfig(managed: Partial<ManagedPaths>): boolean {
+/**
+ * Whether the managed policy keeps a `--mcp-config` from the child, only where Claude Code
+ * itself would refuse it: `managed-mcp.json`, `disableSideloadFlags` in a readable source, a
+ * Windows policy key that is present or cannot be queried. Each case logged by path.
+ */
+function managedPolicyRefusesMcpConfig(
+  managed: Partial<ManagedPaths>,
+  policy: ManagedPolicy
+): boolean {
   if (managedMcpPresent(managed.managedMcpFile)) return true;
-  return managedSideloadFlagsDisabled(
-    managed.managedSettingsFile,
-    managed.managedSettingsDropInDir
-  );
+  if (registryPolicyBlocksMcpConfig(managed)) return true;
+  return managedPolicyBlocksMcpConfig(policy);
 }
 
 /** The real main checkout holding `dir` (`.git` files read only when regular), else `dir`. */
 function mainCheckoutKey(dir: string): string {
   return realOrResolved(mainCheckoutRoot(dir, readText, regularPathKind) ?? dir);
+}
+
+/**
+ * Whether two directories share one main checkout ({@link mainCheckoutKey}): a subfolder or a
+ * linked worktree of one repository. Outside Git a directory is its own key, so a subfolder of
+ * a folder outside Git does not share it.
+ */
+export function sharesMainCheckout(a: string, b: string): boolean {
+  return mainCheckoutKey(realOrResolved(a)) === mainCheckoutKey(realOrResolved(b));
 }
 
 /** What {@link buildInheritedMcpConfig} needs beyond the two directories. */
@@ -622,13 +1057,17 @@ export interface InheritedMcpOptions extends Partial<ManagedPaths> {
  *
  * - Nothing while `options.managedMcpFile` exists: Claude Code would refuse the
  *   `--mcp-config` flag and the child would not start. A log line names the file.
- * - Nothing while a managed settings file or drop-in sets `disableSideloadFlags: true`:
- *   Claude Code exits at startup on that flag too. A log line names the file.
+ * - Nothing while a managed policy source ({@link readManagedPolicy}: the remote settings, a
+ *   managed preference plist, the managed settings file or a drop-in) that Claude Code reads
+ *   sets `disableSideloadFlags: true` (Claude Code exits at startup on that flag too), or a
+ *   Windows policy key holds a `Settings` value or cannot be queried. A source Claude Code
+ *   skips (malformed, unconvertible, over its size limit) is skipped. A log line names the
+ *   source.
  * - `.mcp.json` servers, only when `childCwd` is not within setupFrom (walk-up cannot
  *   reach them): every regular file of the folders Claude Code's walk-up from setupFrom
  *   reads ({@link mcpJsonWalkDirs}) except a folder holding `childCwd`, nearest wins, minus every
  *   name in `disabledMcpjsonServers` of `layer`, the `.claude.json` project entry, the
- *   user settings, the managed settings and its drop-ins, since a `--mcp-config` server
+ *   user settings, every managed policy source, since a `--mcp-config` server
  *   bypasses that list. A name matches as Claude Code compares it ({@link isDisabledBy}).
  *   When the child shares setupFrom's main checkout, a name its local scope defines is
  *   left out too: the child loads that local definition itself.
@@ -661,7 +1100,8 @@ export function buildInheritedMcpConfig(
   const sharedMain = setupMain === mainCheckoutKey(childReal);
   const localGate = !sharedMain && loads("local");
   if (!projectGate && !localGate) return null;
-  if (managedPolicyRefusesMcpConfig(options)) return null;
+  const policy = readManagedPolicy(options, env, childReal);
+  if (managedPolicyRefusesMcpConfig(options, policy)) return null;
 
   const entry = globalConfigProjectEntry(env, setupMain, childReal);
   const localDefined = isPlainObject(entry?.mcpServers) ? entry.mcpServers : {};
@@ -671,7 +1111,8 @@ export function buildInheritedMcpConfig(
     ...serverNameList(layer?.disabledMcpjsonServers, true),
     ...serverNameList(entry?.disabledMcpjsonServers, true),
     ...(loads("user") ? disabledListOf(userFile, true) : []),
-    ...managedDisabledList(options.managedSettingsFile, options.managedSettingsDropInDir),
+    // Claude Code concatenates arrays across managed sources, so the lists add up.
+    ...policy.objects.flatMap(({ value }) => serverNameList(value.disabledMcpjsonServers, false)),
   ];
   const turnedOff = serverNameList(entry?.disabledMcpServers, false);
   const definedLocally = sharedMain && loads("local") ? Object.keys(localDefined) : [];

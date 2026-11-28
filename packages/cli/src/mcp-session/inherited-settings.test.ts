@@ -855,17 +855,27 @@ describe("writePrivateJson", () => {
   });
 });
 
-/** Managed paths under the test's temp dir; none of the three exists until a test writes it. */
-function tempManaged(): {
-  managedSettingsFile: string;
-  managedSettingsDropInDir: string;
-  managedMcpFile: string;
+/**
+ * Every managed policy source under the test's temp dir; none exists until a test writes it.
+ * The plists are read as JSON text by a stand-in for plutil.
+ */
+function tempManaged(): inherited.ManagedPaths & {
+  managedPreferencePlists: [string, string];
+  remoteSettingsFile: string;
 } {
   const dir = join(tmp, "managed");
   return {
     managedSettingsFile: join(dir, "managed-settings.json"),
     managedSettingsDropInDir: join(dir, "managed-settings.d"),
     managedMcpFile: join(dir, "managed-mcp.json"),
+    managedPreferencePlists: [
+      join(dir, "prefs", "user", "com.anthropic.claudecode.plist"),
+      join(dir, "prefs", "com.anthropic.claudecode.plist"),
+    ],
+    remoteSettingsFile: join(dir, "remote", "remote-settings.json"),
+    hybridSettingsDir: join(dir, "remote", "state"),
+    registryPolicyKeys: [],
+    readPlist: (path) => readFileSync(path, "utf-8"),
   };
 }
 
@@ -1368,12 +1378,359 @@ describe("realManagedPaths", () => {
   test("puts managed-mcp.json and managed-settings.d beside the managed settings file", () => {
     const dir = dirname(runner.managedSettingsPath());
 
-    expect(inherited.realManagedPaths()).toEqual({
+    expect(inherited.realManagedPaths("linux")).toEqual({
       managedSettingsFile: runner.managedSettingsPath(),
       managedSettingsDropInDir: join(dir, "managed-settings.d"),
       managedMcpFile: join(dir, "managed-mcp.json"),
+      managedPreferencePlists: [],
+      remoteSettingsFile: null,
+      hybridSettingsDir: null,
+      registryPolicyKeys: [],
     });
   });
+
+  test("on macOS adds the managed preference plists, per-user first, then the device one", () => {
+    const plists = inherited.realManagedPaths("darwin").managedPreferencePlists;
+
+    expect(plists).toHaveLength(2);
+    expect(plists[1]).toBe("/Library/Managed Preferences/com.anthropic.claudecode.plist");
+    expect(plists[0]).toMatch(
+      /^\/Library\/Managed Preferences\/[^/]+\/com\.anthropic\.claudecode\.plist$/
+    );
+  });
+
+  test("on win32 names the registry policy keys Claude Code reads", () => {
+    expect(inherited.realManagedPaths("win32").registryPolicyKeys).toEqual([
+      "HKLM\\SOFTWARE\\Policies\\ClaudeCode",
+      "HKCU\\SOFTWARE\\Policies\\ClaudeCode",
+    ]);
+  });
+
+  test("leaves out the per-user plist for a user name Claude Code would not read", () => {
+    const device = "/Library/Managed Preferences/com.anthropic.claudecode.plist";
+    for (const name of ["", ".", "..", "a/b", "a\nb"]) {
+      expect(inherited.managedPreferencePlistsFor(name)).toEqual([device]);
+    }
+    expect(inherited.managedPreferencePlistsFor("jo")).toEqual([
+      "/Library/Managed Preferences/jo/com.anthropic.claudecode.plist",
+      device,
+    ]);
+  });
+});
+
+describe("the managed policy sources beyond managed-settings.json", () => {
+  function openCaller(): { caller: string; work: string } {
+    const caller = mainCheckout(join(tmp, "caller"));
+    const work = join(tmp, "work");
+    mkdirSync(work, { recursive: true });
+    put(join(caller, ".mcp.json"), { mcpServers: { proj: srv("proj"), off: srv("off") } });
+    return { caller, work };
+  }
+
+  function mcpWithLog(managed: Partial<inherited.ManagedPaths>, env = mcpEnv()) {
+    const { caller, work } = openCaller();
+    const logged = spyOn(logger, "log").mockImplementation(() => {});
+    try {
+      const result = buildInheritedMcpConfig(caller, work, null, env, managed);
+      return { result, lines: logged.mock.calls.map(([line]) => String(line)) };
+    } finally {
+      logged.mockRestore();
+    }
+  }
+
+  for (const [which, pick] of [
+    ["per-user plist", (m: ReturnType<typeof tempManaged>) => m.managedPreferencePlists[0]],
+    ["device plist", (m: ReturnType<typeof tempManaged>) => m.managedPreferencePlists[1]],
+    ["remote-settings.json", (m: ReturnType<typeof tempManaged>) => m.remoteSettingsFile],
+  ] as const) {
+    test(`a ${which} disableSideloadFlags hands over no --mcp-config server and logs its path`, () => {
+      const managed = tempManaged();
+      put(pick(managed), { disableSideloadFlags: true });
+
+      const { result, lines } = mcpWithLog(managed);
+
+      expect(result).toBeNull();
+      expectNamesPath(
+        lines.find((line) => line.includes("disableSideloadFlags")),
+        pick(managed)
+      );
+    });
+
+    test(`a ${which} that cannot be parsed is skipped, as Claude Code skips it`, () => {
+      const managed = tempManaged();
+      put(pick(managed), "{ broken");
+
+      expect(mcpWithLog(managed).result?.mcpServers).toEqual({
+        proj: srv("proj"),
+        off: srv("off"),
+      });
+    });
+
+    test(`a ${which} that is not a JSON object is skipped`, () => {
+      const managed = tempManaged();
+      put(pick(managed), "[1]");
+
+      expect(mcpWithLog(managed).result?.mcpServers).toEqual({
+        proj: srv("proj"),
+        off: srv("off"),
+      });
+    });
+
+    test(`a ${which} disabledMcpjsonServers list applies to the handed-over servers`, () => {
+      const managed = tempManaged();
+      put(pick(managed), { disabledMcpjsonServers: ["off"] });
+
+      expect(mcpWithLog(managed).result?.mcpServers).toEqual({ proj: srv("proj") });
+    });
+  }
+
+  test("a managed settings file that cannot be parsed is skipped, beside a readable disableSideloadFlags", () => {
+    const managed = tempManaged();
+    put(managed.managedSettingsFile, "{ broken");
+    expect(mcpWithLog(managed).result?.mcpServers).toEqual({ proj: srv("proj"), off: srv("off") });
+
+    put(join(managed.managedSettingsDropInDir, "10-policy.json"), { disableSideloadFlags: true });
+    expect(mcpWithLog(managed).result).toBeNull();
+  });
+
+  test("a plist plutil cannot convert is skipped; a readable plist disableSideloadFlags withholds", () => {
+    const managed = tempManaged();
+    put(managed.managedPreferencePlists[0], "binary plist bytes");
+    put(managed.managedPreferencePlists[1], { disableSideloadFlags: true });
+    const unconvertible = managed.managedPreferencePlists[0];
+    const readPlist = (path: string) =>
+      path === unconvertible ? null : readFileSync(path, "utf-8");
+
+    expect(mcpWithLog({ ...managed, readPlist }).result).toBeNull();
+    rmSync(managed.managedPreferencePlists[1]);
+    expect(mcpWithLog({ ...managed, readPlist }).result?.mcpServers).toEqual({
+      proj: srv("proj"),
+      off: srv("off"),
+    });
+  });
+
+  test("the first plist that converts wins: a per-user plist without disableSideloadFlags keeps --mcp-config beside a device plist that sets it", () => {
+    const managed = tempManaged();
+    put(managed.managedPreferencePlists[0], { permissions: { allow: ["Read"] } });
+    put(managed.managedPreferencePlists[1], { disableSideloadFlags: true });
+
+    expect(mcpWithLog(managed).result?.mcpServers).toEqual({ proj: srv("proj"), off: srv("off") });
+  });
+
+  test("a per-user plist that converts to no object, or a damaged one plutil answers empty, still wins over the device plist", () => {
+    const managed = tempManaged();
+    put(managed.managedPreferencePlists[1], { disableSideloadFlags: true });
+    for (const text of ["[1, 2]", ""]) {
+      put(managed.managedPreferencePlists[0], "x");
+      const readPlist = (path: string) =>
+        path === managed.managedPreferencePlists[0] ? text : readFileSync(path, "utf-8");
+      expect(mcpWithLog({ ...managed, readPlist }).result?.mcpServers).toEqual({
+        proj: srv("proj"),
+        off: srv("off"),
+      });
+    }
+  });
+
+  test.skipIf(process.platform !== "darwin")(
+    "plutilJson answers a damaged plist with empty text, as Claude Code does, and a plist with a date value with null",
+    () => {
+      const damaged = join(tmp, "damaged.plist");
+      put(damaged, "this is not a plist");
+      expect(inherited.plutilJson(damaged)).toBe("");
+
+      const dated = join(tmp, "dated.plist");
+      put(
+        dated,
+        '<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0"><dict><key>d</key><date>2026-01-01T00:00:00Z</date></dict></plist>\n'
+      );
+      expect(inherited.plutilJson(dated)).toBeNull();
+
+      const good = join(tmp, "good.plist");
+      put(good, { disableSideloadFlags: true });
+      expect(JSON.parse(inherited.plutilJson(good) ?? "null")).toEqual({
+        disableSideloadFlags: true,
+      });
+    }
+  );
+
+  test("a remote-settings.json over Claude Code's size limit is skipped", () => {
+    const managed = tempManaged();
+    const pad = "x".repeat(8 * 1024 * 1024);
+    put(managed.remoteSettingsFile, `{"disableSideloadFlags":true,"pad":"${pad}"}`);
+
+    expect(mcpWithLog(managed).result?.mcpServers).toEqual({ proj: srv("proj"), off: srv("off") });
+  });
+
+  test("a named-pipe policy source is never opened, and is skipped", () => {
+    const managed = tempManaged();
+    const path = managed.managedPreferencePlists[0];
+    mkdirSync(dirname(path), { recursive: true });
+    expect(Bun.spawnSync(["mkfifo", path]).exitCode).toBe(0);
+    let opened = false;
+    const readPlist = () => {
+      opened = true;
+      return "{}";
+    };
+
+    expect(mcpWithLog({ ...managed, readPlist }).result?.mcpServers).toEqual({
+      proj: srv("proj"),
+      off: srv("off"),
+    });
+    expect(opened).toBe(false);
+  });
+
+  test("a linked-worktree child outside setup_from keeps --mcp-config beside a malformed plist", () => {
+    const main = mainCheckout(join(tmp, "main"));
+    put(join(main, ".mcp.json"), { mcpServers: { proj: srv("proj") } });
+    const gitDir = join(main, ".git", "worktrees", "wt");
+    put(join(gitDir, "commondir"), "../..\n");
+    const worktree = join(tmp, "wt");
+    put(join(worktree, ".git"), `gitdir: ${gitDir}\n`);
+    const managed = tempManaged();
+    put(managed.managedPreferencePlists[1], "{ not a plist");
+
+    const logged = spyOn(logger, "log").mockImplementation(() => {});
+    try {
+      const result = buildInheritedMcpConfig(main, worktree, null, mcpEnv(), managed);
+      expect(result?.mcpServers).toEqual({ proj: srv("proj") });
+    } finally {
+      logged.mockRestore();
+    }
+  });
+
+  describe("the Windows policy keys", () => {
+    const HKLM = "HKLM\\SOFTWARE\\Policies\\ClaudeCode";
+    const HKCU = "HKCU\\SOFTWARE\\Policies\\ClaudeCode";
+    const missing = {
+      status: 1,
+      stdout: "",
+      stderr: "ERROR: The system was unable to find the specified registry key or value.\r\n",
+    };
+    const settingsValue = {
+      status: 0,
+      stdout: `\r\n${HKLM}\r\n    Settings    REG_SZ    {"disableSideloadFlags":false}\r\n`,
+      stderr: "",
+    };
+
+    function underRegistry(answer: (key: string) => inherited.RegistryAnswer | null) {
+      const asked: string[] = [];
+      const managed = {
+        ...tempManaged(),
+        registryPolicyKeys: [HKLM, HKCU],
+        readRegistry: (key: string) => {
+          asked.push(key);
+          return answer(key);
+        },
+      };
+      return { ...mcpWithLog(managed), asked };
+    }
+
+    test("both keys absent hand the servers over", () => {
+      const { result, asked } = underRegistry(() => missing);
+      expect(result?.mcpServers).toEqual({ proj: srv("proj"), off: srv("off") });
+      expect(asked).toEqual([HKLM, HKCU]);
+    });
+
+    test("a Settings value under either key withholds the servers and names the key", () => {
+      for (const present of [HKLM, HKCU]) {
+        const { result, lines } = underRegistry((key) =>
+          key === present ? settingsValue : missing
+        );
+        expect(result).toBeNull();
+        expect(lines.some((line) => line.includes(present))).toBe(true);
+      }
+    });
+
+    test("a query that times out, cannot run or answers otherwise withholds the servers", () => {
+      for (const answer of [
+        null,
+        { status: 5, stdout: "", stderr: "Zugriff verweigert" },
+        { status: null, stdout: "", stderr: "" },
+        { status: 0, stdout: `\r\n${HKLM}\r\n`, stderr: "" },
+        { status: 1, stdout: settingsValue.stdout, stderr: "" },
+      ]) {
+        expect(underRegistry((key) => (key === HKLM ? missing : answer)).result).toBeNull();
+      }
+    });
+
+    test("reads exit status 1 with no Settings line as absent, in any language", () => {
+      const missingIn = [
+        "FEHLER: Der angegebene Registrierungsschlüssel bzw. Wert wurde nicht gefunden.\r\n",
+        "ERREUR : le système n’a pas trouvé la clé ou la valeur de Registre spécifiée.\r\n",
+        "",
+      ];
+      for (const stderr of missingIn) {
+        const { result, asked } = underRegistry(() => ({ status: 1, stdout: "", stderr }));
+        expect(result?.mcpServers).toEqual({ proj: srv("proj"), off: srv("off") });
+        expect(asked).toEqual([HKLM, HKCU]);
+      }
+    });
+  });
+
+  test("a remote-settings.json in the child's config dir gates when the path is left to it", () => {
+    put(join(tmp, "config", "remote-settings.json"), { disableSideloadFlags: true });
+
+    expect(mcpWithLog({ ...tempManaged(), remoteSettingsFile: null }).result).toBeNull();
+  });
+
+  test("a cached remote-settings.json disableSideloadFlags withholds a linked worktree's --mcp-config even beside a signature that does not verify", () => {
+    // Claude Code checks the cached copy's trust (its `<file>.signature.json`, the account's
+    // organisation pin) and may ignore it; claudish reads the cache as in effect. Fail safe: a
+    // --mcp-config under a policy that IS in effect makes Claude Code exit at startup.
+    const caller = mainCheckout(join(tmp, "caller"));
+    put(join(caller, ".mcp.json"), { mcpServers: { proj: srv("proj") } });
+    const gitDir = join(caller, ".git", "worktrees", "wt");
+    put(join(gitDir, "commondir"), "../..\n");
+    const worktree = join(tmp, "wt");
+    put(join(worktree, ".git"), `gitdir: ${gitDir}\n`);
+    const cache = join(tmp, "config", "remote-settings.json");
+    put(cache, { disableSideloadFlags: true });
+    put(`${cache}.signature.json`, { jws: "not-a-signature", receivedAt: 0 });
+    const managed = { ...tempManaged(), remoteSettingsFile: null };
+
+    const { result, lines } = loggedLines(() =>
+      buildInheritedMcpConfig(caller, worktree, null, mcpEnv(), managed)
+    );
+
+    expect(result).toBeNull();
+    expectNamesPath(
+      lines.find((line) => line.includes("disableSideloadFlags")),
+      cache
+    );
+    // without the cache the same worktree child gets the project server
+    rmSync(cache);
+    expect(buildInheritedMcpConfig(caller, worktree, null, mcpEnv(), managed)).toEqual({
+      mcpServers: { proj: srv("proj") },
+    });
+  });
+
+  test("absent sources hand the servers over as before", () => {
+    expect(mcpWithLog(tempManaged()).result?.mcpServers).toEqual({
+      proj: srv("proj"),
+      off: srv("off"),
+    });
+  });
+
+  test.skipIf(process.platform !== "darwin")(
+    "a binary plist disableSideloadFlags read through the real plutil gates --mcp-config",
+    () => {
+      const { readPlist: _fake, ...managed } = tempManaged();
+      const json = join(tmp, "policy.json");
+      put(json, { disableSideloadFlags: true });
+      mkdirSync(dirname(managed.managedPreferencePlists[1]), { recursive: true });
+      const run = Bun.spawnSync([
+        "/usr/bin/plutil",
+        "-convert",
+        "binary1",
+        "-o",
+        managed.managedPreferencePlists[1],
+        json,
+      ]);
+      expect(run.exitCode).toBe(0);
+
+      expect(mcpWithLog(managed).result).toBeNull();
+    }
+  );
 });
 
 describe("a managed disableSideloadFlags", () => {

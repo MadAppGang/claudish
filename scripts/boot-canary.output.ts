@@ -1,6 +1,7 @@
 /**
  * The spawn shapes the boot canary boots, and the files one run writes in its output directory:
- * `results.json` and one `<scenario>.screen.txt` per shape. The canary removes an earlier run's
+ * `results.json` and one `<scenario>.screen.txt` per shape. `pluginprobe` boots no pane: it runs
+ * claudish's plugin probe (`boot-canary.plugin-probe.ts`), and its `.screen.txt` is a summary. The canary removes an earlier run's
  * files from its `--out` directory with this list. The macOS gate (`test-macos.ts`) removes
  * nothing: each of its runs gives the canary a new temp directory of its own.
  */
@@ -18,6 +19,7 @@ export const SCENARIOS = [
   "mcp",
   "settingserr",
   "nokey",
+  "pluginprobe",
 ] as const;
 export type Scenario = (typeof SCENARIOS)[number];
 

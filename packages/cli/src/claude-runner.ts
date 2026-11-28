@@ -3944,9 +3944,13 @@ export function setupSignalHandlers(
  * 1. CLAUDE_PATH env var
  * 2. Local installation (~/.claude/local/claude)
  * 3. Global PATH
+ *
+ * `signal` stops the PATH lookup ({@link shellLookup}): its shell is killed, and the answer is
+ * null once the shell is gone.
  */
 export async function findClaudeBinary(
-  env: Record<string, string | undefined> = process.env
+  env: Record<string, string | undefined> = process.env,
+  signal?: AbortSignal
 ): Promise<string | null> {
   const isWindows = process.platform === "win32";
 
@@ -4002,47 +4006,73 @@ export async function findClaudeBinary(
   }
 
   // 4. Check global PATH using command -v (portable) / where (Windows)
-  // Use shell: true to inherit user's PATH from .zshrc/.bashrc (fixes Mac detection)
   // Note: "command -v" is a shell builtin, more portable than "which" (works on Termux without extra packages)
-  try {
-    // On Windows use "where claude", on Unix use "command -v claude" (shell builtin, no external dependency)
-    const shellCommand = isWindows ? "where claude" : "command -v claude";
+  const lines = await shellLookup(isWindows ? "where claude" : "command -v claude", signal, true);
+  if (lines === null) return null;
+  if (isWindows) {
+    // On Windows, prefer .cmd file over shell script
+    const cmdPath = lines.find((line) => line.endsWith(".cmd"));
+    if (cmdPath) return cmdPath;
+  }
+  return lines[0] ?? null;
+}
 
-    const proc = spawn(shellCommand, [], {
-      stdio: "pipe",
-      shell: true, // Always use shell to inherit user's PATH and run builtins
-    });
-
+/**
+ * Runs `shellCommand` in a shell (`shell: true`, so the user's PATH and the shell's builtins
+ * apply) and answers its first stdout line, or null when it exits non-zero, prints nothing, or
+ * `signal` aborts. On Unix the shell leads its own process group, and an abort kills the whole
+ * group; the answer comes only once the shell has exited, so no lookup outlives its caller.
+ * A signal already aborted starts nothing.
+ */
+export function shellLookup(shellCommand: string, signal?: AbortSignal): Promise<string | null>;
+export function shellLookup(
+  shellCommand: string,
+  signal: AbortSignal | undefined,
+  allLines: true
+): Promise<string[] | null>;
+export function shellLookup(
+  shellCommand: string,
+  signal?: AbortSignal,
+  allLines?: true
+): Promise<string | string[] | null> {
+  if (signal?.aborted) return Promise.resolve(null);
+  const isWindows = process.platform === "win32";
+  return new Promise((settle) => {
+    let proc: ChildProcess;
+    try {
+      proc = spawn(shellCommand, [], {
+        stdio: ["ignore", "pipe", "ignore"],
+        shell: true,
+        detached: !isWindows,
+      });
+    } catch {
+      settle(null);
+      return;
+    }
     let output = "";
+    let aborted = false;
     proc.stdout?.on("data", (data) => {
       output += data.toString();
     });
-
-    const exitCode = await new Promise<number>((resolve) => {
-      proc.on("exit", (code) => {
-        resolve(code ?? 1);
-      });
-    });
-
-    if (exitCode === 0 && output.trim()) {
-      const lines = output.trim().split(/\r?\n/);
-
-      if (isWindows) {
-        // On Windows, prefer .cmd file over shell script
-        const cmdPath = lines.find((line) => line.endsWith(".cmd"));
-        if (cmdPath) {
-          return cmdPath;
-        }
+    const onAbort = () => {
+      aborted = true;
+      try {
+        if (!isWindows && proc.pid !== undefined) process.kill(-proc.pid, "SIGKILL");
+        else proc.kill("SIGKILL");
+      } catch {
+        // already gone
       }
-
-      // Return first line (primary match)
-      return lines[0];
-    }
-  } catch {
-    // Command failed
-  }
-
-  return null;
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    const done = (code: number | null) => {
+      signal?.removeEventListener("abort", onAbort);
+      const lines = output.trim() ? output.trim().split(/\r?\n/) : [];
+      if (aborted || code !== 0 || lines.length === 0) return settle(null);
+      settle(allLines ? lines : (lines[0] as string));
+    };
+    proc.on("error", () => done(null));
+    proc.on("close", done);
+  });
 }
 
 /**

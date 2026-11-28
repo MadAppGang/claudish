@@ -4,6 +4,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -169,6 +170,83 @@ describe("pane environment", () => {
     expect(magmuxEnv.CLAUDISH_TOKEN_FILE).toBe("/t.json");
     expect(magmuxEnv.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).toBe("1");
     expect(magmuxEnv.SHELL).toBe("/root/launch-AAAAAA/sh-shim");
+  });
+
+  /** `<root>/link -> <root>/a/b`, so `link/..` is `<root>/a` on disk and `<root>` lexically. */
+  function claudePathWorld(executableAt: "a/bin" | "bin" | "bin-plain") {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "claudish-pane-claudepath-")));
+    dirs.push(root);
+    mkdirSync(join(root, "a", "b"), { recursive: true });
+    symlinkSync(join(root, "a", "b"), join(root, "link"));
+    const dir = join(root, executableAt === "bin-plain" ? "bin" : executableAt);
+    mkdirSync(dir, { recursive: true });
+    const file = join(dir, "claude");
+    writeFileSync(file, "#!/bin/sh\nexit 0\n", {
+      mode: executableAt === "bin-plain" ? 0o644 : 0o755,
+    });
+    return { root, file };
+  }
+
+  const buildWithClaudePath = (claudePath: string, serverCwd: string) =>
+    buildPaneEnv({
+      parentEnv: { CLAUDE_PATH: claudePath },
+      slotEnv: {},
+      cwd: "/work/repo",
+      ctlDir: "/root/launch-AAAAAA",
+      configFile: null,
+      serverCwd,
+    }).magmuxEnv;
+
+  const codeOfThrow = (run: () => unknown): string | undefined => {
+    try {
+      run();
+    } catch (e) {
+      return (e as { code?: string }).code;
+    }
+    return undefined;
+  };
+
+  test("a relative CLAUDE_PATH reaches the child as the real path of the file in this process's directory, not the pane's cwd", () => {
+    const { root, file } = claudePathWorld("bin");
+    const relative = buildWithClaudePath("./bin/claude", root);
+    expect(relative.CLAUDE_PATH).toBe(file);
+    expect(JSON.parse(relative.CLAUDISH_PANE_ENV as string).CLAUDE_PATH).toBe(file);
+    expect(buildWithClaudePath("/opt/claude", root).CLAUDE_PATH).toBe("/opt/claude");
+  });
+
+  test("a relative CLAUDE_PATH with no empty, `.` or `..` segment is joined to this process's directory as text", () => {
+    const { root, file } = claudePathWorld("bin");
+    expect(buildWithClaudePath("bin/claude", root).CLAUDE_PATH).toBe(file);
+    expect(buildWithClaudePath("./bin/claude", root).CLAUDE_PATH).toBe(`${root}/bin/claude`);
+  });
+
+  test("a relative CLAUDE_PATH with a trailing slash, an empty, `.` or `..` segment is refused, even where a file is found", () => {
+    // From "/", the kernel refuses the first two (ENOTDIR) where a component walk finds /usr/bin/true.
+    for (const named of ["./usr/bin/true/", "./usr/bin/true/."]) {
+      expect(codeOfThrow(() => buildWithClaudePath(named, "/"))).toBe("no_claude_binary");
+    }
+    const { root } = claudePathWorld("bin");
+    mkdirSync(join(root, "a", "bin"), { recursive: true });
+    writeFileSync(join(root, "a", "bin", "claude"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    for (const named of ["./a/../bin/claude", "bin//claude", "a/./bin/claude", "../x/bin/claude"]) {
+      expect(codeOfThrow(() => buildWithClaudePath(named, root))).toBe("no_claude_binary");
+    }
+  });
+
+  test("a relative CLAUDE_PATH through a symlink and `..` is refused, wherever the file is", () => {
+    for (const at of ["a/bin", "bin"] as const) {
+      const { root } = claudePathWorld(at);
+      expect(codeOfThrow(() => buildWithClaudePath("./link/../bin/claude", root))).toBe(
+        "no_claude_binary"
+      );
+    }
+  });
+
+  test("a relative CLAUDE_PATH naming nothing, a directory or a file that is not executable is refused", () => {
+    const { root } = claudePathWorld("bin-plain");
+    for (const named of ["./bin/claude", "./bin", "./bin/missing"]) {
+      expect(codeOfThrow(() => buildWithClaudePath(named, root))).toBe("no_claude_binary");
+    }
   });
 
   test("the snapshot keeps the REAL SHELL and excludes shell-managed keys and itself", () => {
