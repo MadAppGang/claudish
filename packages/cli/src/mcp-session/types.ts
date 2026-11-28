@@ -6,6 +6,9 @@ import type { SessionHookBinding } from "../hooks/session/binding.js";
 import type { FailureReason, PaneSessionOptions, SlotState, SlotStep } from "../pane/index.js";
 import type { ViewClaims } from "../view/view-claims.js";
 import type { ViewFeed } from "../view/view-feed.js";
+import type { HostLaunchReader } from "./host-launch.js";
+import type { ManagedPaths } from "./inherited-settings.js";
+import type { PluginProbeRunner, PolicyPlatform } from "./plugin-probe.js";
 
 /**
  * Every value a session row's `event` field may carry, as a runtime list so a
@@ -234,6 +237,25 @@ export interface SessionManagerOptions {
   feed?: ViewFeed;
   /** Holders of the active view. Absent: no answer carries `view` and no resize claims. */
   claims?: ViewClaims;
+  /**
+   * Claude Code's managed files, read for a `setup_from` child's inherited MCP servers.
+   * Defaults to the machine's own (`realManagedPaths()`); tests point them at a temp dir.
+   */
+  managedPaths?: ManagedPaths;
+  /**
+   * @internal test seam: starts one plugin probe for a `setup_from` child outside setup_from's
+   * repository. Default `spawnPluginProbe` (the `claude` the child would start).
+   */
+  pluginProbe?: PluginProbeRunner;
+  /** @internal test seam: one plugin probe's deadline. Default `PLUGIN_PROBE_TIMEOUT_MS`. */
+  pluginProbeTimeoutMs?: number;
+  /**
+   * @internal test seam: reads the host's (the caller's Claude Code's) argv and cwd for the
+   * caller plugin probe. Default `readHostLaunch`.
+   */
+  readHostLaunch?: HostLaunchReader;
+  /** @internal test seam: the machine's policy platform. Default `hostPolicyPlatform`. */
+  pluginPolicyPlatform?: PolicyPlatform;
   /**
    * @internal test seam (§11.5): the binding for one session, instead of the real one.
    * Return null for no binding.

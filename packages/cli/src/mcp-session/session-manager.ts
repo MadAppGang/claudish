@@ -43,6 +43,7 @@ import {
 } from "node:fs";
 import { join, resolve, sep } from "node:path";
 
+import { enabledSettingSources } from "../claude-runner.js";
 import { ENV } from "../config.js";
 import { UPSTREAM_ERROR_LOG_ENV } from "../handlers/shared/upstream-error-capture.js";
 import type { HookEngine } from "../hooks/engine.js";
@@ -123,8 +124,25 @@ import { watchTokenFile } from "../view/token-watch.js";
 import { type ClaimCaller, MCP_CALLER, type ViewClaims } from "../view/view-claims.js";
 import type { ViewFeed } from "../view/view-feed.js";
 import { sessionsDirFrom } from "./home-dir.js";
-import { buildInheritedSettingsLayer } from "./inherited-settings.js";
+import { type HostLaunchReader, readHostLaunch } from "./host-launch.js";
+import {
+  type InheritedMcpConfig,
+  type ManagedPaths,
+  buildInheritedSettingsLayer,
+  inheritedMcpFor,
+  realManagedPaths,
+  realOrResolved,
+  writePrivateJson,
+} from "./inherited-settings.js";
 import { hostPidFrom } from "./parent-session.js";
+import {
+  type PluginHandover,
+  type PluginProbeOutcome,
+  type PluginProbeRunner,
+  type PolicyPlatform,
+  hostPolicyPlatform,
+  inheritedPluginsFor,
+} from "./plugin-probe.js";
 import { ScrollbackBuffer } from "./scrollback-buffer.js";
 import type {
   SessionCreateOptions,
@@ -370,6 +388,62 @@ const SPAWN_RECORD_SCHEMA = 1;
 
 /** The caller's settings layer, in the session dir (never in work_dir or setupFrom). */
 const INHERITED_SETTINGS = "inherited-settings.json";
+
+/** The caller's cwd-bound MCP servers, in the session dir, handed over as `--mcp-config`. */
+const INHERITED_MCP = "inherited-mcp.json";
+
+/**
+ * A `setup_from` child's inherited settings layer (`buildInheritedSettingsLayer`, under the
+ * caller's `--setting-sources`), and setupFrom's real path. That path is resolved once and
+ * handed to the MCP builder too, so a symlink to a subdirectory of a repository finds the
+ * same main checkout in both. Without setupFrom: no layer and the flags unchanged.
+ */
+function inheritedLayerFor(
+  setupFrom: string | undefined,
+  callerFlags: readonly string[]
+): { setupReal: string | undefined; layer: Record<string, unknown> | null; restFlags: string[] } {
+  if (!setupFrom) return { setupReal: undefined, layer: null, restFlags: [...callerFlags] };
+  const setupReal = realOrResolved(setupFrom);
+  const settingSources = enabledSettingSources(callerFlags);
+  return { setupReal, ...buildInheritedSettingsLayer(setupReal, callerFlags, { settingSources }) };
+}
+
+/**
+ * `spawn.json`'s `inheritedPlugins` (ids and versions only, never a path; left out when
+ * nothing is handed over) and `pluginProbe` (left out when no probe was due).
+ */
+function pluginRecordOf(handover: PluginHandover | null): {
+  inheritedPlugins?: Array<{ id: string; version?: string }>;
+  pluginProbe?: PluginProbeOutcome;
+} {
+  if (!handover) return {};
+  const { plugins, outcome } = handover;
+  return {
+    ...(plugins.length > 0
+      ? { inheritedPlugins: plugins.map(({ id, version }) => ({ id, version })) }
+      : {}),
+    pluginProbe: outcome,
+  };
+}
+
+/** One `--plugin-dir <path>` pair per handed-over copy, each path one token. */
+function pluginDirFlags(handover: PluginHandover | null): string[] {
+  return (handover?.plugins ?? []).flatMap((p) => ["--plugin-dir", p.path]);
+}
+
+/**
+ * The inherited settings layer and MCP server file, each only when there is one. Both 0600:
+ * the caller's settings.local.json can carry `env` secrets, and a server definition can
+ * carry `headers.Authorization` and `env`.
+ */
+function writeInheritedFiles(
+  sessionDir: string,
+  layer: Record<string, unknown> | null,
+  mcp: InheritedMcpConfig | null
+): void {
+  if (layer) writePrivateJson(join(sessionDir, INHERITED_SETTINGS), layer);
+  if (mcp) writePrivateJson(join(sessionDir, INHERITED_MCP), mcp);
+}
 
 /** RUNNING activities that are not a tool name (§8 B). */
 // "hook": a settled turn held while session hooks run (§7.3); not a tool
@@ -764,8 +838,22 @@ export class SessionManager {
   private readonly paneTimings: SessionManagerOptions["paneTimings"];
   /** createSession calls past their checks whose entry is not in the map yet. */
   private starting = 0;
-  /** Pane starts in flight; `shutdownAll` waits for them so no pane starts unsettled. */
+  /**
+   * Session starts in flight, from the magmux check (before the plugin probes) to the pane;
+   * `shutdownAll` waits for them, so no probe or pane outlives the server unsettled.
+   */
   private readonly pendingStarts = new Set<Promise<void>>();
+  /**
+   * Aborted by `shutdownAll`, and never replaced: a start in its plugin probes kills them and
+   * starts no pane.
+   */
+  private readonly startAbort = new AbortController();
+  /**
+   * Set by `shutdownAll` before it waits for the starts in flight, and never cleared: from then
+   * on `createSession` refuses at entry and after each await, so a start that arrives during
+   * teardown starts no probe and no pane.
+   */
+  private shuttingDown = false;
   private readonly _hostPid: number;
   private readonly _launcherPid: number | undefined;
   /** Team run record id → its `startedAt`, until `finishTeamRun` writes its end. */
@@ -779,6 +867,11 @@ export class SessionManager {
   private readonly magmuxBinary: string | undefined;
   private readonly feed: ViewFeed | undefined;
   private readonly claims: ViewClaims | undefined;
+  private readonly managedPaths: ManagedPaths;
+  private readonly pluginProbe: PluginProbeRunner | undefined;
+  private readonly pluginProbeTimeoutMs: number | undefined;
+  private readonly readHostLaunch: HostLaunchReader;
+  private readonly pluginPolicyPlatform: PolicyPlatform | undefined;
 
   constructor(options?: SessionManagerOptions) {
     // Computed once: the Claude Code process that launched this MCP server
@@ -803,6 +896,11 @@ export class SessionManager {
     this.magmuxBinary = options?.magmuxBinary;
     this.feed = options?.feed;
     this.claims = options?.claims;
+    this.managedPaths = options?.managedPaths ?? realManagedPaths();
+    this.pluginProbe = options?.pluginProbe;
+    this.pluginProbeTimeoutMs = options?.pluginProbeTimeoutMs;
+    this.readHostLaunch = options?.readHostLaunch ?? readHostLaunch;
+    this.pluginPolicyPlatform = options?.pluginPolicyPlatform;
   }
 
   /** The process's hook engine (§2.2), awaited before the first pane spawn. Never rejects. */
@@ -934,6 +1032,9 @@ export class SessionManager {
       teamPath?: string;
       slots?: number;
       setupFrom?: string;
+      inheritedMcpServers?: string[];
+      inheritedPlugins?: Array<{ id: string; version?: string }>;
+      pluginProbe?: PluginProbeOutcome;
       agentRequested?: string;
       taskType?: string;
     }
@@ -953,6 +1054,11 @@ export class SessionManager {
     writeJsonAtomic(join(dir, "spawn.json"), body);
   }
 
+  /** Throws once `shutdownAll` has begun: no session starts during or after teardown. */
+  private refuseWhileShuttingDown(): void {
+    if (this.shuttingDown) throw new Error("MCP server is shutting down: no session started");
+  }
+
   /**
    * Create a session and start its pane. Resolves with the session id once the pane
    * exists (no boot wait): the session is STARTING then.
@@ -963,6 +1069,7 @@ export class SessionManager {
    * FAILED `pane_lost` session with a `meta.json`, and the call throws.
    */
   async createSession(opts: SessionCreateOptions): Promise<string> {
+    this.refuseWhileShuttingDown();
     if (this.activeSessions + this.starting >= this.maxSessions) {
       throw new Error(`Max sessions (${this.maxSessions}) reached`);
     }
@@ -974,9 +1081,7 @@ export class SessionManager {
     const flagCheck = checkChildFlags(callerFlags);
     if (!flagCheck.ok) throw new Error(`invalid_args: ${flagCheck.message}`);
     // Built before any pane, so a malformed settings file fails the call as invalid_args.
-    const inherited = opts.setupFrom
-      ? buildInheritedSettingsLayer(opts.setupFrom, callerFlags)
-      : { layer: null, restFlags: callerFlags };
+    const { setupReal, ...inherited } = inheritedLayerFor(opts.setupFrom, callerFlags);
     let flags = callerFlags;
     const readAvailable = !flagsRemoveRead(flags);
     if (opts.prompt) {
@@ -984,6 +1089,18 @@ export class SessionManager {
       if (refusal) throw new Error(`invalid_args: ${refusal}`);
     }
     const parentEnv = opts.parentEnv ?? this.parentEnv;
+    const childCwd = opts.cwd ?? process.cwd();
+    // Also before any pane. A `.mcp.json` Claude Code would skip (malformed, unreadable or
+    // over its size limit) is skipped with a log line naming its path. A caller's
+    // `--strict-mcp-config` already states the child's exact server set.
+    const inheritedMcp = inheritedMcpFor(
+      setupReal,
+      childCwd,
+      inherited.layer,
+      callerFlags,
+      parentEnv,
+      this.managedPaths
+    );
 
     // Counted from here, so concurrent creates cannot overshoot maxSessions while they
     // await the magmux check; from `sessions.set` on, the entry itself counts.
@@ -993,12 +1110,39 @@ export class SessionManager {
       if (counted) this.starting--;
       counted = false;
     };
+    // Tracked from here, before the plugin probes, so a shutdown waits for (and aborts) them.
+    const { signal } = this.startAbort;
+    let releaseStart: () => void = () => {};
+    const tracked = new Promise<void>((done) => {
+      releaseStart = done;
+    });
+    this.pendingStarts.add(tracked);
     try {
       await assertMagmuxAvailable(this.magmuxBinary);
+      this.refuseWhileShuttingDown();
+      // Also before any pane: the caller's plugin copies a child outside setup_from's
+      // repository would load at another version, or not at all, read from two quiet Claude
+      // Code probes, the caller's with the host's own launch flags. Null (no probe) for the
+      // same repository.
+      const plugins = await inheritedPluginsFor({
+        setupReal,
+        childCwd,
+        layer: inherited.layer,
+        childFlags: callerFlags,
+        env: parentEnv,
+        managed: this.managedPaths,
+        hostPid: this._hostPid,
+        readHostLaunch: this.readHostLaunch,
+        policyPlatform: this.pluginPolicyPlatform ?? hostPolicyPlatform(parentEnv),
+        runner: this.pluginProbe,
+        timeoutMs: this.pluginProbeTimeoutMs,
+        signal,
+      });
+      this.refuseWhileShuttingDown();
       reservePanes(1, sockRootFor(parentEnv));
       let entry: SessionEntry;
       try {
-        entry = this.recordSession(opts, inherited.layer);
+        entry = this.recordSession(opts, inherited.layer, inheritedMcp, plugins);
       } catch (err) {
         releasePaneReservations(1);
         throw err;
@@ -1008,29 +1152,31 @@ export class SessionManager {
       if (inherited.layer) {
         flags = [...inherited.restFlags, "--settings", join(entry.sessionDir, INHERITED_SETTINGS)];
       }
+      // Before the caller's flags, which the probes were given too.
+      flags = [...pluginDirFlags(plugins), ...flags];
+      // First, so a caller's own `--mcp-config` comes later and wins a name clash.
+      if (inheritedMcp) flags = ["--mcp-config", join(entry.sessionDir, INHERITED_MCP), ...flags];
       this.sessions.set(entry.info.sessionId, entry);
       uncount();
-      const started = this.startPane(entry, opts, { flags, readAvailable, parentEnv });
-      const tracked = started.catch(() => undefined);
-      this.pendingStarts.add(tracked);
-      try {
-        await started;
-      } finally {
-        this.pendingStarts.delete(tracked);
-      }
+      await this.startPane(entry, opts, { flags, readAvailable, parentEnv });
       return entry.info.sessionId;
     } finally {
+      this.pendingStarts.delete(tracked);
+      releaseStart();
       uncount();
     }
   }
 
   /**
-   * `prompt.md`, `spawn.json`, `inherited-settings.json` (when there is a layer) and the
-   * in-memory entry (STARTING). Throws before any pane.
+   * `prompt.md`, `spawn.json`, `inherited-settings.json` (when there is a layer),
+   * `inherited-mcp.json` (when there are inherited MCP servers) and the in-memory entry
+   * (STARTING). Throws before any pane.
    */
   private recordSession(
     opts: SessionCreateOptions,
-    inheritedLayer: Record<string, unknown> | null
+    inheritedLayer: Record<string, unknown> | null,
+    inheritedMcp: InheritedMcpConfig | null,
+    plugins: PluginHandover | null
   ): SessionEntry {
     const sessionId = opts.sessionId ?? randomUUID().slice(0, 8);
     // Minted here: it is the child's transcript basename, known BEFORE the pane starts.
@@ -1055,18 +1201,14 @@ export class SessionManager {
       timeoutSeconds: timeout,
       claudeSessionId,
       ...(opts.setupFrom ? { setupFrom: opts.setupFrom } : {}),
+      // Names only: a definition can carry headers, env and tokens.
+      inheritedMcpServers: inheritedMcp ? Object.keys(inheritedMcp.mcpServers) : undefined,
+      ...pluginRecordOf(plugins),
       ...(agentRequested ? { agentRequested } : {}),
       // undefined is left out of spawn.json by JSON.stringify
       taskType: opts.taskType,
     });
-    // 0600: the caller's settings.local.json can carry `env` secrets.
-    if (inheritedLayer) {
-      writeFileSync(
-        join(sessionDir, INHERITED_SETTINGS),
-        `${JSON.stringify(inheritedLayer, null, 2)}\n`,
-        { encoding: "utf-8", mode: 0o600 }
-      );
-    }
+    writeInheritedFiles(sessionDir, inheritedLayer, inheritedMcp);
 
     const cwd = opts.cwd ?? process.cwd();
     const parentEnv = opts.parentEnv ?? this.parentEnv;
@@ -1927,7 +2069,11 @@ export class SessionManager {
    * panes gone awaits its own no-orphan check.
    */
   async shutdownAll(): Promise<void> {
-    // A pane still starting would otherwise be skipped here and run on unsettled.
+    // Set first: a start entering from here on refuses before any probe or pane. A start
+    // still in its plugin probes kills them and starts no pane; a pane still starting would
+    // otherwise be skipped here and run on unsettled.
+    this.shuttingDown = true;
+    this.startAbort.abort();
     await Promise.all([...this.pendingStarts]);
     const pending: Promise<unknown>[] = [];
     for (const entry of this.sessions.values()) {

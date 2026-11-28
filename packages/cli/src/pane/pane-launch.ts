@@ -23,7 +23,9 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import {
+  accessSync,
   chmodSync,
+  constants as fsConstants,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -31,7 +33,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { claudeCodeConfigDir } from "../auth/claude-code-facts.js";
 import {
   CLAUDISH_EXITING_FLAGS,
@@ -209,6 +211,41 @@ export class PaneEnvTooLargeError extends Error {
   readonly code = "pane_lost";
 }
 
+/** A relative `CLAUDE_PATH` that names no executable file in this process's directory. */
+export class PaneClaudePathError extends Error {
+  readonly code = "no_claude_binary";
+}
+
+/**
+ * The absolute path a relative `CLAUDE_PATH` names in `base`, or null when it names none that
+ * this process may execute. One leading `./` is dropped; what remains must have no empty, `.`
+ * or `..` segment and no trailing slash. It is then joined to `base` as plain text: with no such
+ * segment, that text is exactly the path the kernel walks, symlinks included, so nothing is
+ * resolved here. The joined path must be a file with the execute bit for this process.
+ */
+export function claudePathIn(base: string, named: string): string | null {
+  const rest = named.startsWith("./") ? named.slice(2) : named;
+  if (rest === "" || isAbsolute(rest)) return null;
+  if (rest.split("/").some((part) => part === "" || part === "." || part === "..")) return null;
+  const abs = base.endsWith("/") ? `${base}${rest}` : `${base}/${rest}`;
+  try {
+    if (!statSync(abs).isFile()) return null;
+    accessSync(abs, fsConstants.X_OK);
+    return abs;
+  } catch {
+    return null;
+  }
+}
+
+/** {@link claudePathIn} for a pane child, throwing {@link PaneClaudePathError} on null. */
+function paneClaudePath(base: string, named: string): string {
+  const real = claudePathIn(base, named);
+  if (real === null) {
+    throw new PaneClaudePathError(`CLAUDE_PATH ${named} names no executable file in ${base}`);
+  }
+  return real;
+}
+
 export interface PaneEnvInput {
   parentEnv: Record<string, string | undefined>;
   slotEnv: Record<string, string>;
@@ -226,6 +263,8 @@ export interface PaneEnvInput {
   /** the pane's size at launch (already clamped); DEFAULT_PANE_COLS × DEFAULT_PANE_ROWS when absent */
   cols?: number;
   rows?: number;
+  /** the directory a relative `CLAUDE_PATH` names a file in; this process's cwd when absent */
+  serverCwd?: string;
 }
 
 /**
@@ -241,6 +280,11 @@ export function buildPaneEnv(input: PaneEnvInput): { magmuxEnv: Record<string, s
   for (const [k, v] of Object.entries(input.parentEnv)) {
     if (v === undefined || isStrippedFromChildEnv(k)) continue;
     env[k] = v;
+  }
+  // The child runs in the pane's cwd, the work_dir: a relative CLAUDE_PATH would name a file
+  // in that repository there, not the binary this process was pointed at.
+  if (env.CLAUDE_PATH && !isAbsolute(env.CLAUDE_PATH)) {
+    env.CLAUDE_PATH = paneClaudePath(input.serverCwd ?? process.cwd(), env.CLAUDE_PATH);
   }
   env.COLUMNS = String(input.cols ?? DEFAULT_PANE_COLS);
   env.LINES = String(input.rows ?? DEFAULT_PANE_ROWS);

@@ -34,6 +34,7 @@ import { initLogger, log } from "./logger.js";
 import { ReplayManager, SessionManager } from "./mcp-session/index.js";
 import { resolveSetupFrom } from "./mcp-session/inherited-settings.js";
 import { parentSessionForCall } from "./mcp-session/parent-session.js";
+import { sweepStaleProbeDirs } from "./mcp-session/plugin-probe.js";
 import { NESTED_INSTRUCTIONS, NESTED_MCP_TOOL_NAMES } from "./mcp/nested-mode.js";
 import {
   type HeartbeatHandle,
@@ -3777,6 +3778,9 @@ async function main() {
   const viewFeed = new ViewFeed();
   const viewClaims = new ViewClaims({ notify: (target) => viewFeed.changed(target, true) });
   const sessionManager = new SessionManager({ feed: viewFeed, claims: viewClaims });
+  // A server killed mid-probe leaves its plugin probe's settings files; remove those now
+  // rather than at the next probe, which may never come.
+  sweepStaleProbeDirs();
   replays.setViewServices({ feed: viewFeed, claims: viewClaims });
   setViewServices({ feed: viewFeed, claims: viewClaims });
 

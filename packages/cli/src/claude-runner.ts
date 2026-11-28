@@ -893,7 +893,7 @@ export function userSettingsFile(configDir: string | undefined, home: string, cw
  * working directory. Outside Git only the working directory's file. Project
  * settings (`settings.json`) load from the working directory alone.
  */
-function localSettingsFiles(
+export function localSettingsFiles(
   cwd: string,
   readFile: (path: string) => string,
   pathKind: (path: string) => "dir" | "file" | undefined
@@ -911,10 +911,11 @@ function localSettingsFiles(
  * directory makes its parent the root. A `.git` file (`gitdir: <path>`, a
  * linked worktree) points at a Git directory whose `commondir` names the common
  * Git directory; the root is that directory's parent. A `.git` file with no
- * readable `commondir` keeps its own directory as the root. No `.git` at all:
- * undefined.
+ * readable `commondir` keeps its own directory as the root, and so does one whose
+ * `commondir` `pathKind` does not call a file: a named pipe is never read, since
+ * a read with no writer blocks. No `.git` at all: undefined.
  */
-function mainCheckoutRoot(
+export function mainCheckoutRoot(
   cwd: string,
   readFile: (path: string) => string,
   pathKind: (path: string) => "dir" | "file" | undefined
@@ -924,22 +925,34 @@ function mainCheckoutRoot(
     const entry = join(dir, ".git");
     const kind = pathKind(entry);
     if (kind === "dir") return dir;
-    if (kind === "file") {
-      const gitDir = gitDirOfFile(entry, readFile);
-      if (gitDir === undefined) return dir;
-      let common: string;
-      try {
-        common = readFile(join(gitDir, "commondir")).trim();
-      } catch {
-        return dir;
-      }
-      if (!common) return dir;
-      return dirname(resolve(gitDir, common));
-    }
+    if (kind === "file") return linkedCheckoutRoot(dir, entry, readFile, pathKind);
     const parent = dirname(dir);
     if (parent === dir) return undefined;
     dir = parent;
   }
+}
+
+/**
+ * The main checkout a `.git` FILE at `entry` (in `dir`) leads to through its Git
+ * directory's `commondir`, else `dir` ({@link mainCheckoutRoot}).
+ */
+function linkedCheckoutRoot(
+  dir: string,
+  entry: string,
+  readFile: (path: string) => string,
+  pathKind: (path: string) => "dir" | "file" | undefined
+): string {
+  const gitDir = gitDirOfFile(entry, readFile);
+  if (gitDir === undefined) return dir;
+  const commondir = join(gitDir, "commondir");
+  if (pathKind(commondir) !== "file") return dir;
+  let common: string;
+  try {
+    common = readFile(commondir).trim();
+  } catch {
+    return dir;
+  }
+  return common ? dirname(resolve(gitDir, common)) : dir;
 }
 
 /** The Git directory a `.git` file's `gitdir:` line names, resolved against the file's directory. */
@@ -954,11 +967,16 @@ function gitDirOfFile(entry: string, readFile: (path: string) => string): string
   return match ? resolve(dirname(entry), match[1]) : undefined;
 }
 
-/** {@link ChildAuthControlDeps.pathKind} on the real file system. */
-function statPathKind(path: string): "dir" | "file" | undefined {
+/**
+ * {@link ChildAuthControlDeps.pathKind} on the real file system. Only a regular
+ * file is a "file": a named pipe, socket or device is undefined, as a missing
+ * path is, since reading a pipe with no writer blocks.
+ */
+export function statPathKind(path: string): "dir" | "file" | undefined {
   try {
     const stat = statSync(path);
-    return stat.isDirectory() ? "dir" : "file";
+    if (stat.isDirectory()) return "dir";
+    return stat.isFile() ? "file" : undefined;
   } catch {
     return undefined;
   }
@@ -1115,7 +1133,7 @@ export function unreadableSettingsArgs(
 }
 
 /** A settings file tier `--setting-sources` can turn on or off. */
-type SettingSource = "user" | "project" | "local";
+export type SettingSource = "user" | "project" | "local";
 
 /**
  * The file tiers Claude Code loads under the passthrough `--setting-sources`
@@ -1124,7 +1142,7 @@ type SettingSource = "user" | "project" | "local";
  * means every tier loads. `--setting-sources ""` loads none of them. Managed
  * settings and `--settings` values are outside this flag's reach.
  */
-function enabledSettingSources(args: readonly string[]): Set<SettingSource> | null {
+export function enabledSettingSources(args: readonly string[]): Set<SettingSource> | null {
   let value: string | undefined;
   for (let i = 0; i < args.length; i++) {
     const token = args[i];
@@ -1179,7 +1197,7 @@ function readSettingsSource(
  * tier, which "cannot be overridden by anything" (not even our --settings overlay).
  * https://code.claude.com/docs/en/settings
  */
-function managedSettingsPath(): string {
+export function managedSettingsPath(): string {
   if (isWindows()) {
     return join(
       process.env.PROGRAMDATA || "C:\\ProgramData",
@@ -3926,9 +3944,13 @@ export function setupSignalHandlers(
  * 1. CLAUDE_PATH env var
  * 2. Local installation (~/.claude/local/claude)
  * 3. Global PATH
+ *
+ * `signal` stops the PATH lookup ({@link shellLookup}): its shell is killed, and the answer is
+ * null once the shell is gone.
  */
 export async function findClaudeBinary(
-  env: Record<string, string | undefined> = process.env
+  env: Record<string, string | undefined> = process.env,
+  signal?: AbortSignal
 ): Promise<string | null> {
   const isWindows = process.platform === "win32";
 
@@ -3984,47 +4006,73 @@ export async function findClaudeBinary(
   }
 
   // 4. Check global PATH using command -v (portable) / where (Windows)
-  // Use shell: true to inherit user's PATH from .zshrc/.bashrc (fixes Mac detection)
   // Note: "command -v" is a shell builtin, more portable than "which" (works on Termux without extra packages)
-  try {
-    // On Windows use "where claude", on Unix use "command -v claude" (shell builtin, no external dependency)
-    const shellCommand = isWindows ? "where claude" : "command -v claude";
+  const lines = await shellLookup(isWindows ? "where claude" : "command -v claude", signal, true);
+  if (lines === null) return null;
+  if (isWindows) {
+    // On Windows, prefer .cmd file over shell script
+    const cmdPath = lines.find((line) => line.endsWith(".cmd"));
+    if (cmdPath) return cmdPath;
+  }
+  return lines[0] ?? null;
+}
 
-    const proc = spawn(shellCommand, [], {
-      stdio: "pipe",
-      shell: true, // Always use shell to inherit user's PATH and run builtins
-    });
-
+/**
+ * Runs `shellCommand` in a shell (`shell: true`, so the user's PATH and the shell's builtins
+ * apply) and answers its first stdout line, or null when it exits non-zero, prints nothing, or
+ * `signal` aborts. On Unix the shell leads its own process group, and an abort kills the whole
+ * group; the answer comes only once the shell has exited, so no lookup outlives its caller.
+ * A signal already aborted starts nothing.
+ */
+export function shellLookup(shellCommand: string, signal?: AbortSignal): Promise<string | null>;
+export function shellLookup(
+  shellCommand: string,
+  signal: AbortSignal | undefined,
+  allLines: true
+): Promise<string[] | null>;
+export function shellLookup(
+  shellCommand: string,
+  signal?: AbortSignal,
+  allLines?: true
+): Promise<string | string[] | null> {
+  if (signal?.aborted) return Promise.resolve(null);
+  const isWindows = process.platform === "win32";
+  return new Promise((settle) => {
+    let proc: ChildProcess;
+    try {
+      proc = spawn(shellCommand, [], {
+        stdio: ["ignore", "pipe", "ignore"],
+        shell: true,
+        detached: !isWindows,
+      });
+    } catch {
+      settle(null);
+      return;
+    }
     let output = "";
+    let aborted = false;
     proc.stdout?.on("data", (data) => {
       output += data.toString();
     });
-
-    const exitCode = await new Promise<number>((resolve) => {
-      proc.on("exit", (code) => {
-        resolve(code ?? 1);
-      });
-    });
-
-    if (exitCode === 0 && output.trim()) {
-      const lines = output.trim().split(/\r?\n/);
-
-      if (isWindows) {
-        // On Windows, prefer .cmd file over shell script
-        const cmdPath = lines.find((line) => line.endsWith(".cmd"));
-        if (cmdPath) {
-          return cmdPath;
-        }
+    const onAbort = () => {
+      aborted = true;
+      try {
+        if (!isWindows && proc.pid !== undefined) process.kill(-proc.pid, "SIGKILL");
+        else proc.kill("SIGKILL");
+      } catch {
+        // already gone
       }
-
-      // Return first line (primary match)
-      return lines[0];
-    }
-  } catch {
-    // Command failed
-  }
-
-  return null;
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    const done = (code: number | null) => {
+      signal?.removeEventListener("abort", onAbort);
+      const lines = output.trim() ? output.trim().split(/\r?\n/) : [];
+      if (aborted || code !== 0 || lines.length === 0) return settle(null);
+      settle(allLines ? lines : (lines[0] as string));
+    };
+    proc.on("error", () => done(null));
+    proc.on("close", done);
+  });
 }
 
 /**

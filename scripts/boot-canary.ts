@@ -9,6 +9,12 @@
  * booted a valid agent. This boots each shape on macOS in `bun run test:macos` (the pinned
  * release).
  *
+ * The `pluginprobe` scenario boots no pane: it runs claudish's plugin probe for a `setup_from`
+ * child (`boot-canary.plugin-probe.ts`) in an isolated config holding a placeholder Claude
+ * subscription login, and checks that the quiet `/effort` boot still prints an init event with a
+ * `plugins` list, answers with `/effort`'s usage line, makes no model request, and runs no plugin
+ * hook or MCP server.
+ *
  * Usage:
  *   bun scripts/boot-canary.ts [--bin <claude binary>] [--scenarios a,b] [--expect <json>] [--out <dir>]
  *                              [--jobs <n>]
@@ -49,6 +55,7 @@ import {
 } from "../packages/cli/src/pane/screen-model.js";
 import { SessionRegistry } from "../packages/cli/src/pane/session-registry.js";
 import { SCENARIOS, type Scenario, removeCanaryOutput } from "./boot-canary.output.js";
+import { type PluginProbeReading, runPluginProbeCheck } from "./boot-canary.plugin-probe.js";
 import {
   BOOT_CLOCK_START,
   type BootClock,
@@ -61,14 +68,17 @@ import { runPool } from "./run-pool.js";
 
 /**
  * What one boot read as. `boot` is `repl`, `booting`, `dialog:<name>`, `choice`, `exited`, or
- * `no-paint` when the pane drew nothing before MAX_MS.
+ * `no-paint` when the pane drew nothing before MAX_MS. The `pluginprobe` check boots no pane
+ * and adds its own fields (`PluginProbeReading`).
  */
-interface Reading {
-  boot: string;
-  agentRejected: boolean;
-  /** the registry record's status, `absent` when no live record matched the session id */
-  registry: string;
-}
+type Reading =
+  | {
+      boot: string;
+      agentRejected: boolean;
+      /** the registry record's status, `absent` when no live record matched the session id */
+      registry: string;
+    }
+  | PluginProbeReading;
 
 function usage(msg: string): never {
   console.error(`boot-canary: ${msg}`);
@@ -92,6 +102,34 @@ function claudeBinary(): string {
   } catch {
     usage("no --bin and no `claude` on PATH");
   }
+}
+
+/** One reading as the canary prints it. */
+function readingText(r: Reading): string {
+  const fields =
+    "probe" in r
+      ? `probe=${r.probe} plugins=${r.plugins} productionRequests=${r.productionRequests}` +
+        ` modelRequests=${r.modelRequests}` +
+        ` realTurns=${r.realTurns} sideEffects=${r.sideEffects} exit=${r.exit} result=${r.result}` +
+        ` policySources=${r.policySources} providerSwitches=${r.providerSwitches}` +
+        ` policyGate=${r.policyGate} answer=${r.answer} login=${r.login} probeLogin=${r.probeLogin}` +
+        ` handoff=${r.handoff} handoffControl=${r.handoffControl} unixSocket=${r.unixSocket} runnerSocket=${r.runnerSocket}` +
+        ` commandSettings=${r.commandSettings} userHelperGate=${r.userHelperGate}` +
+        ` userApiKeyHelper="${r.userApiKeyHelper}"` +
+        ` restrictedMode=${r.restrictedMode} safeMode=${r.safeMode}`
+      : `registry=${r.registry}`;
+  return `boot=${r.boot} ${fields}${r.agentRejected ? " agent-rejected" : ""}`;
+}
+
+/** This process's environment without Claude Code's, magmux's and Anthropic's variables. */
+function canaryEnv(): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (v === undefined || /^(CLAUDE|MAGMUX_|ANTHROPIC_)/.test(k)) continue;
+    if (k === "TERM_PROGRAM" || k === "ENABLE_IDE_INTEGRATION") continue;
+    env[k] = v;
+  }
+  return env;
 }
 
 function shapeFor(
@@ -171,6 +209,9 @@ function shapeFor(
       for (const k of Object.keys(env)) delete env[k];
       delete overlay.forceLoginMethod;
       break;
+    case "pluginprobe":
+      // boots no pane: see runScenario
+      break;
   }
   return { args, env, claudeJson, overlay };
 }
@@ -184,6 +225,21 @@ async function runScenario(
 ): Promise<Reading> {
   const world = join(sockDir, `w-${scenario}`);
   rmSync(world, { recursive: true, force: true });
+  if (scenario === "pluginprobe") {
+    mkdirSync(world, { recursive: true });
+    try {
+      const { reading, summary } = await runPluginProbeCheck(
+        bin,
+        version,
+        realpathSync(world),
+        canaryEnv()
+      );
+      writeFileSync(join(outDir, `${scenario}.screen.txt`), `${summary}\n`);
+      return reading;
+    } finally {
+      rmSync(world, { recursive: true, force: true });
+    }
+  }
   const cfg = join(world, "cfg");
   mkdirSync(cfg, { recursive: true });
   mkdirSync(join(world, "cwd"), { recursive: true });
@@ -200,12 +256,7 @@ async function runScenario(
   );
   chmodSync(wrapper, 0o755);
 
-  const env: Record<string, string> = {};
-  for (const [k, v] of Object.entries(process.env)) {
-    if (v === undefined || /^(CLAUDE|MAGMUX_|ANTHROPIC_)/.test(k)) continue;
-    if (k === "TERM_PROGRAM" || k === "ENABLE_IDE_INTEGRATION") continue;
-    env[k] = v;
-  }
+  const env = canaryEnv();
   Object.assign(env, shape.env, {
     COLUMNS: "160",
     LINES: "50",
@@ -310,7 +361,10 @@ async function main(): Promise<void> {
   removeCanaryOutput(outDir);
   const version =
     execFileSync(bin, ["--version"], { encoding: "utf8" }).trim().split(/\s/)[0] ?? "unknown";
-  const expected = JSON.parse(readFileSync(expectPath, "utf8")) as Record<string, Partial<Reading>>;
+  const expected = JSON.parse(readFileSync(expectPath, "utf8")) as Record<
+    string,
+    Record<string, unknown>
+  >;
   mkdirSync(outDir, { recursive: true });
   // macOS caps a socket path at 104 bytes: a short directory under /tmp, never $TMPDIR
   const sockDir = mkdtempSync(join(process.platform === "darwin" ? "/tmp" : tmpdir(), "ccanary-"));
@@ -328,12 +382,13 @@ async function main(): Promise<void> {
     for (const [i, s] of scenarios.entries()) {
       const r = readings[i] as Reading;
       const want = expected[s] ?? {};
-      const ok = (Object.keys(want) as (keyof Reading)[]).every((k) => want[k] === r[k]);
+      const read = r as Record<string, unknown>;
+      const ok = Object.entries(want).every(([k, v]) => v === read[k]);
       if (!ok) failed++;
       results[s] = { ...r, ok };
       console.log(
-        `${ok ? "ok  " : "FAIL"} ${s.padEnd(12)} boot=${r.boot} registry=${r.registry}` +
-          `${r.agentRejected ? " agent-rejected" : ""}${ok ? "" : `  expected ${JSON.stringify(want)}`}`
+        `${ok ? "ok  " : "FAIL"} ${s.padEnd(12)} ${readingText(r)}` +
+          `${ok ? "" : `  expected ${JSON.stringify(want)}`}`
       );
     }
   } finally {
