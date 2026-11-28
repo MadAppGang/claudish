@@ -59,7 +59,9 @@ describe("readHostLaunch, live", () => {
     expect(launch).not.toBeNull();
     // `bun test` rewrites process.argv, so the kernel's view is the reference: `ps` joins the
     // arguments with spaces, which is exact while no argument holds one
-    const ps = Bun.spawnSync(["ps", "-o", "args=", "-p", String(process.pid)]);
+    const ps = Bun.spawnSync(["ps", "-o", "args=", "-p", String(process.pid)], {
+      env: { PATH: "/usr/bin:/bin" },
+    });
     const shown = ps.stdout.toString().trim();
     expect(launch?.argv.some((arg) => arg.includes(" "))).toBe(false);
     expect(launch?.argv.join(" ")).toBe(shown);
@@ -73,7 +75,7 @@ describe("readHostLaunch, live", () => {
       const cwd = join(tmp, "dir with space ü");
       mkdirSync(cwd);
       const args = ["-c", "sleep 30; :", "a b", "", '--settings={"x": 1}', "ü 日本", "line\nbreak"];
-      const child = Bun.spawn(["/bin/sh", ...args], { cwd });
+      const child = Bun.spawn(["/bin/sh", ...args], { cwd, env: { PATH: "/usr/bin:/bin" } });
       try {
         await Bun.sleep(100);
         const launch = readHostLaunch(child.pid);
@@ -146,7 +148,9 @@ describe("readHostLaunch, live", () => {
   test.skipIf(process.platform !== "darwin")(
     "is null for a live process whose argv[0] is empty",
     async () => {
-      const child = Bun.spawn(["/usr/bin/perl", "-e", 'exec {"/bin/sleep"} "", "30"']);
+      const child = Bun.spawn(["/usr/bin/perl", "-e", 'exec {"/bin/sleep"} "", "30"'], {
+        env: { PATH: "/usr/bin:/bin" },
+      });
       try {
         await Bun.sleep(150);
         expect(readHostLaunch(child.pid)).toBeNull();
@@ -158,7 +162,7 @@ describe("readHostLaunch, live", () => {
   );
 
   test.skipIf(!live)("is null for a process that is gone", async () => {
-    const child = Bun.spawn(["/bin/sh", "-c", "exit 0"]);
+    const child = Bun.spawn(["/bin/sh", "-c", "exit 0"], { env: { PATH: "/usr/bin:/bin" } });
     await child.exited;
     expect(readHostLaunch(child.pid)).toBeNull();
   });

@@ -190,7 +190,10 @@ function main(): void {
   };
   if (plan.mode === "wrapper") {
     // not detached: the child stays in this process's group, holding stdout open
-    const descendant = spawn("/bin/sleep", ["60"], { stdio: ["ignore", "inherit", "ignore"] });
+    const descendant = spawn("/bin/sleep", ["60"], {
+      stdio: ["ignore", "inherit", "ignore"],
+      env: { PATH: "/usr/bin:/bin" },
+    });
     descendant.unref();
     run.descendantPid = descendant.pid;
   }

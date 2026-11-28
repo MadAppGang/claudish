@@ -1011,7 +1011,7 @@ describe("inheritedPluginsFor", () => {
   test("starts no probe when a policy source is a named pipe, and never opens it", async () => {
     const path = managedIn(tmp).managedPreferencePlists[0] as string;
     mkdirSync(join(path, ".."), { recursive: true });
-    expect(Bun.spawnSync(["mkfifo", path]).exitCode).toBe(0);
+    expect(Bun.spawnSync(["mkfifo", path], { env: { PATH: "/usr/bin:/bin" } }).exitCode).toBe(0);
     let opened = false;
     const managed = {
       ...managedIn(tmp),
@@ -1631,7 +1631,11 @@ describe("inheritedPluginsFor", () => {
     test("a caller settings file that is not a regular file refuses (caller_settings_unreadable) without blocking", async () => {
       const dir = join(tmp, "caller", ".claude");
       mkdirSync(dir, { recursive: true });
-      expect(Bun.spawnSync(["mkfifo", join(dir, "settings.local.json")]).exitCode).toBe(0);
+      expect(
+        Bun.spawnSync(["mkfifo", join(dir, "settings.local.json")], {
+          env: { PATH: "/usr/bin:/bin" },
+        }).exitCode
+      ).toBe(0);
       const got = await underLaunch({});
       expect(got.value).toEqual({ plugins: [], outcome: "caller_settings_unreadable" });
       expect(got.calls).toEqual([]);
@@ -2111,7 +2115,11 @@ describe("inheritedPluginsFor", () => {
   test("starts no probe when work_dir's project settings file is not a regular file, without blocking on it", async () => {
     const { caller, work, lists } = world();
     mkdirSync(join(work, ".claude"), { recursive: true });
-    expect(Bun.spawnSync(["mkfifo", join(work, ".claude", "settings.json")]).exitCode).toBe(0);
+    expect(
+      Bun.spawnSync(["mkfifo", join(work, ".claude", "settings.json")], {
+        env: { PATH: "/usr/bin:/bin" },
+      }).exitCode
+    ).toBe(0);
     const calls: PluginProbeRequest[] = [];
 
     const { value } = await logsOf(() =>
@@ -2243,7 +2251,7 @@ describe("inheritedPluginsFor", () => {
     async () => {
       const cwd = mkdirP(join(tmp, "dir with space"));
       const args = ["-c", "sleep 30; :", "a b", "", '--settings={"x": 1}', "ü"];
-      const child = Bun.spawn(["/bin/sh", ...args], { cwd });
+      const child = Bun.spawn(["/bin/sh", ...args], { cwd, env: { PATH: "/usr/bin:/bin" } });
       try {
         await Bun.sleep(100);
         const launch = readHostLaunch(child.pid);

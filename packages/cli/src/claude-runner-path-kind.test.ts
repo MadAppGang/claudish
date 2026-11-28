@@ -16,7 +16,7 @@ afterEach(() => {
 
 function mkfifo(path: string): void {
   mkdirSync(dirname(path), { recursive: true });
-  const made = Bun.spawnSync(["mkfifo", path]);
+  const made = Bun.spawnSync(["mkfifo", path], { env: { PATH: "/usr/bin:/bin" } });
   expect(made.exitCode).toBe(0);
 }
 

@@ -61,6 +61,7 @@ describe("the host creds file writer", () => {
       // a writer that exits before opening the pipe leaves `cat` blocked on its open: the
       // timeout kills it, and the test fails on the signal instead of hanging
       const got = spawnSync("/bin/cat", [pipe], {
+        env: { PATH: "/usr/bin:/bin" },
         encoding: "utf8",
         timeout: READER_TIMEOUT_MS,
         killSignal: "SIGKILL",

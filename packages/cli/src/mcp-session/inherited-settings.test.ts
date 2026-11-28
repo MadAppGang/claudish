@@ -1027,7 +1027,7 @@ function runIsolated(body: string): { exitCode: number | null; stdout: string; s
 
 function mkfifo(path: string): void {
   mkdirSync(dirname(path), { recursive: true });
-  const made = Bun.spawnSync(["mkfifo", path]);
+  const made = Bun.spawnSync(["mkfifo", path], { env: { PATH: "/usr/bin:/bin" } });
   expect(made.exitCode).toBe(0);
 }
 
@@ -1565,7 +1565,7 @@ describe("the managed policy sources beyond managed-settings.json", () => {
     const managed = tempManaged();
     const path = managed.managedPreferencePlists[0];
     mkdirSync(dirname(path), { recursive: true });
-    expect(Bun.spawnSync(["mkfifo", path]).exitCode).toBe(0);
+    expect(Bun.spawnSync(["mkfifo", path], { env: { PATH: "/usr/bin:/bin" } }).exitCode).toBe(0);
     let opened = false;
     const readPlist = () => {
       opened = true;
@@ -1718,14 +1718,10 @@ describe("the managed policy sources beyond managed-settings.json", () => {
       const json = join(tmp, "policy.json");
       put(json, { disableSideloadFlags: true });
       mkdirSync(dirname(managed.managedPreferencePlists[1]), { recursive: true });
-      const run = Bun.spawnSync([
-        "/usr/bin/plutil",
-        "-convert",
-        "binary1",
-        "-o",
-        managed.managedPreferencePlists[1],
-        json,
-      ]);
+      const run = Bun.spawnSync(
+        ["/usr/bin/plutil", "-convert", "binary1", "-o", managed.managedPreferencePlists[1], json],
+        { env: { PATH: "/usr/bin:/bin" } }
+      );
       expect(run.exitCode).toBe(0);
 
       expect(mcpWithLog(managed).result).toBeNull();
